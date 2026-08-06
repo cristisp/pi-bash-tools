@@ -1,5 +1,5 @@
 {
-  "name": "subagent-herdr",
+  "name": "@ztc/subagent-herdr",
   "version": "0.1.0",
   "description": "Pi extension that spawns subagents as live pi sessions in their own herdr tabs - parallel/chain modes, session reuse, steering, and approval-waiting detection.",
   "type": "module",
