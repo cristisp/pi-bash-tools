@@ -17,8 +17,7 @@
     "skipLibCheck": true
   },
   "include": [
-    "index.ts",
-    "agents.ts",
-    "templates.ts"
+    "*.ts",
+    "test/*.ts"
   ]
 }

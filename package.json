@@ -18,6 +18,14 @@
     "index.ts",
     "agents.ts",
     "templates.ts",
+    "types.ts",
+    "herdr.ts",
+    "format.ts",
+    "registry.ts",
+    "poll.ts",
+    "run.ts",
+    "render.ts",
+    "execute.ts",
     "README.md",
     "LICENSE"
   ],
@@ -27,18 +35,23 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "typescript": "^5.8.0"
+    "@vitest/coverage-v8": "^4.1.10",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.10"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "publishConfig": {
     "access": "public"
