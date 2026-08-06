@@ -1,0 +1,18 @@
+stages:
+  - publish
+
+publish-npm:
+  stage: publish
+  image: node:24
+  variables:
+    NPM_REGISTRY_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/npm/"
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    # Strip protocol from API URL for .npmrc auth entry (npmrc uses //host/path format)
+    - NPM_REGISTRY_HOST="${CI_API_V4_URL#https://}"
+    - NPM_REGISTRY_HOST="${NPM_REGISTRY_HOST#http://}"
+    - echo "//${NPM_REGISTRY_HOST}/projects/${CI_PROJECT_ID}/packages/npm/:_authToken=${CI_JOB_TOKEN}" > .npmrc
+    - echo "@ztc:registry=${NPM_REGISTRY_URL}" >> .npmrc
+    - npm ci
+    - npm publish

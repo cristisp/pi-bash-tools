@@ -1,0 +1,46 @@
+{
+  "name": "subagent-herdr",
+  "version": "0.1.0",
+  "description": "Pi extension that spawns subagents as live pi sessions in their own herdr tabs - parallel/chain modes, session reuse, steering, and approval-waiting detection.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "herdr",
+    "subagents",
+    "multi-agent"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "index.ts",
+    "agents.ts",
+    "templates.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.8.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
