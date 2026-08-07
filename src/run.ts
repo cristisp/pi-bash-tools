@@ -158,41 +158,49 @@ async function relaunchOrPrompt(
 	label: string,
 	task: string,
 	paneId: string,
-): Promise<{ kind: 'relaunch' | 'prompt'; error: string } | null> {
+): Promise<{
+	kind: 'relaunch' | 'prompt';
+	error: string;
+	tmp: AgentTempFiles | null;
+} | null> {
 	const { status } = await getAgentStatus(paneId);
 	if (status === 'no-agent') {
-		if (!agent) return { kind: 'relaunch', error: 'no agent' };
+		if (!agent) return { kind: 'relaunch', error: 'no agent', tmp: null };
 		const taskTmp = await writePromptToTempFile(entry.agent, `Task: ${task}`);
 		const command = buildLaunchCommand(agent, label, entry.sessionFile, taskTmp.filePath, null);
 		const launchError = await launchInPane(paneId, command);
-		removeTempFiles(taskTmp.dir, taskTmp.filePath);
-		return launchError ? { kind: 'relaunch', error: launchError } : null;
+		const tmp: AgentTempFiles = {
+			promptDir: null,
+			promptPath: null,
+			taskDir: taskTmp.dir,
+			taskPath: taskTmp.filePath,
+		};
+		return { kind: 'relaunch', error: launchError ?? '', tmp };
 	}
 	let promptError = '';
 	for (let attempt = 0; attempt < 3; attempt++) {
 		try {
 			const resp = await herdrCli(['agent', 'prompt', paneId, task]);
 			const code = herdrErrorCode(resp);
-			if (!code) return null;
+			if (!code) return { kind: 'prompt', error: '', tmp: null };
 			promptError = herdrErrorText(resp) || code;
 		} catch (err) {
 			promptError = (err as Error).message;
 		}
 		if (attempt < 2) await sleep(1000);
 	}
-	return { kind: 'prompt', error: promptError };
+	return { kind: 'prompt', error: promptError, tmp: null };
 }
 
 // fallow-ignore-next-line complexity
-async function writeAgentTempFiles(
-	agent: AgentConfig,
-	task: string,
-): Promise<{
+interface AgentTempFiles {
 	promptDir: string | null;
 	promptPath: string | null;
 	taskDir: string;
 	taskPath: string;
-}> {
+}
+
+async function writeAgentTempFiles(agent: AgentConfig, task: string): Promise<AgentTempFiles> {
 	let promptDir: string | null = null;
 	let promptPath: string | null = null;
 	if (agent.systemPrompt.trim()) {
@@ -263,6 +271,13 @@ async function launchSubagent(
 	return true;
 }
 
+interface FreshAgentTab extends AgentTempFiles {
+	paneId: string;
+	tabId: string;
+	label: string;
+	sessionPath: string;
+}
+
 async function launchFreshAgent(
 	agent: AgentConfig,
 	defaultCwd: string,
@@ -270,11 +285,18 @@ async function launchFreshAgent(
 	task: string,
 	parentSession: string | undefined,
 	currentResult: SingleResult,
-): Promise<{ paneId: string; tabId: string; label: string; sessionPath: string } | null> {
+): Promise<FreshAgentTab | null> {
 	const tmp = await writeAgentTempFiles(agent, task);
+	const cleanupTmp = (): void => {
+		removeTempFiles(tmp.promptDir, tmp.promptPath);
+		removeTempFiles(tmp.taskDir, tmp.taskPath);
+	};
 	try {
 		const tab = await createFreshSubagentTab(agent, defaultCwd, cwd, parentSession, currentResult);
-		if (!tab) return null;
+		if (!tab) {
+			cleanupTmp();
+			return null;
+		}
 		const launched = await launchSubagent(
 			agent,
 			tab.label,
@@ -287,12 +309,13 @@ async function launchFreshAgent(
 		if (!launched) {
 			await closeTab(tab.tabId);
 			removeRegistryEntry(tab.label);
+			cleanupTmp();
 			return null;
 		}
-		return tab;
-	} finally {
-		removeTempFiles(tmp.promptDir, tmp.promptPath);
-		removeTempFiles(tmp.taskDir, tmp.taskPath);
+		return { ...tab, ...tmp };
+	} catch (err) {
+		cleanupTmp();
+		throw err;
 	}
 }
 
@@ -421,12 +444,19 @@ export async function runSingleAgent(
 
 	let tabId: string | null = null;
 	let label = '';
+	let tmpFiles: AgentTempFiles | null = null;
 
 	try {
 		const tab = await launchFreshAgent(agent, defaultCwd, cwd, task, parentSession, currentResult);
 		if (!tab) return currentResult;
 		tabId = tab.tabId;
 		label = tab.label;
+		tmpFiles = {
+			promptDir: tab.promptDir,
+			promptPath: tab.promptPath,
+			taskDir: tab.taskDir,
+			taskPath: tab.taskPath,
+		};
 
 		await pollAndApply(
 			tab.paneId,
@@ -447,6 +477,11 @@ export async function runSingleAgent(
 		if (tabId) await closeTab(tabId);
 		if (label) removeRegistryEntry(label);
 		return currentResult;
+	} finally {
+		if (tmpFiles) {
+			removeTempFiles(tmpFiles.promptDir, tmpFiles.promptPath);
+			removeTempFiles(tmpFiles.taskDir, tmpFiles.taskPath);
+		}
 	}
 }
 
@@ -464,6 +499,8 @@ export async function runReusedAgent(
 	if (!('entry' in init)) return init;
 	const { entry, agent, currentResult } = init;
 
+	let relaunchTmp: AgentTempFiles | null = null;
+
 	try {
 		updateRegistryEntry(label, { status: 'running', updatedAt: Date.now() });
 
@@ -479,10 +516,12 @@ export async function runReusedAgent(
 			updateRegistryEntry(label, { paneId, tabId, updatedAt: Date.now() });
 		}
 
-		const relaunchError = await relaunchOrPrompt(agent, entry, label, task, paneId);
-		if (relaunchError) {
+		const relaunch = await relaunchOrPrompt(agent, entry, label, task, paneId);
+		if (!relaunch) throw new Error('relaunchOrPrompt returned no outcome');
+		relaunchTmp = relaunch.tmp;
+		if (relaunch.error) {
 			currentResult.exitCode = 1;
-			currentResult.stderr = `Could not ${relaunchError.kind} subagent ${label} in pane ${paneId} (${relaunchError.error}).`;
+			currentResult.stderr = `Could not ${relaunch.kind} subagent ${label} in pane ${paneId} (${relaunch.error}).`;
 			return currentResult;
 		}
 
@@ -505,5 +544,10 @@ export async function runReusedAgent(
 		currentResult.exitCode = 1;
 		currentResult.stderr = (err as Error).message || String(err);
 		return currentResult;
+	} finally {
+		if (relaunchTmp) {
+			removeTempFiles(relaunchTmp.promptDir, relaunchTmp.promptPath);
+			removeTempFiles(relaunchTmp.taskDir, relaunchTmp.taskPath);
+		}
 	}
 }

@@ -131,6 +131,24 @@ describe('runSingleAgent - launch', () => {
 		});
 		expect(countTempDirs()).toBe(before);
 	});
+
+	it('keeps temp files alive until the run completes', async () => {
+		const before = countTempDirs();
+		let resolvePoll!: (value: 'aborted' | 'gone' | 'settled' | 'failed') => void;
+		vi.mocked(pollSubagent).mockReturnValue(
+			new Promise<'aborted' | 'gone' | 'settled' | 'failed'>((resolve) => {
+				resolvePoll = resolve;
+			}),
+		);
+		const promise = singleCall({ step: 1 });
+		await vi.waitFor(() => {
+			expect(countTempDirs()).toBeGreaterThan(before);
+		});
+		resolvePoll('settled');
+		const result = await promise;
+		expect(result.exitCode).toBe(0);
+		expect(countTempDirs()).toBe(before);
+	});
 });
 
 describe('runSingleAgent - failures', () => {
