@@ -48,7 +48,9 @@ describe('renderAgentFile', () => {
 		expect(out).toContain(
 			'description: Creates implementation plans from context and requirements',
 		);
-		expect(out).toContain('tools: read, grep, find, codegraph_explore, codegraph_sync');
+		expect(out).toContain(
+			'tools: read, grep, find, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, codegraph_sync',
+		);
 		expect(out).toContain('model: test-model:high');
 		expect(out).toContain('## Goal');
 	});
@@ -59,6 +61,45 @@ describe('renderAgentFile', () => {
 		);
 		expect(out).not.toContain('tools:');
 		expect(out).toContain('body text');
+	});
+	it('includes the full codegraph toolset in every restricted template', () => {
+		const codegraphTools = [
+			'codegraph_explore',
+			'codegraph_callers',
+			'codegraph_callees',
+			'codegraph_impact',
+			'codegraph_affected',
+			'codegraph_sync',
+		];
+		for (const t of AGENT_TEMPLATES) {
+			if (!t.tools) continue;
+			for (const tool of codegraphTools) {
+				expect(t.tools, `${t.name} must include ${tool}`).toContain(tool);
+			}
+		}
+	});
+	it('carries the codegraph usage guidance in every template body', () => {
+		for (const t of AGENT_TEMPLATES) {
+			expect(t.body, `${t.name} must carry codegraph guidance`).toContain('## Codegraph usage');
+			expect(t.body, `${t.name} must teach the .codegraph check`).toContain(
+				'First check that `.codegraph` exists',
+			);
+		}
+	});
+	it('offers the docs lookup tools to planner, reviewer, and scout', () => {
+		for (const name of ['planner', 'reviewer', 'scout']) {
+			const t = AGENT_TEMPLATES.find((a) => a.name === name);
+			expect(t?.tools, `${name} must whitelist resolve-library-id`).toContain('resolve-library-id');
+			expect(t?.tools, `${name} must whitelist query-docs`).toContain('query-docs');
+			expect(t?.body, `${name} must carry docs lookup guidance`).toContain(
+				'resolve-library-id first',
+			);
+		}
+	});
+	it('gives the worker the docs lookup guidance too', () => {
+		const worker = AGENT_TEMPLATES.find((t) => t.name === 'worker');
+		expect(worker?.tools).toBeUndefined();
+		expect(worker?.body).toContain('resolve-library-id first');
 	});
 	it('produces parseable frontmatter for every template', () => {
 		for (const t of AGENT_TEMPLATES) {
