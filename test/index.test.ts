@@ -12,6 +12,7 @@ vi.mock("../herdr.ts", async (importOriginal) => {
 });
 
 import { closeTab, getAgentStatus } from "../herdr.ts";
+import { DEFAULT_CONFIG } from "../config.ts";
 import { makeRegistryEntry, makeTempDir, stubEnv } from "./helpers.ts";
 
 let dir: string;
@@ -190,7 +191,24 @@ describe("commands", () => {
 		expect(fs.existsSync(path.join(agentsDir, "scout.md"))).toBe(true);
 		const worker = fs.readFileSync(path.join(agentsDir, "worker.md"), "utf-8");
 		expect(worker).toContain("model: github-copilot/gpt-5.6-luna:high");
+		const configFile = path.join(dir, "subagent-herdr.config.json");
+		expect(fs.existsSync(configFile)).toBe(true);
+		expect(JSON.parse(fs.readFileSync(configFile, "utf-8"))).toEqual(DEFAULT_CONFIG);
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("4 created"), "info");
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Config file created"), "info");
+	});
+
+	it("setup-subagents leaves an existing config file untouched", async () => {
+		const configFile = path.join(dir, "subagent-herdr.config.json");
+		fs.writeFileSync(configFile, JSON.stringify({ maxParallelTasks: 3 }));
+		const cmd = await getCommand("setup-subagents");
+		const input = vi.fn().mockResolvedValue("p/m:off");
+		const confirm = vi.fn().mockResolvedValue(true);
+		const notify = vi.fn();
+		const ctx = { hasUI: true, ui: { input, confirm, notify } };
+		await cmd.handler({}, ctx);
+		expect(fs.readFileSync(configFile, "utf-8")).toBe(JSON.stringify({ maxParallelTasks: 3 }));
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Config file already exists (left unchanged)"), "info");
 	});
 
 	it("setup-subagents retries invalid models and aborts on cancel", async () => {

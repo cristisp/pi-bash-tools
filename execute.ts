@@ -4,15 +4,13 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { discoverAgents } from "./agents.ts";
 import type { AgentConfig, AgentScope } from "./agents.ts";
+import { getConfig } from "./config.ts";
 import { getFinalOutput, getResultOutput, isFailedResult, truncateParallelOutput } from "./format.ts";
 import { NESTED, ownWorkspaceId } from "./herdr.ts";
 import { listSubagents } from "./registry.ts";
 import { runReusedAgent, runSingleAgent } from "./run.ts";
 import { makeEmptyUsage } from "./types.ts";
 import type { BlockEventInfo, OnUpdateCallback, SingleResult, SubagentDetails } from "./types.ts";
-
-const MAX_PARALLEL_TASKS = 8;
-const MAX_CONCURRENCY = 4;
 
 const TaskItem = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
@@ -27,7 +25,7 @@ const ChainItem = Type.Object({
 });
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
-	description: 'Which agent directories to use. Default: "user". Use "both" to include project-local agents.',
+	description: 'Which agent directories to use. Default: "user" (or config defaultAgentScope). Use "both" to include project-local agents.',
 	default: "user",
 });
 
@@ -38,7 +36,7 @@ export const SubagentParams = Type.Object({
 	chain: Type.Optional(Type.Array(ChainItem, { description: "Array of {agent, task} for sequential execution" })),
 	agentScope: Type.Optional(AgentScopeSchema),
 	confirmProjectAgents: Type.Optional(
-		Type.Boolean({ description: "Prompt before running project-local agents. Default: true.", default: true }),
+		Type.Boolean({ description: "Prompt before running project-local agents. Default: true (or config confirmProjectAgents).", default: true }),
 	),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
 	listSubagents: Type.Optional(Type.Boolean({ description: "List existing subagent sessions (labels, status, panes, session files)" })),
@@ -143,12 +141,13 @@ async function executeParallelMode(
 	tasks: Static<typeof TaskItem>[],
 ): Promise<AgentToolResult<SubagentDetails>> {
 	const makeDetails = makeDetailsFor(ctx);
-	if (tasks.length > MAX_PARALLEL_TASKS) {
+	const maxParallelTasks = getConfig().maxParallelTasks;
+	if (tasks.length > maxParallelTasks) {
 		return {
 			content: [
 				{
 					type: "text",
-					text: `Too many parallel tasks (${tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`,
+					text: `Too many parallel tasks (${tasks.length}). Max is ${maxParallelTasks}.`,
 				},
 			],
 			details: makeDetails("parallel")([]),
@@ -182,7 +181,7 @@ async function executeParallelMode(
 		}
 	};
 
-	const results = await mapWithConcurrencyLimit(tasks, MAX_CONCURRENCY, async (t, index) => {
+	const results = await mapWithConcurrencyLimit(tasks, getConfig().maxConcurrency, async (t, index) => {
 		const result = await runSingleAgent(
 			ctx.cwd,
 			ctx.agents,
@@ -342,11 +341,11 @@ export async function executeSubagent(
 	onUpdate: OnUpdateCallback | undefined,
 	ctx: ExtensionContext,
 ): Promise<AgentToolResult<SubagentDetails>> {
-	const agentScope: AgentScope = params.agentScope ?? "user";
+	const agentScope: AgentScope = params.agentScope ?? getConfig().defaultAgentScope;
 	const sessionFile = ctx.sessionManager.getSessionFile() ?? undefined;
 	const discovery = discoverAgents(ctx.cwd, agentScope);
 	const agents = discovery.agents;
-	const confirmProjectAgents = params.confirmProjectAgents ?? true;
+	const confirmProjectAgents = params.confirmProjectAgents ?? getConfig().confirmProjectAgents;
 
 	const hasChain = (params.chain?.length ?? 0) > 0;
 	const hasTasks = (params.tasks?.length ?? 0) > 0;

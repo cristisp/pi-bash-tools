@@ -22,6 +22,7 @@
     "herdr.ts",
     "format.ts",
     "registry.ts",
+    "config.ts",
     "poll.ts",
     "run.ts",
     "render.ts",

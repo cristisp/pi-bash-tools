@@ -100,6 +100,28 @@ describe("executeSubagent validation", () => {
 		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("Too many parallel tasks (9)") });
 	});
 
+	it("respects maxParallelTasks from config", async () => {
+		const { executeSubagent } = await loadExecute();
+		fs.writeFileSync(path.join(dir, "subagent-herdr.config.json"), JSON.stringify({ maxParallelTasks: 2 }));
+		const tasks = [
+			{ agent: "a", task: "t" },
+			{ agent: "b", task: "u" },
+			{ agent: "c", task: "v" },
+		];
+		const result = await executeSubagent({ tasks }, undefined, undefined, ctx());
+		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("Too many parallel tasks (3). Max is 2.") });
+	});
+
+	it("uses defaultAgentScope from config", async () => {
+		const { executeSubagent } = await loadExecute();
+		const agentsDir = path.join(dir, ".pi", "agents");
+		fs.mkdirSync(agentsDir, { recursive: true });
+		writeAgentFile(agentsDir, "proj.md", "Project prompt.", { name: "proj", description: "project agent" });
+		fs.writeFileSync(path.join(dir, "subagent-herdr.config.json"), JSON.stringify({ defaultAgentScope: "both" }));
+		const result = await executeSubagent({}, undefined, undefined, ctx());
+		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("proj (project)") });
+	});
+
 	it("aggregates failed parallel runs", async () => {
 		const { executeSubagent } = await loadExecute();
 		const result = await executeSubagent({ tasks: [{ agent: "ghost1", task: "a" }, { agent: "ghost2", task: "b" }] }, undefined, undefined, ctx());

@@ -28,7 +28,7 @@ Or from git or a local path: `pi install git:github.com/<you>/subagent-herdr`,
 The extension registers one tool, `subagent`. Modes:
 
 - `subagent(agent, task)` - single task in a fresh session
-- `subagent(tasks: [{agent, task}, ...])` - parallel, up to 8 tasks
+- `subagent(tasks: [{agent, task}, ...])` - parallel, up to `maxParallelTasks` (default 8)
 - `subagent(chain: [{agent, task}, ...])` - sequential; `{previous}` is replaced
   with the previous step's output
 - `subagent(reuseLabel, task)` - continue an existing session in place (same tab,
@@ -39,7 +39,8 @@ Setting up the standard agents:
 
 - `/setup-subagents` - creates or updates the `planner`, `reviewer`, `scout`, and
   `worker` agent files in `~/.pi/agent/agents` (they are not bundled with the
-  package). It asks for the model first, as `provider/model(:thinking_level)` -
+  package), and creates `~/.pi/agent/subagent-herdr.config.json` with all
+  defaults if it does not exist yet (an existing config is left untouched). It asks for the model first, as `provider/model(:thinking_level)` -
   e.g. `github-copilot/gpt-5.6-luna:high` or `cortecs/deepseek-v4-flash-0731`
   (level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; the templates live in
   `templates.ts`). Existing files are only overwritten after confirmation.
@@ -121,6 +122,50 @@ vs. new decisions). It is:
 - **Locked** - all mutations take an exclusive lock file (with stale-lock
   stealing), so multiple workspaces can spawn concurrently without clobbering
   each other
+
+## Configuration
+
+All defaults can be overridden with a JSON config file at
+`~/.pi/agent/subagent-herdr.config.json`. Missing keys fall back to the
+defaults; invalid values (non-numeric, negative, ...) are ignored per key. The
+file is re-read on every use, so edits take effect without a restart. Running
+`/setup-subagents` creates this file with all defaults if it does not exist yet.
+
+```json
+{
+  "maxParallelTasks": 8,
+  "maxConcurrency": 4,
+  "pollIntervalMs": 1500,
+  "startupTimeoutMs": 30000,
+  "settleStabilityMs": 5000,
+  "statusLossTimeoutMs": 60000,
+  "abortGraceMs": 60000,
+  "steerTimeoutMs": 60000,
+  "perTaskOutputCap": 51200,
+  "registryLockTimeoutMs": 10000,
+  "registryLockStaleMs": 5000,
+  "herdrCliTimeoutMs": 8000,
+  "defaultAgentScope": "user",
+  "confirmProjectAgents": true
+}
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `maxParallelTasks` | 8 | Hard cap on `tasks` in one `subagent(...)` call |
+| `maxConcurrency` | 4 | How many parallel tasks actually run at once |
+| `pollIntervalMs` | 1500 | Poll cycle for subagent status and session tail |
+| `startupTimeoutMs` | 30000 | Give up if the subagent produces no output within this after launch |
+| `settleStabilityMs` | 5000 | Stable idle time before a run counts as finished |
+| `statusLossTimeoutMs` | 60000 | Give up if the herdr agent status vanishes for this long |
+| `abortGraceMs` | 60000 | Grace period after an abort before finishing |
+| `steerTimeoutMs` | 60000 | Wait for a steer while blocked before finishing |
+| `perTaskOutputCap` | 51200 | Per-task byte cap in parallel summaries (bytes) |
+| `registryLockTimeoutMs` | 10000 | Max wait for the registry lock |
+| `registryLockStaleMs` | 5000 | Steal the registry lock after this age |
+| `herdrCliTimeoutMs` | 8000 | Timeout for each herdr CLI call |
+| `defaultAgentScope` | `"user"` | Default `agentScope` when the tool call omits it (`"user"`, `"project"`, `"both"`) |
+| `confirmProjectAgents` | `true` | Default for the project-agent confirmation prompt |
 
 ## Lifecycle of the main session
 

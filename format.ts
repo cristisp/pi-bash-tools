@@ -1,8 +1,7 @@
 import * as os from "node:os";
 import type { Message } from "@earendil-works/pi-ai";
+import { getConfig } from "./config.ts";
 import type { DisplayItem, RegistryEntry, SingleResult } from "./types.ts";
-
-const PER_TASK_OUTPUT_CAP = 50 * 1024;
 
 export function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
@@ -232,11 +231,12 @@ export function completionPatch(currentResult: SingleResult): Partial<RegistryEn
 }
 
 export function truncateParallelOutput(output: string): string {
+	const cap = getConfig().perTaskOutputCap;
 	const byteLength = Buffer.byteLength(output, "utf8");
-	if (byteLength <= PER_TASK_OUTPUT_CAP) return output;
+	if (byteLength <= cap) return output;
 
-	let truncated = output.slice(0, PER_TASK_OUTPUT_CAP);
-	while (Buffer.byteLength(truncated, "utf8") > PER_TASK_OUTPUT_CAP) {
+	let truncated = output.slice(0, cap);
+	while (Buffer.byteLength(truncated, "utf8") > cap) {
 		truncated = truncated.slice(0, -1);
 	}
 	return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted. Full output preserved in tool details.]`;

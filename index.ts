@@ -10,6 +10,7 @@ import {
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { executeSubagent, SubagentParams } from "./execute.ts";
+import { configPath, DEFAULT_CONFIG } from "./config.ts";
 import { HERDR_ENV, HERDR_PANE_ID, HERDR_SOCKET_PATH, NESTED, getAgentStatus } from "./herdr.ts";
 import { closeSubagentFlow, readRegistry, reconcileRegistry, REGISTRY_PATH, sessionLinkedEntries } from "./registry.ts";
 import { renderSubagentCall, renderSubagentResult } from "./render.ts";
@@ -145,7 +146,7 @@ async function promptForModel(ctx: { ui: ExtensionContext["ui"] }): Promise<stri
 function registerSetupCommand(pi: ExtensionAPI) {
 	pi.registerCommand("setup-subagents", {
 		description:
-			"Create or update the planner, reviewer, scout, and worker agent files in ~/.pi/agent/agents with a chosen model (provider/model(:thinking_level), e.g. github-copilot/gpt-5.6-luna:high)",
+			"Create or update the planner, reviewer, scout, and worker agent files in ~/.pi/agent/agents with a chosen model (provider/model(:thinking_level), e.g. github-copilot/gpt-5.6-luna:high), and create the subagent-herdr config file if missing",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) {
 				ctx.ui.notify("/setup-subagents needs an interactive session", "warning");
@@ -178,7 +179,15 @@ function registerSetupCommand(pi: ExtensionAPI) {
 				if (existed) updated++;
 				else created++;
 			}
-			ctx.ui.notify(`Subagents ready - ${created} created, ${updated} updated with model ${model}`, "info");
+			const configFile = configPath();
+			const configCreated = !fs.existsSync(configFile);
+			if (configCreated) {
+				fs.writeFileSync(configFile, `${JSON.stringify(DEFAULT_CONFIG, null, 2)}\n`);
+			}
+			ctx.ui.notify(
+				`Subagents ready - ${created} created, ${updated} updated with model ${model}. Config file ${configCreated ? "created" : "already exists (left unchanged)"} at ${configFile}`,
+				"info",
+			);
 		},
 	});
 }

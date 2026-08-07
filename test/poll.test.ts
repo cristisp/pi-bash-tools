@@ -25,9 +25,34 @@ afterEach(() => {
 	vi.unstubAllEnvs();
 	vi.useRealTimers();
 	vi.clearAllMocks();
+	const agentDir = process.env.PI_CODING_AGENT_DIR;
+	if (agentDir) {
+		const cfgFile = path.join(agentDir, "subagent-herdr.config.json");
+		if (fs.existsSync(cfgFile)) fs.unlinkSync(cfgFile);
+	}
 });
 
 describe("pollSubagent", () => {
+	it("uses poll interval and startup timeout from config", async () => {
+		vi.useFakeTimers();
+		const dir = makeTempDir();
+		const sessionFile = path.join(dir, "session.jsonl");
+		fs.writeFileSync(sessionFile, "");
+		fs.writeFileSync(
+			path.join(process.env.PI_CODING_AGENT_DIR!, "subagent-herdr.config.json"),
+			JSON.stringify({ pollIntervalMs: 50, startupTimeoutMs: 100 }),
+		);
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: "idle" });
+		const result = makeSingleResult();
+		const promise = pollSubagent("ws1:p1", sessionFile, 0, undefined, result, undefined, makeDetails);
+		for (let i = 0; i < 10; i++) {
+			await vi.advanceTimersByTimeAsync(50);
+			if ((await Promise.race([promise.then(() => "done"), Promise.resolve("pending")])) === "done") break;
+		}
+		await expect(promise).resolves.toBe("failed");
+		expect(result.stderr).toBe("subagent did not start");
+	});
+
 	it("returns aborted immediately for an already-aborted signal", async () => {
 		const dir = makeTempDir();
 		const sessionFile = path.join(dir, "session.jsonl");

@@ -1,16 +1,11 @@
 import * as fs from "node:fs";
 import type { Message } from "@earendil-works/pi-ai";
 import { formatBlockedPreview, findPendingToolCall, getFinalOutput, statusTag } from "./format.ts";
+import { getConfig } from "./config.ts";
 import { getAgentStatus, sleep } from "./herdr.ts";
 import { updateRegistryEntry } from "./registry.ts";
+import type { SubagentHerdrConfig } from "./config.ts";
 import type { BlockEventInfo, BlockReason, HerdrStatus, OnUpdateCallback, SingleResult, SubagentDetails } from "./types.ts";
-
-const POLL_INTERVAL_MS = 1500;
-const STARTUP_TIMEOUT_MS = 30_000;
-const SETTLE_STABILITY_MS = 5000;
-const STATUS_LOSS_TIMEOUT_MS = 60_000;
-const ABORT_GRACE_MS = 60_000;
-const STEER_TIMEOUT_MS = 60_000;
 
 function emitStatusUpdate(
 	onUpdate: OnUpdateCallback | undefined,
@@ -109,6 +104,7 @@ function evaluateIdleDone(
 	lastMessageRole: string | undefined,
 	steerPendingSince: number | null,
 	abortedAt: number | null,
+	cfg: SubagentHerdrConfig,
 ): { settle: boolean; candidate: number | null } {
 	const now = Date.now();
 	let candidate = settledCandidateAt;
@@ -119,13 +115,13 @@ function evaluateIdleDone(
 		const hasPendingSteer =
 			lastMessageRole === "user" &&
 			steerPendingSince !== null &&
-			now - steerPendingSince < STEER_TIMEOUT_MS;
-		const inAbortGrace = abortedAt !== null && now - abortedAt < ABORT_GRACE_MS;
+			now - steerPendingSince < cfg.steerTimeoutMs;
+		const inAbortGrace = abortedAt !== null && now - abortedAt < cfg.abortGraceMs;
 		if (hasPendingSteer || inAbortGrace) {
 			candidate = null;
 		} else if (
-			now - (candidate ?? 0) >= SETTLE_STABILITY_MS &&
-			now - lastEntryAt >= SETTLE_STABILITY_MS
+			now - (candidate ?? 0) >= cfg.settleStabilityMs &&
+			now - lastEntryAt >= cfg.settleStabilityMs
 		) {
 			return { settle: true, candidate };
 		}
@@ -257,6 +253,7 @@ export async function pollSubagent(
 	try {
 		while (true) {
 			if (wasAborted) return "aborted";
+			const cfg = getConfig();
 			const prevStatus = currentResult.herdrStatus;
 			const { status } = await getAgentStatus(paneId);
 			if (status === "working" || status === "idle" || status === "blocked" || status === "done") {
@@ -297,18 +294,19 @@ export async function pollSubagent(
 					tailState.lastMessageRole,
 					tailState.steerPendingSince,
 					tailState.abortedAt,
+					cfg,
 				);
 				settledCandidateAt = candidate;
 				if (settle) return "settled";
-			} else if (Date.now() - lastKnownAt > STATUS_LOSS_TIMEOUT_MS) {
+			} else if (Date.now() - lastKnownAt > cfg.statusLossTimeoutMs) {
 				currentResult.stderr = "herdr agent status was lost";
 				return "failed";
 			}
-			if (Date.now() - startedAt > STARTUP_TIMEOUT_MS && !sawWorking && currentResult.messages.length === 0) {
+			if (Date.now() - startedAt > cfg.startupTimeoutMs && !sawWorking && currentResult.messages.length === 0) {
 				currentResult.stderr = "subagent did not start";
 				return "failed";
 			}
-			await sleep(POLL_INTERVAL_MS);
+			await sleep(cfg.pollIntervalMs);
 		}
 	} finally {
 		if (fd !== null) {

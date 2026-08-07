@@ -4,6 +4,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { formatTokens, registryBlockedInfo } from "./format.ts";
 import { closeTab, getAgentStatus, herdrCli, herdrErrorCode, ownWorkspaceId, sleep } from "./herdr.ts";
+import { getConfig } from "./config.ts";
 import type { Registry, RegistryEntry } from "./types.ts";
 
 export const REGISTRY_PATH = path.join(getAgentDir(), "subagent-herdr.json");
@@ -36,8 +37,9 @@ function writeRegistry(reg: Registry): void {
 
 // fallow-ignore-next-line complexity
 function withRegistryFileLock<T>(fn: () => T): T {
+	const cfg = getConfig();
 	const lockPath = `${REGISTRY_PATH}.lock`;
-	const deadline = Date.now() + 10_000;
+	const deadline = Date.now() + cfg.registryLockTimeoutMs;
 	while (true) {
 		try {
 			const fd = fs.openSync(lockPath, "wx");
@@ -52,7 +54,7 @@ function withRegistryFileLock<T>(fn: () => T): T {
 		} catch (err) {
 			if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
 			try {
-				if (Date.now() - fs.statSync(lockPath).mtimeMs > 5000) {
+				if (Date.now() - fs.statSync(lockPath).mtimeMs > cfg.registryLockStaleMs) {
 					fs.unlinkSync(lockPath);
 					continue;
 				}

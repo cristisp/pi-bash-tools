@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { getConfig } from "./config.ts";
 import type { HerdrStatus } from "./types.ts";
 
 export const HERDR_ENV = process.env.HERDR_ENV === "1";
@@ -22,7 +23,7 @@ export function herdrCli(args: string[]): Promise<any> {
 		execFile(
 			"herdr",
 			[...args, ...herdrSessionArgs()],
-			{ timeout: 8000, maxBuffer: 4 * 1024 * 1024 },
+			{ timeout: getConfig().herdrCliTimeoutMs, maxBuffer: 4 * 1024 * 1024 },
 			(err, stdout, stderr) => {
 				for (const out of [stdout, stderr]) {
 					if (out) {
