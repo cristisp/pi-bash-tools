@@ -6,14 +6,17 @@ import type { SubagentParams } from './execute.ts';
 import {
 	blockedSummaryLine,
 	formatToolCall,
+	formatTokens,
 	formatUsageStats,
 	getDisplayItems,
 	getFinalOutput,
 	isFailedResult,
 } from './format.ts';
-import type { DisplayItem, SingleResult, SubagentDetails } from './types.ts';
+import { findEntry } from './registry.ts';
+import type { DisplayItem, RegistryEntry, SingleResult, SubagentDetails } from './types.ts';
 
 const COLLAPSED_ITEM_COUNT = 10;
+const HIGH_CONTEXT_WARN = 100_000;
 
 function renderDisplayItems(
 	items: DisplayItem[],
@@ -119,6 +122,17 @@ function addItemsAndOutput(
 	}
 }
 
+function resultErrorText(r: SingleResult): string | null {
+	if (r.errorMessage) return r.errorMessage;
+	if (r.exitCode !== 0 && r.stderr) return r.stderr;
+	return null;
+}
+
+function addErrorBlock(container: Container, r: SingleResult, theme: Theme): void {
+	const errText = resultErrorText(r);
+	if (errText) container.addChild(new Text(theme.fg('error', errText), 0, 0));
+}
+
 function addExpandedResultBlock(
 	container: Container,
 	r: SingleResult,
@@ -132,6 +146,7 @@ function addExpandedResultBlock(
 	container.addChild(new Spacer(1));
 	container.addChild(new Text(heading, 0, 0));
 	container.addChild(new Text(theme.fg('muted', 'Task: ') + theme.fg('dim', r.task), 0, 0));
+	addErrorBlock(container, r, theme);
 	if (showBlocked && r.herdrStatus === 'blocked')
 		container.addChild(new Text(theme.fg('warning', blockedSummaryLine(r)), 0, 0));
 	addItemsAndOutput(container, displayItems, finalOutput, theme, mdTheme);
@@ -182,6 +197,26 @@ function renderParallelCall(args: SubagentParams, scope: AgentScope, theme: Them
 	return new Text(text, 0, 0);
 }
 
+function reuseMetaParts(entry: RegistryEntry | undefined, theme: Theme): string {
+	if (!entry) return '';
+	const parts: string[] = [];
+	if (entry.contextTokens && entry.contextTokens > 0) {
+		const ctx = `ctx:${formatTokens(entry.contextTokens)}`;
+		parts.push(
+			entry.contextTokens >= HIGH_CONTEXT_WARN ? theme.fg('warning', ctx) : theme.fg('dim', ctx),
+		);
+	}
+	if (entry.reuseCount && entry.reuseCount > 0) {
+		parts.push(theme.fg('dim', `reused ${entry.reuseCount}x`));
+	}
+	if (entry.tasks && entry.tasks.length > 0) {
+		parts.push(
+			theme.fg('dim', `${entry.tasks.length} task${entry.tasks.length > 1 ? 's' : ''} so far`),
+		);
+	}
+	return parts.length > 0 ? ` (${parts.join(', ')})` : '';
+}
+
 function renderReuseCall(args: SubagentParams, scope: AgentScope, theme: Theme): Text {
 	const preview = args.task
 		? args.task.length > 60
@@ -192,6 +227,7 @@ function renderReuseCall(args: SubagentParams, scope: AgentScope, theme: Theme):
 		theme.fg('toolTitle', theme.bold('subagent ')) +
 			theme.fg('accent', `reuse ${args.reuseLabel}`) +
 			theme.fg('muted', ` [${scope}]`) +
+			reuseMetaParts(findEntry(args.reuseLabel!), theme) +
 			`\n  ${theme.fg('dim', preview)}`,
 		0,
 		0,
@@ -202,6 +238,16 @@ function renderListCall(scope: AgentScope, theme: Theme): Text {
 	return new Text(
 		theme.fg('toolTitle', theme.bold('subagent ')) +
 			theme.fg('accent', 'list') +
+			theme.fg('muted', ` [${scope}]`),
+		0,
+		0,
+	);
+}
+
+function renderAgentsCall(scope: AgentScope, theme: Theme): Text {
+	return new Text(
+		theme.fg('toolTitle', theme.bold('subagent ')) +
+			theme.fg('accent', 'agents') +
 			theme.fg('muted', ` [${scope}]`),
 		0,
 		0,
@@ -229,6 +275,7 @@ export function renderSubagentCall(args: SubagentParams, theme: Theme): Text {
 	if (args.tasks && args.tasks.length > 0) return renderParallelCall(args, scope, theme);
 	if (args.reuseLabel) return renderReuseCall(args, scope, theme);
 	if (args.listSubagents) return renderListCall(scope, theme);
+	if (args.agents) return renderAgentsCall(scope, theme);
 	return renderSingleCall(args, scope, theme);
 }
 
@@ -258,8 +305,7 @@ function renderSingleExpanded(
 	const isError = isFailedResult(r);
 	const displayName = r.label ?? r.agent;
 	container.addChild(new Text(singleHeaderText(icon, displayName, r, theme, isError), 0, 0));
-	if (isError && r.errorMessage)
-		container.addChild(new Text(theme.fg('error', `Error: ${r.errorMessage}`), 0, 0));
+	addErrorBlock(container, r, theme);
 	if (r.herdrStatus === 'blocked')
 		container.addChild(new Text(theme.fg('warning', blockedSummaryLine(r)), 0, 0));
 	if (r.paneId) container.addChild(new Text(theme.fg('muted', `pane ${r.paneId}`), 0, 0));
@@ -293,7 +339,8 @@ function renderSingleResult(
 	}
 
 	let text = singleHeaderText(icon, displayName, r, theme, isError);
-	if (isError && r.errorMessage) text += `\n${theme.fg('error', `Error: ${r.errorMessage}`)}`;
+	const errText = resultErrorText(r);
+	if (errText) text += `\n${theme.fg('error', errText)}`;
 	else if (r.herdrStatus === 'blocked') text += `\n${theme.fg('warning', blockedSummaryLine(r))}`;
 	else if (displayItems.length === 0) text += `\n${theme.fg('muted', '(no output)')}`;
 	else {

@@ -61,7 +61,7 @@ describe('extension registration', () => {
 		register(pi as never);
 
 		const toolNames = pi.registerTool.mock.calls.map((c) => c[0].name);
-		expect(toolNames).toEqual(['subagent', 'subagent_close']);
+		expect(toolNames.toSorted()).toEqual(['subagent', 'subagent_close', 'subagent_stats']);
 
 		const commandNames = pi.registerCommand.mock.calls.map((c) => c[0]);
 		expect(commandNames).toEqual(['setup-subagents', 'kill-session-subagents']);

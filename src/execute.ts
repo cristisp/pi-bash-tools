@@ -1,6 +1,7 @@
+import * as path from 'node:path';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import { StringEnum } from '@earendil-works/pi-ai';
-import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { getAgentDir, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Type, type Static } from 'typebox';
 import { discoverAgents } from './agents.ts';
 import type { AgentConfig, AgentScope } from './agents.ts';
@@ -83,6 +84,12 @@ export const SubagentParams = Type.Object({
 			description: 'With listSubagents: show the full last result instead of an 80-char preview',
 		}),
 	),
+	agents: Type.Optional(
+		Type.Boolean({
+			description:
+				'List available agents (name, description, source) for the current agentScope; call this before picking an agent name',
+		}),
+	),
 	reuseLabel: Type.Optional(
 		Type.String({
 			description:
@@ -93,7 +100,7 @@ export const SubagentParams = Type.Object({
 
 export type SubagentParams = Static<typeof SubagentParams>;
 
-type SubagentMode = 'single' | 'parallel' | 'chain' | 'reuse' | 'list';
+type SubagentMode = 'single' | 'parallel' | 'chain' | 'reuse' | 'list' | 'agents';
 
 function resolveMode(params: SubagentParams): SubagentMode | null {
 	const hasChain = (params.chain?.length ?? 0) > 0;
@@ -101,13 +108,20 @@ function resolveMode(params: SubagentParams): SubagentMode | null {
 	const hasSingle = Boolean(params.agent && params.task);
 	const hasList = params.listSubagents === true;
 	const hasReuse = typeof params.reuseLabel === 'string';
+	const hasAgents = params.agents === true;
 	const modeCount =
-		Number(hasChain) + Number(hasTasks) + Number(hasSingle) + Number(hasList) + Number(hasReuse);
+		Number(hasChain) +
+		Number(hasTasks) +
+		Number(hasSingle) +
+		Number(hasList) +
+		Number(hasReuse) +
+		Number(hasAgents);
 	if (modeCount !== 1) return null;
 	if (hasChain) return 'chain';
 	if (hasTasks) return 'parallel';
 	if (hasSingle) return 'single';
 	if (hasList) return 'list';
+	if (hasAgents) return 'agents';
 	return 'reuse';
 }
 
@@ -489,6 +503,36 @@ function listResponse(
 	};
 }
 
+function agentsResponse(
+	ctx: ExecuteContext,
+	makeDetails: ReturnType<typeof makeDetailsFor>,
+): AgentToolResult<SubagentDetails> {
+	if (ctx.agents.length === 0) {
+		return {
+			content: [
+				{
+					type: 'text',
+					text: `No agents found for agentScope "${ctx.agentScope}" (looked in ${path.join(getAgentDir(), 'agents')}${ctx.projectAgentsDir ? ` and ${ctx.projectAgentsDir}` : ''}). Use agentScope "user" or "both" for user agents, or create agent files.`,
+				},
+			],
+			details: makeDetails('single')([]),
+		};
+	}
+	const lines = ctx.agents.map((a) => {
+		const model = a.model ? `, model: ${a.model}` : '';
+		return `- ${a.name} (${a.source}) - ${a.description}${model}`;
+	});
+	return {
+		content: [
+			{
+				type: 'text',
+				text: `Available agents (agentScope: ${ctx.agentScope}):\n${lines.join('\n')}\n\nPick the agent whose description best fits the task and use its exact name; do not invent agent names.`,
+			},
+		],
+		details: makeDetails('single')([]),
+	};
+}
+
 function reuseWithoutTaskResponse(
 	makeDetails: ReturnType<typeof makeDetailsFor>,
 ): AgentToolResult<SubagentDetails> {
@@ -516,12 +560,15 @@ export async function executeSubagent(
 		return invalidParamsResponse(
 			executeCtx.agents,
 			makeDetails,
-			'Invalid parameters. Provide exactly one mode (single, parallel, chain, reuse, or list).\nAvailable agents: {available}',
+			'Invalid parameters. Provide exactly one mode (single, parallel, chain, reuse, list, or agents).\nAvailable agents: {available}',
 		);
 	}
 	if (NESTED) return nestedResponse(mode, makeDetails);
 	if (mode === 'list') {
 		return listResponse(params, makeDetails);
+	}
+	if (mode === 'agents') {
+		return agentsResponse(executeCtx, makeDetails);
 	}
 	if (mode === 'reuse') {
 		if (!params.task) return reuseWithoutTaskResponse(makeDetails);

@@ -46,6 +46,15 @@ const agent: AgentConfig = {
 	filePath: '/tmp/worker.md',
 };
 
+const reviewerAgent: AgentConfig = {
+	name: 'reviewer',
+	description: 'reviewer agent',
+	systemPrompt: 'You are a reviewer.',
+	model: 'test-model',
+	source: 'user',
+	filePath: '/tmp/reviewer.md',
+};
+
 function makeDetails(results: SingleResult[]): SubagentDetails {
 	return { mode: 'single', agentScope: 'user', projectAgentsDir: null, results };
 }
@@ -59,11 +68,17 @@ function countTempDirs(): number {
 }
 
 function singleCall(
-	overrides: { agentName?: string; task?: string; step?: number; parentSession?: string } = {},
+	overrides: {
+		agentName?: string;
+		task?: string;
+		step?: number;
+		parentSession?: string;
+		agents?: AgentConfig[];
+	} = {},
 ) {
 	return runSingleAgent(
 		'/tmp',
-		[agent],
+		overrides.agents ?? [agent],
 		overrides.agentName ?? 'worker',
 		overrides.task ?? 'do it',
 		undefined,
@@ -128,6 +143,7 @@ describe('runSingleAgent - launch', () => {
 			agent: 'worker',
 			paneId: 'ws1:p9',
 			parentSession: '/sess/parent.jsonl',
+			tasks: ['do it'],
 		});
 		expect(countTempDirs()).toBe(before);
 	});
@@ -168,6 +184,22 @@ describe('runSingleAgent - failures', () => {
 		expect(result).toMatchObject({ exitCode: 1, agent: 'ghost', agentSource: 'unknown' });
 		expect(result.stderr).toContain('Unknown agent: "ghost"');
 		expect(createTaskTab).not.toHaveBeenCalled();
+	});
+
+	it('suggests close agent names for typos', async () => {
+		const result = await singleCall({ agentName: 'reviewr', agents: [agent, reviewerAgent] });
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toContain('Did you mean "reviewer"?');
+	});
+
+	it('suggests agents contained in an invented compound name', async () => {
+		const result = await singleCall({
+			agentName: 'security-reviewer',
+			agents: [agent, reviewerAgent],
+		});
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toContain('Did you mean "reviewer"?');
+		expect(result.stderr).toContain('agents: true');
 	});
 
 	it('reports missing workspace resolution', async () => {
@@ -238,5 +270,29 @@ describe('runReusedAgent - lookups', () => {
 		expect(result).toMatchObject({ exitCode: 1, agent: 'ghost-1', agentSource: 'reuse' });
 		expect(result.stderr).toContain('No subagent session labeled "ghost-1"');
 		expect(createTaskTab).not.toHaveBeenCalled();
+	});
+});
+
+describe('runReusedAgent - reuse accounting', () => {
+	it('records reuse count and appends task history on reuse', async () => {
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'working' });
+		registerEntry(makeRegistryEntry({ status: 'done', reuseCount: 2, tasks: ['first', 'second'] }));
+		const result = await reuseCall();
+		expect(result.exitCode).toBe(0);
+		expect(readRegistry().tabs['ws1:worker-1']).toMatchObject({
+			reuseCount: 3,
+			tasks: ['first', 'second', 'next task'],
+		});
+	});
+
+	it('starts reuse accounting from zero for a fresh session', async () => {
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'working' });
+		registerEntry(makeRegistryEntry({ status: 'done' }));
+		const result = await reuseCall();
+		expect(result.exitCode).toBe(0);
+		expect(readRegistry().tabs['ws1:worker-1']).toMatchObject({
+			reuseCount: 1,
+			tasks: ['next task'],
+		});
 	});
 });

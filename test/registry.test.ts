@@ -148,6 +148,24 @@ describe('listSubagents', () => {
 		expect(out).toContain('ctx:1.5k');
 		expect(out).toContain('pane ws1:p10');
 	});
+	it('shows reuse count and task history metadata', () => {
+		registerEntry(
+			makeRegistryEntry({
+				contextTokens: 42000,
+				reuseCount: 3,
+				tasks: ['review auth', 'review api', 'review db'],
+			}),
+		);
+		registerEntry(makeRegistryEntry({ label: 'reviewer-1', agent: 'reviewer' }));
+		const out = listSubagents({});
+		const workerLine = out.split('\n').find((l) => l.includes('ws1:worker-1'))!;
+		expect(workerLine).toContain('ctx:42k');
+		expect(workerLine).toContain('reused:3');
+		expect(workerLine).toContain('tasks:3');
+		const reviewerLine = out.split('\n').find((l) => l.includes('ws1:reviewer-1'))!;
+		expect(reviewerLine).not.toContain('reused:');
+		expect(reviewerLine).not.toContain('tasks:');
+	});
 	it('filters by label (bare and qualified)', () => {
 		registerEntry(makeRegistryEntry({ label: 'worker-1' }));
 		registerEntry(makeRegistryEntry({ label: 'reviewer-1', agent: 'reviewer' }));

@@ -62,6 +62,10 @@ export function removeRegistryEntry(label: string): void {
 	});
 }
 
+export function findEntry(label: string): RegistryEntry | undefined {
+	return readRegistry().tabs[`${ownWorkspaceId()}:${label}`];
+}
+
 export function sessionLinkedEntries(sessionFile: string | undefined): RegistryEntry[] {
 	if (!sessionFile) return [];
 	return Object.values(readRegistry().tabs).filter((e) => e.parentSession === sessionFile);
@@ -174,8 +178,11 @@ export function listSubagents(filter: {
 		const last = e.lastResult ? e.lastResult.replace(/\s+/g, ' ').trim().slice(0, previewLen) : '-';
 		const ctx =
 			e.contextTokens && e.contextTokens > 0 ? `ctx:${formatTokens(e.contextTokens)}` : null;
+		const reuse = e.reuseCount && e.reuseCount > 0 ? `reused:${e.reuseCount}` : null;
+		const tasks = e.tasks && e.tasks.length > 0 ? `tasks:${e.tasks.length}` : null;
 		const blocked = registryBlockedInfo(e);
-		return `${e.workspace}:${e.label}  ${e.status.padEnd(8)}${blocked ? `  ${blocked}` : ''}${ctx ? `  ${ctx}` : ''}  pane ${e.paneId || '-'}  ${e.sessionFile}\n    last: ${last}`;
+		const meta = [blocked, ctx, reuse, tasks].filter(Boolean).join('  ');
+		return `${e.workspace}:${e.label}  ${e.status.padEnd(8)}${meta ? `  ${meta}` : ''}  pane ${e.paneId || '-'}  ${e.sessionFile}\n    last: ${last}`;
 	});
 	return `Subagent sessions (registry: ${REGISTRY_PATH}):\n\n${lines.join('\n')}`;
 }

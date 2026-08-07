@@ -21,7 +21,7 @@ pi install npm:@ztc/subagent-herdr
 
 ## Usage
 
-The extension registers one tool, `subagent`. Modes:
+The extension registers two tools, `subagent` and `subagent_stats`. `subagent` modes:
 
 - `subagent(agent, task)` - single task in a fresh session
 - `subagent(tasks: [{agent, task}, ...])` - parallel, up to `maxParallelTasks` (default 8)
@@ -30,6 +30,23 @@ The extension registers one tool, `subagent`. Modes:
 - `subagent(reuseLabel, task)` - continue an existing session in place (same tab,
   same context, only the new turn counts as the result)
 - `subagent(listSubagents: true)` - list all sessions in the registry
+- `subagent(agents: true)` - list available agents (name, description, source)
+  for the current agentScope; the agent should check this before picking an
+  agent name. Unknown agent names fail with the available list, a
+  "did you mean" suggestion, and a pointer to this mode.
+- `subagent_stats(label)` - reuse-relevant stats for one session: context size
+  (from the session file, so current even while running), lifetime turns and
+  token/cost usage, session file size, age, reuse count, task history, and the
+  last result. It flags high-context and heavily-reused sessions with notes.
+
+Reuse judgment: before `reuseLabel`, agents should check `subagent_stats` and
+judge cost/impact (context size, turn count, prior tasks, reuse history). A
+review/audit/verification session that is reused anchors on its earlier
+findings - it tends to re-check the issues it already found and miss newly
+introduced ones. For a fresh review of code that changed, prefer a new session
+or explicitly instruct the reused session to re-examine from scratch. The TUI
+shows the reused session's state on the `reuse` call line (context, reuse
+count), in warning color when context is large, so the choice is visible.
 
 Setting up the standard agents:
 
@@ -111,7 +128,9 @@ While a subagent is `running` you can correct its course directly in its tab:
 `~/.pi/agent/subagent-herdr.json` maps every session to its pane, tab, session
 file, working directory, status, last result, and context size
 (`contextTokens` - the context size at the last completed turn, for reuse
-vs. new decisions). It is:
+vs. new decisions). Entries also track `reuseCount` (how many times the session
+was reused) and `tasks` (the last 5 tasks it was given, for topical-fit
+judgment). It is:
 
 - **Workspace-scoped** - entries are keyed `<workspace>:<label>`, so every herdr
   workspace has its own `worker-1`, `worker-2`, ... and its own session files

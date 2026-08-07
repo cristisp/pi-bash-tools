@@ -218,6 +218,7 @@ async function createFreshSubagentTab(
 	cwd: string | undefined,
 	parentSession: string | undefined,
 	currentResult: SingleResult,
+	task: string,
 ): Promise<{ paneId: string; tabId: string; label: string; sessionPath: string } | null> {
 	const alloc = allocateLabel(agent.name);
 	const label = alloc.label;
@@ -247,6 +248,7 @@ async function createFreshSubagentTab(
 		updatedAt: Date.now(),
 		lastResult: '',
 		contextTokens: 0,
+		tasks: [task],
 		parentSession,
 	});
 	return { paneId: created.paneId, tabId: created.tabId, label, sessionPath };
@@ -292,7 +294,14 @@ async function launchFreshAgent(
 		removeTempFiles(tmp.taskDir, tmp.taskPath);
 	};
 	try {
-		const tab = await createFreshSubagentTab(agent, defaultCwd, cwd, parentSession, currentResult);
+		const tab = await createFreshSubagentTab(
+			agent,
+			defaultCwd,
+			cwd,
+			parentSession,
+			currentResult,
+			task,
+		);
 		if (!tab) {
 			cleanupTmp();
 			return null;
@@ -369,6 +378,37 @@ function sessionFileOffset(sessionFile: string): number {
 	}
 }
 
+function editDistance(a: string, b: string): number {
+	const m = a.length;
+	const n = b.length;
+	let prev = Array.from({ length: n + 1 }, (_, j) => j);
+	for (let i = 1; i <= m; i++) {
+		const curr = [i, ...Array.from({ length: n }, () => 0)];
+		for (let j = 1; j <= n; j++) {
+			curr[j] = Math.min(
+				prev[j] + 1,
+				curr[j - 1] + 1,
+				prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+			);
+		}
+		prev = curr;
+	}
+	return prev[n];
+}
+
+function suggestAgents(requested: string, agents: AgentConfig[]): string[] {
+	const suggestions = new Set<string>();
+	for (const a of agents) {
+		const d = editDistance(requested, a.name);
+		const threshold = Math.max(2, Math.floor(requested.length / 3));
+		if (d > 0 && d <= threshold) suggestions.add(a.name);
+		else if (a.name.length >= 3 && (requested.includes(a.name) || a.name.includes(requested))) {
+			suggestions.add(a.name);
+		}
+	}
+	return Array.from(suggestions).slice(0, 2);
+}
+
 function findAgentOrFail(
 	agents: AgentConfig[],
 	agentName: string,
@@ -378,11 +418,14 @@ function findAgentOrFail(
 	const agent = agents.find((a) => a.name === agentName);
 	if (agent) return agent;
 	const available = agents.map((a) => `"${a.name}"`).join(', ') || 'none';
+	const suggested = suggestAgents(agentName, agents);
+	const hint =
+		suggested.length > 0 ? ` Did you mean ${suggested.map((s) => `"${s}"`).join(' or ')}?` : '';
 	return failedResult(
 		agentName,
 		'unknown',
 		task,
-		`Unknown agent: "${agentName}". Available agents: ${available}.`,
+		`Unknown agent: "${agentName}". Available agents: ${available}.${hint} To see agent descriptions, call subagent with agents: true.`,
 		step,
 	);
 }
@@ -485,6 +528,15 @@ export async function runSingleAgent(
 	}
 }
 
+const MAX_TASK_HISTORY = 5;
+
+function recordTask(label: string, entry: RegistryEntry, task: string): void {
+	updateRegistryEntry(label, {
+		reuseCount: (entry.reuseCount ?? 0) + 1,
+		tasks: [...(entry.tasks ?? []), task].slice(-MAX_TASK_HISTORY),
+	});
+}
+
 export async function runReusedAgent(
 	defaultCwd: string,
 	agents: AgentConfig[],
@@ -503,6 +555,7 @@ export async function runReusedAgent(
 
 	try {
 		updateRegistryEntry(label, { status: 'running', updatedAt: Date.now() });
+		recordTask(label, entry, task);
 
 		let paneId = entry.paneId;
 		let tabId = entry.tabId;

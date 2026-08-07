@@ -56,7 +56,7 @@ describe('executeSubagent - mode validation', () => {
 		const result = await execSubagent({});
 		expect(result.content[0]).toMatchObject({
 			type: 'text',
-			text: 'Invalid parameters. Provide exactly one mode (single, parallel, chain, reuse, or list).\nAvailable agents: none',
+			text: 'Invalid parameters. Provide exactly one mode (single, parallel, chain, reuse, list, or agents).\nAvailable agents: none',
 		});
 	});
 
@@ -76,6 +76,67 @@ describe('executeSubagent - mode validation', () => {
 		expect(result.content[0]).toMatchObject({
 			type: 'text',
 			text: expect.stringContaining('Available agents: worker (user)'),
+		});
+	});
+});
+
+describe('executeSubagent - agents listing', () => {
+	it('lists agents with name, source, and description', async () => {
+		const agentsDir = path.join(dir, 'agents');
+		fs.mkdirSync(agentsDir, { recursive: true });
+		writeAgentFile(agentsDir, 'worker.md', 'prompt', {
+			name: 'worker',
+			description: 'executes tasks',
+		});
+		writeAgentFile(agentsDir, 'reviewer.md', 'prompt', {
+			name: 'reviewer',
+			description: 'reviews code',
+			model: 'test-model',
+		});
+		const result = await execSubagent({ agents: true });
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('- worker (user) - executes tasks'),
+		});
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('- reviewer (user) - reviews code, model: test-model'),
+		});
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('do not invent agent names'),
+		});
+	});
+
+	it('includes project agents for the both scope', async () => {
+		const agentsDir = path.join(dir, 'agents');
+		fs.mkdirSync(agentsDir, { recursive: true });
+		writeAgentFile(agentsDir, 'worker.md', 'prompt', { name: 'worker', description: 'd' });
+		writeProjectAgent('pworker', 'project agent');
+		const result = await execSubagent({ agents: true, agentScope: 'both' });
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('- worker (user)'),
+		});
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('- pworker (project) - project agent'),
+		});
+	});
+
+	it('reports when no agents are available', async () => {
+		const result = await execSubagent({ agents: true });
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('No agents found for agentScope "user"'),
+		});
+	});
+
+	it('rejects agents combined with another mode', async () => {
+		const result = await execSubagent({ agents: true, agent: 'worker', task: 'x' });
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('Provide exactly one mode'),
 		});
 	});
 });

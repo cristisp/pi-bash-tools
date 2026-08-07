@@ -28,6 +28,8 @@ export interface RegistryEntry {
 	updatedAt: number;
 	lastResult: string;
 	contextTokens?: number;
+	reuseCount?: number;
+	tasks?: string[];
 	parentSession?: string;
 	blockedSince?: number;
 	blockReason?: BlockReason;

@@ -1,10 +1,17 @@
 import { Container, Text } from '@earendil-works/pi-tui';
 import type { Theme } from '@earendil-works/pi-coding-agent';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { renderSubagentCall, renderSubagentResult } from '../src/render.ts';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
+import { registerEntry } from '../src/registry.ts';
 import type { SingleResult, SubagentDetails } from '../src/types.ts';
-import { assistantMsg, makeSingleResult } from './helpers.ts';
+import {
+	assistantMsg,
+	makeRegistryEntry,
+	makeSingleResult,
+	makeTempDir,
+	stubEnv,
+} from './helpers.ts';
 
 function textOf(out: Text | Container): string {
 	return (out as unknown as { text?: string }).text ?? '';
@@ -86,6 +93,51 @@ describe('renderSubagentCall', () => {
 			'<accent>list</accent>',
 		);
 	});
+	it('shows the reused session state when the registry has it', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		try {
+			registerEntry(
+				makeRegistryEntry({
+					label: 'reviewer-2',
+					agent: 'reviewer',
+					status: 'done',
+					contextTokens: 85000,
+					reuseCount: 2,
+					tasks: ['review auth', 'review api'],
+				}),
+			);
+			const text = textOf(
+				renderSubagentCall({ reuseLabel: 'reviewer-2', task: 're-review auth' }, theme),
+			);
+			expect(text).toContain('reuse reviewer-2');
+			expect(text).toContain('ctx:85k');
+			expect(text).toContain('reused 2x');
+			expect(text).toContain('2 tasks so far');
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+	it('warns when reusing a session with very large context', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		try {
+			registerEntry(
+				makeRegistryEntry({
+					label: 'worker-9',
+					contextTokens: 200000,
+				}),
+			);
+			const text = textOf(renderSubagentCall({ reuseLabel: 'worker-9', task: 'next' }, theme));
+			expect(text).toContain('<warning>ctx:200k</warning>');
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+	it('renders agents listing mode', () => {
+		const text = textOf(renderSubagentCall({ agents: true }, theme));
+		expect(text).toContain('<accent>agents</accent>');
+	});
 	it('shows the agent scope', () => {
 		const text = textOf(
 			renderSubagentCall({ agent: 'scout', task: 'x', agentScope: 'project' }, theme),
@@ -166,7 +218,18 @@ describe('renderSubagentResult - single collapsed', () => {
 		const text = textOf(renderResult(singleDetails([r]), false));
 		expect(text).toContain('<error>✗</error>');
 		expect(text).toContain('<error>[error]</error>');
-		expect(text).toContain('Error: boom');
+		expect(text).toContain('<error>boom</error>');
+	});
+	it('shows stderr for failures without an error message', () => {
+		const r = makeSingleResult({
+			label: 'security-reviewer',
+			agentSource: 'unknown',
+			exitCode: 1,
+			stderr: 'Unknown agent: "security-reviewer". Available agents: "reviewer".',
+		});
+		const text = textOf(renderResult(singleDetails([r]), false));
+		expect(text).not.toContain('(no output)');
+		expect(text).toContain('Unknown agent: "security-reviewer"');
 	});
 	it('renders a blocked single result', () => {
 		const r = makeSingleResult({
