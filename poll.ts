@@ -3,7 +3,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { formatBlockedPreview, findPendingToolCall, getFinalOutput, statusTag } from "./format.ts";
 import { getAgentStatus, sleep } from "./herdr.ts";
 import { updateRegistryEntry } from "./registry.ts";
-import type { BlockReason, HerdrStatus, OnUpdateCallback, SingleResult, SubagentDetails } from "./types.ts";
+import type { BlockEventInfo, BlockReason, HerdrStatus, OnUpdateCallback, SingleResult, SubagentDetails } from "./types.ts";
 
 const POLL_INTERVAL_MS = 1500;
 const STARTUP_TIMEOUT_MS = 30_000;
@@ -140,7 +140,7 @@ function handleBlockedState(
 	pendingToolCalls: Map<string, { name: string; args: Record<string, any> }>,
 	prevStatus: string | undefined,
 	prevReason: BlockReason | undefined,
-	onBlocked: ((info: { label: string; blockReason: BlockReason; preview?: string }) => void) | undefined,
+	onBlocked: ((info: BlockEventInfo) => void) | undefined,
 ): BlockReason | undefined {
 	const { reason, preview } = detectBlock(currentResult, pendingToolCalls);
 	const firstBlock = prevStatus !== "blocked";
@@ -161,6 +161,8 @@ function handleBlockedState(
 		}
 		if (reason === "approval" && prevReason !== "approval") {
 			onBlocked?.({ label: currentResult.label ?? "?", blockReason: reason, preview });
+		} else if (prevReason === "approval" && reason !== "approval") {
+			onBlocked?.({ label: currentResult.label ?? "?", blockReason: reason, resolved: true });
 		}
 	}
 	return reason;
@@ -190,7 +192,7 @@ export async function pollSubagent(
 	currentResult: SingleResult,
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
-	onBlocked?: (info: { label: string; blockReason: BlockReason; preview?: string }) => void,
+	onBlocked?: (info: BlockEventInfo) => void,
 ): Promise<"settled" | "failed" | "gone" | "aborted"> {
 	let wasAborted = false;
 	const onAbort = () => {
@@ -265,6 +267,9 @@ export async function pollSubagent(
 			if (currentResult.herdrStatus === "blocked") {
 				prevReason = handleBlockedState(currentResult, pendingToolCalls, prevStatus, prevReason, onBlocked);
 			} else if (prevStatus === "blocked") {
+				if (prevReason === "approval") {
+					onBlocked?.({ label: currentResult.label ?? "?", blockReason: "approval", resolved: true });
+				}
 				clearBlockedState(currentResult);
 				prevReason = undefined;
 			}

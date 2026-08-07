@@ -13,7 +13,7 @@ vi.mock("../herdr.ts", async (importOriginal) => {
 import { getAgentStatus } from "../herdr.ts";
 import { pollSubagent } from "../poll.ts";
 import type { SingleResult, SubagentDetails } from "../types.ts";
-import { assistantMsg, makeSingleResult, makeTempDir, userMsg, writeSessionFile } from "./helpers.ts";
+import { assistantMsg, makeSingleResult, makeTempDir, toolResultMsg, userMsg, writeSessionFile } from "./helpers.ts";
 
 function makeDetails(results: SingleResult[]): SubagentDetails {
 	return { mode: "single", agentScope: "user", projectAgentsDir: null, results };
@@ -182,6 +182,94 @@ describe("pollSubagent", () => {
 		const reg = readRegistry();
 		expect(reg.tabs["ws1:worker-1"]).toMatchObject({ status: "running", blockReason: "approval", blockedPreview: "bash rm -rf /" });
 		expect(reg.tabs["ws1:worker-1"].blockedSince).toBeDefined();
+	});
+
+	it("notifies when an approval block is resolved", async () => {
+		vi.useFakeTimers();
+		const dir = makeTempDir();
+		const sessionFile = writeSessionFile(dir, "session.jsonl", [
+			assistantMsg("", {
+				toolCalls: [{ id: "tc1", name: "bash", args: { command: "rm -rf /" } }],
+			}),
+		]);
+		const { registerEntry } = await import("../registry.ts");
+		registerEntry({
+			label: "worker-1",
+			agent: "worker",
+			workspace: "ws1",
+			paneId: "ws1:p1",
+			tabId: "tab1",
+			sessionFile,
+			cwd: dir,
+			status: "running",
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+			lastResult: "",
+		});
+		vi.mocked(getAgentStatus)
+			.mockResolvedValueOnce({ status: "blocked" })
+			.mockResolvedValueOnce({ status: "idle" })
+			.mockResolvedValue({ status: "gone" });
+		const result = makeSingleResult({ label: "worker-1", paneId: "ws1:p1" });
+		const onBlocked = vi.fn();
+		const promise = pollSubagent("ws1:p1", sessionFile, 0, undefined, result, undefined, makeDetails, onBlocked);
+		for (let i = 0; i < 5; i++) {
+			await vi.advanceTimersByTimeAsync(INTERVAL_MS);
+			if ((await Promise.race([promise.then(() => "done"), Promise.resolve("pending")])) === "done") break;
+		}
+		await expect(promise).resolves.toBe("gone");
+		expect(onBlocked).toHaveBeenCalledTimes(2);
+		expect(onBlocked).toHaveBeenNthCalledWith(1, { label: "worker-1", blockReason: "approval", preview: "bash rm -rf /" });
+		expect(onBlocked).toHaveBeenNthCalledWith(2, { label: "worker-1", blockReason: "approval", resolved: true });
+		expect(result.blockReason).toBeUndefined();
+	});
+
+	it("notifies when an approval block resolves into a steer block", async () => {
+		vi.useFakeTimers();
+		const dir = makeTempDir();
+		const sessionFile = writeSessionFile(dir, "session.jsonl", [
+			assistantMsg("", {
+				toolCalls: [{ id: "tc1", name: "bash", args: { command: "rm -rf /" } }],
+			}),
+		]);
+		const { registerEntry } = await import("../registry.ts");
+		registerEntry({
+			label: "worker-1",
+			agent: "worker",
+			workspace: "ws1",
+			paneId: "ws1:p1",
+			tabId: "tab1",
+			sessionFile,
+			cwd: dir,
+			status: "running",
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+			lastResult: "",
+		});
+		vi.mocked(getAgentStatus).mockImplementation(async () => {
+			const raw = fs.readFileSync(sessionFile, "utf8");
+			return raw.includes("instead do this") ? { status: "gone" } : { status: "blocked" };
+		});
+		const result = makeSingleResult({ label: "worker-1", paneId: "ws1:p1" });
+		const onBlocked = vi.fn();
+		const promise = pollSubagent("ws1:p1", sessionFile, 0, undefined, result, undefined, makeDetails, onBlocked);
+		let appended = false;
+		for (let i = 0; i < 6; i++) {
+			await vi.advanceTimersByTimeAsync(INTERVAL_MS);
+			if (!appended) {
+				appended = true;
+				fs.appendFileSync(
+					sessionFile,
+					`${JSON.stringify({ type: "message", message: toolResultMsg("tc1") })}\n${JSON.stringify({ type: "message", message: userMsg("instead do this") })}\n`,
+				);
+			}
+			if ((await Promise.race([promise.then(() => "done"), Promise.resolve("pending")])) === "done") break;
+		}
+		await expect(promise).resolves.toBe("gone");
+		expect(onBlocked).toHaveBeenCalledTimes(2);
+		expect(onBlocked).toHaveBeenNthCalledWith(1, { label: "worker-1", blockReason: "approval", preview: "bash rm -rf /" });
+		expect(onBlocked).toHaveBeenNthCalledWith(2, { label: "worker-1", blockReason: "steer", resolved: true });
+		expect(result.blockReason).toBe("steer");
 	});
 
 	it("clears blocked state when the pane unblocks", async () => {

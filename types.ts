@@ -6,6 +6,13 @@ export type HerdrStatus = "unknown" | "working" | "idle" | "blocked" | "done";
 
 export type BlockReason = "approval" | "steer";
 
+export interface BlockEventInfo {
+	label: string;
+	blockReason: BlockReason;
+	preview?: string;
+	resolved?: boolean;
+}
+
 export type RegistryStatus = "running" | "done";
 
 export interface RegistryEntry {

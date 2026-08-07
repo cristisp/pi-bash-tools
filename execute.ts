@@ -9,7 +9,7 @@ import { NESTED, ownWorkspaceId } from "./herdr.ts";
 import { listSubagents } from "./registry.ts";
 import { runReusedAgent, runSingleAgent } from "./run.ts";
 import { makeEmptyUsage } from "./types.ts";
-import type { BlockReason, OnUpdateCallback, SingleResult, SubagentDetails } from "./types.ts";
+import type { BlockEventInfo, OnUpdateCallback, SingleResult, SubagentDetails } from "./types.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -58,7 +58,7 @@ interface ExecuteContext {
 	cwd: string;
 	signal: AbortSignal | undefined;
 	onUpdate: OnUpdateCallback | undefined;
-	onBlocked: ((info: { label: string; blockReason: BlockReason; preview?: string }) => void) | undefined;
+	onBlocked: ((info: BlockEventInfo) => void) | undefined;
 }
 
 function makeDetailsFor(ctx: ExecuteContext) {
@@ -288,11 +288,14 @@ async function executeReuseMode(
 	};
 }
 
-function buildOnBlocked(
-	ctx: ExtensionContext,
-): ((info: { label: string; blockReason: BlockReason; preview?: string }) => void) | undefined {
+function buildOnBlocked(ctx: ExtensionContext): ((info: BlockEventInfo) => void) | undefined {
 	if (!ctx.hasUI) return undefined;
 	return (info) => {
+		if (info.resolved) {
+			const suffix = info.blockReason === "steer" ? " - still needs input in its tab" : " - continuing";
+			ctx.ui.notify(`Subagent ${ownWorkspaceId()}:${info.label} is no longer awaiting approval${suffix}`, "info");
+			return;
+		}
 		ctx.ui.notify(
 			`Subagent ${ownWorkspaceId()}:${info.label} is awaiting approval${info.preview ? `: ${info.preview}` : ""} (approve/reject in its tab)`,
 			"warning",

@@ -20,7 +20,7 @@ import {
 import { pollSubagent } from "./poll.ts";
 import { allocateLabel, readRegistry, registerEntry, removeRegistryEntry, sanitizeSegment, updateRegistryEntry } from "./registry.ts";
 import { ABORT_ERROR, makeEmptyUsage } from "./types.ts";
-import type { BlockReason, OnUpdateCallback, SingleResult, SubagentDetails } from "./types.ts";
+import type { BlockEventInfo, OnUpdateCallback, SingleResult, SubagentDetails } from "./types.ts";
 
 async function writePromptToTempFile(
 	agentName: string,
@@ -175,7 +175,7 @@ export async function runSingleAgent(
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
 	parentSession: string | undefined,
-	onBlocked?: (info: { label: string; blockReason: BlockReason; preview?: string }) => void,
+	onBlocked?: (info: BlockEventInfo) => void,
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -290,7 +290,7 @@ export async function runReusedAgent(
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
-	onBlocked?: (info: { label: string; blockReason: BlockReason; preview?: string }) => void,
+	onBlocked?: (info: BlockEventInfo) => void,
 ): Promise<SingleResult> {
 	const reg = readRegistry();
 	const entry = reg.tabs[`${ownWorkspaceId()}:${label}`];
