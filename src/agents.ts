@@ -2,11 +2,11 @@
  * Agent discovery and configuration
  */
 
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from '@earendil-works/pi-coding-agent';
 
-export type AgentScope = "user" | "project" | "both";
+export type AgentScope = 'user' | 'project' | 'both';
 
 export interface AgentConfig {
 	name: string;
@@ -14,7 +14,7 @@ export interface AgentConfig {
 	tools?: string[];
 	model?: string;
 	systemPrompt: string;
-	source: "user" | "project";
+	source: 'user' | 'project';
 	filePath: string;
 }
 
@@ -24,7 +24,7 @@ export interface AgentDiscoveryResult {
 }
 
 // fallow-ignore-next-line complexity
-function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
+function loadAgentsFromDir(dir: string, source: 'user' | 'project'): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
 	if (!fs.existsSync(dir)) {
@@ -39,13 +39,13 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 	}
 
 	for (const entry of entries) {
-		if (!entry.name.endsWith(".md")) continue;
+		if (!entry.name.endsWith('.md')) continue;
 		if (!entry.isFile() && !entry.isSymbolicLink()) continue;
 
 		const filePath = path.join(dir, entry.name);
 		let content: string;
 		try {
-			content = fs.readFileSync(filePath, "utf-8");
+			content = fs.readFileSync(filePath, 'utf-8');
 		} catch {
 			continue;
 		}
@@ -57,7 +57,7 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 		}
 
 		const tools = frontmatter.tools
-			?.split(",")
+			?.split(',')
 			.map((t: string) => t.trim())
 			.filter(Boolean);
 
@@ -86,7 +86,7 @@ function isDirectory(p: string): boolean {
 function findNearestProjectAgentsDir(cwd: string): string | null {
 	let currentDir = cwd;
 	while (true) {
-		const candidate = path.join(currentDir, CONFIG_DIR_NAME, "agents");
+		const candidate = path.join(currentDir, CONFIG_DIR_NAME, 'agents');
 		if (isDirectory(candidate)) return candidate;
 
 		const parentDir = path.dirname(currentDir);
@@ -96,18 +96,19 @@ function findNearestProjectAgentsDir(cwd: string): string | null {
 }
 
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
-	const userDir = path.join(getAgentDir(), "agents");
+	const userDir = path.join(getAgentDir(), 'agents');
 	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
 
-	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
-	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
+	const userAgents = scope === 'project' ? [] : loadAgentsFromDir(userDir, 'user');
+	const projectAgents =
+		scope === 'user' || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, 'project');
 
 	const agentMap = new Map<string, AgentConfig>();
 
-	if (scope === "both") {
+	if (scope === 'both') {
 		for (const agent of userAgents) agentMap.set(agent.name, agent);
 		for (const agent of projectAgents) agentMap.set(agent.name, agent);
-	} else if (scope === "user") {
+	} else if (scope === 'user') {
 		for (const agent of userAgents) agentMap.set(agent.name, agent);
 	} else {
 		for (const agent of projectAgents) agentMap.set(agent.name, agent);
@@ -115,4 +116,3 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 
 	return { agents: Array.from(agentMap.values()), projectAgentsDir };
 }
-

@@ -1,27 +1,27 @@
-import { execFile } from "node:child_process";
-import { getConfig } from "./config.ts";
-import type { HerdrStatus } from "./types.ts";
+import { execFile } from 'node:child_process';
+import { getConfig } from './config.ts';
+import type { HerdrStatus } from './types.ts';
 
-export const HERDR_ENV = process.env.HERDR_ENV === "1";
+export const HERDR_ENV = process.env.HERDR_ENV === '1';
 export const HERDR_SOCKET_PATH = process.env.HERDR_SOCKET_PATH;
 export const HERDR_PANE_ID = process.env.HERDR_PANE_ID;
-const HERDR_SESSION = process.env.HERDR_SESSION || "";
-export const NESTED = process.env.PI_SUBAGENT_NESTED === "1";
+const HERDR_SESSION = process.env.HERDR_SESSION || '';
+export const NESTED = process.env.PI_SUBAGENT_NESTED === '1';
 
 export function ownWorkspaceId(): string {
-	return (HERDR_PANE_ID ?? "").split(":")[0] || "default";
+	return (HERDR_PANE_ID ?? '').split(':')[0] || 'default';
 }
 
 let cachedWorkspaceId: string | null | undefined;
 
 function herdrSessionArgs(): string[] {
-	return HERDR_SESSION ? ["--session", HERDR_SESSION] : [];
+	return HERDR_SESSION ? ['--session', HERDR_SESSION] : [];
 }
 
 export function herdrCli(args: string[]): Promise<any> {
 	return new Promise((resolve, reject) => {
 		execFile(
-			"herdr",
+			'herdr',
 			[...args, ...herdrSessionArgs()],
 			{ timeout: getConfig().herdrCliTimeoutMs, maxBuffer: 4 * 1024 * 1024 },
 			(err, stdout, stderr) => {
@@ -49,26 +49,26 @@ export function herdrErrorCode(resp: any): string | undefined {
 
 export function herdrErrorText(resp: any): string {
 	const e = resp?.error;
-	if (!e) return "";
-	if (typeof e === "string") return e;
+	if (!e) return '';
+	if (typeof e === 'string') return e;
 	const parts: string[] = [];
-	if (typeof e.code === "string") parts.push(e.code);
-	if (typeof e.message === "string") parts.push(e.message);
-	else if (typeof e.detail === "string") parts.push(e.detail);
-	return parts.join(": ");
+	if (typeof e.code === 'string') parts.push(e.code);
+	if (typeof e.message === 'string') parts.push(e.message);
+	else if (typeof e.detail === 'string') parts.push(e.detail);
+	return parts.join(': ');
 }
 
 export async function resolveOwnWorkspace(): Promise<string> {
-	if (cachedWorkspaceId !== undefined) return cachedWorkspaceId ?? "";
-	if (!HERDR_PANE_ID) return "";
+	if (cachedWorkspaceId !== undefined) return cachedWorkspaceId ?? '';
+	if (!HERDR_PANE_ID) return '';
 	try {
-		const resp = await herdrCli(["pane", "get", HERDR_PANE_ID]);
+		const resp = await herdrCli(['pane', 'get', HERDR_PANE_ID]);
 		const ws = resp?.result?.pane?.workspace_id;
-		cachedWorkspaceId = typeof ws === "string" && ws ? ws : null;
+		cachedWorkspaceId = typeof ws === 'string' && ws ? ws : null;
 	} catch {
 		cachedWorkspaceId = null;
 	}
-	return cachedWorkspaceId ?? "";
+	return cachedWorkspaceId ?? '';
 }
 
 export async function createTaskTab(
@@ -76,34 +76,47 @@ export async function createTaskTab(
 	cwd: string,
 	label: string,
 ): Promise<{ paneId: string; tabId: string }> {
-	const resp = await herdrCli(["tab", "create", "--workspace", workspaceId, "--cwd", cwd, "--label", label, "--no-focus"]);
+	const resp = await herdrCli([
+		'tab',
+		'create',
+		'--workspace',
+		workspaceId,
+		'--cwd',
+		cwd,
+		'--label',
+		label,
+		'--no-focus',
+	]);
 	const code = herdrErrorCode(resp);
 	if (code) throw new Error(`herdr tab create failed: ${code}`);
 	const paneId = resp?.result?.root_pane?.pane_id;
 	const tabId = resp?.result?.tab?.tab_id;
-	if (typeof paneId !== "string" || !paneId || typeof tabId !== "string" || !tabId) {
-		throw new Error("herdr tab create returned no pane/tab id");
+	if (typeof paneId !== 'string' || !paneId || typeof tabId !== 'string' || !tabId) {
+		throw new Error('herdr tab create returned no pane/tab id');
 	}
 	return { paneId, tabId };
 }
 
-export async function getAgentStatus(paneId: string): Promise<{ status: HerdrStatus | "no-agent" | "gone" }> {
+export async function getAgentStatus(
+	paneId: string,
+): Promise<{ status: HerdrStatus | 'no-agent' | 'gone' }> {
 	try {
-		const resp = await herdrCli(["agent", "get", paneId]);
+		const resp = await herdrCli(['agent', 'get', paneId]);
 		const code = herdrErrorCode(resp);
-		if (code === "agent_not_found") return { status: "no-agent" };
-		if (code === "pane_not_found") return { status: "gone" };
+		if (code === 'agent_not_found') return { status: 'no-agent' };
+		if (code === 'pane_not_found') return { status: 'gone' };
 		const s = resp?.result?.agent?.agent_status;
-		if (s === "working" || s === "idle" || s === "blocked" || s === "done" || s === "unknown") return { status: s };
-		return { status: "unknown" };
+		if (s === 'working' || s === 'idle' || s === 'blocked' || s === 'done' || s === 'unknown')
+			return { status: s };
+		return { status: 'unknown' };
 	} catch {
-		return { status: "unknown" };
+		return { status: 'unknown' };
 	}
 }
 
 export async function closeTab(tabId: string): Promise<void> {
 	try {
-		await herdrCli(["tab", "close", tabId]);
+		await herdrCli(['tab', 'close', tabId]);
 	} catch {}
 }
 
@@ -112,21 +125,21 @@ export async function launchInPane(paneId: string, command: string): Promise<str
 	await sleep(500);
 	let textSent = false;
 	let keySent = false;
-	let launchError = "";
+	let launchError = '';
 	for (let attempt = 0; attempt < 3 && !keySent; attempt++) {
 		try {
 			if (!textSent) {
-				const resp = await herdrCli(["pane", "send-text", paneId, command]);
+				const resp = await herdrCli(['pane', 'send-text', paneId, command]);
 				const code = herdrErrorCode(resp);
 				if (code) {
 					launchError = herdrErrorText(resp) || code;
 				} else {
 					textSent = true;
-					launchError = "";
+					launchError = '';
 				}
 			}
 			if (textSent) {
-				const keyResp = await herdrCli(["pane", "send-keys", paneId, "enter"]);
+				const keyResp = await herdrCli(['pane', 'send-keys', paneId, 'enter']);
 				const keyCode = herdrErrorCode(keyResp);
 				if (keyCode) {
 					launchError = `submit failed: ${herdrErrorText(keyResp) || keyCode}`;

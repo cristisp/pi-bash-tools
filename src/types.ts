@@ -1,10 +1,10 @@
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Message } from "@earendil-works/pi-ai";
-import type { AgentScope } from "./agents.ts";
+import type { AgentToolResult } from '@earendil-works/pi-agent-core';
+import type { Message } from '@earendil-works/pi-ai';
+import type { AgentScope } from './agents.ts';
 
-export type HerdrStatus = "unknown" | "working" | "idle" | "blocked" | "done";
+export type HerdrStatus = 'unknown' | 'working' | 'idle' | 'blocked' | 'done';
 
-export type BlockReason = "approval" | "steer";
+export type BlockReason = 'approval' | 'steer';
 
 export interface BlockEventInfo {
 	label: string;
@@ -13,7 +13,7 @@ export interface BlockEventInfo {
 	resolved?: boolean;
 }
 
-export type RegistryStatus = "running" | "done";
+export type RegistryStatus = 'running' | 'done';
 
 export interface RegistryEntry {
 	label: string;
@@ -51,7 +51,7 @@ export interface UsageStats {
 
 export interface SingleResult {
 	agent: string;
-	agentSource: "user" | "project" | "unknown" | "reuse";
+	agentSource: 'user' | 'project' | 'unknown' | 'reuse';
 	task: string;
 	exitCode: number;
 	messages: Message[];
@@ -72,17 +72,19 @@ export interface SingleResult {
 }
 
 export interface SubagentDetails {
-	mode: "single" | "parallel" | "chain";
+	mode: 'single' | 'parallel' | 'chain';
 	agentScope: AgentScope;
 	projectAgentsDir: string | null;
 	results: SingleResult[];
 }
 
-export type DisplayItem = { type: "text"; text: string } | { type: "toolCall"; name: string; args: Record<string, any> };
+export type DisplayItem =
+	| { type: 'text'; text: string }
+	| { type: 'toolCall'; name: string; args: Record<string, any> };
 
 export type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
-export const ABORT_ERROR = new Error("Subagent was aborted");
+export const ABORT_ERROR = new Error('Subagent was aborted');
 
 export function makeEmptyUsage(): UsageStats {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };

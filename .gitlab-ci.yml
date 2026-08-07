@@ -1,5 +1,23 @@
 stages:
+  - check
   - publish
+
+quality-gates:
+  stage: check
+  image: node:24
+  variables:
+    NPM_REGISTRY_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/npm/"
+  script:
+    # Strip protocol from API URL for .npmrc auth entry (npmrc uses //host/path format)
+    - NPM_REGISTRY_HOST="${CI_API_V4_URL#https://}"
+    - NPM_REGISTRY_HOST="${NPM_REGISTRY_HOST#http://}"
+    - echo "//${NPM_REGISTRY_HOST}/projects/${CI_PROJECT_ID}/packages/npm/:_authToken=${CI_JOB_TOKEN}" > .npmrc
+    - echo "@ztc:registry=${NPM_REGISTRY_URL}" >> .npmrc
+    - npm ci
+    - npm run typecheck
+    - npm run lint
+    - npm run format:check
+    - npm run test
 
 publish-npm:
   stage: publish

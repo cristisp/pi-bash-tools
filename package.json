@@ -1,9 +1,12 @@
 {
   "name": "@ztc/subagent-herdr",
+  "author": {
+    "email": "cristian.spissack@zitec.com",
+    "name": "Cristian Spissack"
+  },
   "version": "1.0.1",
   "description": "Pi extension that spawns subagents as live pi sessions in their own herdr tabs - parallel/chain modes, session reuse, steering, and approval-waiting detection.",
   "type": "module",
-  "license": "MIT",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -16,19 +19,8 @@
   },
   "files": [
     "index.ts",
-    "agents.ts",
-    "templates.ts",
-    "types.ts",
-    "herdr.ts",
-    "format.ts",
-    "registry.ts",
-    "config.ts",
-    "poll.ts",
-    "run.ts",
-    "render.ts",
-    "execute.ts",
-    "README.md",
-    "LICENSE"
+    "src",
+    "README.md"
   ],
   "pi": {
     "extensions": [
@@ -45,16 +37,18 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@vitest/coverage-v8": "^4.1.10",
+    "oxfmt": "^0.62.0",
+    "oxlint": "^1.77.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.10"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "lint": "oxlint --deny-warnings",
+    "format": "oxfmt index.ts src test vitest.config.ts",
+    "format:check": "oxfmt --check index.ts src test vitest.config.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
-  },
-  "publishConfig": {
-    "access": "public"
   }
 }

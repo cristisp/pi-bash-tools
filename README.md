@@ -10,12 +10,8 @@ tasks, so hard-won context is never rebuilt from scratch.
 ## Install
 
 ```bash
-pi install npm:subagent-herdr
+pi install npm:@ztc/subagent-herdr
 ```
-
-Or from git or a local path: `pi install git:github.com/<you>/subagent-herdr`,
-`pi install /path/to/subagent-herdr`. The extension then hot-reloads with
-`/reload` (or on the next start).
 
 ## Requirements
 
@@ -43,7 +39,7 @@ Setting up the standard agents:
   defaults if it does not exist yet (an existing config is left untouched). It asks for the model first, as `provider/model(:thinking_level)` -
   e.g. `github-copilot/gpt-5.6-luna:high` or `cortecs/deepseek-v4-flash-0731`
   (level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; the templates live in
-  `templates.ts`). Existing files are only overwritten after confirmation.
+  `src/templates.ts`). Existing files are only overwritten after confirmation.
 
 Closing subagents (two entry points, same behavior):
 
@@ -192,7 +188,11 @@ load and `session_start`), a reconciliation pass runs:
 ## Development
 
 - `npm install` (installs the peer pi packages + typescript), then `npm run typecheck`
+- Quality gates: `npm run lint` (oxlint, configured in `.oxlintrc.json` - errors
+  fail, warnings fail via `--deny-warnings`), `npm run format` / `npm run format:check`
+  (oxfmt, configured in `.oxfmtrc.json`), `npm test` (vitest) - the GitLab CI
+  pipeline runs all of them plus `tsc` on every push
 - `npm pack` / `npm publish` to distribute; the published tarball contains
-  `index.ts`, `agents.ts`, `README.md`, `LICENSE` (see `files` in `package.json`)
+  `index.ts`, `src/`, `README.md` (see `files` in `package.json`)
 - The package is loaded through the `pi` manifest in `package.json`
   (`"pi": { "extensions": ["./index.ts"] }`)

@@ -1,0 +1,14 @@
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"categories": {
+		"correctness": "error",
+		"suspicious": "warn",
+		"perf": "warn"
+	},
+	"plugins": ["eslint", "typescript", "oxc", "import", "unicorn", "promise", "vitest"],
+	"ignorePatterns": ["coverage/**", "node_modules/**"],
+	"rules": {
+		"no-await-in-loop": "off",
+		"vitest/require-mock-type-parameters": "off"
+	}
+}
