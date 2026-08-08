@@ -158,6 +158,29 @@ describe('executeSubagent - reuse and single lookups', () => {
 		});
 	});
 
+	it('accepts an expanded payload with empty optional fields (single mode)', async () => {
+		const result = await execSubagent({
+			agent: 'ghost',
+			task: 'x',
+			tasks: [],
+			chain: [],
+			agentScope: 'user',
+			confirmProjectAgents: true,
+			cwd: '/tmp',
+			listSubagents: false,
+			listLabel: '',
+			listStatus: '',
+			listVerbose: false,
+			agents: false,
+			reuseLabel: '',
+		});
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('Unknown agent: "ghost"'),
+		});
+		expect(result.details).toMatchObject({ mode: 'single' });
+	});
+
 	it('reports unknown agents in single mode', async () => {
 		const result = await execSubagent({ agent: 'ghost', task: 'x' });
 		expect(result.content[0]).toMatchObject({

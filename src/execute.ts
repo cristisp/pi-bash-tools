@@ -107,7 +107,7 @@ function resolveMode(params: SubagentParams): SubagentMode | null {
 	const hasTasks = (params.tasks?.length ?? 0) > 0;
 	const hasSingle = Boolean(params.agent && params.task);
 	const hasList = params.listSubagents === true;
-	const hasReuse = typeof params.reuseLabel === 'string';
+	const hasReuse = Boolean(params.reuseLabel);
 	const hasAgents = params.agents === true;
 	const modeCount =
 		Number(hasChain) +
