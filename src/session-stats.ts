@@ -157,10 +157,10 @@ function reuseHints(entry: RegistryEntry | undefined, parsed: ParsedSession): st
 	return hints;
 }
 
-export async function sessionStatsText(label: string): Promise<string> {
-	const entry = findEntry(label);
+export async function sessionStatsText(label: string, parentSession?: string): Promise<string> {
+	const entry = findEntry(label, parentSession);
 	if (!entry) {
-		return `No subagent session labeled "${label}". Use listSubagents to see available sessions.`;
+		return `No subagent session labeled "${label}" in the active Pi session. Use listSubagents and pass the bare label shown after "reuseLabel:".`;
 	}
 	const parsed = await parseSessionFile(entry.sessionFile);
 	const fileSize = (() => {

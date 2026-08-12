@@ -144,9 +144,30 @@ describe('listSubagents', () => {
 		const out = listSubagents({});
 		expect(out).toContain('ws1:worker-1');
 		expect(out).toContain('ws1:reviewer-1');
+		expect(out).toContain('reuseLabel: worker-1');
 		expect(out).toContain('running');
 		expect(out).toContain('ctx:1.5k');
 		expect(out).toContain('pane ws1:p10');
+	});
+	it('preserves full-registry behavior for owner-less direct calls', () => {
+		registerEntry(makeRegistryEntry({ label: 'worker-1' }));
+		registerEntry(makeRegistryEntry({ label: 'worker-2', workspace: 'ws2', paneId: 'ws2:p20' }));
+
+		const out = listSubagents({});
+		expect(out).toContain('registry:');
+		expect(out).toContain('ws1:worker-1');
+		expect(out).toContain('reuseLabel: worker-1');
+		expect(out).toContain('ws2:worker-2');
+	});
+	it('filters same-workspace entries by parent Pi session when requested', () => {
+		registerEntry(makeRegistryEntry({ label: 'worker-1', parentSession: '/sess/current.jsonl' }));
+		registerEntry(makeRegistryEntry({ label: 'worker-2', parentSession: '/sess/other.jsonl' }));
+
+		const out = listSubagents({ parentSession: '/sess/current.jsonl' });
+		expect(out).toContain('active Pi session: /sess/current.jsonl');
+		expect(out).toContain('ws1:worker-1');
+		expect(out).not.toContain('ws1:worker-2');
+		expect(listSubagents({ parentSession: '/sess/other.jsonl' })).toContain('ws1:worker-2');
 	});
 	it('shows reuse count and task history metadata', () => {
 		registerEntry(

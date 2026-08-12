@@ -14,6 +14,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.doUnmock('../src/run.ts');
 	vi.unstubAllEnvs();
 });
 
@@ -143,7 +144,10 @@ describe('executeSubagent - agents listing', () => {
 
 describe('executeSubagent - reuse and single lookups', () => {
 	it('requires a task for reuse', async () => {
-		const result = await execSubagent({ reuseLabel: 'worker-1' });
+		const result = await execSubagent(
+			{ reuseLabel: 'worker-1' },
+			{ sessionManager: { getSessionFile: () => '/sess/current.jsonl' } as never },
+		);
 		expect(result.content[0]).toMatchObject({
 			type: 'text',
 			text: 'Invalid parameters. reuseLabel requires a task (the next message for that session).',
@@ -151,11 +155,26 @@ describe('executeSubagent - reuse and single lookups', () => {
 	});
 
 	it('reports unknown reuse labels', async () => {
-		const result = await execSubagent({ reuseLabel: 'ghost-1', task: 'hi' });
+		const result = await execSubagent(
+			{ reuseLabel: 'ghost-1', task: 'hi' },
+			{ sessionManager: { getSessionFile: () => '/sess/current.jsonl' } as never },
+		);
 		expect(result.content[0]).toMatchObject({
 			type: 'text',
 			text: expect.stringContaining('No subagent session labeled "ghost-1"'),
 		});
+	});
+
+	it('fails closed before reuse when the current Pi session has no session file', async () => {
+		await seedRegistry([makeRegistryEntry({ parentSession: '/sess/other.jsonl' })]);
+		const { readRegistry } = await import('../src/registry-store.ts');
+		const before = readRegistry();
+		const result = await execSubagent({ reuseLabel: 'worker-1', task: 'next task' });
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('session ownership is unavailable'),
+		});
+		expect(readRegistry()).toEqual(before);
 	});
 
 	it('accepts an expanded payload with empty optional fields (single mode)', async () => {
@@ -194,18 +213,148 @@ describe('executeSubagent - reuse and single lookups', () => {
 	});
 });
 
+function mockSuccessfulRuns() {
+	vi.doMock('../src/run.ts', () => ({
+		runSingleAgent: vi
+			.fn()
+			.mockImplementation(async (_defaultCwd, _agents, agent, task, _cwd, step) => ({
+				agent,
+				agentSource: 'user',
+				task,
+				exitCode: 0,
+				messages: [],
+				stderr: '',
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					cost: 0,
+					contextTokens: 0,
+					turns: 0,
+				},
+				label: `${agent}-${step ?? 1}`,
+				step,
+			})),
+		runReusedAgent: vi.fn().mockResolvedValue({
+			agent: 'worker',
+			agentSource: 'reuse',
+			task: 'next task',
+			exitCode: 0,
+			messages: [],
+			stderr: '',
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: 0,
+				contextTokens: 0,
+				turns: 0,
+			},
+			label: 'worker-1',
+		}),
+	}));
+}
+
+describe('executeSubagent - model-facing reuse labels', () => {
+	beforeEach(() => {
+		fs.mkdirSync(path.join(dir, 'agents'), { recursive: true });
+		writeAgentFile(path.join(dir, 'agents'), 'worker.md', 'prompt', {
+			name: 'worker',
+			description: 'worker',
+		});
+		writeAgentFile(path.join(dir, 'agents'), 'reviewer.md', 'prompt', {
+			name: 'reviewer',
+			description: 'reviewer',
+		});
+	});
+
+	it('exposes a fresh single label as explicit reuse metadata', async () => {
+		mockSuccessfulRuns();
+		const result = await execSubagent({ agent: 'worker', task: 'do work' });
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('reuseLabel: worker-1'),
+		});
+	});
+
+	it('identifies reused labels and every chain and parallel label', async () => {
+		mockSuccessfulRuns();
+		const reused = await execSubagent(
+			{ reuseLabel: 'worker-1', task: 'next task' },
+			{ sessionManager: { getSessionFile: () => '/sess/current.jsonl' } as never },
+		);
+		expect(reused.content[0]).toMatchObject({
+			text: expect.stringContaining('reuseLabel: worker-1'),
+		});
+
+		const chain = await execSubagent({
+			chain: [
+				{ agent: 'worker', task: 'first' },
+				{ agent: 'reviewer', task: 'second' },
+			],
+		});
+		expect(chain.content[0]).toMatchObject({
+			text: expect.stringContaining('step 1: reuseLabel: worker-1'),
+		});
+		expect(chain.content[0]).toMatchObject({
+			text: expect.stringContaining('step 2: reuseLabel: reviewer-2'),
+		});
+
+		const parallel = await execSubagent({
+			tasks: [
+				{ agent: 'worker', task: 'first' },
+				{ agent: 'reviewer', task: 'second' },
+			],
+		});
+		expect(parallel.content[0]).toMatchObject({
+			text: expect.stringContaining('reuseLabel: worker-1'),
+		});
+		expect(parallel.content[0]).toMatchObject({
+			text: expect.stringContaining('reuseLabel: reviewer-1'),
+		});
+	});
+
+	it('describes the list, stats, and reuse sequence in the parameter schema', async () => {
+		const { SubagentParams } = await loadExecute();
+		const schemaText = JSON.stringify(SubagentParams);
+		expect(schemaText).toContain('call subagent with listSubagents: true');
+		expect(schemaText).toContain('call subagent_stats');
+		expect(schemaText).toContain('Never infer or increment labels');
+		expect(schemaText).toContain('another workspace');
+		expect(schemaText).toContain('workspace:label');
+	});
+});
+
 describe('executeSubagent - listing', () => {
-	it('lists subagents without entries', async () => {
+	it('fails closed when the current Pi session has no session file', async () => {
+		await seedRegistry([makeRegistryEntry({ parentSession: '/sess/other.jsonl' })]);
 		const result = await execSubagent({ listSubagents: true });
-		expect(result.content[0]).toMatchObject({ type: 'text', text: 'No subagent sessions yet.' });
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('session ownership is unavailable'),
+		});
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.not.stringContaining('worker-1'),
+		});
 	});
 
 	it('lists subagents with filters', async () => {
 		await seedRegistry([
-			makeRegistryEntry({ status: 'running' }),
-			makeRegistryEntry({ label: 'reviewer-1', agent: 'reviewer', status: 'done' }),
+			makeRegistryEntry({ status: 'running', parentSession: '/sess/current.jsonl' }),
+			makeRegistryEntry({
+				label: 'reviewer-1',
+				agent: 'reviewer',
+				status: 'done',
+				parentSession: '/sess/current.jsonl',
+			}),
 		]);
-		const result = await execSubagent({ listSubagents: true, listStatus: 'running' });
+		const result = await execSubagent(
+			{ listSubagents: true, listStatus: 'running' },
+			{ sessionManager: { getSessionFile: () => '/sess/current.jsonl' } as never },
+		);
 		expect(result.content[0]).toMatchObject({
 			type: 'text',
 			text: expect.stringContaining('worker-1'),
@@ -213,6 +362,24 @@ describe('executeSubagent - listing', () => {
 		expect(result.content[0]).toMatchObject({
 			type: 'text',
 			text: expect.not.stringContaining('reviewer-1'),
+		});
+	});
+	it('lists only subagents owned by the active Pi session', async () => {
+		await seedRegistry([
+			makeRegistryEntry({ label: 'worker-1', parentSession: '/sess/current.jsonl' }),
+			makeRegistryEntry({ label: 'worker-2', parentSession: '/sess/other.jsonl' }),
+		]);
+		const result = await execSubagent(
+			{ listSubagents: true },
+			{ sessionManager: { getSessionFile: () => '/sess/current.jsonl' } as never },
+		);
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('ws1:worker-1'),
+		});
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.not.stringContaining('ws1:worker-2'),
 		});
 	});
 });

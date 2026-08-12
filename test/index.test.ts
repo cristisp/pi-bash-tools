@@ -70,6 +70,54 @@ describe('extension registration', () => {
 		expect(events).toContain('session_start');
 		expect(events).toContain('input');
 	});
+
+	it('registers the explicit list, stats, and reuse guidance', async () => {
+		const { default: register } = await loadIndex();
+		const pi = mockPi();
+		register(pi as never);
+
+		const subagent = pi.registerTool.mock.calls.find((c) => c[0].name === 'subagent')![0];
+		const stats = pi.registerTool.mock.calls.find((c) => c[0].name === 'subagent_stats')![0];
+		expect(subagent.description).toContain('call subagent with listSubagents: true');
+		expect(subagent.description).toContain('call subagent_stats with that label');
+		expect(subagent.description).toContain('Never infer or increment labels');
+		expect(subagent.description).toContain('another workspace');
+		expect(subagent.description).toContain('workspace:label');
+		expect(stats.description).toContain('This tool is the stats step and must run before reuse');
+		expect(stats.description).toContain('Never infer or increment labels');
+	});
+});
+
+describe('subagent_stats tool - ownership', () => {
+	async function getStatsTool() {
+		const { default: register } = await loadIndex();
+		const pi = mockPi();
+		register(pi as never);
+		const tool = pi.registerTool.mock.calls.find((c) => c[0].name === 'subagent_stats');
+		expect(tool).toBeDefined();
+		return tool![0];
+	}
+
+	it('fails closed without looking up a same-workspace entry when the session file is missing', async () => {
+		const { registerEntry } = await import('../src/registry.ts');
+		const { readRegistry } = await import('../src/registry-store.ts');
+		registerEntry(makeRegistryEntry({ parentSession: '/sess/other.jsonl' }));
+		const before = readRegistry();
+		const tool = await getStatsTool();
+		const out = await tool.execute('stats-1', { label: 'worker-1' }, undefined, undefined, {
+			...handlerCtx(),
+			sessionManager: { getSessionFile: () => undefined },
+		});
+		expect(out.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('session ownership is unavailable'),
+		});
+		expect(out.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.not.stringContaining('Session ws1:worker-1'),
+		});
+		expect(readRegistry()).toEqual(before);
+	});
 });
 
 describe('input handler - pass-through', () => {

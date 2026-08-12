@@ -20,11 +20,12 @@ import {
 import { pollSubagent } from './poll.ts';
 import {
 	allocateLabel,
+	findEntry,
 	registerEntry,
 	removeRegistryEntry,
 	updateRegistryEntry,
 } from './registry.ts';
-import { readRegistry, sanitizeSegment } from './registry-store.ts';
+import { sanitizeSegment } from './registry-store.ts';
 import { ABORT_ERROR, makeEmptyUsage } from './types.ts';
 import type {
 	BlockEventInfo,
@@ -338,16 +339,16 @@ function initReusedSession(
 	agents: AgentConfig[],
 	label: string,
 	task: string,
+	parentSession?: string,
 ): ReusedSessionInit | SingleResult {
-	const reg = readRegistry();
-	const entry = reg.tabs[`${ownWorkspaceId()}:${label}`];
+	const entry = findEntry(label, parentSession);
 
 	if (!entry) {
 		return failedResult(
 			label,
 			'reuse',
 			task,
-			`No subagent session labeled "${label}". Use listSubagents to see available sessions.`,
+			`No subagent session labeled "${label}" in the active Pi session. Use listSubagents and pass the bare label shown after "reuseLabel:"`,
 		);
 	}
 	const agent = agents.find((a) => a.name === entry.agent);
@@ -546,8 +547,9 @@ export async function runReusedAgent(
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
 	onBlocked?: (info: BlockEventInfo) => void,
+	parentSession?: string,
 ): Promise<SingleResult> {
-	const init = initReusedSession(agents, label, task);
+	const init = initReusedSession(agents, label, task, parentSession);
 	if (!('entry' in init)) return init;
 	const { entry, agent, currentResult } = init;
 

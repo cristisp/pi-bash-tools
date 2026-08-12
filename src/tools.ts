@@ -15,6 +15,9 @@ import { renderSubagentCall, renderSubagentResult } from './render.ts';
 import { sessionStatsText } from './session-stats.ts';
 import type { SubagentDetails } from './types.ts';
 
+const REUSE_WORKFLOW_DESCRIPTION =
+	'For safe reuse, first call subagent with listSubagents: true, select an exact active-session entry, copy its bare reuseLabel, call subagent_stats with that label, and reuse only when the stats and task history show it is appropriate. Never infer or increment labels, use labels from another workspace, or pass workspace:label to reuseLabel or subagent_stats.';
+
 export function registerSubagentTool(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: 'subagent',
@@ -25,14 +28,16 @@ export function registerSubagentTool(pi: ExtensionAPI) {
 			'Tabs stay open after finishing until closed manually; sessions can be reused (preserving context).',
 			`Registry of all subagent sessions: ${REGISTRY_PATH} (read it to find reusable sessions and their session files).`,
 			`Registry entries include ctx:<tokens> - the context size at the last completed turn; use it to decide between reuseLabel and a fresh session.`,
-			'Before reusing a session, call subagent_stats to check its context size, turn count, prior tasks, and reuse history, and judge whether reuse is actually cheaper than a fresh session.',
+			REUSE_WORKFLOW_DESCRIPTION,
+			'Before reusing a session, call subagent_stats with the bare label from the active Pi session list (e.g. worker-1) to check its context size, turn count, prior tasks, and reuse history, and judge whether reuse is actually cheaper than a fresh session.',
 			'Reusing a review/audit/verification session anchors it on its earlier findings - it will tend to re-check the issues it already found and miss newly introduced ones. For a fresh review of code that changed since the session last ran, prefer a new session, or explicitly instruct the reused session to re-examine from scratch.',
-			'Labels are scoped per herdr workspace: each workspace has its own worker-1, worker-2, ... numbering and session files.',
+			'Labels are scoped per herdr workspace: each workspace has its own worker-1, worker-2, ... numbering and session files; visibility and reuse are scoped to the active Pi session.',
+			'reuseLabel and subagent_stats accept the bare label shown by the active Pi session list (e.g. worker-1); qualified workspace:label values and sessions from other Pi sessions are not reusable from the current session.',
 			'Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder), agents (list available agents).',
 			'Before choosing an agent name, call subagent with agents: true to see the available agents (name, description, source); pick the exact name that fits the task - never invent or modify agent names, unknown names fail.',
 			'A session becomes read-only once its result is delivered to the main agent; reuseLabel + task makes it interactive again for a new task.',
 			"Steers typed into a running subagent's tab are folded into its final outcome and marked [steered] in the result.",
-			'listSubagents: true lists all sessions; listLabel/listStatus/listVerbose filter the listing (single entry, status, full last result).',
+			'listSubagents: true lists sessions linked to the active Pi session in the active herdr workspace and shows the workspace identity plus the exact bare label to reuse; listLabel/listStatus/listVerbose filter that listing (single entry, status, full last result).',
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), 'agents')}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
 		].join(' '),
@@ -68,20 +73,34 @@ export function registerSubagentStatsTool(pi: ExtensionAPI) {
 		name: 'subagent_stats',
 		label: 'Subagent Session Stats',
 		description: [
-			'Get reuse-relevant stats for a subagent session before deciding to reuse it.',
+			`${REUSE_WORKFLOW_DESCRIPTION} This tool is the stats step and must run before reuse.`,
 			'Reports: context size (tokens, last turn), lifetime turns, cumulative token/cache/cost usage, session file size, age, reuse count, task history (what the session has already worked on), and the last result.',
 			'Context size and turns come from the session file itself, so the report is current even while the session runs.',
 			'Use this to judge cost and impact: a session with a large context, many turns, or many reuses is usually better replaced by a fresh session; a session whose task history does not match the new task topic is a poor reuse target.',
 			'Review/audit/verification tasks carry a hidden cost when reused: the session anchors on its earlier findings and may only retest those, missing newly introduced issues. For independent reviews of code that changed, prefer a fresh session or explicitly instruct the reused session to re-examine from scratch.',
+			'reuseLabel and this tool accept only the bare label from the active Pi session list; qualified workspace:label values and sessions from other Pi sessions are not reusable from the current session. Never infer or increment a label after a failed lookup; call listSubagents again.',
 		].join(' '),
 		parameters: Type.Object({
 			label: Type.String({
-				description: 'Label of the session to inspect (e.g. worker-1 or ws8:worker-1)',
+				description:
+					'Exact bare reuseLabel copied from an active-session entry after calling listSubagents; pass the same label to subagent_stats before reuse. Never infer or increment labels, use labels from another workspace, or pass workspace:label.',
 			}),
 		}),
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const sessionFile = ctx.sessionManager.getSessionFile() ?? undefined;
+			if (!sessionFile) {
+				return {
+					content: [
+						{
+							type: 'text',
+							text: 'Subagent session ownership is unavailable: the current Pi session has no session file, so session stats are unavailable.',
+						},
+					],
+					details: {},
+				};
+			}
 			return {
-				content: [{ type: 'text', text: await sessionStatsText(params.label) }],
+				content: [{ type: 'text', text: await sessionStatsText(params.label, sessionFile) }],
 				details: {},
 			};
 		},

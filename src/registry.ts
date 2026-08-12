@@ -62,8 +62,11 @@ export function removeRegistryEntry(label: string): void {
 	});
 }
 
-export function findEntry(label: string): RegistryEntry | undefined {
-	return readRegistry().tabs[`${ownWorkspaceId()}:${label}`];
+export function findEntry(label: string, parentSession?: string): RegistryEntry | undefined {
+	const entry = readRegistry().tabs[`${ownWorkspaceId()}:${label}`];
+	if (!entry || (parentSession !== undefined && entry.parentSession !== parentSession))
+		return undefined;
+	return entry;
 }
 
 export function sessionLinkedEntries(sessionFile: string | undefined): RegistryEntry[] {
@@ -159,15 +162,23 @@ export function listSubagents(filter: {
 	label?: string;
 	status?: string;
 	verbose?: boolean;
+	parentSession?: string;
 }): string {
 	const reg = readRegistry();
+	const workspace = ownWorkspaceId();
 	const matchLabel = (e: RegistryEntry) => {
 		if (!filter.label) return true;
 		const qualified = `${e.workspace}:${e.label}`;
 		return qualified === filter.label || e.label === filter.label;
 	};
 	const entries = Object.values(reg.tabs)
-		.filter((e) => matchLabel(e) && (!filter.status || e.status === filter.status))
+		.filter(
+			(e) =>
+				(filter.parentSession === undefined || e.workspace === workspace) &&
+				(filter.parentSession === undefined || e.parentSession === filter.parentSession) &&
+				matchLabel(e) &&
+				(!filter.status || e.status === filter.status),
+		)
 		.toSorted((a, b) => a.label.localeCompare(b.label));
 	if (entries.length === 0) {
 		const why = filter.label || filter.status ? ' (no matches for the given filters)' : '';
@@ -182,7 +193,10 @@ export function listSubagents(filter: {
 		const tasks = e.tasks && e.tasks.length > 0 ? `tasks:${e.tasks.length}` : null;
 		const blocked = registryBlockedInfo(e);
 		const meta = [blocked, ctx, reuse, tasks].filter(Boolean).join('  ');
-		return `${e.workspace}:${e.label}  ${e.status.padEnd(8)}${meta ? `  ${meta}` : ''}  pane ${e.paneId || '-'}  ${e.sessionFile}\n    last: ${last}`;
+		return `${e.workspace}:${e.label}  reuseLabel: ${e.label}  ${e.status.padEnd(8)}${meta ? `  ${meta}` : ''}  pane ${e.paneId || '-'}  ${e.sessionFile}\n    last: ${last}`;
 	});
-	return `Subagent sessions (registry: ${REGISTRY_PATH}):\n\n${lines.join('\n')}`;
+	if (filter.parentSession === undefined) {
+		return `Subagent sessions (registry: ${REGISTRY_PATH}):\n\n${lines.join('\n')}`;
+	}
+	return `Subagent sessions (active Pi session: ${filter.parentSession}, active workspace: ${workspace}, registry: ${REGISTRY_PATH}):\n\n${lines.join('\n')}`;
 }

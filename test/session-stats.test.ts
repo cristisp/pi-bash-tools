@@ -26,6 +26,19 @@ describe('sessionStatsText', () => {
 		expect(out).toContain('No subagent session labeled "ghost-1"');
 	});
 
+	it('reports a same-workspace session from another Pi session as unavailable', async () => {
+		registerEntry(makeRegistryEntry({ parentSession: '/sess/other.jsonl' }));
+		const out = await sessionStatsText('worker-1', '/sess/current.jsonl');
+		expect(out).toContain('No subagent session labeled "worker-1" in the active Pi session');
+	});
+
+	it('reports stats for a session owned by the active Pi session', async () => {
+		const sessionFile = writeSessionFile(dir, 'sessions/subagent-ws1-worker-1.jsonl', []);
+		registerEntry(makeRegistryEntry({ sessionFile, parentSession: '/sess/current.jsonl' }));
+		const out = await sessionStatsText('worker-1', '/sess/current.jsonl');
+		expect(out).toContain('Session ws1:worker-1');
+	});
+
 	it('reports context, turns, and lifetime usage from the session file', async () => {
 		const sessionFile = writeSessionFile(dir, 'sessions/subagent-ws1-worker-1.jsonl', [
 			userMsg('Task: first job'),

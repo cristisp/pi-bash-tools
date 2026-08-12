@@ -8,3 +8,4 @@ process.env.HERDR_ENV = '1';
 process.env.HERDR_SOCKET_PATH = path.join(dir, 'herdr.sock');
 process.env.HERDR_PANE_ID = 'ws1:p1';
 process.env.HERDR_SESSION = 'ws1';
+process.env.PI_SUBAGENT_NESTED = '0';

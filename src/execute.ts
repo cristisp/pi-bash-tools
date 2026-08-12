@@ -36,6 +36,9 @@ const AgentScopeSchema = StringEnum(['user', 'project', 'both'] as const, {
 	default: 'user',
 });
 
+const REUSE_WORKFLOW_DESCRIPTION =
+	'For safe reuse, first call subagent with listSubagents: true, select an exact active-session entry, copy its bare reuseLabel, call subagent_stats with that label, and reuse only when the stats and task history show it is appropriate. Never infer or increment labels, use labels from another workspace, or pass workspace:label to reuseLabel or subagent_stats.';
+
 export const SubagentParams = Type.Object({
 	agent: Type.Optional(
 		Type.String({ description: 'Name of the agent to invoke (for single mode)' }),
@@ -65,13 +68,13 @@ export const SubagentParams = Type.Object({
 	),
 	listSubagents: Type.Optional(
 		Type.Boolean({
-			description: 'List existing subagent sessions (labels, status, panes, session files)',
+			description: `${REUSE_WORKFLOW_DESCRIPTION} Each entry shows the exact bare label to pass as reuseLabel.`,
 		}),
 	),
 	listLabel: Type.Optional(
 		Type.String({
 			description:
-				'With listSubagents: only show the session with this label (bare or workspace-qualified, e.g. worker-1 or w8:worker-1)',
+				'With listSubagents: only show the session with this label linked to the active Pi session (bare or active-workspace-qualified for filtering, e.g. worker-1 or ws1:worker-1)',
 		}),
 	),
 	listStatus: Type.Optional(
@@ -92,8 +95,7 @@ export const SubagentParams = Type.Object({
 	),
 	reuseLabel: Type.Optional(
 		Type.String({
-			description:
-				'Continue an existing subagent session in place (preserving its context); send `task` as the next message',
+			description: `${REUSE_WORKFLOW_DESCRIPTION} Continue the selected session in place (preserving its context); send task as the next message.`,
 		}),
 	),
 });
@@ -180,6 +182,17 @@ function invalidParamsResponse(
 	};
 }
 
+function appendReuseLabel(text: string, label: string | undefined): string {
+	return label ? `${text}\n\nreuseLabel: ${label}` : text;
+}
+
+function appendChainReuseLabels(text: string, results: SingleResult[]): string {
+	const labels = results
+		.filter((result): result is SingleResult & { label: string } => Boolean(result.label))
+		.map((result, index) => `- step ${result.step ?? index + 1}: reuseLabel: ${result.label}`);
+	return labels.length > 0 ? `${text}\n\nReusable session labels:\n${labels.join('\n')}` : text;
+}
+
 async function executeChainMode(
 	ctx: ExecuteContext,
 	chain: Static<typeof ChainItem>[],
@@ -225,7 +238,13 @@ async function executeChainMode(
 			const errorMsg = getResultOutput(result);
 			return {
 				content: [
-					{ type: 'text', text: `Chain stopped at step ${i + 1} (${step.agent}): ${errorMsg}` },
+					{
+						type: 'text',
+						text: appendChainReuseLabels(
+							`Chain stopped at step ${i + 1} (${step.agent}): ${errorMsg}`,
+							results,
+						),
+					},
 				],
 				details: makeDetails('chain')(results),
 			};
@@ -234,7 +253,13 @@ async function executeChainMode(
 	}
 	return {
 		content: [
-			{ type: 'text', text: getFinalOutput(results[results.length - 1].messages) || '(no output)' },
+			{
+				type: 'text',
+				text: appendChainReuseLabels(
+					getFinalOutput(results[results.length - 1].messages) || '(no output)',
+					results,
+				),
+			},
 		],
 		details: makeDetails('chain')(results),
 	};
@@ -316,7 +341,8 @@ function parallelSummaryText(results: SingleResult[]): string {
 		const status = isFailedResult(r)
 			? `failed${r.stopReason && r.stopReason !== 'end' ? ` (${r.stopReason})` : ''}`
 			: 'completed';
-		return `### [${r.label ?? r.agent}] ${status}\n\n${output}`;
+		const label = r.label ? `\n\nreuseLabel: ${r.label}` : '';
+		return `### [${r.label ?? r.agent}] ${status}${label}\n\n${output}`;
 	});
 	return `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join('\n\n---\n\n')}`;
 }
@@ -374,12 +400,25 @@ async function executeSingleMode(
 	if (isError) {
 		const errorMsg = getResultOutput(result);
 		return {
-			content: [{ type: 'text', text: `Agent ${result.stopReason || 'failed'}: ${errorMsg}` }],
+			content: [
+				{
+					type: 'text',
+					text: appendReuseLabel(
+						`Agent ${result.stopReason || 'failed'}: ${errorMsg}`,
+						result.label,
+					),
+				},
+			],
 			details: makeDetails('single')([result]),
 		};
 	}
 	return {
-		content: [{ type: 'text', text: getFinalOutput(result.messages) || '(no output)' }],
+		content: [
+			{
+				type: 'text',
+				text: appendReuseLabel(getFinalOutput(result.messages) || '(no output)', result.label),
+			},
+		],
 		details: makeDetails('single')([result]),
 	};
 }
@@ -399,6 +438,7 @@ async function executeReuseMode(
 		ctx.onUpdate,
 		makeDetails('single'),
 		ctx.onBlocked,
+		ctx.sessionFile,
 	);
 	const isError = isFailedResult(result);
 	if (isError) {
@@ -406,14 +446,25 @@ async function executeReuseMode(
 			content: [
 				{
 					type: 'text',
-					text: `Reuse ${result.stopReason || 'failed'}: ${getResultOutput(result)}`,
+					text: appendReuseLabel(
+						`Reuse ${result.stopReason || 'failed'}: ${getResultOutput(result)}`,
+						result.label ?? reuseLabel,
+					),
 				},
 			],
 			details: makeDetails('single')([result]),
 		};
 	}
 	return {
-		content: [{ type: 'text', text: getFinalOutput(result.messages) || '(no output)' }],
+		content: [
+			{
+				type: 'text',
+				text: appendReuseLabel(
+					getFinalOutput(result.messages) || '(no output)',
+					result.label ?? reuseLabel,
+				),
+			},
+		],
 		details: makeDetails('single')([result]),
 	};
 }
@@ -487,6 +538,7 @@ function nestedResponse(
 function listResponse(
 	params: SubagentParams,
 	makeDetails: ReturnType<typeof makeDetailsFor>,
+	parentSession: string | undefined,
 ): AgentToolResult<SubagentDetails> {
 	return {
 		content: [
@@ -496,6 +548,7 @@ function listResponse(
 					label: params.listLabel,
 					status: params.listStatus,
 					verbose: params.listVerbose,
+					parentSession,
 				}),
 			},
 		],
@@ -547,6 +600,20 @@ function reuseWithoutTaskResponse(
 	};
 }
 
+function sessionOwnerUnavailableResponse(
+	makeDetails: ReturnType<typeof makeDetailsFor>,
+): AgentToolResult<SubagentDetails> {
+	return {
+		content: [
+			{
+				type: 'text',
+				text: 'Subagent session ownership is unavailable: the current Pi session has no session file, so listing and reuse are unavailable.',
+			},
+		],
+		details: makeDetails('single')([]),
+	};
+}
+
 // fallow-ignore-next-line complexity
 export async function executeSubagent(
 	params: SubagentParams,
@@ -563,9 +630,12 @@ export async function executeSubagent(
 			'Invalid parameters. Provide exactly one mode (single, parallel, chain, reuse, list, or agents).\nAvailable agents: {available}',
 		);
 	}
+	if ((mode === 'list' || mode === 'reuse') && !executeCtx.sessionFile) {
+		return sessionOwnerUnavailableResponse(makeDetails);
+	}
 	if (NESTED) return nestedResponse(mode, makeDetails);
 	if (mode === 'list') {
-		return listResponse(params, makeDetails);
+		return listResponse(params, makeDetails, executeCtx.sessionFile);
 	}
 	if (mode === 'agents') {
 		return agentsResponse(executeCtx, makeDetails);

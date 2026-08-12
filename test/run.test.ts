@@ -90,8 +90,18 @@ function singleCall(
 	);
 }
 
-function reuseCall(label = 'worker-1', task = 'next task') {
-	return runReusedAgent('/tmp', [agent], label, task, undefined, undefined, makeDetails);
+function reuseCall(label = 'worker-1', task = 'next task', parentSession?: string) {
+	return runReusedAgent(
+		'/tmp',
+		[agent],
+		label,
+		task,
+		undefined,
+		undefined,
+		makeDetails,
+		undefined,
+		parentSession,
+	);
 }
 
 beforeEach(() => {
@@ -270,6 +280,32 @@ describe('runReusedAgent - lookups', () => {
 		expect(result).toMatchObject({ exitCode: 1, agent: 'ghost-1', agentSource: 'reuse' });
 		expect(result.stderr).toContain('No subagent session labeled "ghost-1"');
 		expect(createTaskTab).not.toHaveBeenCalled();
+	});
+
+	it('rejects a same-workspace session owned by another Pi session without side effects', async () => {
+		registerEntry(
+			makeRegistryEntry({
+				status: 'done',
+				parentSession: '/sess/other.jsonl',
+				reuseCount: 2,
+				tasks: ['old task'],
+			}),
+		);
+		const before = readRegistry();
+		const result = await reuseCall('worker-1', 'next task', '/sess/current.jsonl');
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toContain('active Pi session');
+		expect(herdrCli).not.toHaveBeenCalled();
+		expect(createTaskTab).not.toHaveBeenCalled();
+		expect(readRegistry()).toEqual(before);
+	});
+
+	it('reuses a session owned by the active Pi session', async () => {
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'working' });
+		registerEntry(makeRegistryEntry({ status: 'done', parentSession: '/sess/current.jsonl' }));
+		const result = await reuseCall('worker-1', 'next task', '/sess/current.jsonl');
+		expect(result.exitCode).toBe(0);
+		expect(herdrCli).toHaveBeenCalledWith(['agent', 'prompt', 'ws1:p10', 'next task']);
 	});
 });
 
