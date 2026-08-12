@@ -149,6 +149,24 @@ describe('listSubagents', () => {
 		expect(out).toContain('ctx:1.5k');
 		expect(out).toContain('pane ws1:p10');
 	});
+	it('displays a workspace name while retaining the stable workspace id', () => {
+		registerEntry(makeRegistryEntry({ workspaceName: 'Project Alpha' }));
+		const out = listSubagents({});
+		expect(out).toContain('Project Alpha (ws1):worker-1');
+		expect(out).toContain('reuseLabel: worker-1');
+	});
+	it('falls back to the stable workspace id when no name is stored', () => {
+		registerEntry(makeRegistryEntry());
+		const out = listSubagents({});
+		expect(out).toContain('ws1:worker-1');
+	});
+	it('includes the workspace name in the active-session header', () => {
+		registerEntry(
+			makeRegistryEntry({ workspaceName: 'Project Alpha', parentSession: '/sess/current.jsonl' }),
+		);
+		const out = listSubagents({ parentSession: '/sess/current.jsonl' });
+		expect(out).toContain('active workspace: Project Alpha (ws1)');
+	});
 	it('preserves full-registry behavior for owner-less direct calls', () => {
 		registerEntry(makeRegistryEntry({ label: 'worker-1' }));
 		registerEntry(makeRegistryEntry({ label: 'worker-2', workspace: 'ws2', paneId: 'ws2:p20' }));

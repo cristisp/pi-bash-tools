@@ -19,6 +19,7 @@ export interface RegistryEntry {
 	label: string;
 	agent: string;
 	workspace: string;
+	workspaceName?: string;
 	paneId: string;
 	tabId: string;
 	sessionFile: string;

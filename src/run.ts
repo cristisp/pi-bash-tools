@@ -15,6 +15,7 @@ import {
 	launchInPane,
 	ownWorkspaceId,
 	resolveOwnWorkspace,
+	resolveWorkspaceName,
 	sleep,
 } from './herdr.ts';
 import { pollSubagent } from './poll.ts';
@@ -236,10 +237,15 @@ async function createFreshSubagentTab(
 	const created = await createTaskTab(workspaceId, cwd ?? defaultCwd, label);
 	currentResult.paneId = created.paneId;
 	currentResult.tabId = created.tabId;
+	let workspaceName: string | undefined;
+	try {
+		workspaceName = await resolveWorkspaceName(workspaceId);
+	} catch {}
 	registerEntry({
 		label,
 		agent: agent.name,
 		workspace: ownWorkspaceId(),
+		...(workspaceName ? { workspaceName } : {}),
 		paneId: created.paneId,
 		tabId: created.tabId,
 		sessionFile: sessionPath,

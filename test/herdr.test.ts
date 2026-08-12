@@ -15,6 +15,7 @@ import {
 	herdrErrorText,
 	launchInPane,
 	ownWorkspaceId,
+	resolveWorkspaceName,
 	sleep,
 } from '../src/herdr.ts';
 
@@ -112,24 +113,70 @@ describe('ownWorkspaceId / resolveOwnWorkspace', () => {
 	it('derives the workspace from the pane id at load time', () => {
 		expect(ownWorkspaceId()).toBe('ws1');
 	});
+	it('prefers the injected workspace id over the pane id prefix', async () => {
+		vi.resetModules();
+		vi.stubEnv('HERDR_PANE_ID', 'fallback:p1');
+		vi.stubEnv('HERDR_WORKSPACE_ID', 'injected');
+		const { ownWorkspaceId: dynamicOwnWorkspaceId } = await import('../src/herdr.ts');
+		expect(dynamicOwnWorkspaceId()).toBe('injected');
+	});
+	it('falls back to the pane id prefix when no workspace id is injected', async () => {
+		vi.resetModules();
+		vi.stubEnv('HERDR_PANE_ID', 'fallback:p1');
+		vi.stubEnv('HERDR_WORKSPACE_ID', '');
+		const { ownWorkspaceId: dynamicOwnWorkspaceId } = await import('../src/herdr.ts');
+		expect(dynamicOwnWorkspaceId()).toBe('fallback');
+	});
 
 	it('resolves the workspace from herdr', async () => {
 		vi.resetModules();
+		vi.stubEnv('HERDR_WORKSPACE_ID', '');
 		resolveWith({ result: { pane: { workspace_id: 'wsX' } } });
 		const { resolveOwnWorkspace } = await import('../src/herdr.ts');
 		await expect(resolveOwnWorkspace()).resolves.toBe('wsX');
 	});
 	it('returns empty string when the pane is missing', async () => {
 		vi.resetModules();
+		vi.stubEnv('HERDR_WORKSPACE_ID', '');
 		vi.stubEnv('HERDR_PANE_ID', '');
 		const { resolveOwnWorkspace } = await import('../src/herdr.ts');
 		await expect(resolveOwnWorkspace()).resolves.toBe('');
 	});
 	it('returns empty string when herdr fails', async () => {
 		vi.resetModules();
+		vi.stubEnv('HERDR_WORKSPACE_ID', '');
 		rejectWith(new Error('boom'));
 		const { resolveOwnWorkspace } = await import('../src/herdr.ts');
 		await expect(resolveOwnWorkspace()).resolves.toBe('');
+	});
+});
+
+describe('resolveWorkspaceName', () => {
+	it('parses the workspace label from herdr metadata', async () => {
+		resolveWith({ result: { workspace: { label: ' Project Alpha ' } } });
+		await expect(resolveWorkspaceName('ws-meta')).resolves.toBe('Project Alpha');
+		expect(execFileMock).toHaveBeenCalledWith(
+			'herdr',
+			['workspace', 'get', 'ws-meta', '--session', 'ws1'],
+			expect.anything(),
+			expect.anything(),
+		);
+	});
+	it('treats missing and empty labels as unavailable', async () => {
+		resolveWith({ result: { workspace: {} } });
+		await expect(resolveWorkspaceName('ws-no-label')).resolves.toBeUndefined();
+		resolveWith({ result: { workspace: { label: '   ' } } });
+		await expect(resolveWorkspaceName('ws-empty-label')).resolves.toBeUndefined();
+	});
+	it('falls back when the metadata lookup fails', async () => {
+		rejectWith(new Error('workspace unavailable'));
+		await expect(resolveWorkspaceName('ws-failed')).resolves.toBeUndefined();
+	});
+	it('caches metadata lookups by workspace id', async () => {
+		resolveWith({ result: { workspace: { label: 'Project Alpha' } } });
+		await expect(resolveWorkspaceName('ws-cached')).resolves.toBe('Project Alpha');
+		await expect(resolveWorkspaceName('ws-cached')).resolves.toBe('Project Alpha');
+		expect(execFileMock).toHaveBeenCalledOnce();
 	});
 });
 

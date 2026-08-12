@@ -5,14 +5,16 @@ import type { HerdrStatus } from './types.ts';
 export const HERDR_ENV = process.env.HERDR_ENV === '1';
 export const HERDR_SOCKET_PATH = process.env.HERDR_SOCKET_PATH;
 export const HERDR_PANE_ID = process.env.HERDR_PANE_ID;
+export const HERDR_WORKSPACE_ID = process.env.HERDR_WORKSPACE_ID;
 const HERDR_SESSION = process.env.HERDR_SESSION || '';
 export const NESTED = process.env.PI_SUBAGENT_NESTED === '1';
 
 export function ownWorkspaceId(): string {
-	return (HERDR_PANE_ID ?? '').split(':')[0] || 'default';
+	return HERDR_WORKSPACE_ID || (HERDR_PANE_ID ?? '').split(':')[0] || 'default';
 }
 
 let cachedWorkspaceId: string | null | undefined;
+const workspaceNameCache = new Map<string, Promise<string | undefined>>();
 
 function herdrSessionArgs(): string[] {
 	return HERDR_SESSION ? ['--session', HERDR_SESSION] : [];
@@ -59,6 +61,7 @@ export function herdrErrorText(resp: any): string {
 }
 
 export async function resolveOwnWorkspace(): Promise<string> {
+	if (HERDR_WORKSPACE_ID) return HERDR_WORKSPACE_ID;
 	if (cachedWorkspaceId !== undefined) return cachedWorkspaceId ?? '';
 	if (!HERDR_PANE_ID) return '';
 	try {
@@ -69,6 +72,21 @@ export async function resolveOwnWorkspace(): Promise<string> {
 		cachedWorkspaceId = null;
 	}
 	return cachedWorkspaceId ?? '';
+}
+
+export function resolveWorkspaceName(workspaceId: string): Promise<string | undefined> {
+	const cached = workspaceNameCache.get(workspaceId);
+	if (cached) return cached;
+
+	const lookup = Promise.resolve()
+		.then(() => herdrCli(['workspace', 'get', workspaceId]))
+		.then((resp) => {
+			const label = resp?.result?.workspace?.label;
+			return typeof label === 'string' && label.trim() ? label.trim() : undefined;
+		})
+		.catch(() => undefined);
+	workspaceNameCache.set(workspaceId, lookup);
+	return lookup;
 }
 
 export async function createTaskTab(

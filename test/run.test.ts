@@ -13,6 +13,7 @@ vi.mock('../src/herdr.ts', async (importOriginal) => {
 		herdrCli: vi.fn(),
 		launchInPane: vi.fn(),
 		resolveOwnWorkspace: vi.fn(),
+		resolveWorkspaceName: vi.fn(),
 	};
 });
 
@@ -27,6 +28,7 @@ import {
 	herdrCli,
 	launchInPane,
 	resolveOwnWorkspace,
+	resolveWorkspaceName,
 } from '../src/herdr.ts';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { pollSubagent } from '../src/poll.ts';
@@ -113,6 +115,7 @@ beforeEach(() => {
 		} catch {}
 	}
 	vi.mocked(resolveOwnWorkspace).mockResolvedValue('ws1');
+	vi.mocked(resolveWorkspaceName).mockResolvedValue(undefined);
 	vi.mocked(createTaskTab).mockResolvedValue({ paneId: 'ws1:p9', tabId: 't9' });
 	vi.mocked(launchInPane).mockResolvedValue(null);
 	vi.mocked(herdrCli).mockResolvedValue({ result: {} });
@@ -156,6 +159,15 @@ describe('runSingleAgent - launch', () => {
 			tasks: ['do it'],
 		});
 		expect(countTempDirs()).toBe(before);
+	});
+
+	it('persists the workspace display name on a fresh entry', async () => {
+		vi.mocked(resolveWorkspaceName).mockResolvedValue('Project Alpha');
+		await singleCall({ parentSession: '/sess/parent.jsonl' });
+		expect(readRegistry().tabs['ws1:worker-1']).toMatchObject({
+			workspace: 'ws1',
+			workspaceName: 'Project Alpha',
+		});
 	});
 
 	it('keeps temp files alive until the run completes', async () => {
