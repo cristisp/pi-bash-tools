@@ -1,0 +1,53 @@
+{
+  "name": "@ztc/bash-tools",
+  "version": "0.0.1",
+  "description": "Safe bash tools for pi agents",
+  "keywords": [
+    "bash",
+    "pi-extension",
+    "pi-package",
+    "security"
+  ],
+  "files": [
+    "index.ts",
+    "src",
+    "README.md"
+  ],
+  "type": "module",
+  "scripts": {
+    "lint": "oxlint .",
+    "lint:fix": "oxlint --fix .",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "fallow": "fallow",
+    "fallow:audit": "fallow audit --format json --quiet",
+    "fallow:dead-code": "fallow dead-code --format json --quiet",
+    "fallow:dupes": "fallow dupes --format json --quiet",
+    "fallow:health": "fallow health --format json --quiet",
+    "fallow:list:entry-points": "fallow list --entry-points --format json --quiet",
+    "fallow:list:boundaries": "fallow list --boundaries --format json --quiet",
+    "check": "npm run lint && npm run format:check && npm run fallow && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "fallow": "^3.16.0",
+    "oxfmt": "^0.63.0",
+    "oxlint": "^1.78.0",
+    "oxlint-tsgolint": "^7.0.2001",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
