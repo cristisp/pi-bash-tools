@@ -31,3 +31,11 @@ Production source files belong in `src/`.
 Keep source-specific tests next to their source file using the `*.test.ts` suffix.
 
 Keep broader cross-cutting or integration tests in `test/`.
+
+## Pi tool boundaries
+
+Pi already provides `read`, `write`, `edit`, `grep`, `find`, `ls`, and `bash`.
+
+Do not implement duplicate tools or register replacements for those built-ins by default.
+
+Use pi's current context and path handling instead of adding a redundant working-directory tool.

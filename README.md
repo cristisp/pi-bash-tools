@@ -1,8 +1,150 @@
 # Bash Tools
 
-A pi package that will provide safe bash tools for agents instead of exposing full bash.
+A pi package that provides narrowly scoped, read-only Git tools instead of exposing another shell interface.
 
-The extension currently loads a no-op factory so the package and development workflow are ready for the tool implementation.
+Pi's built-in `read`, `write`, `edit`, `grep`, `find`, `ls`, and `bash` tools remain unchanged.
+
+## Tool catalog
+
+The extension registers exactly these custom tools:
+
+- `git_status` reads porcelain Git status entries and the canonical repository root.
+- `git_diff` reads a working-tree or staged diff for one or more paths.
+- `git_log` reads bounded commit IDs, authors, dates, and subjects.
+- `git_show` reads bounded output from a revision, optionally filtered by a path.
+- `environment` reads only explicitly requested environment variables after policy authorization.
+- `project_command` runs only the fixed `workspace_path` and `node_version` commands after policy authorization.
+
+## Environment policy
+
+The environment tool reads its policy only from the user-owned file `~/.pi/agent/bash-tools.json`, or from the path returned by pi's `getAgentDir()` followed by `bash-tools.json`.
+It never reads a repository-local authorization file, `.env` file, or any other environment file.
+The file is optional, and a missing file starts with an empty policy.
+
+The complete version 1 schema is:
+
+`version` is required and must be `1`.
+`confirmationTimeoutMs`, `global`, `global.allow`, `global.deny`, and `projects` are optional.
+Each project entry may contain optional `allow` and `deny` arrays.
+
+```json
+{
+  "version": 1,
+  "confirmationTimeoutMs": 120000,
+  "global": {
+    "allow": ["PUBLIC_API_URL"],
+    "deny": ["DATABASE_PASSWORD"]
+  },
+  "projects": {
+    "/real/path/to/project": {
+      "allow": ["PROJECT_TOKEN"],
+      "deny": ["PRIVATE_KEY"]
+    }
+  }
+}
+```
+
+`confirmationTimeoutMs` is optional, applies globally, and defaults to 120000 milliseconds.
+Projects cannot override the confirmation timeout.
+Project keys are literal normalized absolute path strings.
+At runtime, the environment tool compares them with the exact canonical path returned by `realpath(ctx.cwd)`; policy loading does not resolve or normalize project keys.
+Environment names must be valid unique names matching `^[A-Za-z_][A-Za-z0-9_]*$`.
+Wildcard names, duplicate names, same-scope allow and deny conflicts, unknown properties, invalid JSON, and invalid types are rejected fail closed.
+
+Authorization precedence is global deny, project deny, global allow, project allow, and then unknown.
+A global deny is hard and cannot be overridden by any project rule.
+An unknown key is prompted for only in TUI or RPC mode when pi reports `hasUI`.
+The prompt options are exactly `Deny globally`, `Deny for this project`, `Allow globally`, and `Allow for this project`.
+A manual cancellation before the policy commit rejects the current request without changing policy.
+A cancellation after the commit rejects without returning environment values, but the completed policy commit is retained.
+A confirmation timeout records a project-level deny and returns no environment values.
+Print, JSON, and other no-UI modes reject unknown keys without modifying policy.
+
+Every key in a multi-key request is authorized before any environment value is read.
+An authorization denial, cancellation, timeout, or policy persistence failure rejects the entire request without partial output.
+Missing environment variables are returned as explicit `null`, while present empty strings remain empty strings.
+The tool performs direct lookups of only the requested keys and does not enumerate the process environment.
+It does not invoke `.env`, `env`, `printenv`, a shell, or `pi.exec`.
+Invalid or unreadable policy files fail closed without exposing raw policy contents or environment values.
+The policy file and every parent directory must be regular, non-symlink filesystem objects.
+Unsupported special files, unsafe parent paths, and ambiguous filesystem races are rejected without reading or writing policy data.
+Policy filesystem access is supported on macOS and Linux; unsupported runtime platforms fail closed.
+Policy decisions use an adjacent exclusive lock for up to 5 seconds with 25 millisecond retries.
+Existing locks are never reclaimed automatically.
+If a process crashes while holding the lock, remove `bash-tools.json.lock` manually only after confirming that no pi process owns it.
+
+## Project command policy and execution
+
+The project command tool accepts exactly one field, `commandId`, whose value is `workspace_path` or `node_version`.
+
+The extension owns the complete command catalog and never reads package manifests, lockfiles, environment files, repository configuration, repository policy, package scripts, or repository binaries to build it.
+
+`workspace_path` directly spawns `/bin/pwd` without arguments.
+
+`node_version` directly spawns the current Node executable with `--version`.
+
+Both commands use the canonical `realpath(ctx.cwd)` as their working directory, `shell: false`, ignored stdin, piped stdout and stderr, a fixed minimal environment, and bounded output.
+
+Command execution uses a fixed 30-second process timeout that is separate from the 120-second confirmation timeout.
+
+Command policy is stored only at `getAgentDir()/bash-tools.json`.
+
+A command policy identity combines its semantic ID with a SHA-256 definition fingerprint and is scoped by the canonical project path.
+
+Global deny, project deny, globally safe global allow, project allow, and unknown are evaluated in that order.
+
+Unknown commands are denied without a UI or outside TUI and RPC modes.
+
+Interactive prompts use exactly `Deny globally`, `Deny for this project`, `Allow globally`, and `Allow for this project`.
+
+Command decisions migrate a version 1 environment document to a version 2 document containing the unchanged nested environment version 1 policy and a version 1 project command policy namespace.
+
+The command executor never calls `pi.exec`, inherits the process environment, runs a shell, exposes executable details, or returns raw spawn errors.
+
+The corresponding Bash behavior is equivalent to the following examples, but the extension does not execute these command strings:
+
+```bash
+git --no-optional-locks -c core.fsmonitor=false status --porcelain=v1 -z --untracked-files=all -- <path>
+git --no-optional-locks -c core.fsmonitor=false diff --no-ext-diff --no-textconv --binary [--cached] -- <path>...
+git --no-optional-locks -c core.fsmonitor=false log --no-ext-diff --no-textconv --no-decorate --date=iso-strict --format='format:%H%x00%an%x00%aI%x00%s%x00' --max-count=<maxEntries> [<revision>] -- <path>
+git --no-optional-locks -c core.fsmonitor=false show --no-ext-diff --no-textconv <revision> -- <path>
+```
+
+## Safety and contract behavior
+
+Git is invoked through pi's argument-array `exec` API, never through shell interpolation or an arbitrary shell command.
+
+Git tools use the current pi workspace (`ctx.cwd`) and first resolve its canonical Git repository root.
+The environment tool instead uses `realpath(ctx.cwd)` as the project identity and does not require a Git repository.
+
+Paths must be workspace-relative, must remain inside the repository, and must not contain absolute, drive-letter, UNC, traversal, control-character, backslash, symlink-escaping, Git pathspec magic, or wildcard forms.
+
+A `--` argument separates revisions and options from path filters.
+
+`git_diff` accepts either `path` or `paths`, not both, and rejects empty or duplicate path lists.
+
+Revisions must be non-empty, non-option-like Git revision expressions without whitespace, path extraction colons, shell-like wildcard characters, or control characters.
+
+`git_show` intentionally implements `git show <revision> -- <path>` path filtering.
+
+It does not implement `REV:path` blob extraction.
+
+Structured status and log results are limited to 2,000 records and 50 KiB of raw Git output.
+
+Diff and show text are limited to the requested `maxBytes`, from 1 byte through 1 MiB.
+
+Every bounded result contains `output.truncated`, `output.totalBytes`, and `output.totalLines` metadata.
+
+Empty output is returned as an empty string or empty entry list with zero-sized metadata.
+
+Binary output is returned as UTF-8 text, with Git's binary patch representation preserved where Git provides one.
+
+Git failures, invalid revisions, non-repository workspaces, unsafe paths, and cancellation are reported as tool errors rather than being silently converted to successful results.
+
+The tools pass fixed Git options that disable optional index locks and the configured fsmonitor for each invocation.
+Diff, log, and show also disable external diff and textconv helpers where Git supports those options.
+These measures suppress the helper and lock behaviors covered by this contract, but Git configuration can affect other behavior that is not eliminated by these flags.
+The tools are read-only and do not reset, checkout, write, stage, commit, push, fetch, or intentionally execute repository content.
 
 ## Development
 
@@ -15,7 +157,7 @@ Use `npm run test:watch` while developing.
 
 ## Loading into pi
 
-The `pi` manifest points to `index.ts` as the extension entry point.
+The pi manifest points to `src/index.ts` as the extension entry point.
 
 To load the local package for a single run, use:
 
