@@ -4,6 +4,7 @@ import {
   PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
   type ProjectCommandDefinition,
 } from "./definitions.ts";
+import { resolveFixedProjectCommand, type ResolvedProjectCommand } from "./resolution.ts";
 
 export type ProjectCommandExecutionStatus =
   | "success"
@@ -313,8 +314,14 @@ function outcomeFromState(
   return { status: state.exit.code === 0 ? "success" : "nonzero", ...base };
 }
 
+type ProjectCommandExecutionInput = ResolvedProjectCommand | ProjectCommandDefinition;
+
+function resolvedCommand(input: ProjectCommandExecutionInput): ResolvedProjectCommand {
+  return "definition" in input ? input : resolveFixedProjectCommand(input);
+}
+
 async function executeProjectCommand(
-  definition: ProjectCommandDefinition,
+  input: ProjectCommandExecutionInput,
   cwd: string,
   signal: AbortSignal | undefined,
   spawnCommand: ProjectCommandSpawn,
@@ -322,18 +329,19 @@ async function executeProjectCommand(
   processTimeoutMs: number,
   graceMs: number,
 ): Promise<ProjectCommandExecutionOutcome> {
+  const resolved = resolvedCommand(input);
   if (signal?.aborted) {
     return emptyOutcome("cancelled");
   }
   const stdout = new Capture(
-    Math.min(definition.outputLimitBytes, PROJECT_COMMAND_OUTPUT_LIMIT_BYTES),
+    Math.min(resolved.definition.outputLimitBytes, PROJECT_COMMAND_OUTPUT_LIMIT_BYTES),
   );
   const stderr = new Capture(
-    Math.min(definition.outputLimitBytes, PROJECT_COMMAND_OUTPUT_LIMIT_BYTES),
+    Math.min(resolved.definition.outputLimitBytes, PROJECT_COMMAND_OUTPUT_LIMIT_BYTES),
   );
   let child: ChildProcess;
   try {
-    child = spawnCommand(definition.executable, definition.args, {
+    child = spawnCommand(resolved.executable, resolved.args, {
       cwd,
       shell: false,
       detached: platform === "darwin",
@@ -356,21 +364,23 @@ async function executeProjectCommand(
 export function createProjectCommandExecutor(
   options: ProjectCommandExecutorOptions = {},
 ): (
-  definition: ProjectCommandDefinition,
+  resolved: ProjectCommandExecutionInput,
   cwd: string,
   signal?: AbortSignal,
 ) => Promise<ProjectCommandExecutionOutcome> {
   const spawnCommand = options.spawn ?? spawnProjectCommand;
   const platform = options.platform ?? process.platform;
   const graceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
-  return (definition, cwd, signal) =>
-    executeProjectCommand(
-      definition,
+  return (input, cwd, signal) => {
+    const resolved = resolvedCommand(input);
+    return executeProjectCommand(
+      resolved,
       cwd,
       signal,
       spawnCommand,
       platform,
-      options.processTimeoutMs ?? definition.processTimeoutMs,
+      options.processTimeoutMs ?? resolved.definition.processTimeoutMs,
       graceMs,
     );
+  };
 }

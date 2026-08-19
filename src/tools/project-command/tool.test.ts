@@ -3,8 +3,18 @@ import { describe, expect, it, vi } from "vitest";
 import { createProjectCommandToolForTesting } from "./tool.ts";
 import { createPolicyStoreForTesting } from "../policy/store.ts";
 import type { PolicyStore } from "../policy/types.ts";
-import { getProjectCommandDefinition, projectCommandIdentity } from "./definitions.ts";
+import {
+  getProjectCommandDefinition,
+  getProjectCommandDefinitions,
+  projectCommandIdentity,
+  type ProjectCommandDefinition,
+} from "./definitions.ts";
 import type { ProjectCommandToolContext } from "./tool.ts";
+import {
+  ProjectCommandResolutionError,
+  resolveFixedProjectCommand,
+  type ResolvedProjectCommand,
+} from "./resolution.ts";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,22 +54,86 @@ async function fixture(
 }
 
 function successExecutor() {
-  return vi.fn(
-    async (
-      _definition: NonNullable<ReturnType<typeof getProjectCommandDefinition>>,
-      cwd: string,
-    ) => ({
-      status: "success" as const,
-      exit: { code: 0, signal: null },
-      timedOut: false,
-      cancelled: false,
-      stdout: { text: cwd, truncated: false, totalBytes: cwd.length, totalLines: 1 },
-      stderr: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
-    }),
-  );
+  return vi.fn(async (_resolved: ResolvedProjectCommand, cwd: string) => ({
+    status: "success" as const,
+    exit: { code: 0, signal: null },
+    timedOut: false,
+    cancelled: false,
+    stdout: { text: cwd, truncated: false, totalBytes: cwd.length, totalLines: 1 },
+    stderr: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
+  }));
 }
 
 describe("project command tool authorization", () => {
+  it("keeps resolution failures outside authorization and execution failure mapping", async () => {
+    const fixtureData = await fixture();
+    const executor = successExecutor();
+    const resolutionError = new ProjectCommandResolutionError(
+      "binary-resolution",
+      "missing-binary",
+    );
+    const tool = createProjectCommandToolForTesting({
+      configPath: fixtureData.configPath,
+      executor,
+      resolver: async () => {
+        throw resolutionError;
+      },
+    });
+
+    await expect(
+      tool.execute(
+        "1",
+        { commandId: "workspace_path" },
+        undefined,
+        undefined,
+        context(fixtureData.directory),
+      ),
+    ).rejects.toBe(resolutionError);
+    expect(executor).not.toHaveBeenCalled();
+  });
+
+  it("passes the resolved command shape through authorization and execution", async () => {
+    const fixtureData = await fixture();
+    const definition = getProjectCommandDefinition("workspace_path");
+    if (definition === undefined) {
+      throw new Error("missing workspace_path definition");
+    }
+    const resolved = {
+      ...resolveFixedProjectCommand(definition),
+      executable: "/bin/echo",
+      args: ["resolved"],
+    } satisfies ResolvedProjectCommand;
+    const projectPath = await realpath(fixtureData.directory);
+    const identity = projectCommandIdentity(definition, resolved);
+    await writeFile(
+      fixtureData.configPath,
+      JSON.stringify({
+        version: 2,
+        environment: { version: 1 },
+        projectCommands: {
+          version: 1,
+          global: { allow: [], deny: [] },
+          projects: { [projectPath]: { allow: [identity], deny: [] } },
+        },
+      }),
+    );
+    const executor = successExecutor();
+    const tool = createProjectCommandToolForTesting({
+      configPath: fixtureData.configPath,
+      executor,
+      resolver: async () => resolved,
+    });
+
+    await tool.execute(
+      "1",
+      { commandId: "workspace_path" },
+      undefined,
+      undefined,
+      context(fixtureData.directory),
+    );
+    expect(executor).toHaveBeenCalledWith(resolved, projectPath, undefined);
+  });
+
   it("reports a dismissed confirmation as an abort cancellation", async () => {
     const fixtureData = await fixture();
     const tool = createProjectCommandToolForTesting({ configPath: fixtureData.configPath });
@@ -131,6 +205,85 @@ describe("project command tool authorization", () => {
     });
   });
 
+  it("captures injected definitions for schema, validation, and dispatch", async () => {
+    const fixtureData = await fixture();
+    const customDefinition = {
+      namespace: "bash-tools.project-command",
+      commandId: "custom_command",
+      description: "Run the custom command.",
+      executable: "/bin/echo",
+      args: ["custom"],
+      cwdStrategy: "canonical-project",
+      sanitizedEnvironmentProfile: "minimal-static-v1",
+      processTimeoutMs: 30_000,
+      outputLimitBytes: 50 * 1024,
+      risk: "workspace-observation",
+      globalSafe: true,
+    } satisfies ProjectCommandDefinition<"custom_command">;
+    const injectedDefinitions: ProjectCommandDefinition[] = [customDefinition];
+    const executor = successExecutor();
+    const tool = createProjectCommandToolForTesting({
+      configPath: fixtureData.configPath,
+      definitions: injectedDefinitions,
+      executor,
+    });
+    injectedDefinitions.push(getProjectCommandDefinitions()[0]);
+    const projectPath = await realpath(fixtureData.directory);
+    await writeFile(
+      fixtureData.configPath,
+      JSON.stringify({
+        version: 2,
+        environment: { version: 1 },
+        projectCommands: {
+          version: 1,
+          global: { allow: [], deny: [] },
+          projects: {
+            [projectPath]: { allow: [projectCommandIdentity(customDefinition)], deny: [] },
+          },
+        },
+      }),
+    );
+
+    expect(JSON.stringify(tool.parameters)).toContain('"custom_command"');
+    expect(JSON.stringify(tool.parameters)).not.toContain("workspace_path");
+    const response = await tool.execute(
+      "custom",
+      { commandId: "custom_command" },
+      undefined,
+      undefined,
+      context(fixtureData.directory),
+    );
+    expect(response.details).toMatchObject({ commandId: "custom_command", status: "success" });
+    expect(executor).toHaveBeenCalledWith(
+      expect.objectContaining({ definition: customDefinition }),
+      projectPath,
+      undefined,
+    );
+    await expect(
+      tool.execute(
+        "workspace",
+        { commandId: "workspace_path" },
+        undefined,
+        undefined,
+        context(fixtureData.directory),
+      ),
+    ).rejects.toThrow(/invalid/iu);
+  });
+
+  it("rejects duplicate injected command IDs", () => {
+    const definition = getProjectCommandDefinitions()[0];
+    if (definition === undefined) {
+      throw new Error("missing workspace_path definition");
+    }
+
+    expect(() =>
+      createProjectCommandToolForTesting({
+        configPath: "/tmp/project-command-duplicate-policy.json",
+        definitions: [definition, definition],
+      }),
+    ).toThrow(/duplicate/iu);
+  });
+
   it("rejects unknown commands without UI and leaves policy unchanged", async () => {
     const fixtureData = await fixture();
     const tool = createProjectCommandToolForTesting({ configPath: fixtureData.configPath });
@@ -173,7 +326,11 @@ describe("project command tool authorization", () => {
       "Allow for this project",
     ]);
     expect(executor).toHaveBeenCalledWith(
-      expect.objectContaining({ commandId: "workspace_path" }),
+      expect.objectContaining({
+        definition: expect.objectContaining({ commandId: "workspace_path" }),
+        executable: "/bin/pwd",
+        args: [],
+      }),
       await realpath(fixtureData.directory),
       undefined,
     );

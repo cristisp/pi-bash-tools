@@ -83,6 +83,7 @@ export async function authorizeAndPersistEnvironmentKeys(
   const staged: EnvironmentDecisionRequest[] = [];
   for (const key of keys) {
     throwIfRequestAborted(requestSignal);
+    // eslint-disable-next-line no-await-in-loop
     const request = await authorizeOrPrompt<string, EnvironmentDecisionRequest>({
       identity: key,
       loaded: loadedPolicy,

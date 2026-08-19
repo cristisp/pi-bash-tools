@@ -165,6 +165,7 @@ async function acquirePolicyLockFile(
   while (true) {
     try {
       throwIfPolicyOperationAborted(signal);
+      // eslint-disable-next-line no-await-in-loop
       await fileSystem.writeFile(lockPath, "", {
         encoding: "utf8",
         flag: "wx",
@@ -175,6 +176,7 @@ async function acquirePolicyLockFile(
       if (!isPolicyFileAlreadyExistsError(error) || Date.now() >= deadline) {
         throw policyError();
       }
+      // eslint-disable-next-line no-await-in-loop
       await sleep(Math.min(POLICY_LOCK_RETRY_MS, Math.max(1, deadline - Date.now())));
     }
   }
@@ -232,6 +234,7 @@ export async function withPolicyLock<T>(
   const lock = await acquirePolicyLock(configPath, fileSystem, signal);
   try {
     throwIfPolicyOperationAborted(signal);
+    // eslint-disable-next-line no-await-in-loop
     return await operation(lock.parent);
   } finally {
     await lock.release();

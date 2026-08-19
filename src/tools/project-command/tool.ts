@@ -12,14 +12,21 @@ import type { CommandIdentity, PolicyStore, PolicyStoreTestOptions } from "../po
 import {
   getProjectCommandDefinitions,
   projectCommandIdentity,
+  type BuiltInProjectCommandDefinitions,
   type ProjectCommandDefinition,
 } from "./definitions.ts";
 import { createProjectCommandExecutor, type ProjectCommandExecutionOutcome } from "./execution.ts";
 import {
+  resolveProjectCommand,
+  type ProjectCommandResolver,
+  type ResolvedProjectCommand,
+} from "./resolution.ts";
+import {
   cancellationError,
+  createProjectCommandInputSchema,
   ProjectCommandToolError,
-  projectCommandInputSchema,
-  type ProjectCommandInput,
+  type ProjectCommandInputFor,
+  type ProjectCommandInputSchema,
   validateProjectCommandInput,
 } from "./schema.ts";
 
@@ -43,27 +50,32 @@ export type ProjectCommandToolContext = Omit<
 };
 
 export type ProjectCommandExecutor = (
-  definition: ProjectCommandDefinition,
+  resolved: ResolvedProjectCommand,
   cwd: string,
   signal: AbortSignal | undefined,
 ) => Promise<ProjectCommandExecutionOutcome>;
 
-export interface ProjectCommandToolTestOptions {
+export interface ProjectCommandToolTestOptions<
+  Definitions extends readonly ProjectCommandDefinition[] = readonly ProjectCommandDefinition[],
+> {
   readonly configPath?: string;
   readonly fs?: Partial<import("../policy/filesystem.ts").PolicyFileSystem>;
   readonly policy?: PolicyStore;
   readonly executor?: ProjectCommandExecutor;
-  readonly definitions?: readonly ProjectCommandDefinition[];
+  readonly resolver?: ProjectCommandResolver;
+  readonly definitions?: Definitions;
 }
 
-export type ProjectCommandToolDefinition = Omit<
-  ToolDefinition<typeof projectCommandInputSchema, ProjectCommandOutputDetails>,
+export type ProjectCommandToolDefinition<
+  Definitions extends readonly ProjectCommandDefinition[] = BuiltInProjectCommandDefinitions,
+> = Omit<
+  ToolDefinition<ProjectCommandInputSchema<Definitions>, ProjectCommandOutputDetails>,
   "execute"
-> & { execute: ProjectCommandExecute };
+> & { execute: ProjectCommandExecute<Definitions> };
 
-type ProjectCommandExecute = (
+type ProjectCommandExecute<Definitions extends readonly ProjectCommandDefinition[]> = (
   toolCallId: string,
-  params: ProjectCommandInput,
+  params: ProjectCommandInputFor<Definitions>,
   signal: AbortSignal | undefined,
   onUpdate: AgentToolUpdateCallback<ProjectCommandOutputDetails> | undefined,
   ctx: ProjectCommandToolContext,
@@ -199,12 +211,12 @@ function failureOutcome(): ProjectCommandExecutionOutcome {
 
 async function executeAuthorizedCommand(
   executor: ProjectCommandExecutor,
-  definition: ProjectCommandDefinition,
+  resolved: ResolvedProjectCommand,
   projectPath: string,
   signal: AbortSignal | undefined,
 ): Promise<ProjectCommandExecutionOutcome> {
   try {
-    return await executor(definition, projectPath, signal);
+    return await executor(resolved, projectPath, signal);
   } catch {
     return failureOutcome();
   }
@@ -225,12 +237,41 @@ function failureMessage(
   }
 }
 
-function createToolWithDependencies(
+function captureDefinitions<const Definitions extends readonly ProjectCommandDefinition[]>(
+  definitions: Definitions,
+): Definitions;
+function captureDefinitions(
+  definitions: readonly ProjectCommandDefinition[],
+): readonly ProjectCommandDefinition[];
+function captureDefinitions(
+  definitions: readonly ProjectCommandDefinition[],
+): readonly ProjectCommandDefinition[] {
+  const captured: ProjectCommandDefinition[] = [];
+  const seenIds = new Set<string>();
+  for (const definition of definitions) {
+    if (seenIds.has(definition.commandId)) {
+      throw new ProjectCommandToolError(
+        "Project command definitions contain duplicate command IDs",
+      );
+    }
+    seenIds.add(definition.commandId);
+    captured.push(Object.freeze({ ...definition, args: Object.freeze([...definition.args]) }));
+  }
+  return Object.freeze(captured);
+}
+
+function createToolWithDependencies<const Definitions extends readonly ProjectCommandDefinition[]>(
   policy: PolicyStore,
   executor: ProjectCommandExecutor,
-  definitions: readonly ProjectCommandDefinition[],
-): ProjectCommandToolDefinition {
-  const byId = new Map(definitions.map((definition) => [definition.commandId, definition]));
+  resolver: ProjectCommandResolver,
+  definitions: Definitions,
+): ProjectCommandToolDefinition<Definitions> {
+  const capturedDefinitions = captureDefinitions(definitions);
+  const byId = new Map<string, ProjectCommandDefinition>();
+  for (const definition of capturedDefinitions) {
+    byId.set(definition.commandId, definition);
+  }
+  const parameters = createProjectCommandInputSchema(capturedDefinitions);
   return {
     name: "project_command",
     label: "Project command",
@@ -245,22 +286,24 @@ function createToolWithDependencies(
       "Do not use project_command for file or directory inspection; use read, grep, find, or ls instead.",
       "Do not use project_command for arbitrary commands, package scripts, environment access, or project mutation.",
     ],
-    parameters: projectCommandInputSchema,
+    parameters,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
-      const params = validateProjectCommandInput(rawParams);
+      const params = validateProjectCommandInput(rawParams, capturedDefinitions);
       const definition = byId.get(params.commandId);
       if (definition === undefined) {
         throw new ProjectCommandToolError("Project command request is invalid");
       }
       const requestSignal = signal ?? ctx.signal;
       const loaded = await loadPolicy(policy, ctx.cwd, requestSignal);
-      const identity = projectCommandIdentity(definition);
+      const resolved = await resolver(definition, loaded.projectPath, requestSignal);
+      throwIfRequestAborted(requestSignal);
+      const identity = projectCommandIdentity(definition, resolved);
       await authorizeCommand(policy, loaded, definition, identity, ctx, requestSignal);
       throwIfRequestAborted(requestSignal);
       const outcome = await executeAuthorizedCommand(
         executor,
-        definition,
+        resolved,
         loaded.projectPath,
         requestSignal,
       );
@@ -280,19 +323,26 @@ export function createProjectCommandTool(): ProjectCommandToolDefinition {
   return createToolWithDependencies(
     createPolicyStore(),
     createProjectCommandExecutor(),
+    resolveProjectCommand,
     getProjectCommandDefinitions(),
   );
 }
 
-export function createProjectCommandToolForTesting(
-  options: ProjectCommandToolTestOptions & { readonly policy: PolicyStore },
-): ProjectCommandToolDefinition;
-export function createProjectCommandToolForTesting(
-  options: ProjectCommandToolTestOptions & { readonly configPath: string },
-): ProjectCommandToolDefinition;
-export function createProjectCommandToolForTesting(
-  options: ProjectCommandToolTestOptions,
-): ProjectCommandToolDefinition {
+export function createProjectCommandToolForTesting<
+  const Definitions extends readonly ProjectCommandDefinition[] = BuiltInProjectCommandDefinitions,
+>(
+  options: ProjectCommandToolTestOptions<Definitions> & { readonly policy: PolicyStore },
+): ProjectCommandToolDefinition<Definitions>;
+export function createProjectCommandToolForTesting<
+  const Definitions extends readonly ProjectCommandDefinition[] = BuiltInProjectCommandDefinitions,
+>(
+  options: ProjectCommandToolTestOptions<Definitions> & { readonly configPath: string },
+): ProjectCommandToolDefinition<Definitions>;
+export function createProjectCommandToolForTesting<
+  const Definitions extends readonly ProjectCommandDefinition[] = BuiltInProjectCommandDefinitions,
+>(
+  options: ProjectCommandToolTestOptions<Definitions>,
+): ProjectCommandToolDefinition<Definitions | BuiltInProjectCommandDefinitions> {
   let policy = options.policy;
   if (policy === undefined) {
     if (options.configPath === undefined) {
@@ -303,9 +353,11 @@ export function createProjectCommandToolForTesting(
       fs: options.fs,
     } satisfies PolicyStoreTestOptions);
   }
+  const definitions = options.definitions ?? getProjectCommandDefinitions();
   return createToolWithDependencies(
     policy,
     options.executor ?? createProjectCommandExecutor(),
-    options.definitions ?? getProjectCommandDefinitions(),
+    options.resolver ?? resolveProjectCommand,
+    definitions,
   );
 }
