@@ -4,9 +4,9 @@ import { ProjectCommandResolutionError } from "./errors.ts";
 
 export interface ProjectCommandParameterDeclaration {
   readonly name: string;
-  readonly kind: "workspace-paths";
+  readonly kind: "workspace-paths" | "revision";
   readonly required: boolean;
-  readonly mapping: "repeated-after-separator";
+  readonly mapping: "repeated-after-separator" | "flag-value";
 }
 
 export const NODE_TEST_PATH_PATTERN =
@@ -20,6 +20,18 @@ export const NODE_TEST_PARAMETERS = Object.freeze([
     mapping: "repeated-after-separator" as const,
   }),
 ]);
+
+export const FALLOW_AUDIT_PARAMETERS = Object.freeze([
+  Object.freeze({
+    name: "base",
+    kind: "revision" as const,
+    required: true,
+    mapping: "flag-value" as const,
+  }),
+]);
+
+export const FALLOW_REVISION_PATTERN =
+  "^(?!-)(?!.*--)(?!.*:)(?!.*\\s)(?!.*[\\\\*?\\[\\]])[A-Za-z0-9_./@^~{}+=,-]+$";
 
 export type NodeTestParameters = Readonly<{ paths: readonly string[] }>;
 
@@ -39,6 +51,10 @@ function hasControlCharacter(value: string): boolean {
 
 function hasWildcardCharacter(value: string): boolean {
   return ["*", "?", "[", "]", "{", "}"].some((character) => value.includes(character));
+}
+
+function hasRevisionPathspecCharacter(value: string): boolean {
+  return ["\\", "*", "?", "[", "]"].some((character) => value.includes(character));
 }
 
 export function validateWorkspacePathParameter(value: unknown): string {
@@ -74,6 +90,23 @@ export function validateNodeTestPaths(value: unknown): readonly string[] {
     throw parameterError("duplicate-test-path");
   }
   return Object.freeze([...paths]);
+}
+
+export function validateProjectCommandRevision(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    hasControlCharacter(value) ||
+    value.startsWith("-") ||
+    value.includes("--") ||
+    value.includes(":") ||
+    /\s/u.test(value) ||
+    hasRevisionPathspecCharacter(value) ||
+    !/^[A-Za-z0-9_./@^~{}+=,-]+$/u.test(value)
+  ) {
+    throw parameterError("invalid-revision");
+  }
+  return value;
 }
 
 function pathResolutionError(): ProjectCommandResolutionError {

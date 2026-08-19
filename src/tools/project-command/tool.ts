@@ -269,6 +269,17 @@ async function executeAuthorizedCommand(
   }
 }
 
+function hasAcceptedExitCode(
+  resolved: ResolvedProjectCommand,
+  outcome: ProjectCommandExecutionOutcome,
+): boolean {
+  return (
+    outcome.status === "nonzero" &&
+    outcome.exit.code !== null &&
+    (resolved.definition.acceptedExitCodes?.includes(outcome.exit.code) ?? false)
+  );
+}
+
 function failureMessage(
   status: Exclude<ProjectCommandExecutionOutcome["status"], "success" | "cancelled">,
 ): string {
@@ -323,16 +334,17 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
     name: "project_command",
     label: "Project command",
     description:
-      "Run one of five fixed, user-authorized Node project commands or the existing workspace_path and node_version observations. node_project_info reports project state in process; node_test, node_build, node_lint, and node_typecheck run only exact package.json scripts. Do not use this tool for arbitrary shell commands, dependency changes, Fallow commands, file access, Git inspection, environment inspection, or project mutation.",
+      "Run one of five fixed, user-authorized Node project commands, six fixed Fallow analyses, or the existing workspace_path and node_version observations. node_project_info reports project state in process; node_test, node_build, node_lint, and node_typecheck run only exact package.json scripts. Fallow commands run only the project-local Fallow binary with fixed machine-readable arguments. Do not use this tool for arbitrary shell commands, dependency changes, file access, Git inspection, environment inspection, or project mutation.",
     promptSnippet:
-      "Inspect Node project state or run one exact, user-authorized Node package script",
+      "Inspect Node project state, run one exact Node package script, or run one fixed Fallow analysis",
     promptGuidelines: [
       "Use project_command with commandId workspace_path when you need the current project workspace path.",
       "Use project_command with commandId node_version when you need the active Node.js runtime version.",
       "Use project_command with commandId node_project_info before selecting an applicable Node package script.",
       "Use node_test with optional workspace-relative paths only when package.json has an exact test script.",
       "Use node_build, node_lint, or node_typecheck only when package.json has the exact corresponding script.",
-      "Do not use project_command for dependency listing or installation, Fallow commands, Git inspection, file inspection, arbitrary commands, environment access, or project mutation.",
+      "Use fallow_dead_code, fallow_dupes, fallow_health, fallow_audit, fallow_list_entry_points, or fallow_list_boundaries only with their fixed machine-readable Fallow forms.",
+      "Do not use project_command for dependency listing or installation, Git inspection, file inspection, arbitrary commands, environment access, or project mutation.",
     ],
     parameters,
     executionMode: "sequential",
@@ -359,7 +371,7 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
       if (outcome.status === "cancelled" || requestSignal?.aborted) {
         throw cancellationError(details);
       }
-      if (outcome.status !== "success") {
+      if (outcome.status !== "success" && !hasAcceptedExitCode(resolved, outcome)) {
         throw failure(
           failureMessage(outcome.status),
           identity,

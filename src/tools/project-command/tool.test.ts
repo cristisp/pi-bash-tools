@@ -423,6 +423,111 @@ describe("project command tool authorization", () => {
     expect(executor).not.toHaveBeenCalled();
   });
 
+  it("returns Fallow findings with exit code one as normal command data", async () => {
+    const fixtureData = await fixture();
+    const definition = getProjectCommandDefinition("fallow_health");
+    if (definition === undefined) throw new Error("missing fallow_health definition");
+    const resolved = {
+      ...resolveFixedProjectCommand(definition),
+      executable: process.execPath,
+      args: ["/project/node_modules/fallow/bin/fallow", ...definition.args],
+      fingerprintArgs: definition.argvTemplate,
+    } satisfies ResolvedProjectCommand;
+    const projectPath = await realpath(fixtureData.directory);
+    await writeFile(
+      fixtureData.configPath,
+      JSON.stringify({
+        version: 2,
+        environment: { version: 1 },
+        projectCommands: {
+          version: 1,
+          global: { allow: [], deny: [] },
+          projects: {
+            [projectPath]: { allow: [projectCommandIdentity(definition, resolved)], deny: [] },
+          },
+        },
+      }),
+    );
+    const tool = createProjectCommandToolForTesting({
+      configPath: fixtureData.configPath,
+      resolver: async () => resolved,
+      executor: async () => ({
+        status: "nonzero" as const,
+        exit: { code: 1, signal: null },
+        timedOut: false,
+        cancelled: false,
+        stdout: {
+          text: '{"kind":"health","findings":[{}]}',
+          truncated: false,
+          totalBytes: 34,
+          totalLines: 1,
+        },
+        stderr: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
+      }),
+    });
+    const response = await tool.execute(
+      "fallow-health",
+      { commandId: "fallow_health" },
+      undefined,
+      undefined,
+      context(fixtureData.directory),
+    );
+    expect(response.details).toMatchObject({
+      commandId: "fallow_health",
+      status: "nonzero",
+      exit: { code: 1, signal: null },
+      stdout: { text: '{"kind":"health","findings":[{}]}' },
+    });
+  });
+
+  it("keeps exit code two as a Fallow execution failure", async () => {
+    const fixtureData = await fixture();
+    const definition = getProjectCommandDefinition("fallow_health");
+    if (definition === undefined) throw new Error("missing fallow_health definition");
+    const resolved = {
+      ...resolveFixedProjectCommand(definition),
+      executable: process.execPath,
+      args: ["/project/node_modules/fallow/bin/fallow", ...definition.args],
+      fingerprintArgs: definition.argvTemplate,
+    } satisfies ResolvedProjectCommand;
+    const projectPath = await realpath(fixtureData.directory);
+    await writeFile(
+      fixtureData.configPath,
+      JSON.stringify({
+        version: 2,
+        environment: { version: 1 },
+        projectCommands: {
+          version: 1,
+          global: { allow: [], deny: [] },
+          projects: {
+            [projectPath]: { allow: [projectCommandIdentity(definition, resolved)], deny: [] },
+          },
+        },
+      }),
+    );
+    const tool = createProjectCommandToolForTesting({
+      configPath: fixtureData.configPath,
+      resolver: async () => resolved,
+      executor: async () => ({
+        status: "nonzero" as const,
+        exit: { code: 2, signal: null },
+        timedOut: false,
+        cancelled: false,
+        stdout: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
+        stderr: { text: "invalid options", truncated: false, totalBytes: 15, totalLines: 1 },
+      }),
+    });
+    await expect(
+      tool.execute(
+        "fallow-health",
+        { commandId: "fallow_health" },
+        undefined,
+        undefined,
+        context(fixtureData.directory),
+      ),
+    ).rejects.toMatchObject({ message: "Project command exited unsuccessfully" });
+  });
+
   it("returns bounded execution details and marks execution cancellation as abort", async () => {
     const fixtureData = await fixture();
     const identity = projectCommandIdentity(getProjectCommandDefinition("workspace_path")!);

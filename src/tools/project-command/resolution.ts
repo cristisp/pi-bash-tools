@@ -1,7 +1,7 @@
-import { readFile, realpath, stat, lstat } from "node:fs/promises";
-import { basename, isAbsolute, join, relative } from "node:path";
 import type { ProjectCommandDefinition, ResolvedCommandLine } from "./definitions.ts";
-import { ProjectCommandResolutionError, type ResolutionErrorDetails } from "./errors.ts";
+import { ProjectCommandResolutionError } from "./errors.ts";
+import { validateProjectCommandRevision } from "./parameters.ts";
+import { resolveProjectBinary } from "./binary.ts";
 import {
   detectPackageManagerDetailsInternal as detectPackageManagerDetailsImpl,
   detectProjectPackageManagerInternal as detectProjectPackageManagerImpl,
@@ -16,6 +16,8 @@ import {
 } from "./package-manager.ts";
 
 export { ProjectCommandResolutionError, isProjectCommandResolutionError } from "./errors.ts";
+export { resolveProjectBinary } from "./binary.ts";
+export type { ProjectResolutionFileSystem } from "./binary.ts";
 export { detectPackageManagerInternal as detectPackageManager } from "./package-manager.ts";
 
 export type {
@@ -75,6 +77,57 @@ export function resolveFixedProjectCommand(
   });
 }
 
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function resolveFallowParameters(
+  definition: ProjectCommandDefinition,
+  parameters: unknown,
+): { readonly base?: string; readonly effective: Readonly<Record<string, unknown>> } {
+  const isAudit = definition.commandId === "fallow_audit";
+  if (
+    parameters !== undefined &&
+    (!isRecord(parameters) ||
+      Object.keys(parameters).some(
+        (key) => key !== "commandId" && (isAudit ? key !== "base" : true),
+      ))
+  ) {
+    throw new ProjectCommandResolutionError("probe", "invalid-fallow-parameters");
+  }
+  if (!isAudit) {
+    return { effective: Object.freeze({}) };
+  }
+  const base = validateProjectCommandRevision(
+    parameters === undefined || !isRecord(parameters) ? undefined : parameters.base,
+  );
+  return { base, effective: Object.freeze({ base }) };
+}
+
+async function resolveFallowProjectCommand(
+  definition: ProjectCommandDefinition,
+  projectPath: string,
+  parameters: unknown,
+): Promise<ResolvedProjectCommand> {
+  if (definition.binaryName !== "fallow") {
+    throw new ProjectCommandResolutionError("probe", "invalid-project-binary-definition");
+  }
+  const fallowParameters = resolveFallowParameters(definition, parameters);
+  const binary = await resolveProjectBinary(projectPath, definition.binaryName);
+  const args = [
+    ...definition.args,
+    ...(fallowParameters.base === undefined ? [] : ["--base", fallowParameters.base]),
+  ];
+  return Object.freeze({
+    definition,
+    executable: process.execPath,
+    args: [binary, ...args],
+    fingerprintArgs: definition.argvTemplate,
+    displayCommand: [process.execPath, binary, ...args].join(" "),
+    effectiveParameters: fallowParameters.effective,
+  });
+}
+
 export type ProjectCommandResolver = (
   definition: ProjectCommandDefinition,
   projectPath: string,
@@ -89,100 +142,12 @@ export async function resolveProjectCommand(
   parameters?: unknown,
 ): Promise<ResolvedProjectCommand> {
   void signal;
+  if (definition.applicability === "fallow-binary") {
+    return resolveFallowProjectCommand(definition, projectPath, parameters);
+  }
   if (definition.applicability === "node-script" || definition.commandId === "node_project_info") {
     const { resolveNodeProjectCommand } = await import("./node.ts");
     return resolveNodeProjectCommand(definition, projectPath, parameters);
   }
   return resolveFixedProjectCommand(definition);
-}
-
-export interface ProjectResolutionFileSystem {
-  readonly readFile: (path: string, encoding: "utf8") => Promise<string>;
-  readonly realpath: (path: string) => Promise<string>;
-  readonly stat: (path: string) => Promise<import("node:fs").Stats>;
-  readonly lstat: (path: string) => Promise<import("node:fs").Stats>;
-}
-
-const nodeProjectResolutionFileSystem: ProjectResolutionFileSystem = {
-  readFile: (path, encoding) => readFile(path, encoding),
-  realpath,
-  stat,
-  lstat,
-};
-
-function binaryResolutionError(
-  code: string,
-  details: ResolutionErrorDetails = {},
-): ProjectCommandResolutionError {
-  return new ProjectCommandResolutionError("binary-resolution", code, details);
-}
-
-function isWithinRoot(root: string, target: string): boolean {
-  const pathFromRoot = relative(root, target);
-  return pathFromRoot === "" || (!pathFromRoot.startsWith("..") && !isAbsolute(pathFromRoot));
-}
-
-function isValidBinaryName(name: unknown): name is string {
-  return (
-    typeof name === "string" &&
-    /^[A-Za-z0-9][A-Za-z0-9._+-]*$/u.test(name) &&
-    basename(name) === name
-  );
-}
-
-export async function resolveProjectBinary(
-  projectPath: string,
-  binaryName: string,
-  fileSystem: ProjectResolutionFileSystem = nodeProjectResolutionFileSystem,
-): Promise<string> {
-  if (!isValidBinaryName(binaryName)) {
-    throw binaryResolutionError("invalid-binary-name");
-  }
-
-  let canonicalProjectPath: string;
-  try {
-    canonicalProjectPath = await fileSystem.realpath(projectPath);
-  } catch {
-    throw binaryResolutionError("invalid-project-root");
-  }
-
-  const nodeModulesPath = join(canonicalProjectPath, "node_modules");
-  let canonicalNodeModulesPath: string;
-  try {
-    canonicalNodeModulesPath = await fileSystem.realpath(nodeModulesPath);
-  } catch {
-    throw binaryResolutionError("missing-node-modules-root");
-  }
-  if (!isWithinRoot(canonicalProjectPath, canonicalNodeModulesPath)) {
-    throw binaryResolutionError("node-modules-root-escape");
-  }
-
-  const candidate = join(canonicalNodeModulesPath, ".bin", binaryName);
-  let resolvedTarget: string;
-  try {
-    resolvedTarget = await fileSystem.realpath(candidate);
-  } catch {
-    let candidateExists = false;
-    try {
-      await fileSystem.lstat(candidate);
-      candidateExists = true;
-    } catch {}
-    throw binaryResolutionError(candidateExists ? "dangling-binary" : "missing-binary");
-  }
-  if (!isWithinRoot(canonicalNodeModulesPath, resolvedTarget)) {
-    throw binaryResolutionError("binary-target-escape");
-  }
-
-  try {
-    const targetStats = await fileSystem.stat(resolvedTarget);
-    if (!targetStats.isFile()) {
-      throw binaryResolutionError("binary-not-file");
-    }
-  } catch (error) {
-    if (error instanceof ProjectCommandResolutionError) {
-      throw error;
-    }
-    throw binaryResolutionError("binary-stat-failed");
-  }
-  return resolvedTarget;
 }

@@ -10,6 +10,7 @@ import {
   ProjectCommandResolutionError,
   resolveFixedProjectCommand,
   resolveProjectBinary,
+  resolveProjectCommand,
   type PackageManager,
   type PackageManagerAvailability,
 } from "./resolution.ts";
@@ -102,6 +103,80 @@ describe("project command resolution", () => {
     expect(resolved.args).toBe(definition.args);
     expect(projectCommandIdentity(definition, resolved)).toEqual(
       projectCommandIdentity(definition),
+    );
+  });
+
+  it("dispatches only the fallow-binary applicability to Fallow resolution", async () => {
+    const definition = getProjectCommandDefinition("fallow_health");
+    if (definition === undefined) throw new Error("missing Fallow definition");
+    const nonFallowApplicability = { ...definition, applicability: "always" as const };
+
+    const resolved = await resolveProjectCommand(
+      nonFallowApplicability,
+      "/missing-project",
+      undefined,
+    );
+
+    expect(resolved.executable).toBe(definition.executable);
+    expect(resolved.args).toBe(definition.args);
+  });
+
+  it("resolves Fallow through the project-local binary and process.execPath", async () => {
+    const { directory, nodeModules, binDirectory } = await createBinaryProject();
+    const fallowTarget = join(nodeModules, "fallow", "bin", "fallow");
+    await mkdir(join(nodeModules, "fallow", "bin"), { recursive: true });
+    await writeFile(fallowTarget, "#!/usr/bin/env node\\n");
+    await symlink("../fallow/bin/fallow", join(binDirectory, "fallow"));
+    const definition = getProjectCommandDefinition("fallow_health");
+    const auditDefinition = getProjectCommandDefinition("fallow_audit");
+    if (definition === undefined || auditDefinition === undefined) {
+      throw new Error("missing Fallow definition");
+    }
+
+    const resolved = await resolveProjectCommand(definition, directory, undefined);
+    expect(resolved.executable).toBe(process.execPath);
+    expect(resolved.args).toEqual([
+      await realpath(fallowTarget),
+      "health",
+      "--format",
+      "json",
+      "--quiet",
+    ]);
+    expect(resolved.displayCommand).toContain(
+      `${process.execPath} ${await realpath(fallowTarget)}`,
+    );
+
+    const audit = await resolveProjectCommand(auditDefinition, directory, undefined, {
+      commandId: "fallow_audit",
+      base: "HEAD~1",
+    });
+    const changedBase = await resolveProjectCommand(auditDefinition, directory, undefined, {
+      commandId: "fallow_audit",
+      base: "origin/main",
+    });
+    expect(audit.args).toEqual([
+      await realpath(fallowTarget),
+      "audit",
+      "--format",
+      "json",
+      "--quiet",
+      "--base",
+      "HEAD~1",
+    ]);
+    expect(audit.effectiveParameters).toEqual({ base: "HEAD~1" });
+    expect(projectCommandIdentity(auditDefinition, audit)).toEqual(
+      projectCommandIdentity(auditDefinition, changedBase),
+    );
+  });
+
+  it("fails closed when a Fallow project binary is unavailable", async () => {
+    const directory = await projectDirectory();
+    const definition = getProjectCommandDefinition("fallow_health");
+    if (definition === undefined) throw new Error("missing Fallow definition");
+    await expectResolutionError(
+      resolveProjectCommand(definition, directory, undefined),
+      "binary-resolution",
+      "missing-node-modules-root",
     );
   });
 

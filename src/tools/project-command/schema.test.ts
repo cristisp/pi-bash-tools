@@ -68,6 +68,12 @@ describe("project command request contract", () => {
       "node_build",
       "node_lint",
       "node_typecheck",
+      "fallow_dead_code",
+      "fallow_dupes",
+      "fallow_health",
+      "fallow_audit",
+      "fallow_list_entry_points",
+      "fallow_list_boundaries",
     ]);
     expect(variants[0]).toMatchObject({
       type: "object",
@@ -88,7 +94,16 @@ describe("project command request contract", () => {
         paths: { type: "array", items: { type: "string" } },
       },
     });
-    expect(variants).toHaveLength(7);
+    expect(variants[10]).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        commandId: { const: "fallow_audit" },
+        base: { type: "string" },
+      },
+      required: ["commandId", "base"],
+    });
+    expect(variants).toHaveLength(13);
     expect(variants.every((variant) => !variant.additionalProperties)).toBe(true);
   });
 
@@ -100,9 +115,18 @@ describe("project command request contract", () => {
       "node_build",
       "node_lint",
       "node_typecheck",
+      "fallow_dead_code",
+      "fallow_dupes",
+      "fallow_health",
+      "fallow_list_entry_points",
+      "fallow_list_boundaries",
     ]) {
       expect(validateProjectCommandInput({ commandId })).toEqual({ commandId });
     }
+    expect(validateProjectCommandInput({ commandId: "fallow_audit", base: "HEAD~1" })).toEqual({
+      commandId: "fallow_audit",
+      base: "HEAD~1",
+    });
     expect(
       validateProjectCommandInput({ commandId: "node_test", paths: ["src/index.ts"] }),
     ).toEqual({
@@ -118,8 +142,17 @@ describe("project command request contract", () => {
     const invalidRequests: unknown[] = [
       {},
       { commandId: "unknown" },
+      { commandId: "node_deps_list" },
+      { commandId: "node_deps_install" },
+      { commandId: "fallow" },
       { commandId: "workspace_path", args: [] },
       { commandId: "node_build", paths: [] },
+      { commandId: "fallow_audit" },
+      { commandId: "fallow_audit", base: "" },
+      { commandId: "fallow_audit", base: "--help" },
+      { commandId: "fallow_audit", base: "HEAD:secret" },
+      { commandId: "fallow_audit", base: "HEAD main" },
+      { commandId: "fallow_audit", base: "HEAD", extra: true },
       { commandId: "node_test", executable: "/bin/sh" },
       { commandId: "node_test", paths: ["../outside"] },
       { commandId: "node_test", paths: ["-leading"] },

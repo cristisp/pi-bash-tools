@@ -1,13 +1,17 @@
 import { createHash } from "node:crypto";
 import type { CommandIdentity } from "../policy/types.ts";
-import { NODE_TEST_PARAMETERS, type ProjectCommandParameterDeclaration } from "./parameters.ts";
+import {
+  FALLOW_AUDIT_PARAMETERS,
+  NODE_TEST_PARAMETERS,
+  type ProjectCommandParameterDeclaration,
+} from "./parameters.ts";
 
 export const PROJECT_COMMAND_NAMESPACE = "bash-tools.project-command" as const;
 const PROJECT_COMMAND_PROCESS_TIMEOUT_MS = 30_000;
 export const PROJECT_COMMAND_OUTPUT_LIMIT_BYTES = 50 * 1024;
 
 export type ProjectCommandExecutionKind = "process" | "in-process";
-export type ProjectCommandApplicability = "always" | "node-script";
+export type ProjectCommandApplicability = "always" | "node-script" | "fallow-binary";
 export type ProjectCommandRisk =
   | "workspace-observation"
   | "runtime-observation"
@@ -33,6 +37,8 @@ export interface ProjectCommandDefinition<CommandId extends string = string> {
   readonly applicability?: ProjectCommandApplicability;
   readonly bindsRepoContent?: boolean;
   readonly scriptBinding?: "none" | "package-script";
+  readonly binaryName?: "fallow";
+  readonly acceptedExitCodes?: readonly number[];
   readonly truncationDirection?: ProjectCommandTruncationDirection;
   readonly parameters?: readonly ProjectCommandParameterDeclaration[];
   readonly argvTemplate?: readonly string[];
@@ -45,6 +51,9 @@ function freezeDefinition<const Definition extends ProjectCommandDefinition>(
   return Object.freeze({
     ...definition,
     args: Object.freeze([...definition.args]),
+    ...(definition.acceptedExitCodes === undefined
+      ? {}
+      : { acceptedExitCodes: Object.freeze([...definition.acceptedExitCodes]) }),
     parameters:
       definition.parameters === undefined
         ? undefined
@@ -211,6 +220,144 @@ const definitions = Object.freeze([
     argvTemplate: ["<package-manager>", "run", "typecheck"],
     fixedScriptKey: "typecheck",
   }),
+  freezeDefinition({
+    namespace: PROJECT_COMMAND_NAMESPACE,
+    commandId: "fallow_dead_code",
+    description: "Run Fallow dead-code analysis with machine-readable output.",
+    executable: process.execPath,
+    args: ["dead-code", "--format", "json", "--quiet"],
+    cwdStrategy: "canonical-project",
+    sanitizedEnvironmentProfile: "node-v1",
+    environmentProfile: "node-v1",
+    processTimeoutMs: PROJECT_COMMAND_PROCESS_TIMEOUT_MS,
+    outputLimitBytes: PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
+    risk: "project-code",
+    globalSafe: false,
+    executionKind: "process",
+    applicability: "fallow-binary",
+    bindsRepoContent: false,
+    scriptBinding: "none",
+    binaryName: "fallow",
+    acceptedExitCodes: [1],
+    truncationDirection: "tail",
+    parameters: [],
+    argvTemplate: ["<fallow-launcher>", "dead-code", "--format", "json", "--quiet"],
+  }),
+  freezeDefinition({
+    namespace: PROJECT_COMMAND_NAMESPACE,
+    commandId: "fallow_dupes",
+    description: "Run Fallow duplicate-code analysis with machine-readable output.",
+    executable: process.execPath,
+    args: ["dupes", "--format", "json", "--quiet"],
+    cwdStrategy: "canonical-project",
+    sanitizedEnvironmentProfile: "node-v1",
+    environmentProfile: "node-v1",
+    processTimeoutMs: PROJECT_COMMAND_PROCESS_TIMEOUT_MS,
+    outputLimitBytes: PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
+    risk: "project-code",
+    globalSafe: false,
+    executionKind: "process",
+    applicability: "fallow-binary",
+    bindsRepoContent: false,
+    scriptBinding: "none",
+    binaryName: "fallow",
+    acceptedExitCodes: [1],
+    truncationDirection: "tail",
+    parameters: [],
+    argvTemplate: ["<fallow-launcher>", "dupes", "--format", "json", "--quiet"],
+  }),
+  freezeDefinition({
+    namespace: PROJECT_COMMAND_NAMESPACE,
+    commandId: "fallow_health",
+    description: "Run Fallow project health analysis with machine-readable output.",
+    executable: process.execPath,
+    args: ["health", "--format", "json", "--quiet"],
+    cwdStrategy: "canonical-project",
+    sanitizedEnvironmentProfile: "node-v1",
+    environmentProfile: "node-v1",
+    processTimeoutMs: PROJECT_COMMAND_PROCESS_TIMEOUT_MS,
+    outputLimitBytes: PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
+    risk: "project-code",
+    globalSafe: false,
+    executionKind: "process",
+    applicability: "fallow-binary",
+    bindsRepoContent: false,
+    scriptBinding: "none",
+    binaryName: "fallow",
+    acceptedExitCodes: [1],
+    truncationDirection: "tail",
+    parameters: [],
+    argvTemplate: ["<fallow-launcher>", "health", "--format", "json", "--quiet"],
+  }),
+  freezeDefinition({
+    namespace: PROJECT_COMMAND_NAMESPACE,
+    commandId: "fallow_audit",
+    description: "Run Fallow audit analysis against a specified base revision.",
+    executable: process.execPath,
+    args: ["audit", "--format", "json", "--quiet"],
+    cwdStrategy: "canonical-project",
+    sanitizedEnvironmentProfile: "node-v1",
+    environmentProfile: "node-v1",
+    processTimeoutMs: PROJECT_COMMAND_PROCESS_TIMEOUT_MS,
+    outputLimitBytes: PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
+    risk: "project-code",
+    globalSafe: false,
+    executionKind: "process",
+    applicability: "fallow-binary",
+    bindsRepoContent: false,
+    scriptBinding: "none",
+    binaryName: "fallow",
+    acceptedExitCodes: [1],
+    truncationDirection: "tail",
+    parameters: FALLOW_AUDIT_PARAMETERS,
+    argvTemplate: ["<fallow-launcher>", "audit", "--format", "json", "--quiet"],
+  }),
+  freezeDefinition({
+    namespace: PROJECT_COMMAND_NAMESPACE,
+    commandId: "fallow_list_entry_points",
+    description: "List Fallow entry points with machine-readable output.",
+    executable: process.execPath,
+    args: ["list", "--entry-points", "--format", "json", "--quiet"],
+    cwdStrategy: "canonical-project",
+    sanitizedEnvironmentProfile: "node-v1",
+    environmentProfile: "node-v1",
+    processTimeoutMs: PROJECT_COMMAND_PROCESS_TIMEOUT_MS,
+    outputLimitBytes: PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
+    risk: "project-code",
+    globalSafe: false,
+    executionKind: "process",
+    applicability: "fallow-binary",
+    bindsRepoContent: false,
+    scriptBinding: "none",
+    binaryName: "fallow",
+    acceptedExitCodes: [1],
+    truncationDirection: "tail",
+    parameters: [],
+    argvTemplate: ["<fallow-launcher>", "list", "--entry-points", "--format", "json", "--quiet"],
+  }),
+  freezeDefinition({
+    namespace: PROJECT_COMMAND_NAMESPACE,
+    commandId: "fallow_list_boundaries",
+    description: "List Fallow project boundaries with machine-readable output.",
+    executable: process.execPath,
+    args: ["list", "--boundaries", "--format", "json", "--quiet"],
+    cwdStrategy: "canonical-project",
+    sanitizedEnvironmentProfile: "node-v1",
+    environmentProfile: "node-v1",
+    processTimeoutMs: PROJECT_COMMAND_PROCESS_TIMEOUT_MS,
+    outputLimitBytes: PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
+    risk: "project-code",
+    globalSafe: false,
+    executionKind: "process",
+    applicability: "fallow-binary",
+    bindsRepoContent: false,
+    scriptBinding: "none",
+    binaryName: "fallow",
+    acceptedExitCodes: [1],
+    truncationDirection: "tail",
+    parameters: [],
+    argvTemplate: ["<fallow-launcher>", "list", "--boundaries", "--format", "json", "--quiet"],
+  }),
 ] as const);
 
 export type ProjectCommandId = (typeof definitions)[number]["commandId"];
@@ -307,6 +454,10 @@ function catalogBindingMetadata(
     parameters: definition.parameters ?? [],
     fixedScriptKey: definition.fixedScriptKey ?? null,
     scriptHash: resolved.scriptHash ?? null,
+    ...(definition.binaryName === undefined ? {} : { binaryName: definition.binaryName }),
+    ...(definition.acceptedExitCodes === undefined
+      ? {}
+      : { acceptedExitCodes: [...definition.acceptedExitCodes] }),
   };
 }
 

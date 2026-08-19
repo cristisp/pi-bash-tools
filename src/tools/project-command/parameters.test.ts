@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   normalizeNodeTestParameters,
   validateNodeTestPaths,
+  validateProjectCommandRevision,
   validateWorkspacePathParameter,
 } from "./parameters.ts";
 
@@ -35,6 +36,15 @@ describe("project command parameters", () => {
       expect(() => validateWorkspacePathParameter(value)).toThrow();
     }
     expect(() => validateNodeTestPaths(["src/test.ts", "src/test.ts"])).toThrow();
+  });
+
+  it("validates safe Fallow audit revisions", () => {
+    for (const revision of ["HEAD", "HEAD~1", "origin/main", "v1.2.3", "feature/name"] as const) {
+      expect(validateProjectCommandRevision(revision)).toBe(revision);
+    }
+    for (const revision of ["", "--help", "HEAD:secret", "HEAD main", "HEAD*", "HEAD\\n"]) {
+      expect(() => validateProjectCommandRevision(revision)).toThrow();
+    }
   });
 
   it("normalizes existing paths and rejects symlink escapes", async () => {

@@ -4,7 +4,12 @@ import {
   type ProjectCommandDefinition,
   type ProjectCommandId,
 } from "./definitions.ts";
-import { NODE_TEST_PATH_PATTERN, validateNodeTestPaths } from "./parameters.ts";
+import {
+  FALLOW_REVISION_PATTERN,
+  NODE_TEST_PATH_PATTERN,
+  validateNodeTestPaths,
+  validateProjectCommandRevision,
+} from "./parameters.ts";
 
 export type ProjectCommandInputSchema<
   Definitions extends readonly ProjectCommandDefinition[] =
@@ -15,7 +20,9 @@ type InputForDefinition<Definition extends ProjectCommandDefinition> =
   Definition extends ProjectCommandDefinition
     ? Definition["commandId"] extends "node_test"
       ? { readonly commandId: Definition["commandId"]; readonly paths?: readonly string[] }
-      : { readonly commandId: Definition["commandId"] }
+      : Definition["commandId"] extends "fallow_audit"
+        ? { readonly commandId: Definition["commandId"]; readonly base: string }
+        : { readonly commandId: Definition["commandId"] }
     : never;
 
 export type ProjectCommandInputFor<Definitions extends readonly ProjectCommandDefinition[]> =
@@ -34,6 +41,18 @@ function variantForDefinition(definition: ProjectCommandDefinition): TObject {
             description: "Optional workspace-relative test paths.",
           }),
         ),
+      },
+      { additionalProperties: false },
+    );
+  }
+  if (definition.commandId === "fallow_audit") {
+    return Type.Object(
+      {
+        commandId,
+        base: Type.String({
+          pattern: FALLOW_REVISION_PATTERN,
+          description: "Required safe revision used as the Fallow audit base.",
+        }),
       },
       { additionalProperties: false },
     );
@@ -97,7 +116,12 @@ function findDefinition(
 }
 
 function validateRequestKeys(keys: readonly string[], commandId: string): void {
-  const expectedKeys = commandId === "node_test" ? ["commandId", "paths"] : ["commandId"];
+  const expectedKeys =
+    commandId === "node_test"
+      ? ["commandId", "paths"]
+      : commandId === "fallow_audit"
+        ? ["commandId", "base"]
+        : ["commandId"];
   if (!keys.includes("commandId") || keys.some((key) => !expectedKeys.includes(key))) {
     throw invalidRequest();
   }
@@ -106,7 +130,10 @@ function validateRequestKeys(keys: readonly string[], commandId: string): void {
 function normalizedRequest(
   params: Record<string, unknown>,
   commandId: string,
-): { readonly commandId: string; readonly paths?: readonly string[] } {
+): { readonly commandId: string; readonly paths?: readonly string[]; readonly base?: string } {
+  if (commandId === "fallow_audit") {
+    return { commandId, base: validateProjectCommandRevision(params.base) };
+  }
   if (commandId !== "node_test") {
     return { commandId };
   }

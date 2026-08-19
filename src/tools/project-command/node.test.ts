@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -36,6 +36,70 @@ describe("Node project command resolution", () => {
       packageManager: null,
       scripts: [],
       applicableCommands: ["node_project_info"],
+    });
+  });
+
+  it("reports Fallow commands when the project-local binary is available", async () => {
+    const directory = await project({ scripts: {} });
+    await mkdir(join(directory, "node_modules", ".bin"), { recursive: true });
+    await writeFile(join(directory, "node_modules", ".bin", "fallow"), "fallow");
+    await expect(readNodeProjectInfo(directory)).resolves.toMatchObject({
+      applicableCommands: [
+        "node_project_info",
+        "fallow_dead_code",
+        "fallow_dupes",
+        "fallow_health",
+        "fallow_audit",
+        "fallow_list_entry_points",
+        "fallow_list_boundaries",
+      ],
+    });
+  });
+
+  it("reports Fallow only for a safe in-root binary", async () => {
+    const fallowCommandIds = [
+      "fallow_dead_code",
+      "fallow_dupes",
+      "fallow_health",
+      "fallow_audit",
+      "fallow_list_entry_points",
+      "fallow_list_boundaries",
+    ];
+    const missingProject = await project({ scripts: {} });
+    await expect(readNodeProjectInfo(missingProject)).resolves.toMatchObject({
+      applicableCommands: ["node_project_info"],
+    });
+
+    const escapingProject = await project({ scripts: {} });
+    const outside = await project({ scripts: {} });
+    await writeFile(join(outside, "fallow"), "escaping");
+    await mkdir(join(escapingProject, "node_modules", ".bin"), { recursive: true });
+    await symlink(join(outside, "fallow"), join(escapingProject, "node_modules", ".bin", "fallow"));
+    await expect(readNodeProjectInfo(escapingProject)).resolves.toMatchObject({
+      applicableCommands: ["node_project_info"],
+    });
+
+    const danglingProject = await project({ scripts: {} });
+    await mkdir(join(danglingProject, "node_modules", ".bin"), { recursive: true });
+    await symlink(
+      join(danglingProject, "missing-fallow"),
+      join(danglingProject, "node_modules", ".bin", "fallow"),
+    );
+    await expect(readNodeProjectInfo(danglingProject)).resolves.toMatchObject({
+      applicableCommands: ["node_project_info"],
+    });
+
+    const nonFileProject = await project({ scripts: {} });
+    await mkdir(join(nonFileProject, "node_modules", ".bin", "fallow"), { recursive: true });
+    await expect(readNodeProjectInfo(nonFileProject)).resolves.toMatchObject({
+      applicableCommands: ["node_project_info"],
+    });
+
+    const validProject = await project({ scripts: {} });
+    await mkdir(join(validProject, "node_modules", ".bin"), { recursive: true });
+    await writeFile(join(validProject, "node_modules", ".bin", "fallow"), "fallow");
+    await expect(readNodeProjectInfo(validProject)).resolves.toMatchObject({
+      applicableCommands: ["node_project_info", ...fallowCommandIds],
     });
   });
 

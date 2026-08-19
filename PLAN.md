@@ -12,13 +12,13 @@ Every tool must define explicit input and output contracts, enforce workspace bo
 
 The extension currently registers six tools: environment, git_status, git_diff, git_log, git_show, and project_command.
 
-The project_command catalog currently supports seven extension-owned semantic commands: workspace_path, node_version, node_project_info, node_test, node_build, node_lint, and node_typecheck.
+The project_command catalog currently supports thirteen extension-owned semantic commands: workspace_path, node_version, node_project_info, node_test, node_build, node_lint, node_typecheck, fallow_dead_code, fallow_dupes, fallow_health, fallow_audit, fallow_list_entry_points, and fallow_list_boundaries.
 
 The environment tool provides explicit-key access with fail-closed authorization, canonical project identity, restrictive policy storage, locking, atomic writes, cancellation, and timeout handling.
 
 The Git tools provide validated, bounded, cancellable, read-only repository inspection with temporary-repository integration coverage.
 
-The project_command tool supports fixed workspace and Node runtime observation commands, in-process Node project discovery, and authorized Node project script commands.
+The project_command tool supports fixed workspace and Node runtime observation commands, in-process Node project discovery, authorized Node project script commands, and authorized Fallow analysis commands.
 
 project_command accepts a strict discriminated command schema and executes only catalog-defined operations.
 
@@ -28,7 +28,7 @@ Command authorization uses the user-owned policy at `getAgentDir()/bash-tools.js
 
 Command decisions migrate a version 1 environment document to a version 2 document containing the unchanged nested environment version 1 policy and a version 1 project command policy namespace.
 
-Native macOS validation currently passes the 136-test suite, TypeScript checks, warning-free lint, formatting, Fallow analysis, Fallow audit, and git diff checks.
+Native macOS validation currently passes the 145-test suite, TypeScript checks, warning-free lint, formatting, Fallow analysis, Fallow audit, and git diff checks.
 
 Linux runtime validation remains deferred, and Windows and FreeBSD remain unsupported by design.
 
@@ -36,9 +36,9 @@ The simplification pass is complete: one policy store in `src/tools/policy/` ser
 
 The cleanup-failure execution status was removed from the tool contract because it was unreachable with real processes.
 
-The catalog architecture and the first Node command slice are complete.
+The catalog architecture, the first Node command slice, and the Fallow command slice are complete.
 
-The next milestone is the separately reviewed dependency command slice for node_deps_list and node_deps_install, followed by the Fallow command family.
+The next milestone is the separately reviewed dependency command slice for node_deps_list and node_deps_install.
 
 ## Existing pi capabilities
 
@@ -60,13 +60,13 @@ The extension should use `ctx.cwd` and existing pi path handling instead of addi
 
 Each extension tool has a dedicated source folder under `src/tools/`.
 
-| Tool            | Implementation                              | Current safety boundary                                                                 |
-| --------------- | ------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Environment     | `src/tools/environment/environment-tool.ts` | Return only explicitly requested and authorized environment variables.                  |
-| Git status      | `src/tools/git/status/tool.ts`              | Inspect repository status without changing the working tree.                            |
-| Git diff        | `src/tools/git/diff/tool.ts`                | Read bounded diffs for approved paths without changing the repository.                  |
-| Git log         | `src/tools/git/log/tool.ts`                 | Read bounded commit history with validated revision and path inputs.                    |
-| Git show        | `src/tools/git/show/tool.ts`                | Read a bounded object or file revision without executing repository content.            |
+| Tool            | Implementation                              | Current safety boundary                                                           |
+| --------------- | ------------------------------------------- | --------------------------------------------------------------------------------- |
+| Environment     | `src/tools/environment/environment-tool.ts` | Return only explicitly requested and authorized environment variables.            |
+| Git status      | `src/tools/git/status/tool.ts`              | Inspect repository status without changing the working tree.                      |
+| Git diff        | `src/tools/git/diff/tool.ts`                | Read bounded diffs for approved paths without changing the repository.            |
+| Git log         | `src/tools/git/log/tool.ts`                 | Read bounded commit history with validated revision and path inputs.              |
+| Git show        | `src/tools/git/show/tool.ts`                | Read a bounded object or file revision without executing repository content.      |
 | Project command | `src/tools/project-command/tool.ts`         | Run only catalog-defined semantic commands after user-owned policy authorization. |
 
 ## Target command architecture
@@ -77,7 +77,7 @@ The command catalog is extension-owned code and never reads repository configura
 
 Definitions are data: id, description, applicability probe, risk class, globalSafe flag, bindsRepoContent flag, environment profile, timeout, output limit, truncation direction, parameter declarations, and a resolve function.
 
-The v1 catalog covers the global and node ecosystems on the macOS runtime.
+The v1 catalog covers global observation, Node project commands, and Fallow analysis commands on the macOS runtime.
 
 .NET and PHP ecosystem modules are kept in mind through the module shape but are not part of v1.
 
@@ -86,6 +86,8 @@ The single `project_command` tool derives its input schema from the catalog as a
 Applicability is enforced at execution time, and unknown or inapplicable commands fail with an error listing the commands applicable to the current project.
 
 The initial Node slice implements this behavior for node_project_info, node_test, node_build, node_lint, and node_typecheck.
+
+The Fallow slice implements fixed project-local analysis commands with the same applicability, authorization, bounded-output, and resolution guarantees.
 
 ### Resolution
 
@@ -284,7 +286,7 @@ The dependency command forms remain deferred until manager-specific list and fro
 - [x] Implement node_build, node_lint, and node_typecheck.
 - [ ] Implement node_deps_list.
 - [ ] Implement node_deps_install with per-package-manager frozen-lockfile forms.
-- [ ] Implement the fallow command family including the audit base revision parameter.
+- [x] Implement the Fallow command family including the audit base revision parameter.
 
 ### Controlled execution
 
@@ -314,6 +316,7 @@ The dependency command forms remain deferred until manager-specific list and fro
 - [x] Add dismissal and cancellation-race regression tests for the shared authorization flow.
 - [x] Add broad cross-tool tests under `test/` for policy composition and command execution behavior.
 - [x] Add initial fixture-project integration coverage for Node project discovery and authorized script execution.
+- [x] Add fixture-project integration coverage for Fallow binary resolution, fixed argv, and audit exit-code behavior.
 - [ ] Add fixture-project integration tests that run real package manager and runner binaries for every catalog command.
 - [ ] Add a scheduled job running the fixture suite against latest toolchains to catch ecosystem drift.
 - [ ] Add Vitest coverage reporting with `@vitest/coverage-v8`.
@@ -333,4 +336,3 @@ The dependency command forms remain deferred until manager-specific list and fro
 - Format check and format write commands, pending demand and script-name standardization.
 - Test-name pattern filtering for node_test, pending runner detection.
 - node_deps_list and node_deps_install, pending manager-specific CLI and dependency-install risk review.
-- Fallow command family, pending command catalog and audit-base resolution implementation.

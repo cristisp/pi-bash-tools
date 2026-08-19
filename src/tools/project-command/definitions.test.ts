@@ -17,6 +17,12 @@ describe("project command definitions", () => {
       "node_build",
       "node_lint",
       "node_typecheck",
+      "fallow_dead_code",
+      "fallow_dupes",
+      "fallow_health",
+      "fallow_audit",
+      "fallow_list_entry_points",
+      "fallow_list_boundaries",
     ]);
     expect(
       definitions.every((definition) => definition.namespace === PROJECT_COMMAND_NAMESPACE),
@@ -37,7 +43,7 @@ describe("project command definitions", () => {
       executable: process.execPath,
       args: ["--version"],
     });
-    expect(definitions.slice(2)).toMatchObject([
+    expect(definitions.slice(2, 7)).toMatchObject([
       { commandId: "node_project_info", risk: "observe", globalSafe: true },
       {
         commandId: "node_test",
@@ -51,6 +57,79 @@ describe("project command definitions", () => {
       { commandId: "node_lint", fixedScriptKey: "lint" },
       { commandId: "node_typecheck", fixedScriptKey: "typecheck" },
     ]);
+    expect(definitions.slice(7)).toMatchObject([
+      {
+        commandId: "fallow_dead_code",
+        executable: process.execPath,
+        args: ["dead-code", "--format", "json", "--quiet"],
+        risk: "project-code",
+        globalSafe: false,
+        applicability: "fallow-binary",
+        binaryName: "fallow",
+        acceptedExitCodes: [1],
+        truncationDirection: "tail",
+      },
+      {
+        commandId: "fallow_dupes",
+        args: ["dupes", "--format", "json", "--quiet"],
+      },
+      {
+        commandId: "fallow_health",
+        args: ["health", "--format", "json", "--quiet"],
+      },
+      {
+        commandId: "fallow_audit",
+        args: ["audit", "--format", "json", "--quiet"],
+        parameters: [{ name: "base", kind: "revision", required: true, mapping: "flag-value" }],
+      },
+      {
+        commandId: "fallow_list_entry_points",
+        args: ["list", "--entry-points", "--format", "json", "--quiet"],
+      },
+      {
+        commandId: "fallow_list_boundaries",
+        args: ["list", "--boundaries", "--format", "json", "--quiet"],
+      },
+    ]);
+  });
+
+  it("uses a stable Fallow launcher template without runtime audit parameters", () => {
+    const definitions = getProjectCommandDefinitions().filter(
+      (definition) => definition.applicability === "fallow-binary",
+    );
+    expect(definitions).toHaveLength(6);
+    expect(
+      definitions.every((definition) => definition.argvTemplate?.[0] === "<fallow-launcher>"),
+    ).toBe(true);
+    expect(
+      definitions.find((definition) => definition.commandId === "fallow_audit")?.argvTemplate,
+    ).toEqual(["<fallow-launcher>", "audit", "--format", "json", "--quiet"]);
+    expect(
+      definitions.every(
+        (definition) => !JSON.stringify(definition.argvTemplate).includes("<base>"),
+      ),
+    ).toBe(true);
+
+    const auditDefinition = definitions.find(
+      (definition) => definition.commandId === "fallow_audit",
+    );
+    if (auditDefinition === undefined) throw new Error("missing Fallow audit definition");
+    const resolved = (base: string) => ({
+      executable: process.execPath,
+      args: [...auditDefinition.args, "--base", base],
+      fingerprintArgs: auditDefinition.argvTemplate,
+    });
+    expect(fingerprintProjectCommandDefinition(auditDefinition, resolved("HEAD~1"))).toBe(
+      fingerprintProjectCommandDefinition(auditDefinition, resolved("origin/main")),
+    );
+
+    const changedTemplate = {
+      ...auditDefinition,
+      argvTemplate: [...(auditDefinition.argvTemplate ?? []), "<static-change>"],
+    };
+    expect(fingerprintProjectCommandDefinition(changedTemplate)).not.toBe(
+      fingerprintProjectCommandDefinition(auditDefinition),
+    );
   });
 
   it("keeps the catalog and its command arguments immutable", () => {

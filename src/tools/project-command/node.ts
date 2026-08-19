@@ -13,6 +13,7 @@ import {
   type PackageManager,
   type PackageManagerAvailabilityInput,
 } from "./package-manager.ts";
+import { resolveProjectBinary } from "./binary.ts";
 import type { ProjectResolutionFileSystem, ResolvedProjectCommand } from "./resolution.ts";
 import { ProjectCommandResolutionError } from "./errors.ts";
 import { normalizeNodeTestParameters, validateNodeTestPaths } from "./parameters.ts";
@@ -22,6 +23,15 @@ const NODE_SCRIPT_COMMANDS = [
   { commandId: "node_build", script: "build" },
   { commandId: "node_lint", script: "lint" },
   { commandId: "node_typecheck", script: "typecheck" },
+] as const;
+
+const FALLOW_COMMAND_IDS = [
+  "fallow_dead_code",
+  "fallow_dupes",
+  "fallow_health",
+  "fallow_audit",
+  "fallow_list_entry_points",
+  "fallow_list_boundaries",
 ] as const;
 
 const NODE_LOCKFILES = [
@@ -55,7 +65,8 @@ export interface NodeProjectInfo {
   readonly applicableCommands: readonly string[];
 }
 
-type NodeFileSystem = Pick<ProjectResolutionFileSystem, "readFile" | "stat">;
+type NodeFileSystem = Pick<ProjectResolutionFileSystem, "readFile" | "stat"> &
+  Partial<Pick<ProjectResolutionFileSystem, "realpath" | "lstat">>;
 
 interface NodeManifest {
   readonly scripts: Readonly<Record<string, string>>;
@@ -66,6 +77,7 @@ interface NodeManifest {
 interface NodeProjectState {
   readonly manifest: NodeManifest | null;
   readonly lockfiles: readonly string[];
+  readonly fallowBinaryAvailable: boolean;
   readonly detected: DetectedPackageManager | null;
   readonly managerExecutable: string | undefined;
   readonly scriptHash: string | null;
@@ -184,11 +196,19 @@ export function hashNodeScripts(scripts: Readonly<Record<string, string>>): stri
   return createHash("sha256").update(canonicalizeNodeScripts(scripts), "utf8").digest("hex");
 }
 
-function applicableCommands(scripts: Readonly<Record<string, string>>): readonly string[] {
+function applicableCommands(
+  scripts: Readonly<Record<string, string>>,
+  fallowBinaryAvailable: boolean,
+): readonly string[] {
   const ids = new Set<string>(["node_project_info"]);
   for (const command of NODE_SCRIPT_COMMANDS) {
     if (Object.prototype.hasOwnProperty.call(scripts, command.script)) {
       ids.add(command.commandId);
+    }
+  }
+  if (fallowBinaryAvailable) {
+    for (const commandId of FALLOW_COMMAND_IDS) {
+      ids.add(commandId);
     }
   }
   return Object.freeze(
@@ -196,6 +216,30 @@ function applicableCommands(scripts: Readonly<Record<string, string>>): readonly
       .map((definition) => definition.commandId)
       .filter((commandId) => ids.has(commandId)),
   );
+}
+
+function hasSafeBinaryResolutionFileSystem(
+  fileSystem: NodeFileSystem,
+): fileSystem is ProjectResolutionFileSystem {
+  return fileSystem.realpath !== undefined && fileSystem.lstat !== undefined;
+}
+
+async function projectBinaryAvailable(
+  projectPath: string,
+  fileSystem: NodeFileSystem,
+): Promise<boolean> {
+  if (!hasSafeBinaryResolutionFileSystem(fileSystem)) {
+    return false;
+  }
+  try {
+    await resolveProjectBinary(projectPath, "fallow", fileSystem);
+    return true;
+  } catch (error) {
+    if (error instanceof ProjectCommandResolutionError && error.stage === "binary-resolution") {
+      return false;
+    }
+    throw resolutionError("detection", "fallow-binary-probe-failed");
+  }
 }
 
 async function projectState(
@@ -209,6 +253,7 @@ async function projectState(
     return {
       manifest: null,
       lockfiles: [],
+      fallowBinaryAvailable: false,
       detected: null,
       managerExecutable: undefined,
       scriptHash: null,
@@ -222,6 +267,7 @@ async function projectState(
     };
   }
   const lockfiles = await readLockfiles(projectPath, fileSystem);
+  const fallowBinaryAvailable = await projectBinaryAvailable(projectPath, fileSystem);
   const detected = detectPackageManagerDetails(
     manifest.hasPackageManager
       ? { packageManager: manifest.packageManager, lockfiles }
@@ -243,11 +289,12 @@ async function projectState(
       executableAvailable: managerExecutable !== undefined,
     }),
     scripts: Object.freeze(Object.keys(manifest.scripts).sort()),
-    applicableCommands: applicableCommands(manifest.scripts),
+    applicableCommands: applicableCommands(manifest.scripts, fallowBinaryAvailable),
   });
   return {
     manifest,
     lockfiles,
+    fallowBinaryAvailable,
     detected,
     managerExecutable,
     scriptHash: hashNodeScripts(manifest.scripts),
@@ -329,7 +376,10 @@ export async function resolveNodeProjectCommand(
   if (!Object.prototype.hasOwnProperty.call(preliminaryManifest.scripts, script)) {
     throw resolutionError("probe", "inapplicable-command", {
       commandId: definition.commandId,
-      applicableCommands: applicableCommands(preliminaryManifest.scripts),
+      applicableCommands: applicableCommands(
+        preliminaryManifest.scripts,
+        await projectBinaryAvailable(projectPath, fileSystem),
+      ),
     });
   }
   const state = await projectState(projectPath, options, false);
