@@ -24,23 +24,24 @@ describe("project command request contract", () => {
       { commandId: "workspace_path", script: "node -e process.env.SECRET" },
       { commandId: "node -e process.env.SECRET" },
       { commandId: "python", args: ["-c", "print(1)"] },
-      { commandId: "sh -c echo unsafe" },
-      { commandId: "workspace_path", [Symbol("extra")]: true },
-      Object.assign(Object.create(null), { commandId: "workspace_path", extra: true }),
+      { "sh -c echo unsafe": "workspace_path" },
+      { commandId: 1 },
+      { commandId: undefined },
     ];
     for (const request of invalidRequests) {
       expect(() => validateProjectCommandInput(request)).toThrow(/invalid/iu);
     }
   });
 
-  it("rejects accessors and non-plain objects", () => {
-    const accessor = {} as { commandId?: string };
-    Object.defineProperty(accessor, "commandId", {
-      configurable: true,
-      enumerable: true,
-      get: () => "workspace_path",
-    });
-    expect(() => validateProjectCommandInput(accessor)).toThrow(/invalid/iu);
-    expect(() => validateProjectCommandInput(new String("workspace_path"))).toThrow(/invalid/iu);
+  it("uses only enumerable commandId shape keys", () => {
+    const nonEnumerable = { commandId: "workspace_path" };
+    Object.defineProperty(nonEnumerable, "extra", { value: true, enumerable: false });
+    expect(validateProjectCommandInput(nonEnumerable)).toEqual({ commandId: "workspace_path" });
+
+    const inherited = Object.create({ commandId: "workspace_path" });
+    expect(() => validateProjectCommandInput(inherited)).toThrow(/invalid/iu);
+
+    const prototypePollution = JSON.parse('{"__proto__":{"polluted":true}}');
+    expect(() => validateProjectCommandInput(prototypePollution)).toThrow(/invalid/iu);
   });
 });

@@ -1,185 +1,38 @@
-import type { EnvironmentToolContext } from "./environment-tool.ts";
+import type { AuthorizeOrPromptContext } from "../authorization.ts";
+import { authorizeOrPrompt, type AuthorizationErrorKind } from "../authorization.ts";
+import { findEnvironmentPolicyDecision } from "../policy/decisions.ts";
+import type { EnvironmentDecisionRequest, LoadedPolicy, PolicyStore } from "../policy/types.ts";
 import { EnvironmentToolError } from "./environment-schema.ts";
-import {
-  cancellationError,
-  decisionForPromptChoice,
-  promptForEnvironmentAccess,
-  type EnvironmentPromptResult,
-} from "./environment-prompt.ts";
-import {
-  type EnvironmentPolicyAuthorization,
-  type EnvironmentPolicyDecisionRequest,
-  type EnvironmentPolicyStore,
-  type LoadedEnvironmentPolicy,
-  findEnvironmentPolicyDecision,
-} from "./policy.ts";
+import type { EnvironmentToolContext } from "./environment-tool.ts";
 
-function policyLoadError(): EnvironmentToolError {
-  return new EnvironmentToolError("Unable to load environment policy");
+function cancellationError(): EnvironmentToolError {
+  const error = new EnvironmentToolError("Environment request cancelled");
+  error.name = "AbortError";
+  return error;
 }
 
-function policyPersistenceError(): EnvironmentToolError {
-  return new EnvironmentToolError("Unable to save environment policy");
-}
+const ENVIRONMENT_AUTHORIZATION_MESSAGES: Record<
+  Exclude<AuthorizationErrorKind, "cancelled" | "dismissed">,
+  string
+> = {
+  denied: "Environment access denied by policy",
+  "not-authorized": "Environment key is not authorized in this mode",
+  timeout: "Environment confirmation timed out",
+  confirmation: "Environment confirmation failed",
+  save: "Unable to save environment policy",
+  load: "Unable to load environment policy",
+  "invalid-choice": "Environment confirmation returned an invalid choice",
+  "unsafe-global": "Environment confirmation returned an invalid choice",
+};
 
-function unknownEnvironmentKeyError(): EnvironmentToolError {
-  return new EnvironmentToolError("Environment key is not authorized in this mode");
-}
-
-async function persistEnvironmentDecisions(
-  policy: EnvironmentPolicyStore,
-  projectPath: string,
-  decisions: readonly EnvironmentPolicyDecisionRequest[],
-  requestSignal?: AbortSignal,
-): Promise<void> {
-  if (decisions.length === 0) {
-    return;
+function errorForKind(kind: AuthorizationErrorKind): EnvironmentToolError {
+  if (kind === "cancelled") {
+    return cancellationError();
   }
-  if (requestSignal?.aborted) {
-    throw cancellationError();
+  if (kind === "dismissed") {
+    return new EnvironmentToolError("Environment confirmation cancelled");
   }
-  try {
-    await policy.recordDecisions(projectPath, decisions, requestSignal);
-  } catch {
-    if (requestSignal?.aborted) {
-      throw cancellationError();
-    }
-    throw policyPersistenceError();
-  }
-  if (requestSignal?.aborted) {
-    throw cancellationError();
-  }
-}
-
-function readEnvironmentAuthorization(
-  loadedPolicy: LoadedEnvironmentPolicy,
-  key: string,
-): EnvironmentPolicyAuthorization {
-  try {
-    return findEnvironmentPolicyDecision(loadedPolicy, loadedPolicy.projectPath, key);
-  } catch {
-    throw policyLoadError();
-  }
-}
-
-function requireInteractiveAuthorization(
-  authorization: EnvironmentPolicyAuthorization,
-  ctx: EnvironmentToolContext,
-  requestSignal: AbortSignal | undefined,
-): boolean {
-  if (authorization === "deny-global" || authorization === "deny-project") {
-    throw new EnvironmentToolError("Environment access denied by policy");
-  }
-  if (authorization !== "unknown") {
-    return false;
-  }
-  if (ctx.hasUI && (ctx.mode === "tui" || ctx.mode === "rpc") && !requestSignal?.aborted) {
-    return true;
-  }
-  throw unknownEnvironmentKeyError();
-}
-
-async function persistDeniedEnvironmentDecision(
-  policy: EnvironmentPolicyStore,
-  loadedPolicy: LoadedEnvironmentPolicy,
-  key: string,
-  decision: EnvironmentPolicyDecisionRequest["decision"],
-  requestSignal: AbortSignal | undefined,
-): Promise<void> {
-  await persistEnvironmentDecisions(
-    policy,
-    loadedPolicy.projectPath,
-    [{ key, decision }],
-    requestSignal,
-  );
-}
-
-async function resolveEnvironmentPromptDecision(
-  prompt: EnvironmentPromptResult,
-  policy: EnvironmentPolicyStore,
-  loadedPolicy: LoadedEnvironmentPolicy,
-  key: string,
-  requestSignal: AbortSignal | undefined,
-): Promise<EnvironmentPolicyDecisionRequest> {
-  if (prompt.kind === "timeout") {
-    await persistDeniedEnvironmentDecision(
-      policy,
-      loadedPolicy,
-      key,
-      "deny-project",
-      requestSignal,
-    );
-    throw new EnvironmentToolError("Environment confirmation timed out");
-  }
-  if (prompt.kind === "cancelled") {
-    throw cancellationError();
-  }
-  if (prompt.kind === "error") {
-    throw new EnvironmentToolError("Environment confirmation failed");
-  }
-  if (prompt.choice === undefined) {
-    throw new EnvironmentToolError("Environment confirmation cancelled");
-  }
-  if (requestSignal?.aborted) {
-    throw cancellationError();
-  }
-  const decision = decisionForPromptChoice(prompt.choice);
-  if (decision === "deny-global" || decision === "deny-project") {
-    await persistDeniedEnvironmentDecision(policy, loadedPolicy, key, decision, requestSignal);
-    throw new EnvironmentToolError("Environment access denied by policy");
-  }
-  return { key, decision };
-}
-
-async function authorizeEnvironmentKey(
-  key: string,
-  ctx: EnvironmentToolContext,
-  loadedPolicy: LoadedEnvironmentPolicy,
-  policy: EnvironmentPolicyStore,
-  requestSignal: AbortSignal | undefined,
-): Promise<EnvironmentPolicyDecisionRequest | undefined> {
-  const authorization = readEnvironmentAuthorization(loadedPolicy, key);
-  if (!requireInteractiveAuthorization(authorization, ctx, requestSignal)) {
-    return undefined;
-  }
-  const prompt = await promptForEnvironmentAccess(
-    ctx,
-    key,
-    loadedPolicy.confirmationTimeoutMs,
-    requestSignal,
-  );
-  return resolveEnvironmentPromptDecision(prompt, policy, loadedPolicy, key, requestSignal);
-}
-
-async function authorizeEnvironmentKeys(
-  keys: readonly string[],
-  index: number,
-  ctx: EnvironmentToolContext,
-  loadedPolicy: LoadedEnvironmentPolicy,
-  policy: EnvironmentPolicyStore,
-  requestSignal: AbortSignal | undefined,
-  stagedDecisions: EnvironmentPolicyDecisionRequest[],
-): Promise<void> {
-  const key = keys[index];
-  if (key === undefined) {
-    return;
-  }
-  if (requestSignal?.aborted) {
-    throw cancellationError();
-  }
-  const decision = await authorizeEnvironmentKey(key, ctx, loadedPolicy, policy, requestSignal);
-  if (decision !== undefined) {
-    stagedDecisions.push(decision);
-  }
-  await authorizeEnvironmentKeys(
-    keys,
-    index + 1,
-    ctx,
-    loadedPolicy,
-    policy,
-    requestSignal,
-    stagedDecisions,
-  );
+  return new EnvironmentToolError(ENVIRONMENT_AUTHORIZATION_MESSAGES[kind]);
 }
 
 function throwIfRequestAborted(signal: AbortSignal | undefined): void {
@@ -188,11 +41,22 @@ function throwIfRequestAborted(signal: AbortSignal | undefined): void {
   }
 }
 
+function persistenceError(signal: AbortSignal | undefined): EnvironmentToolError {
+  if (signal?.aborted) {
+    return cancellationError();
+  }
+  return new EnvironmentToolError("Unable to save environment policy");
+}
+
+function contextForAuthorization(ctx: EnvironmentToolContext): AuthorizeOrPromptContext {
+  return ctx;
+}
+
 export async function loadEnvironmentPolicyForRequest(
-  policy: EnvironmentPolicyStore,
+  policy: PolicyStore,
   cwd: string,
   requestSignal: AbortSignal | undefined,
-): Promise<LoadedEnvironmentPolicy> {
+): Promise<LoadedPolicy> {
   throwIfRequestAborted(requestSignal);
   try {
     const loadedPolicy = await policy.load(cwd);
@@ -202,33 +66,49 @@ export async function loadEnvironmentPolicyForRequest(
     if (error instanceof EnvironmentToolError && error.name === "AbortError") {
       throw error;
     }
-    throw policyLoadError();
+    if (requestSignal?.aborted) {
+      throw cancellationError();
+    }
+    throw new EnvironmentToolError("Unable to load environment policy");
   }
 }
 
 export async function authorizeAndPersistEnvironmentKeys(
   keys: readonly string[],
   ctx: EnvironmentToolContext,
-  loadedPolicy: LoadedEnvironmentPolicy,
-  policy: EnvironmentPolicyStore,
+  loadedPolicy: LoadedPolicy,
+  policy: PolicyStore,
   requestSignal: AbortSignal | undefined,
 ): Promise<void> {
-  const stagedDecisions: EnvironmentPolicyDecisionRequest[] = [];
-  await authorizeEnvironmentKeys(
-    keys,
-    0,
-    ctx,
-    loadedPolicy,
-    policy,
-    requestSignal,
-    stagedDecisions,
-  );
+  const staged: EnvironmentDecisionRequest[] = [];
+  for (const key of keys) {
+    throwIfRequestAborted(requestSignal);
+    const request = await authorizeOrPrompt<string, EnvironmentDecisionRequest>({
+      identity: key,
+      loaded: loadedPolicy,
+      context: contextForAuthorization(ctx),
+      signal: requestSignal,
+      globalSafe: true,
+      deferAllowPersistence: true,
+      findDecision: (loaded, identity) => findEnvironmentPolicyDecision(loaded, identity),
+      recordDecisions: (projectPath, requests, signal) =>
+        policy.recordDecisions(projectPath, requests, signal),
+      makeRequest: (identity, decision) => ({ kind: "environment", key: identity, decision }),
+      promptText: (identity) => `Authorize access to environment variable ${identity}`,
+      error: errorForKind,
+    });
+    if (request !== undefined) {
+      staged.push(request);
+    }
+  }
   throwIfRequestAborted(requestSignal);
-  await persistEnvironmentDecisions(
-    policy,
-    loadedPolicy.projectPath,
-    stagedDecisions,
-    requestSignal,
-  );
+  if (staged.length === 0) {
+    return;
+  }
+  try {
+    await policy.recordDecisions(loadedPolicy.projectPath, staged, requestSignal);
+  } catch {
+    throw persistenceError(requestSignal);
+  }
   throwIfRequestAborted(requestSignal);
 }

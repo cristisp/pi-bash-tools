@@ -1,32 +1,34 @@
 import { mkdir, readFile, realpath, rename, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  createEnvironmentPolicyStoreForTesting,
-  findEnvironmentPolicyDecision,
-} from "../policy.ts";
+import { createPolicyStoreForTesting } from "./store.ts";
+import { findEnvironmentPolicyDecision } from "./decisions.ts";
 import { createPolicyTestFixtures } from "./test-fixtures.ts";
 
 const fixtures = createPolicyTestFixtures();
 
 afterEach(() => fixtures.cleanup());
 
-describe("environment policy storage races", () => {
+describe("shared policy storage races", () => {
   it("preserves unrelated decisions during serialized updates", async () => {
     const directory = await fixtures.createDirectory();
     const configPath = join(await realpath(directory), "bash-tools.json");
     const projectPath = await realpath(directory);
-    const store = createEnvironmentPolicyStoreForTesting({ configPath });
+    const store = createPolicyStoreForTesting({ configPath });
     const loaded = await store.load(directory);
 
     await Promise.all([
-      store.recordDecision(projectPath, "FIRST", "allow-project"),
-      store.recordDecision(projectPath, "SECOND", "deny-project"),
+      store.recordDecisions(projectPath, [
+        { kind: "environment", key: "FIRST", decision: "allow-project" },
+      ]),
+      store.recordDecisions(projectPath, [
+        { kind: "environment", key: "SECOND", decision: "deny-project" },
+      ]),
     ]);
-    expect(findEnvironmentPolicyDecision(loaded, projectPath, "FIRST")).toBe("unknown");
+    expect(findEnvironmentPolicyDecision(loaded, "FIRST")).toBe("unknown");
     const updated = await store.load(directory);
-    expect(findEnvironmentPolicyDecision(updated, projectPath, "FIRST")).toBe("allow-project");
-    expect(findEnvironmentPolicyDecision(updated, projectPath, "SECOND")).toBe("deny-project");
+    expect(findEnvironmentPolicyDecision(updated, "FIRST")).toBe("allow-project");
+    expect(findEnvironmentPolicyDecision(updated, "SECOND")).toBe("deny-project");
   });
 
   it.each(["lock", "temporary", "rename"] as const)(
@@ -48,7 +50,7 @@ describe("environment policy storage races", () => {
           await symlink(targetDirectory, policyDirectory);
         }
       };
-      const store = createEnvironmentPolicyStoreForTesting({
+      const store = createPolicyStoreForTesting({
         configPath,
         fs: {
           writeFile: async (path, data, options) => {
@@ -68,7 +70,9 @@ describe("environment policy storage races", () => {
           },
         },
       });
-      await store.recordDecision(policyRoot, "TOKEN", "allow-project");
+      await store.recordDecisions(policyRoot, [
+        { kind: "environment", key: "TOKEN", decision: "allow-project" },
+      ]);
       expect(swapped).toBe(true);
       expect(
         JSON.parse(await readFile(join(movedDirectory, "bash-tools.json"), "utf8")),
@@ -83,18 +87,22 @@ describe("environment policy storage races", () => {
     const directory = await fixtures.createDirectory();
     const configPath = join(await realpath(directory), "bash-tools.json");
     const projectPath = await realpath(directory);
-    const first = createEnvironmentPolicyStoreForTesting({ configPath });
-    const second = createEnvironmentPolicyStoreForTesting({ configPath });
+    const first = createPolicyStoreForTesting({ configPath });
+    const second = createPolicyStoreForTesting({ configPath });
 
     await Promise.all([
-      first.recordDecision(projectPath, "CONCURRENT", "deny-global"),
-      second.recordDecision(projectPath, "CONCURRENT", "allow-project"),
+      first.recordDecisions(projectPath, [
+        { kind: "environment", key: "CONCURRENT", decision: "deny-global" },
+      ]),
+      second.recordDecisions(projectPath, [
+        { kind: "environment", key: "CONCURRENT", decision: "allow-project" },
+      ]),
     ]);
 
     const policy = await first.load(projectPath);
-    expect(findEnvironmentPolicyDecision(policy, projectPath, "CONCURRENT")).toBe("deny-global");
-    expect(policy.global.deny).toContain("CONCURRENT");
-    expect(policy.projects[projectPath]?.allow).toContain("CONCURRENT");
+    expect(findEnvironmentPolicyDecision(policy, "CONCURRENT")).toBe("deny-global");
+    expect(policy.document.environment.global.deny).toContain("CONCURRENT");
+    expect(policy.document.environment.projects[projectPath]?.allow).toContain("CONCURRENT");
     await expect(stat(`${configPath}.lock`)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -104,12 +112,14 @@ describe("environment policy storage races", () => {
     const lockPath = `${configPath}.lock`;
     const projectPath = await realpath(directory);
     await writeFile(lockPath, "held by another process");
-    const store = createEnvironmentPolicyStoreForTesting({ configPath });
+    const store = createPolicyStoreForTesting({ configPath });
 
     const started = Date.now();
-    await expect(store.recordDecision(projectPath, "LOCKED", "allow-project")).rejects.toThrow(
-      /invalid or unreadable/iu,
-    );
+    await expect(
+      store.recordDecisions(projectPath, [
+        { kind: "environment", key: "LOCKED", decision: "allow-project" },
+      ]),
+    ).rejects.toThrow(/invalid or unreadable/iu);
     expect(Date.now() - started).toBeGreaterThanOrEqual(5_000);
     expect(await readFile(lockPath, "utf8")).toBe("held by another process");
   }, 10_000);

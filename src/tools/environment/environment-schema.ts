@@ -1,5 +1,5 @@
 import { Type, type Static } from "typebox";
-import { ENVIRONMENT_VARIABLE_NAME_PATTERN } from "./policy.ts";
+import { ENVIRONMENT_VARIABLE_NAME_PATTERN } from "../policy/format.ts";
 
 export const environmentInputSchema = Type.Object(
   {

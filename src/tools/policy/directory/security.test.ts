@@ -3,7 +3,7 @@ import { mkdir, realpath, rename, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createEnvironmentPolicyStoreForTesting } from "../../policy.ts";
+import { createPolicyStoreForTesting } from "../store.ts";
 import { createPolicyTestFixtures } from "../test-fixtures.ts";
 
 const fixtures = createPolicyTestFixtures();
@@ -11,7 +11,7 @@ const execFile = promisify(execFileCallback);
 
 afterEach(() => fixtures.cleanup());
 
-describe("environment policy directory security", () => {
+describe("policy directory security", () => {
   it("restores a safe cwd and releases the lease when the original cwd is replaced", async () => {
     const directory = await fixtures.createDirectory();
     const root = await realpath(directory);
@@ -25,7 +25,7 @@ describe("environment policy directory security", () => {
     await mkdir(policyDirectory);
     const configPath = join(policyDirectory, "bash-tools.json");
     let swapped = false;
-    const store = createEnvironmentPolicyStoreForTesting({
+    const store = createPolicyStoreForTesting({
       configPath,
       fs: {
         writeFile: async (path, data, options) => {
@@ -40,13 +40,15 @@ describe("environment policy directory security", () => {
     });
     try {
       process.chdir(workingDirectory);
-      await expect(store.recordDecision(root, "CWD", "allow-project")).rejects.toThrow(
-        /invalid or unreadable/iu,
-      );
+      await expect(
+        store.recordDecisions(root, [
+          { kind: "environment", key: "CWD", decision: "allow-project" },
+        ]),
+      ).rejects.toThrow(/invalid or unreadable/iu);
       expect(swapped).toBe(true);
       expect(process.cwd()).toBe("/");
       const loaded = await store.load(root);
-      expect(loaded.projects[root]?.allow).toEqual(["CWD"]);
+      expect(loaded.document.environment.projects[root]?.allow).toEqual(["CWD"]);
     } finally {
       process.chdir(originalCwd);
     }
@@ -56,17 +58,23 @@ describe("environment policy directory security", () => {
     const directory = await fixtures.createDirectory();
     const configPath = join(await realpath(directory), "bash-tools.json");
     const projectPath = await realpath(directory);
-    const store = createEnvironmentPolicyStoreForTesting({ configPath });
+    const store = createPolicyStoreForTesting({ configPath });
     const cwd = vi.spyOn(process, "cwd");
     cwd.mockImplementationOnce(() => {
       throw new Error("cwd unavailable");
     });
-    await expect(store.recordDecision(projectPath, "FIRST", "allow-project")).rejects.toThrow(
-      /invalid or unreadable/iu,
-    );
+    await expect(
+      store.recordDecisions(projectPath, [
+        { kind: "environment", key: "FIRST", decision: "allow-project" },
+      ]),
+    ).rejects.toThrow(/invalid or unreadable/iu);
     cwd.mockRestore();
-    await store.recordDecision(projectPath, "SECOND", "allow-project");
-    expect((await store.load(projectPath)).projects[projectPath]?.allow).toEqual(["SECOND"]);
+    await store.recordDecisions(projectPath, [
+      { kind: "environment", key: "SECOND", decision: "allow-project" },
+    ]);
+    expect(
+      (await store.load(projectPath)).document.environment.projects[projectPath]?.allow,
+    ).toEqual(["SECOND"]);
   });
 
   it("rejects symlink, dangling, directory, FIFO, and unsafe-parent policy paths", async () => {
@@ -96,15 +104,16 @@ describe("environment policy directory security", () => {
       join(unsafeParentLink, "bash-tools.json"),
       join(unsafeParentFile, "bash-tools.json"),
     ];
-    for (const configPath of unsafePaths) {
-      const store = createEnvironmentPolicyStoreForTesting({ configPath });
-      // eslint-disable-next-line no-await-in-loop
-      await expect(store.load(projectPath)).rejects.toThrow(/invalid or unreadable/iu);
-    }
+    await Promise.all(
+      unsafePaths.map(async (configPath) => {
+        const store = createPolicyStoreForTesting({ configPath });
+        await expect(store.load(projectPath)).rejects.toThrow(/invalid or unreadable/iu);
+      }),
+    );
 
     const fifoPath = join(directory, "fifo");
     await execFile("mkfifo", [fifoPath]);
-    const store = createEnvironmentPolicyStoreForTesting({ configPath: fifoPath });
+    const store = createPolicyStoreForTesting({ configPath: fifoPath });
     await expect(store.load(projectPath)).rejects.toThrow(/invalid or unreadable/iu);
   });
 });

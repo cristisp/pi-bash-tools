@@ -14,13 +14,8 @@ import {
   type SecureDirectory,
 } from "./directory/operations.ts";
 import { createEmptyEnvironmentPolicy, policyError } from "./format.ts";
-import {
-  copyEnvironmentIntoPolicyDocument,
-  parsePolicyDocument,
-  serializePolicyDocument,
-  type PolicyDocument,
-} from "./document.ts";
-import type { EnvironmentPolicyData } from "./types.ts";
+import { parsePolicyDocument, serializePolicyDocument } from "./document.ts";
+import type { PolicyDocument } from "./types.ts";
 
 const POLICY_LOCK_TIMEOUT_MS = 5_000;
 const POLICY_LOCK_RETRY_MS = 25;
@@ -74,15 +69,6 @@ export async function readPolicyDocument(
       await closeSecureDirectory(parent);
     }
   }
-}
-
-export async function readPolicyFile(
-  configPath: string,
-  fileSystem: PolicyFileSystem,
-  suppliedParent?: SecureDirectory,
-): Promise<EnvironmentPolicyData> {
-  const document = await readPolicyDocument(configPath, fileSystem, suppliedParent);
-  return document.environment;
 }
 
 async function validatePolicyDestination(
@@ -166,23 +152,6 @@ export async function writePolicyDocumentAtomically(
   }
 }
 
-export async function writePolicyAtomically(
-  configPath: string,
-  policy: EnvironmentPolicyData,
-  fileSystem: PolicyFileSystem,
-  suppliedParent?: SecureDirectory,
-  signal?: AbortSignal,
-): Promise<void> {
-  const current = await readPolicyDocument(configPath, fileSystem, suppliedParent);
-  await writePolicyDocumentAtomically(
-    configPath,
-    copyEnvironmentIntoPolicyDocument(current, policy),
-    fileSystem,
-    suppliedParent,
-    signal,
-  );
-}
-
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -193,19 +162,21 @@ async function acquirePolicyLockFile(
   deadline: number,
   signal: AbortSignal | undefined,
 ): Promise<void> {
-  try {
-    throwIfPolicyOperationAborted(signal);
-    await fileSystem.writeFile(lockPath, "", {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
-  } catch (error) {
-    if (!isPolicyFileAlreadyExistsError(error) || Date.now() >= deadline) {
-      throw policyError();
+  while (true) {
+    try {
+      throwIfPolicyOperationAborted(signal);
+      await fileSystem.writeFile(lockPath, "", {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+      return;
+    } catch (error) {
+      if (!isPolicyFileAlreadyExistsError(error) || Date.now() >= deadline) {
+        throw policyError();
+      }
+      await sleep(Math.min(POLICY_LOCK_RETRY_MS, Math.max(1, deadline - Date.now())));
     }
-    await sleep(Math.min(POLICY_LOCK_RETRY_MS, Math.max(1, deadline - Date.now())));
-    await acquirePolicyLockFile(lockPath, fileSystem, deadline, signal);
   }
 }
 

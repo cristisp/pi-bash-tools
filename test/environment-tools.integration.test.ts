@@ -6,7 +6,7 @@ import {
   createEnvironmentToolForTesting,
   type EnvironmentToolContext,
 } from "../src/tools/environment/environment-tool.ts";
-import { createEnvironmentPolicyStoreForTesting } from "../src/tools/environment/policy.ts";
+import { createPolicyStoreForTesting } from "../src/tools/policy/store.ts";
 
 const directories: string[] = [];
 
@@ -70,7 +70,7 @@ describe("environment tool with a real user policy file", () => {
     const directory = await mkdtemp(join(tmpdir(), "bash-tools-environment-integration-"));
     directories.push(directory);
     const configPath = join(await realpath(directory), "policy", "bash-tools.json");
-    const store = createEnvironmentPolicyStoreForTesting({ configPath });
+    const store = createPolicyStoreForTesting({ configPath });
     const loaded = await store.load(directory);
     await store.recordDecision(loaded.projectPath, "PRESENT", "allow-project");
     await store.recordDecision(loaded.projectPath, "ABSENT", "allow-project");

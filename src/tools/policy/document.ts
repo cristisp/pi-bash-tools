@@ -6,44 +6,23 @@ import {
   serializePolicy,
   validateProjectPath,
 } from "./format.ts";
-import type { EnvironmentPolicyData } from "./types.ts";
+import {
+  COMMAND_POLICY_VERSION,
+  type CommandIdentity,
+  type CommandPolicyData,
+  type CommandPolicyScope,
+  type EnvironmentPolicyData,
+  type PolicyDocument,
+} from "./types.ts";
 
 const POLICY_DOCUMENT_VERSION = 2 as const;
-const PROJECT_COMMAND_POLICY_VERSION = 1 as const;
-
-export interface ProjectCommandIdentity {
-  readonly commandId: string;
-  readonly fingerprint: string;
-}
-
-export interface ProjectCommandPolicyScope {
-  readonly allow: readonly ProjectCommandIdentity[];
-  readonly deny: readonly ProjectCommandIdentity[];
-}
-
-export interface ProjectCommandPolicyData {
-  readonly version: typeof PROJECT_COMMAND_POLICY_VERSION;
-  readonly global: ProjectCommandPolicyScope;
-  readonly projects: Readonly<Record<string, ProjectCommandPolicyScope>>;
-}
-
-export interface PolicyDocumentV2 {
-  readonly version: typeof POLICY_DOCUMENT_VERSION;
-  readonly environment: EnvironmentPolicyData;
-  readonly projectCommands: ProjectCommandPolicyData;
-}
-
-export type PolicyDocument =
-  | { readonly version: 1; readonly environment: EnvironmentPolicyData }
-  | PolicyDocumentV2;
 
 const PROJECT_COMMAND_ID_PATTERN = /^[a-z][a-z0-9_]*$/u;
-const PROJECT_COMMAND_IDS = new Set(["workspace_path", "node_version"]);
 const FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/u;
 const DOCUMENT_KEYS = new Set(["version", "environment", "projectCommands"]);
 const COMMAND_POLICY_KEYS = new Set(["version", "global", "projects"]);
 const COMMAND_SCOPE_KEYS = new Set(["allow", "deny"]);
-const DEFAULT_COMMAND_SCOPE: ProjectCommandPolicyScope = { allow: [], deny: [] };
+const DEFAULT_COMMAND_SCOPE: CommandPolicyScope = { allow: [], deny: [] };
 
 function commandIdentityRecord(value: unknown): Record<string, unknown> {
   if (!isPolicyRecord(value)) {
@@ -59,16 +38,12 @@ function validateCommandIdentityKeys(value: Record<string, unknown>): void {
   }
 }
 
-function commandIdentityValues(value: Record<string, unknown>): {
-  readonly commandId: string;
-  readonly fingerprint: string;
-} {
+function commandIdentityValues(value: Record<string, unknown>): CommandIdentity {
   const commandId = value.commandId;
   const fingerprint = value.fingerprint;
   if (
     typeof commandId !== "string" ||
     !PROJECT_COMMAND_ID_PATTERN.test(commandId) ||
-    !PROJECT_COMMAND_IDS.has(commandId) ||
     typeof fingerprint !== "string" ||
     !FINGERPRINT_PATTERN.test(fingerprint)
   ) {
@@ -77,17 +52,17 @@ function commandIdentityValues(value: Record<string, unknown>): {
   return { commandId, fingerprint };
 }
 
-function parseCommandIdentity(value: unknown): ProjectCommandIdentity {
+function parseCommandIdentity(value: unknown): CommandIdentity {
   const record = commandIdentityRecord(value);
   validateCommandIdentityKeys(record);
   return commandIdentityValues(record);
 }
 
-function identityKey(identity: ProjectCommandIdentity): string {
+function identityKey(identity: CommandIdentity): string {
   return `${identity.commandId}\u0000${identity.fingerprint}`;
 }
 
-function parseCommandIdentities(value: unknown): ProjectCommandIdentity[] {
+function parseCommandIdentities(value: unknown): CommandIdentity[] {
   if (!Array.isArray(value)) {
     throw policyError();
   }
@@ -98,7 +73,7 @@ function parseCommandIdentities(value: unknown): ProjectCommandIdentity[] {
   return identities;
 }
 
-function parseCommandScope(value: unknown): ProjectCommandPolicyScope {
+function parseCommandScope(value: unknown): CommandPolicyScope {
   if (!isPolicyRecord(value)) {
     throw policyError();
   }
@@ -112,38 +87,38 @@ function parseCommandScope(value: unknown): ProjectCommandPolicyScope {
   return { allow, deny };
 }
 
-function parseCommandProjects(value: unknown): Readonly<Record<string, ProjectCommandPolicyScope>> {
+function parseCommandProjects(value: unknown): Readonly<Record<string, CommandPolicyScope>> {
   if (!isPolicyRecord(value)) {
     throw policyError();
   }
-  const projects: Record<string, ProjectCommandPolicyScope> = {};
+  const projects: Record<string, CommandPolicyScope> = {};
   for (const [path, scope] of Object.entries(value)) {
     projects[validateProjectPath(path)] = parseCommandScope(scope);
   }
   return projects;
 }
 
-function parseProjectCommandPolicy(value: unknown): ProjectCommandPolicyData {
+function parseCommandPolicy(value: unknown): CommandPolicyData {
   if (!isPolicyRecord(value)) {
     throw policyError();
   }
   assertPolicyAllowedKeys(value, COMMAND_POLICY_KEYS);
-  if (value.version !== PROJECT_COMMAND_POLICY_VERSION) {
+  if (value.version !== COMMAND_POLICY_VERSION) {
     throw policyError();
   }
   const global =
     value.global === undefined ? DEFAULT_COMMAND_SCOPE : parseCommandScope(value.global);
   const projects = value.projects === undefined ? {} : parseCommandProjects(value.projects);
   return {
-    version: PROJECT_COMMAND_POLICY_VERSION,
+    version: COMMAND_POLICY_VERSION,
     global: { allow: [...global.allow], deny: [...global.deny] },
     projects,
   };
 }
 
-export function createEmptyProjectCommandPolicy(): ProjectCommandPolicyData {
+export function createEmptyCommandPolicy(): CommandPolicyData {
   return {
-    version: PROJECT_COMMAND_POLICY_VERSION,
+    version: COMMAND_POLICY_VERSION,
     global: { allow: [], deny: [] },
     projects: {},
   };
@@ -167,16 +142,16 @@ export function parsePolicyDocument(text: string): PolicyDocument {
     throw policyError();
   }
   const environment = parseEnvironmentPolicy(JSON.stringify(value.environment));
-  const projectCommands = parseProjectCommandPolicy(value.projectCommands);
+  const projectCommands = parseCommandPolicy(value.projectCommands);
   return { version: POLICY_DOCUMENT_VERSION, environment, projectCommands };
 }
 
-function serializeCommandIdentity(identity: ProjectCommandIdentity): ProjectCommandIdentity {
+function serializeCommandIdentity(identity: CommandIdentity): CommandIdentity {
   return { commandId: identity.commandId, fingerprint: identity.fingerprint };
 }
 
-function serializeCommandScope(scope: ProjectCommandPolicyScope): ProjectCommandPolicyScope {
-  const sort = (left: ProjectCommandIdentity, right: ProjectCommandIdentity): number =>
+function serializeCommandScope(scope: CommandPolicyScope): CommandPolicyScope {
+  const sort = (left: CommandIdentity, right: CommandIdentity): number =>
     identityKey(left).localeCompare(identityKey(right));
   return {
     allow: [...scope.allow].sort(sort).map(serializeCommandIdentity),
@@ -185,9 +160,9 @@ function serializeCommandScope(scope: ProjectCommandPolicyScope): ProjectCommand
 }
 
 function serializeCommandProjects(
-  projects: Readonly<Record<string, ProjectCommandPolicyScope>>,
-): Readonly<Record<string, ProjectCommandPolicyScope>> {
-  const result: Record<string, ProjectCommandPolicyScope> = {};
+  projects: Readonly<Record<string, CommandPolicyScope>>,
+): Readonly<Record<string, CommandPolicyScope>> {
+  const result: Record<string, CommandPolicyScope> = {};
   for (const path of Object.keys(projects).sort()) {
     const scope = projects[path];
     if (scope !== undefined) {
@@ -203,10 +178,10 @@ export function serializePolicyDocument(document: PolicyDocument): string {
   }
   return `${JSON.stringify(
     {
-      version: POLICY_DOCUMENT_VERSION,
+      version: 2,
       environment: document.environment,
       projectCommands: {
-        version: PROJECT_COMMAND_POLICY_VERSION,
+        version: COMMAND_POLICY_VERSION,
         global: serializeCommandScope(document.projectCommands.global),
         projects: serializeCommandProjects(document.projectCommands.projects),
       },
@@ -227,8 +202,8 @@ export function copyEnvironmentIntoPolicyDocument(
 
 export function copyProjectCommandsIntoPolicyDocument(
   document: PolicyDocument,
-  projectCommands: ProjectCommandPolicyData,
-): PolicyDocumentV2 {
+  projectCommands: CommandPolicyData,
+): Extract<PolicyDocument, { version: 2 }> {
   return {
     version: POLICY_DOCUMENT_VERSION,
     environment: document.environment,
@@ -236,12 +211,10 @@ export function copyProjectCommandsIntoPolicyDocument(
   };
 }
 
-export function validateProjectCommandIdentity(
-  identity: ProjectCommandIdentity,
-): ProjectCommandIdentity {
+export function validateCommandIdentity(identity: CommandIdentity): CommandIdentity {
   return parseCommandIdentity(identity);
 }
 
-export function commandIdentityKey(identity: ProjectCommandIdentity): string {
+export function commandIdentityKey(identity: CommandIdentity): string {
   return identityKey(identity);
 }

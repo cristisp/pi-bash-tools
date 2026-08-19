@@ -10,7 +10,6 @@ export type ProjectCommandExecutionStatus =
   | "nonzero"
   | "timeout"
   | "spawn-failure"
-  | "cleanup-failure"
   | "cancelled";
 
 export interface ProjectCommandOutput {
@@ -94,9 +93,8 @@ class Capture {
   output(): ProjectCommandOutput {
     const bytes = Buffer.concat(this.chunks, this.retainedBytes);
     const truncated = this.totalBytes > this.limit;
-    const text = decodeUtf8Prefix(bytes, this.limit, truncated);
     return {
-      text,
+      text: decodeUtf8Prefix(bytes, this.limit, truncated),
       truncated,
       totalBytes: this.totalBytes,
       totalLines:
@@ -138,144 +136,22 @@ function isAlreadyExited(error: unknown): boolean {
   );
 }
 
-function requirePid(child: ChildProcess): number {
-  const pid = child.pid;
-  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
-    throw new Error("process cleanup is unsupported");
-  }
-  return pid;
-}
-
 function sendSignal(child: ChildProcess, platform: NodeJS.Platform, signal: NodeJS.Signals): void {
   try {
     if (platform === "darwin") {
-      if (typeof process.kill !== "function") {
+      const pid = child.pid;
+      if (typeof pid !== "number") {
         throw new Error("process cleanup is unsupported");
       }
-      process.kill(-requirePid(child), signal);
-      return;
-    }
-    if (typeof child.kill !== "function") {
-      throw new Error("process cleanup is unsupported");
-    }
-    const killResult: unknown = child.kill(signal);
-    if (killResult === false) {
-      throw new Error("process cleanup is unsupported");
+      process.kill(-pid, signal);
+    } else {
+      child.kill(signal);
     }
   } catch (error) {
     if (!isAlreadyExited(error)) {
       throw error;
     }
   }
-}
-
-type ChildProcessEventListener = (...args: unknown[]) => void;
-
-function addChildEventListener(
-  child: ChildProcess,
-  event: string,
-  listener: ChildProcessEventListener,
-): boolean {
-  for (const methodName of ["once", "on", "addListener"]) {
-    const register = Reflect.get(child, methodName);
-    if (typeof register !== "function") {
-      continue;
-    }
-    try {
-      Reflect.apply(register, child, [event, listener]);
-      return true;
-    } catch {
-      // Try the next EventEmitter registration method before failing closed.
-    }
-  }
-  return false;
-}
-
-function addOutputDataListener(stream: unknown, capture: Capture): boolean {
-  if (stream === null || (typeof stream !== "object" && typeof stream !== "function")) {
-    return false;
-  }
-  const register = Reflect.get(stream, "on");
-  if (typeof register !== "function") {
-    return false;
-  }
-  try {
-    Reflect.apply(register, stream, [
-      "data",
-      (chunk: unknown) => {
-        if (Buffer.isBuffer(chunk) || typeof chunk === "string") {
-          capture.append(chunk);
-        }
-      },
-    ]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function canTerminate(child: ChildProcess, platform: NodeJS.Platform): boolean {
-  try {
-    requirePid(child);
-    return platform === "darwin"
-      ? typeof process.kill === "function"
-      : typeof child.kill === "function";
-  } catch {
-    return false;
-  }
-}
-
-function confirmedChildExit(child: ChildProcess): ProjectCommandExit | undefined {
-  let exitCode: unknown;
-  let signalCode: unknown;
-  try {
-    exitCode = Reflect.get(child, "exitCode");
-    signalCode = Reflect.get(child, "signalCode");
-  } catch {
-    return undefined;
-  }
-  if (typeof exitCode === "number" && exitCode >= 0) {
-    return { code: exitCode, signal: null };
-  }
-  if (typeof signalCode === "string") {
-    return { code: null, signal: signalCode };
-  }
-  return undefined;
-}
-
-function childHasExited(child: ChildProcess): boolean {
-  return confirmedChildExit(child) !== undefined;
-}
-
-function waitForCloseOrExit(
-  child: ChildProcess,
-  close: Promise<void>,
-  onExit: () => void,
-): Promise<void> {
-  return new Promise((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const finish = (): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
-      resolve();
-    };
-    const check = (): void => {
-      if (childHasExited(child)) {
-        onExit();
-        finish();
-        return;
-      }
-      timer = setTimeout(check, 10);
-    };
-    void close.then(finish);
-    check();
-  });
 }
 
 function waitForCloseOrTimeout(close: Promise<void>, milliseconds: number): Promise<boolean> {
@@ -293,58 +169,28 @@ function waitForCloseOrTimeout(close: Promise<void>, milliseconds: number): Prom
   });
 }
 
-interface SignalAttempt {
-  readonly failed: boolean;
-  readonly error: unknown;
-}
-
-function attemptSignal(
-  child: ChildProcess,
-  platform: NodeJS.Platform,
-  signal: NodeJS.Signals,
-): SignalAttempt {
-  try {
-    sendSignal(child, platform, signal);
-    return { failed: false, error: undefined };
-  } catch (error) {
-    return { failed: true, error };
-  }
-}
-
 async function terminateChild(
   child: ChildProcess,
   platform: NodeJS.Platform,
   close: Promise<void>,
   graceMs: number,
-  onConfirmedExit: () => void,
 ): Promise<void> {
-  if (!canTerminate(child, platform)) {
+  let terminationError: unknown;
+  try {
+    sendSignal(child, platform, "SIGTERM");
+  } catch (error) {
+    terminationError = error;
+  }
+  if (!(await waitForCloseOrTimeout(close, graceMs))) {
+    try {
+      sendSignal(child, platform, "SIGKILL");
+    } catch (error) {
+      terminationError ??= error;
+    }
     await close;
-    throw new Error("process cleanup is unsupported");
   }
-
-  const termination = attemptSignal(child, platform, "SIGTERM");
-  if (await waitForCloseOrTimeout(close, graceMs)) {
-    if (termination.failed) {
-      throw termination.error;
-    }
-    return;
-  }
-  if (childHasExited(child)) {
-    onConfirmedExit();
-    if (termination.failed) {
-      throw termination.error;
-    }
-    return;
-  }
-
-  const kill = attemptSignal(child, platform, "SIGKILL");
-  await waitForCloseOrExit(child, close, onConfirmedExit);
-  if (termination.failed) {
-    throw termination.error;
-  }
-  if (kill.failed) {
-    throw kill.error;
+  if (terminationError !== undefined) {
+    throw terminationError;
   }
 }
 
@@ -356,191 +202,95 @@ function spawnProjectCommand(
   return spawn(executable, [...args], options);
 }
 
-export function createProjectCommandExecutor(
-  options: ProjectCommandExecutorOptions = {},
-): (
-  definition: ProjectCommandDefinition,
-  cwd: string,
-  signal?: AbortSignal,
-) => Promise<ProjectCommandExecutionOutcome> {
-  const spawnCommand = options.spawn ?? spawnProjectCommand;
-  const platform = options.platform ?? process.platform;
-  const graceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
-  return async (definition, cwd, signal) =>
-    executeProjectCommand(definition, cwd, signal, {
-      spawn: spawnCommand,
-      platform,
-      processTimeoutMs: options.processTimeoutMs ?? definition.processTimeoutMs,
-      killGraceMs: graceMs,
-    });
-}
-
-interface ProjectCommandRunState {
+interface ChildRunState {
   exit: ProjectCommandExit;
   spawnFailure: boolean;
-  settled: boolean;
   timedOut: boolean;
   cancelled: boolean;
-  cleanupFailure: boolean;
 }
 
-interface ProjectCommandMonitorSetup {
-  readonly closeFinished: Promise<void>;
-  readonly terminationStarted: Promise<void>;
+interface ChildMonitor {
+  readonly state: ChildRunState;
+  readonly close: Promise<void>;
+  readonly termination: () => Promise<void> | undefined;
   readonly requestTermination: () => Promise<void>;
-  readonly getTermination: () => Promise<void> | undefined;
-  readonly canCleanUp: boolean;
-  readonly cleanupUnsupported: boolean;
 }
 
-function createProjectCommandMonitorSetup(
+function setupChildMonitor(
   child: ChildProcess,
   stdout: Capture,
   stderr: Capture,
   platform: NodeJS.Platform,
-  killGraceMs: number,
-  state: ProjectCommandRunState,
-): ProjectCommandMonitorSetup {
+  graceMs: number,
+): ChildMonitor {
+  const state: ChildRunState = {
+    exit: { code: null, signal: null },
+    spawnFailure: false,
+    timedOut: false,
+    cancelled: false,
+  };
   let closeResolve!: () => void;
-  const closeFinished = new Promise<void>((resolve) => {
+  const close = new Promise<void>((resolve) => {
     closeResolve = resolve;
   });
-  const markConfirmedExit = (): void => {
-    const exit = confirmedChildExit(child);
-    if (exit === undefined || state.settled) {
-      return;
-    }
-    state.exit = exit;
-    state.settled = true;
-    closeResolve();
-  };
-  const onClose: ChildProcessEventListener = (code, childSignal): void => {
+  const onClose = (code: number | null, childSignal: NodeJS.Signals | null): void => {
     state.exit = {
       code: typeof code === "number" ? code : null,
       signal: typeof childSignal === "string" ? childSignal : null,
     };
-    state.settled = true;
     closeResolve();
   };
-  const closeListenerAttached = addChildEventListener(child, "close", onClose);
-  const canCleanUp = canTerminate(child, platform);
-  if (childHasExited(child)) {
-    markConfirmedExit();
-  }
-  const childCompletion =
-    closeListenerAttached && canCleanUp && !state.settled
-      ? closeFinished
-      : waitForCloseOrExit(child, closeFinished, markConfirmedExit);
   let termination: Promise<void> | undefined;
-  let terminationStartedResolve!: () => void;
-  const terminationStarted = new Promise<void>((resolve) => {
-    terminationStartedResolve = resolve;
-  });
   const requestTermination = (): Promise<void> => {
-    if (termination === undefined) {
-      termination = terminateChild(
-        child,
-        platform,
-        childCompletion,
-        killGraceMs,
-        markConfirmedExit,
-      ).catch(() => {
-        if (!state.spawnFailure) {
-          state.cleanupFailure = true;
-        }
-      });
-      terminationStartedResolve();
-    }
+    termination ??= terminateChild(child, platform, close, graceMs).catch(() => undefined);
     return termination;
   };
-  const onError: ChildProcessEventListener = (): void => {
+  const onError = (): void => {
     state.spawnFailure = true;
-    if (!state.settled) {
-      void requestTermination();
-    }
+    void requestTermination();
   };
-  const errorListenerAttached = addChildEventListener(child, "error", onError);
-  const stdoutListenerAttached = addOutputDataListener(child.stdout, stdout);
-  const stderrListenerAttached = addOutputDataListener(child.stderr, stderr);
-  const listenersSupported = [
-    errorListenerAttached,
-    closeListenerAttached,
-    stdoutListenerAttached,
-    stderrListenerAttached,
-  ].every(Boolean);
-  const cleanupUnsupported = !listenersSupported || !canCleanUp;
-  if (!listenersSupported) {
-    state.cleanupFailure = true;
-  }
-  return {
-    closeFinished,
-    terminationStarted,
-    requestTermination,
-    getTermination: () => termination,
-    canCleanUp,
-    cleanupUnsupported,
-  };
+  child.once("error", onError);
+  child.once("close", onClose);
+  child.stdout!.on("data", (chunk: Buffer | string) => stdout.append(chunk));
+  child.stderr!.on("data", (chunk: Buffer | string) => stderr.append(chunk));
+  return { state, close, termination: () => termination, requestTermination };
 }
 
-async function monitorProjectCommand(
-  child: ChildProcess,
-  stdout: Capture,
-  stderr: Capture,
+async function monitorChild(
+  monitor: ChildMonitor,
   signal: AbortSignal | undefined,
-  platform: NodeJS.Platform,
   processTimeoutMs: number,
-  killGraceMs: number,
-): Promise<ProjectCommandRunState> {
-  const state: ProjectCommandRunState = {
-    exit: { code: null, signal: null },
-    spawnFailure: false,
-    settled: false,
-    timedOut: false,
-    cancelled: false,
-    cleanupFailure: false,
-  };
-  const setup = createProjectCommandMonitorSetup(
-    child,
-    stdout,
-    stderr,
-    platform,
-    killGraceMs,
-    state,
-  );
+): Promise<ChildRunState> {
   const onAbort = (): void => {
-    state.cancelled = true;
-    void setup.requestTermination();
+    monitor.state.cancelled = true;
+    void monitor.requestTermination();
   };
   signal?.addEventListener("abort", onAbort, { once: true });
   const timeoutId = setTimeout(
     () => {
-      state.timedOut = true;
-      void setup.requestTermination();
+      monitor.state.timedOut = true;
+      void monitor.requestTermination();
     },
     Math.max(0, processTimeoutMs),
   );
-
   if (signal?.aborted) {
     onAbort();
   }
-  if (setup.cleanupUnsupported) {
-    void setup.requestTermination();
+  try {
+    await monitor.close;
+    const termination = monitor.termination();
+    if (termination !== undefined) {
+      await termination;
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    signal?.removeEventListener("abort", onAbort);
   }
-  await Promise.race([
-    setup.closeFinished,
-    setup.terminationStarted.then(() => setup.getTermination() ?? Promise.resolve()),
-  ]);
-  const termination = setup.getTermination();
-  if (termination !== undefined) {
-    await termination;
-  }
-  clearTimeout(timeoutId);
-  signal?.removeEventListener("abort", onAbort);
-  return state;
+  return monitor.state;
 }
 
-function outcomeFromRunState(
-  state: ProjectCommandRunState,
+function outcomeFromState(
+  state: ChildRunState,
   stdout: Capture,
   stderr: Capture,
 ): ProjectCommandExecutionOutcome {
@@ -553,9 +303,6 @@ function outcomeFromRunState(
   };
   if (state.cancelled) {
     return { status: "cancelled", ...base };
-  }
-  if (state.cleanupFailure || !state.settled) {
-    return { status: "cleanup-failure", ...base };
   }
   if (state.timedOut) {
     return { status: "timeout", ...base };
@@ -570,9 +317,10 @@ async function executeProjectCommand(
   definition: ProjectCommandDefinition,
   cwd: string,
   signal: AbortSignal | undefined,
-  options: Required<
-    Pick<ProjectCommandExecutorOptions, "spawn" | "platform" | "processTimeoutMs" | "killGraceMs">
-  >,
+  spawnCommand: ProjectCommandSpawn,
+  platform: NodeJS.Platform,
+  processTimeoutMs: number,
+  graceMs: number,
 ): Promise<ProjectCommandExecutionOutcome> {
   if (signal?.aborted) {
     return emptyOutcome("cancelled");
@@ -585,10 +333,10 @@ async function executeProjectCommand(
   );
   let child: ChildProcess;
   try {
-    child = options.spawn(definition.executable, definition.args, {
+    child = spawnCommand(definition.executable, definition.args, {
       cwd,
       shell: false,
-      detached: options.platform === "darwin",
+      detached: platform === "darwin",
       env: { ...STATIC_ENVIRONMENT },
       stdio: ["ignore", "pipe", "pipe"],
       signal,
@@ -596,14 +344,33 @@ async function executeProjectCommand(
   } catch {
     return outcomeWithOutput("spawn-failure", stdout, stderr);
   }
-  const state = await monitorProjectCommand(
-    child,
-    stdout,
-    stderr,
-    signal,
-    options.platform,
-    options.processTimeoutMs,
-    options.killGraceMs,
-  );
-  return outcomeFromRunState(state, stdout, stderr);
+  try {
+    const monitor = setupChildMonitor(child, stdout, stderr, platform, graceMs);
+    const state = await monitorChild(monitor, signal, processTimeoutMs);
+    return outcomeFromState(state, stdout, stderr);
+  } catch {
+    return outcomeWithOutput("spawn-failure", stdout, stderr);
+  }
+}
+
+export function createProjectCommandExecutor(
+  options: ProjectCommandExecutorOptions = {},
+): (
+  definition: ProjectCommandDefinition,
+  cwd: string,
+  signal?: AbortSignal,
+) => Promise<ProjectCommandExecutionOutcome> {
+  const spawnCommand = options.spawn ?? spawnProjectCommand;
+  const platform = options.platform ?? process.platform;
+  const graceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
+  return (definition, cwd, signal) =>
+    executeProjectCommand(
+      definition,
+      cwd,
+      signal,
+      spawnCommand,
+      platform,
+      options.processTimeoutMs ?? definition.processTimeoutMs,
+      graceMs,
+    );
 }

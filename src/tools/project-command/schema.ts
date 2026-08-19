@@ -30,33 +30,22 @@ export class ProjectCommandToolError extends Error {
 }
 
 export function validateProjectCommandInput(params: unknown): ProjectCommandInput {
-  try {
-    if (typeof params !== "object" || params === null || Array.isArray(params)) {
-      throw new ProjectCommandToolError("Project command request is invalid");
-    }
-    const prototype = Object.getPrototypeOf(params);
-    const keys = Reflect.ownKeys(params);
-    if (
-      (prototype !== Object.prototype && prototype !== null) ||
-      keys.length !== 1 ||
-      keys[0] !== "commandId"
-    ) {
-      throw new ProjectCommandToolError("Project command request is invalid");
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(params, "commandId");
-    const commandId = descriptor?.value;
-    const definition =
-      typeof commandId === "string" ? getProjectCommandDefinition(commandId) : undefined;
-    if (descriptor === undefined || !("value" in descriptor) || definition === undefined) {
-      throw new ProjectCommandToolError("Project command request is invalid");
-    }
-    return { commandId: definition.commandId };
-  } catch (error) {
-    if (error instanceof ProjectCommandToolError) {
-      throw error;
-    }
+  if (typeof params !== "object" || params === null || Array.isArray(params)) {
     throw new ProjectCommandToolError("Project command request is invalid");
   }
+  const keys = Object.keys(params);
+  if (keys.length !== 1 || keys[0] !== "commandId") {
+    throw new ProjectCommandToolError("Project command request is invalid");
+  }
+  const commandId = (params as { readonly commandId?: unknown }).commandId;
+  if (typeof commandId !== "string") {
+    throw new ProjectCommandToolError("Project command request is invalid");
+  }
+  const definition = getProjectCommandDefinition(commandId);
+  if (definition === undefined) {
+    throw new ProjectCommandToolError("Project command request is invalid");
+  }
+  return { commandId: definition.commandId };
 }
 
 export function cancellationError(details?: unknown): ProjectCommandToolError {

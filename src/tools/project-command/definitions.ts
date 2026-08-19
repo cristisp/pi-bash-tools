@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ProjectCommandIdentity } from "../environment/policy/document.ts";
+import type { CommandIdentity } from "../policy/types.ts";
 
 export const PROJECT_COMMAND_NAMESPACE = "bash-tools.project-command" as const;
 const PROJECT_COMMAND_PROCESS_TIMEOUT_MS = 30_000;
@@ -51,7 +51,7 @@ const definitions: readonly ProjectCommandDefinition[] = Object.freeze([
   }),
 ]);
 
-const definitionsById = new Map<ProjectCommandId, ProjectCommandDefinition>(
+const definitionsById = new Map<string, ProjectCommandDefinition>(
   definitions.map((definition) => [definition.commandId, definition]),
 );
 
@@ -74,26 +74,19 @@ export function fingerprintProjectCommandDefinition(definition: ProjectCommandDe
   return createHash("sha256").update(fingerprintPayload(definition), "utf8").digest("hex");
 }
 
-export function projectCommandIdentity(
-  definition: ProjectCommandDefinition,
-): ProjectCommandIdentity {
+export function projectCommandIdentity(definition: ProjectCommandDefinition): CommandIdentity {
   return {
     commandId: definition.commandId,
     fingerprint: fingerprintProjectCommandDefinition(definition),
   };
 }
 
-const PROJECT_COMMAND_DEFINITIONS = definitions;
-
 export function getProjectCommandDefinition(
   commandId: string,
 ): ProjectCommandDefinition | undefined {
-  if (commandId !== "workspace_path" && commandId !== "node_version") {
-    return undefined;
-  }
   return definitionsById.get(commandId);
 }
 
 export function getProjectCommandDefinitions(): readonly ProjectCommandDefinition[] {
-  return PROJECT_COMMAND_DEFINITIONS;
+  return definitions;
 }

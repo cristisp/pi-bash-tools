@@ -15,18 +15,14 @@ import {
   loadEnvironmentPolicyForRequest,
 } from "./environment-authorization.ts";
 import type { EnvironmentOutput } from "./output.ts";
-import {
-  type EnvironmentPolicyStore,
-  type PolicyFileSystem,
-  createEnvironmentPolicyStore,
-  createEnvironmentPolicyStoreForTesting,
-} from "./policy.ts";
+import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
+import type { PolicyFileSystem, PolicyStore } from "../policy/types.ts";
 
 export interface EnvironmentToolTestOptions {
   readonly configPath: string;
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly fs?: Partial<PolicyFileSystem>;
-  readonly policy?: EnvironmentPolicyStore;
+  readonly policy?: PolicyStore;
 }
 
 export type EnvironmentToolContext = Omit<
@@ -49,14 +45,6 @@ export type EnvironmentToolDefinition = Omit<
   "execute"
 > & { execute: EnvironmentToolExecute };
 
-function defineEnvironmentTool(
-  tool: Omit<ToolDefinition<typeof environmentInputSchema, EnvironmentOutput>, "execute"> & {
-    execute: EnvironmentToolExecute;
-  },
-): EnvironmentToolDefinition {
-  return tool;
-}
-
 function makeEnvironmentToolResult(details: EnvironmentOutput): AgentToolResult<EnvironmentOutput> {
   return {
     content: [{ type: "text", text: JSON.stringify(details) }],
@@ -76,10 +64,10 @@ function readEnvironmentValues(
 }
 
 function createEnvironmentToolWithDependencies(
-  policy: EnvironmentPolicyStore,
+  policy: PolicyStore,
   environment: Readonly<Record<string, string | undefined>>,
 ): EnvironmentToolDefinition {
-  return defineEnvironmentTool({
+  return {
     name: "environment",
     label: "Environment",
     description:
@@ -100,11 +88,11 @@ function createEnvironmentToolWithDependencies(
       await authorizeAndPersistEnvironmentKeys(keys, ctx, loadedPolicy, policy, requestSignal);
       return makeEnvironmentToolResult({ values: readEnvironmentValues(keys, environment) });
     },
-  });
+  };
 }
 
 export function createEnvironmentTool(): EnvironmentToolDefinition {
-  return createEnvironmentToolWithDependencies(createEnvironmentPolicyStore(), process.env);
+  return createEnvironmentToolWithDependencies(createPolicyStore(), process.env);
 }
 
 export function createEnvironmentToolForTesting(
@@ -112,7 +100,7 @@ export function createEnvironmentToolForTesting(
 ): EnvironmentToolDefinition {
   const policy =
     options.policy ??
-    createEnvironmentPolicyStoreForTesting({
+    createPolicyStoreForTesting({
       configPath: options.configPath,
       fs: options.fs,
     });

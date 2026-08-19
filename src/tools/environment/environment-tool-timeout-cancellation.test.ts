@@ -252,7 +252,10 @@ describe("environment tool timeout and cancellation", () => {
       }),
     );
     controller.abort();
-    await expect(execution).rejects.toThrow(/cancelled/iu);
+    await expect(execution).rejects.toMatchObject({
+      message: "Environment request cancelled",
+      name: "AbortError",
+    });
     expect(JSON.parse(await readFile(cancelledFixture.configPath, "utf8"))).toEqual({
       version: 1,
       global: {},

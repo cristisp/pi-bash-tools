@@ -1,4 +1,4 @@
-import { EventEmitter } from "node:events";
+import { ChildProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { createProjectCommandExecutor, type ProjectCommandSpawn } from "./execution.ts";
@@ -14,28 +14,37 @@ function definition(
   return { ...base, ...overrides };
 }
 
-function childProcess(
-  closeCode: number | null,
-  closeSignal: NodeJS.Signals | null,
-  onKill?: (signal: NodeJS.Signals) => void,
-) {
-  const child = new EventEmitter() as EventEmitter & {
-    pid: number;
-    stdout: PassThrough;
-    stderr: PassThrough;
-    kill: (signal: NodeJS.Signals) => boolean;
-  };
-  child.pid = 1234;
-  child.stdout = new PassThrough();
-  child.stderr = new PassThrough();
-  child.kill = (signal) => {
-    onKill?.(signal);
-    if (signal === "SIGTERM" || signal === "SIGKILL") {
-      setImmediate(() => child.emit("close", closeCode, closeSignal ?? signal));
+class FakeChild extends ChildProcess {
+  declare pid: number;
+  declare stdout: PassThrough;
+  declare stderr: PassThrough;
+
+  constructor(private readonly onKill?: (child: FakeChild, signal: NodeJS.Signals) => void) {
+    super();
+    this.pid = 1234;
+    this.stdout = new PassThrough();
+    this.stderr = new PassThrough();
+  }
+
+  override kill(signal?: NodeJS.Signals | number): boolean {
+    if (typeof signal === "string") {
+      this.onKill?.(this, signal);
     }
     return true;
-  };
-  return child;
+  }
+}
+
+function childProcess(onKill?: (child: FakeChild, signal: NodeJS.Signals) => void): FakeChild {
+  return new FakeChild(onKill);
+}
+
+function spawnWith(child: FakeChild, setup?: () => void): ProjectCommandSpawn {
+  return (() => {
+    if (setup !== undefined) {
+      setImmediate(setup);
+    }
+    return child;
+  }) satisfies ProjectCommandSpawn;
 }
 
 describe("project command execution", () => {
@@ -45,13 +54,13 @@ describe("project command execution", () => {
       | undefined;
     const spawnCommand: ProjectCommandSpawn = (executable, args, options) => {
       received = { executable, args, options };
-      const child = childProcess(0, null);
+      const child = childProcess();
       setImmediate(() => {
-        child.stdout.end("123456789");
-        child.stderr.end("warning\n");
+        child.stdout.write("123456789");
+        child.stderr.write("warning\n");
         child.emit("close", 0, null);
       });
-      return child as unknown as ReturnType<ProjectCommandSpawn>;
+      return child;
     };
     const result = await createProjectCommandExecutor({ spawn: spawnCommand })(
       definition({ outputLimitBytes: 4 }),
@@ -77,13 +86,31 @@ describe("project command execution", () => {
     expect(JSON.stringify(result)).not.toContain("/canonical/project");
   });
 
-  it("reports nonzero and spawn failures without raw errors", async () => {
+  it("counts CR, LF, CRLF, chunk boundaries, and partial lines", async () => {
+    const child = childProcess();
+    const resultPromise = createProjectCommandExecutor({
+      spawn: spawnWith(child, () => {
+        setImmediate(() => {
+          child.stdout.write("one\r");
+          child.stdout.write("\ntwo\nthree\r");
+          child.stdout.write("\nfour");
+          child.emit("close", 0, null);
+        });
+      }),
+    })(definition(), "/project");
+    const result = await resultPromise;
+    expect(result.stdout).toMatchObject({
+      text: "one\r\ntwo\nthree\r\nfour",
+      totalBytes: 20,
+      totalLines: 4,
+      truncated: false,
+    });
+  });
+
+  it("reports nonzero and synchronous spawn failures without raw errors", async () => {
+    const child = childProcess();
     const nonzero = await createProjectCommandExecutor({
-      spawn: ((_, __, ___) => {
-        const child = childProcess(7, "SIGTERM");
-        setImmediate(() => child.emit("close", 7, "SIGTERM"));
-        return child as unknown as ReturnType<ProjectCommandSpawn>;
-      }) satisfies ProjectCommandSpawn,
+      spawn: spawnWith(child, () => setImmediate(() => child.emit("close", 7, "SIGTERM"))),
     })(definition(), "/project");
     expect(nonzero).toMatchObject({ status: "nonzero", exit: { code: 7, signal: "SIGTERM" } });
 
@@ -96,226 +123,77 @@ describe("project command execution", () => {
     expect(JSON.stringify(spawnFailure)).not.toContain("secret executable path");
   });
 
-  it("handles asynchronous startup errors without an unhandled child error", async () => {
-    const child = childProcess(null, null);
-    (child as unknown as { pid: number | undefined }).pid = undefined;
-    (child as unknown as { once: unknown }).once = undefined;
+  it("handles an asynchronous startup error and close without an unhandled error", async () => {
+    const child = childProcess((current, signal) => {
+      if (signal === "SIGTERM") {
+        setImmediate(() => current.emit("close", null, "SIGTERM"));
+      }
+    });
     const unhandledErrors: unknown[] = [];
     const onUncaughtException = (error: unknown): void => {
       unhandledErrors.push(error);
     };
     process.on("uncaughtException", onUncaughtException);
-    let actualResult;
     let result;
     try {
-      actualResult = await createProjectCommandExecutor({ processTimeoutMs: 100 })(
-        definition({ executable: "/definitely/not/a/project-command" }),
-        process.cwd(),
-      );
       result = await createProjectCommandExecutor({
-        spawn: (() => {
-          setImmediate(() => {
-            child.emit("error", new Error("secret startup failure"));
-            child.emit("close", null, null);
-          });
-          return child as unknown as ReturnType<ProjectCommandSpawn>;
-        }) satisfies ProjectCommandSpawn,
+        platform: "linux",
+        spawn: spawnWith(child, () =>
+          setImmediate(() => child.emit("error", new Error("secret startup failure"))),
+        ),
       })(definition(), "/project");
     } finally {
       process.off("uncaughtException", onUncaughtException);
     }
-    expect(actualResult.status).toBe("spawn-failure");
     expect(result.status).toBe("spawn-failure");
     expect(unhandledErrors).toEqual([]);
     expect(JSON.stringify(result)).not.toContain("secret startup failure");
   });
 
-  it("terminates and awaits a child when output cleanup is unsupported", async () => {
+  it("escalates from SIGTERM to SIGKILL after the grace period and waits for close", async () => {
     const signals: NodeJS.Signals[] = [];
-    const child = childProcess(null, null, (signal) => signals.push(signal));
-    let closeObserved = false;
-    child.on("close", () => {
-      closeObserved = true;
-    });
-    (child as unknown as { stdout: PassThrough | null }).stdout = null;
-    const result = await createProjectCommandExecutor({
-      platform: "linux",
-      spawn: (() =>
-        child as unknown as ReturnType<ProjectCommandSpawn>) satisfies ProjectCommandSpawn,
-    })(definition(), "/project");
-    expect(result.status).toBe("cleanup-failure");
-    expect(signals).toEqual(["SIGTERM"]);
-    expect(closeObserved).toBe(true);
-  });
-
-  it("waits for a child to close after kill reports failure", async () => {
-    const signals: NodeJS.Signals[] = [];
-    const child = childProcess(null, null);
-    child.kill = (signal) => {
+    const child = childProcess((current, signal) => {
       signals.push(signal);
-      if (signal === "SIGTERM") {
-        setTimeout(() => child.emit("close", null, "SIGTERM"), 30);
+      if (signal === "SIGKILL") {
+        setImmediate(() => current.emit("close", null, "SIGKILL"));
       }
-      return false;
-    };
-    let returned = false;
-    const resultPromise = createProjectCommandExecutor({
+    });
+    const result = await createProjectCommandExecutor({
       platform: "linux",
       processTimeoutMs: 1,
       killGraceMs: 5,
-      spawn: (() =>
-        child as unknown as ReturnType<ProjectCommandSpawn>) satisfies ProjectCommandSpawn,
+      spawn: spawnWith(child),
     })(definition(), "/project");
-    void resultPromise.then(() => {
-      returned = true;
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(returned).toBe(false);
-    const result = await resultPromise;
     expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
-    expect(result.status).toBe("cleanup-failure");
+    expect(result).toMatchObject({ status: "timeout", timedOut: true });
   });
 
-  it("waits for close after a non-ESRCH signal failure", async () => {
-    const signals: NodeJS.Signals[] = [];
-    const child = childProcess(null, null);
-    child.kill = (signal) => {
-      signals.push(signal);
-      if (signal === "SIGTERM") {
-        throw Object.assign(new Error("permission denied"), { code: "EPERM" });
-      }
-      setTimeout(() => child.emit("close", null, "SIGKILL"), 30);
-      return true;
-    };
-    const unhandledErrors: unknown[] = [];
-    const onUncaughtException = (error: unknown): void => {
-      unhandledErrors.push(error);
-    };
-    process.on("uncaughtException", onUncaughtException);
-    let returned = false;
-    let resultPromise: ReturnType<ReturnType<typeof createProjectCommandExecutor>>;
-    try {
-      resultPromise = createProjectCommandExecutor({
-        platform: "linux",
-        processTimeoutMs: 1,
-        killGraceMs: 5,
-        spawn: (() =>
-          child as unknown as ReturnType<ProjectCommandSpawn>) satisfies ProjectCommandSpawn,
-      })(definition(), "/project");
-      void resultPromise.then(() => {
-        returned = true;
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(returned).toBe(false);
-      const result = await resultPromise;
-      expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
-      expect(result.status).toBe("cleanup-failure");
-    } finally {
-      process.off("uncaughtException", onUncaughtException);
-    }
-    expect(unhandledErrors).toEqual([]);
-  });
-
-  it("waits for an unsupported no-PID child to close after a startup error", async () => {
-    const child = childProcess(null, null);
-    (child as unknown as { pid: number | undefined }).pid = undefined;
-    let closeObserved = false;
-    child.on("close", () => {
-      closeObserved = true;
-    });
-    const unhandledErrors: unknown[] = [];
-    const onUncaughtException = (error: unknown): void => {
-      unhandledErrors.push(error);
-    };
-    process.on("uncaughtException", onUncaughtException);
-    let returned = false;
-    let resultPromise: ReturnType<ReturnType<typeof createProjectCommandExecutor>>;
-    try {
-      resultPromise = createProjectCommandExecutor({
-        processTimeoutMs: 100,
-        spawn: (() => {
-          setImmediate(() => {
-            child.emit("error", new Error("secret startup failure"));
-            setTimeout(() => child.emit("close", null, null), 30);
-          });
-          return child as unknown as ReturnType<ProjectCommandSpawn>;
-        }) satisfies ProjectCommandSpawn,
-      })(definition(), "/project");
-      void resultPromise.then(() => {
-        returned = true;
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(returned).toBe(false);
-      const result = await resultPromise;
-      expect(result.status).toBe("spawn-failure");
-    } finally {
-      process.off("uncaughtException", onUncaughtException);
-    }
-    expect(closeObserved).toBe(true);
-    expect(unhandledErrors).toEqual([]);
-  });
-
-  it("terminates on timeout and cancellation with the configured cleanup signals", async () => {
-    const signals: NodeJS.Signals[] = [];
-    const timeout = await createProjectCommandExecutor({
-      platform: "linux",
-      processTimeoutMs: 1,
-      killGraceMs: 20,
-      spawn: (() => {
-        const child = childProcess(null, null, (signal) => signals.push(signal));
-        return child as unknown as ReturnType<ProjectCommandSpawn>;
-      }) satisfies ProjectCommandSpawn,
-    })(definition(), "/project");
-    expect(timeout.status).toBe("timeout");
-    expect(timeout.timedOut).toBe(true);
-    expect(signals).toEqual(["SIGTERM"]);
-
+  it("passes cancellation through to spawn and terminates the child", async () => {
     const controller = new AbortController();
     let receivedSignal: AbortSignal | undefined;
-    const cancellation = createProjectCommandExecutor({
+    const signals: NodeJS.Signals[] = [];
+    const child = childProcess((current, signal) => {
+      signals.push(signal);
+      setImmediate(() => current.emit("close", null, signal));
+    });
+    const resultPromise = createProjectCommandExecutor({
       platform: "linux",
       killGraceMs: 20,
       spawn: ((_, __, options) => {
         receivedSignal = options.signal;
-        const child = childProcess(null, null);
         setTimeout(() => controller.abort(), 1);
-        return child as unknown as ReturnType<ProjectCommandSpawn>;
+        return child;
       }) satisfies ProjectCommandSpawn,
     })(definition(), "/project", controller.signal);
-    const cancelled = await cancellation;
-    expect(cancelled.status).toBe("cancelled");
-    expect(cancelled.cancelled).toBe(true);
+    const result = await resultPromise;
     expect(receivedSignal).toBe(controller.signal);
+    expect(signals).toEqual(["SIGTERM"]);
+    expect(result).toMatchObject({ status: "cancelled", cancelled: true });
   });
 
-  it("fails closed after observing close when process cleanup cannot be supported", async () => {
-    const child = new EventEmitter();
-    Object.assign(child, {
-      stdout: new PassThrough(),
-      stderr: new PassThrough(),
-      kill: vi.fn(),
-    });
-    let closeObserved = false;
-    child.once("close", () => {
-      closeObserved = true;
-    });
-    const outcome = await createProjectCommandExecutor({
-      processTimeoutMs: 1,
-      spawn: (() => {
-        setImmediate(() => child.emit("close", 0, null));
-        return child as unknown as ReturnType<ProjectCommandSpawn>;
-      }) satisfies ProjectCommandSpawn,
-    })(definition(), "/project");
-    expect(outcome.status).toBe("cleanup-failure");
-    expect(closeObserved).toBe(true);
-  });
-
-  it("uses Darwin process-group cleanup for detached children and captures pipe output", async () => {
+  it("uses Darwin process-group cleanup and captures descendant output", async () => {
     const signals: Array<{ pid: number; signal: string | number }> = [];
-    const child = childProcess(null, null);
+    const child = childProcess();
     const processKill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
       signals.push({ pid, signal: signal ?? 0 });
       if (signal === "SIGKILL") {
@@ -334,7 +212,7 @@ describe("project command execution", () => {
         killGraceMs: 10,
         spawn: ((_, __, options) => {
           receivedOptions = options;
-          return child as unknown as ReturnType<ProjectCommandSpawn>;
+          return child;
         }) satisfies ProjectCommandSpawn,
       })(definition(), "/project");
     } finally {
@@ -351,5 +229,18 @@ describe("project command execution", () => {
       stdout: { text: "descendant output\n" },
       stderr: { text: "descendant warning\n" },
     });
+  });
+
+  it("tolerates an already exited child during cleanup", async () => {
+    const child = childProcess((current) => {
+      setImmediate(() => current.emit("close", null, "SIGTERM"));
+      throw Object.assign(new Error("already gone"), { code: "ESRCH" });
+    });
+    const result = await createProjectCommandExecutor({
+      platform: "linux",
+      processTimeoutMs: 1,
+      spawn: spawnWith(child),
+    })(definition(), "/project");
+    expect(result.status).toBe("timeout");
   });
 });

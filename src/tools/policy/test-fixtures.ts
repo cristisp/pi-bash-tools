@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDirectoryTestFixtures } from "../../../../test/directory-test-fixtures.ts";
+import { createDirectoryTestFixtures } from "../../../test/directory-test-fixtures.ts";
 
 export function createPolicyTestFixtures() {
   const directoryFixtures = createDirectoryTestFixtures();

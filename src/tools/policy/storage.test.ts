@@ -2,23 +2,25 @@ import { chmod, readFile, realpath, stat, unlink, writeFile } from "node:fs/prom
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { createEnvironmentPolicyStore, createEnvironmentPolicyStoreForTesting } from "../policy.ts";
+import { createPolicyStore, createPolicyStoreForTesting } from "./store.ts";
 import { createPolicyTestFixtures } from "./test-fixtures.ts";
 
 const fixtures = createPolicyTestFixtures();
 
 afterEach(() => fixtures.cleanup());
 
-describe("environment policy storage", () => {
+describe("shared policy storage", () => {
   it("canonicalizes the project and writes decisions atomically with restrictive permissions", async () => {
     const directory = await fixtures.createDirectory();
     const configPath = join(await realpath(directory), "agent", "bash-tools.json");
     const projectPath = await realpath(directory);
-    const store = createEnvironmentPolicyStoreForTesting({ configPath });
+    const store = createPolicyStoreForTesting({ configPath });
 
     const loaded = await store.load(join(directory, "."));
     expect(loaded.projectPath).toBe(projectPath);
-    await store.recordDecision(loaded.projectPath, "TOKEN", "allow-project");
+    await store.recordDecisions(loaded.projectPath, [
+      { kind: "environment", key: "TOKEN", decision: "allow-project" },
+    ]);
 
     const saved = JSON.parse(await readFile(configPath, "utf8"));
     expect(saved).toMatchObject({ projects: { [projectPath]: { allow: ["TOKEN"] } } });
@@ -31,7 +33,7 @@ describe("environment policy storage", () => {
     const policyRoot = await realpath(directory);
     const configPath = join(policyRoot, "bash-tools.json");
     let temporaryUnlinked = false;
-    const store = createEnvironmentPolicyStoreForTesting({
+    const store = createPolicyStoreForTesting({
       configPath,
       fs: {
         chmod: async (path) => {
@@ -48,9 +50,11 @@ describe("environment policy storage", () => {
       },
     });
 
-    await expect(store.recordDecision(policyRoot, "CHMOD", "allow-project")).rejects.toThrow(
-      /invalid or unreadable/iu,
-    );
+    await expect(
+      store.recordDecisions(policyRoot, [
+        { kind: "environment", key: "CHMOD", decision: "allow-project" },
+      ]),
+    ).rejects.toThrow(/invalid or unreadable/iu);
     expect(temporaryUnlinked).toBe(true);
   });
 
@@ -58,9 +62,11 @@ describe("environment policy storage", () => {
     const directory = await fixtures.createDirectory();
     const policyRoot = await realpath(directory);
     const configPath = join(policyRoot, "first", "second", "bash-tools.json");
-    const store = createEnvironmentPolicyStoreForTesting({ configPath });
+    const store = createPolicyStoreForTesting({ configPath });
 
-    await store.recordDecision(policyRoot, "NESTED", "allow-project");
+    await store.recordDecisions(policyRoot, [
+      { kind: "environment", key: "NESTED", decision: "allow-project" },
+    ]);
 
     expect((await stat(join(policyRoot, "first"))).isDirectory()).toBe(true);
     expect((await stat(join(policyRoot, "first", "second"))).isDirectory()).toBe(true);
@@ -74,7 +80,7 @@ describe("environment policy storage", () => {
     const configPath = join(await realpath(directory), "bash-tools.json");
     await writeFile(configPath, '{"version":1,"global":{"allow":["SECRET"]}}');
     await chmod(configPath, 0o000);
-    const store = createEnvironmentPolicyStoreForTesting({ configPath });
+    const store = createPolicyStoreForTesting({ configPath });
     try {
       await expect(store.load(directory)).rejects.toThrow(/invalid or unreadable/iu);
     } finally {
@@ -83,6 +89,6 @@ describe("environment policy storage", () => {
   });
 
   it("uses only the fixed production policy path", () => {
-    expect(createEnvironmentPolicyStore().configPath).toBe(join(getAgentDir(), "bash-tools.json"));
+    expect(createPolicyStore().configPath).toBe(join(getAgentDir(), "bash-tools.json"));
   });
 });

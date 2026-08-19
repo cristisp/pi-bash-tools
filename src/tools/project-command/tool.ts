@@ -4,6 +4,11 @@ import type {
   ExtensionContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { authorizeOrPrompt, type AuthorizationErrorKind } from "../authorization.ts";
+import { displayPath } from "../path-display.ts";
+import { findProjectCommandPolicyDecision } from "../policy/decisions.ts";
+import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
+import type { CommandIdentity, PolicyStore, PolicyStoreTestOptions } from "../policy/types.ts";
 import {
   getProjectCommandDefinitions,
   projectCommandIdentity,
@@ -17,21 +22,6 @@ import {
   type ProjectCommandInput,
   validateProjectCommandInput,
 } from "./schema.ts";
-import {
-  decisionForProjectCommandChoice,
-  projectCommandCanPrompt,
-  promptForProjectCommand,
-  type ProjectCommandPromptResult,
-} from "./prompt.ts";
-import {
-  createProjectCommandPolicyStore,
-  createProjectCommandPolicyStoreForTesting,
-  type LoadedProjectCommandPolicy,
-  type ProjectCommandPolicyStore,
-} from "./policy.ts";
-import { findProjectCommandPolicyDecision } from "./policy-decisions.ts";
-import type { ProjectCommandIdentity } from "../environment/policy/document.ts";
-import { displayPath } from "../path-display.ts";
 
 export interface ProjectCommandOutputDetails {
   readonly commandId: string;
@@ -60,8 +50,8 @@ export type ProjectCommandExecutor = (
 
 export interface ProjectCommandToolTestOptions {
   readonly configPath?: string;
-  readonly fs?: Partial<import("../environment/policy/filesystem.ts").PolicyFileSystem>;
-  readonly policy?: ProjectCommandPolicyStore;
+  readonly fs?: Partial<import("../policy/filesystem.ts").PolicyFileSystem>;
+  readonly policy?: PolicyStore;
   readonly executor?: ProjectCommandExecutor;
   readonly definitions?: readonly ProjectCommandDefinition[];
 }
@@ -89,7 +79,7 @@ function result(
 }
 
 function outputDetails(
-  identity: ProjectCommandIdentity,
+  identity: CommandIdentity,
   projectPath: string,
   outcome: ProjectCommandExecutionOutcome,
 ): ProjectCommandOutputDetails {
@@ -108,161 +98,95 @@ function outputDetails(
 
 function failure(
   message: string,
-  identity: ProjectCommandIdentity,
+  identity: CommandIdentity,
   projectPath: string,
   outcome: ProjectCommandExecutionOutcome,
 ): ProjectCommandToolError {
   return new ProjectCommandToolError(message, outputDetails(identity, projectPath, outcome));
 }
 
-async function persistDecision(
-  policy: ProjectCommandPolicyStore,
-  loaded: LoadedProjectCommandPolicy,
-  identity: ProjectCommandIdentity,
-  decision: "deny-global" | "deny-project" | "allow-global" | "allow-project",
-  signal: AbortSignal | undefined,
-  globalSafe: boolean,
-): Promise<void> {
-  if (signal?.aborted) {
-    throw cancellationError();
+function commandCancellationError(): ProjectCommandToolError {
+  return cancellationError();
+}
+
+const PROJECT_COMMAND_AUTHORIZATION_MESSAGES: Record<
+  Exclude<AuthorizationErrorKind, "cancelled" | "dismissed">,
+  string
+> = {
+  denied: "Project command denied by policy",
+  "not-authorized": "Project command is not authorized in this mode",
+  timeout: "Project command confirmation timed out",
+  confirmation: "Project command confirmation failed",
+  save: "Unable to save project command policy",
+  "unsafe-global": "Project command cannot be allowed globally",
+  "invalid-choice": "Project command confirmation returned an invalid choice",
+  load: "Unable to load project command policy",
+};
+
+function authorizationError(kind: AuthorizationErrorKind): ProjectCommandToolError {
+  if (kind === "cancelled" || kind === "dismissed") {
+    return commandCancellationError();
   }
-  try {
-    await policy.recordDecision(loaded.projectPath, identity, decision, signal, globalSafe);
-  } catch {
-    if (signal?.aborted) {
-      throw cancellationError();
-    }
-    throw new ProjectCommandToolError("Unable to save project command policy");
-  }
+  return new ProjectCommandToolError(PROJECT_COMMAND_AUTHORIZATION_MESSAGES[kind]);
+}
+
+function throwIfRequestAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
-    throw cancellationError();
+    throw commandCancellationError();
   }
 }
 
-async function resolveSelectedPrompt(
-  choice: string | undefined,
-  policy: ProjectCommandPolicyStore,
-  loaded: LoadedProjectCommandPolicy,
-  definition: ProjectCommandDefinition,
-  identity: ProjectCommandIdentity,
-  signal: AbortSignal | undefined,
-): Promise<"allow-global" | "allow-project"> {
-  if (choice === undefined || signal?.aborted) {
-    throw cancellationError();
-  }
-  const decision = decisionForProjectCommandChoice(choice);
-  if (decision === "deny-global" || decision === "deny-project") {
-    await persistDecision(policy, loaded, identity, decision, signal, definition.globalSafe);
-    throw new ProjectCommandToolError("Project command denied by policy");
-  }
-  if (decision === "allow-global" && !definition.globalSafe) {
-    throw new ProjectCommandToolError("Project command cannot be allowed globally");
-  }
-  return decision;
-}
-
-async function resolvePrompt(
-  prompt: ProjectCommandPromptResult,
-  policy: ProjectCommandPolicyStore,
-  loaded: LoadedProjectCommandPolicy,
-  definition: ProjectCommandDefinition,
-  identity: ProjectCommandIdentity,
-  signal: AbortSignal | undefined,
-): Promise<"allow-global" | "allow-project"> {
-  switch (prompt.kind) {
-    case "timeout":
-      await persistDecision(
-        policy,
-        loaded,
-        identity,
-        "deny-project",
-        signal,
-        definition.globalSafe,
-      );
-      throw new ProjectCommandToolError("Project command confirmation timed out");
-    case "cancelled":
-      throw cancellationError();
-    case "error":
-      throw new ProjectCommandToolError("Project command confirmation failed");
-    case "selected":
-      return resolveSelectedPrompt(prompt.choice, policy, loaded, definition, identity, signal);
-    default:
-      throw new ProjectCommandToolError("Project command confirmation failed");
-  }
-}
-
-function rethrowProjectCommandCancellation(error: unknown, signal: AbortSignal | undefined): void {
-  if (error instanceof ProjectCommandToolError && error.name === "AbortError") {
-    throw error;
-  }
-  if (signal?.aborted) {
-    throw cancellationError();
-  }
-}
-
-async function loadProjectCommandPolicy(
-  policy: ProjectCommandPolicyStore,
-  cwd: string,
-  signal: AbortSignal | undefined,
-): Promise<LoadedProjectCommandPolicy> {
-  if (signal?.aborted) {
-    throw cancellationError();
-  }
+async function loadPolicy(policy: PolicyStore, cwd: string, signal: AbortSignal | undefined) {
+  throwIfRequestAborted(signal);
   try {
     const loaded = await policy.load(cwd);
-    if (signal?.aborted) {
-      throw cancellationError();
-    }
+    throwIfRequestAborted(signal);
     return loaded;
   } catch (error) {
-    rethrowProjectCommandCancellation(error, signal);
+    if (error instanceof ProjectCommandToolError && error.name === "AbortError") {
+      throw error;
+    }
+    if (signal?.aborted) {
+      throw commandCancellationError();
+    }
     throw new ProjectCommandToolError("Unable to load project command policy");
   }
 }
 
-async function authorizeProjectCommand(
-  policy: ProjectCommandPolicyStore,
-  loaded: LoadedProjectCommandPolicy,
+async function authorizeCommand(
+  policy: PolicyStore,
+  loaded: Awaited<ReturnType<PolicyStore["load"]>>,
   definition: ProjectCommandDefinition,
-  identity: ProjectCommandIdentity,
+  identity: CommandIdentity,
   ctx: ProjectCommandToolContext,
   signal: AbortSignal | undefined,
 ): Promise<void> {
-  let authorization: ReturnType<typeof findProjectCommandPolicyDecision>;
-  try {
-    authorization = findProjectCommandPolicyDecision(
-      {
-        version: 1,
-        global: loaded.global,
-        projects: { [loaded.projectPath]: loaded.project },
-      },
-      loaded.projectPath,
-      identity,
-      definition.globalSafe,
-    );
-  } catch {
-    throw new ProjectCommandToolError("Unable to load project command policy");
-  }
-  if (authorization === "deny-global" || authorization === "deny-project") {
-    throw new ProjectCommandToolError("Project command denied by policy");
-  }
-  if (authorization !== "unknown") {
-    return;
-  }
-  if (!projectCommandCanPrompt(ctx.mode, ctx.hasUI, signal)) {
-    throw new ProjectCommandToolError("Project command is not authorized in this mode");
-  }
-  const prompt = await promptForProjectCommand(
-    ctx,
-    definition.commandId,
-    loaded.confirmationTimeoutMs,
+  await authorizeOrPrompt<
+    CommandIdentity,
+    Extract<import("../policy/types.ts").PolicyDecisionRequest, { kind: "project-command" }>
+  >({
+    identity,
+    loaded,
+    context: ctx,
     signal,
-  );
-  const decision = await resolvePrompt(prompt, policy, loaded, definition, identity, signal);
-  await persistDecision(policy, loaded, identity, decision, signal, definition.globalSafe);
+    globalSafe: definition.globalSafe,
+    deferAllowPersistence: false,
+    findDecision: (current, currentIdentity) =>
+      findProjectCommandPolicyDecision(current, currentIdentity, definition.globalSafe),
+    recordDecisions: (projectPath, requests, requestSignal) =>
+      policy.recordDecisions(projectPath, requests, requestSignal),
+    makeRequest: (currentIdentity, decision) => ({
+      kind: "project-command",
+      identity: currentIdentity,
+      decision,
+      globalSafe: definition.globalSafe,
+    }),
+    promptText: (currentIdentity) => `Authorize project command ${currentIdentity.commandId}`,
+    error: authorizationError,
+  });
 }
 
-function executionFailureOutcome(): ProjectCommandExecutionOutcome {
+function failureOutcome(): ProjectCommandExecutionOutcome {
   return {
     status: "spawn-failure",
     exit: { code: null, signal: null },
@@ -273,7 +197,7 @@ function executionFailureOutcome(): ProjectCommandExecutionOutcome {
   };
 }
 
-async function executeAuthorizedProjectCommand(
+async function executeAuthorizedCommand(
   executor: ProjectCommandExecutor,
   definition: ProjectCommandDefinition,
   projectPath: string,
@@ -282,11 +206,11 @@ async function executeAuthorizedProjectCommand(
   try {
     return await executor(definition, projectPath, signal);
   } catch {
-    return executionFailureOutcome();
+    return failureOutcome();
   }
 }
 
-function executionFailureMessage(
+function failureMessage(
   status: Exclude<ProjectCommandExecutionOutcome["status"], "success" | "cancelled">,
 ): string {
   switch (status) {
@@ -296,15 +220,13 @@ function executionFailureMessage(
       return "Project command timed out";
     case "spawn-failure":
       return "Project command could not be started";
-    case "cleanup-failure":
-      return "Project command cleanup was unsupported";
     default:
       return "Project command failed";
   }
 }
 
-function createProjectCommandToolWithDependencies(
-  policy: ProjectCommandPolicyStore,
+function createToolWithDependencies(
+  policy: PolicyStore,
   executor: ProjectCommandExecutor,
   definitions: readonly ProjectCommandDefinition[],
 ): ProjectCommandToolDefinition {
@@ -332,13 +254,11 @@ function createProjectCommandToolWithDependencies(
         throw new ProjectCommandToolError("Project command request is invalid");
       }
       const requestSignal = signal ?? ctx.signal;
-      const loaded = await loadProjectCommandPolicy(policy, ctx.cwd, requestSignal);
+      const loaded = await loadPolicy(policy, ctx.cwd, requestSignal);
       const identity = projectCommandIdentity(definition);
-      await authorizeProjectCommand(policy, loaded, definition, identity, ctx, requestSignal);
-      if (requestSignal?.aborted) {
-        throw cancellationError();
-      }
-      const outcome = await executeAuthorizedProjectCommand(
+      await authorizeCommand(policy, loaded, definition, identity, ctx, requestSignal);
+      throwIfRequestAborted(requestSignal);
+      const outcome = await executeAuthorizedCommand(
         executor,
         definition,
         loaded.projectPath,
@@ -349,12 +269,7 @@ function createProjectCommandToolWithDependencies(
         throw cancellationError(details);
       }
       if (outcome.status !== "success") {
-        throw failure(
-          executionFailureMessage(outcome.status),
-          identity,
-          loaded.projectPath,
-          outcome,
-        );
+        throw failure(failureMessage(outcome.status), identity, loaded.projectPath, outcome);
       }
       return result(details);
     },
@@ -362,15 +277,15 @@ function createProjectCommandToolWithDependencies(
 }
 
 export function createProjectCommandTool(): ProjectCommandToolDefinition {
-  return createProjectCommandToolWithDependencies(
-    createProjectCommandPolicyStore(),
+  return createToolWithDependencies(
+    createPolicyStore(),
     createProjectCommandExecutor(),
     getProjectCommandDefinitions(),
   );
 }
 
 export function createProjectCommandToolForTesting(
-  options: ProjectCommandToolTestOptions & { readonly policy: ProjectCommandPolicyStore },
+  options: ProjectCommandToolTestOptions & { readonly policy: PolicyStore },
 ): ProjectCommandToolDefinition;
 export function createProjectCommandToolForTesting(
   options: ProjectCommandToolTestOptions & { readonly configPath: string },
@@ -383,12 +298,12 @@ export function createProjectCommandToolForTesting(
     if (options.configPath === undefined) {
       throw new ProjectCommandToolError("A policy or config path is required for testing");
     }
-    policy = createProjectCommandPolicyStoreForTesting({
+    policy = createPolicyStoreForTesting({
       configPath: options.configPath,
       fs: options.fs,
-    });
+    } satisfies PolicyStoreTestOptions);
   }
-  return createProjectCommandToolWithDependencies(
+  return createToolWithDependencies(
     policy,
     options.executor ?? createProjectCommandExecutor(),
     options.definitions ?? getProjectCommandDefinitions(),

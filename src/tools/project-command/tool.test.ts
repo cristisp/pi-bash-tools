@@ -1,10 +1,8 @@
 import { readFile, realpath, writeFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import { createProjectCommandToolForTesting } from "./tool.ts";
-import {
-  createProjectCommandPolicyStoreForTesting,
-  type ProjectCommandPolicyStore,
-} from "./policy.ts";
+import { createPolicyStoreForTesting } from "../policy/store.ts";
+import type { PolicyStore } from "../policy/types.ts";
 import { getProjectCommandDefinition, projectCommandIdentity } from "./definitions.ts";
 import type { ProjectCommandToolContext } from "./tool.ts";
 import { mkdtemp } from "node:fs/promises";
@@ -62,6 +60,77 @@ function successExecutor() {
 }
 
 describe("project command tool authorization", () => {
+  it("reports a dismissed confirmation as an abort cancellation", async () => {
+    const fixtureData = await fixture();
+    const tool = createProjectCommandToolForTesting({ configPath: fixtureData.configPath });
+    const execution = tool.execute(
+      "1",
+      { commandId: "workspace_path" },
+      undefined,
+      undefined,
+      context(fixtureData.directory, {
+        mode: "tui",
+        hasUI: true,
+        ui: { select: async () => undefined },
+      }),
+    );
+    await expect(execution).rejects.toMatchObject({
+      message: "Project command request cancelled",
+      name: "AbortError",
+    });
+    expect(JSON.parse(await readFile(fixtureData.configPath, "utf8"))).toEqual({ version: 1 });
+  });
+
+  it("preserves cancellation when policy loading fails after abort", async () => {
+    const fixtureData = await fixture();
+    const controller = new AbortController();
+    const policy: PolicyStore = {
+      configPath: fixtureData.configPath,
+      load: async () => {
+        controller.abort();
+        throw new Error("policy load failed");
+      },
+      recordDecisions: async () => undefined,
+    };
+    const tool = createProjectCommandToolForTesting({ policy });
+    await expect(
+      tool.execute(
+        "1",
+        { commandId: "workspace_path" },
+        controller.signal,
+        undefined,
+        context(fixtureData.directory),
+      ),
+    ).rejects.toMatchObject({
+      message: "Project command request cancelled",
+      name: "AbortError",
+    });
+  });
+
+  it("maps non-cancellation policy load failures", async () => {
+    const fixtureData = await fixture();
+    const policy: PolicyStore = {
+      configPath: fixtureData.configPath,
+      load: async () => {
+        throw new Error("policy load failed");
+      },
+      recordDecisions: async () => undefined,
+    };
+    const tool = createProjectCommandToolForTesting({ policy });
+    await expect(
+      tool.execute(
+        "1",
+        { commandId: "workspace_path" },
+        undefined,
+        undefined,
+        context(fixtureData.directory),
+      ),
+    ).rejects.toMatchObject({
+      message: "Unable to load project command policy",
+      name: "ProjectCommandToolError",
+    });
+  });
+
   it("rejects unknown commands without UI and leaves policy unchanged", async () => {
     const fixtureData = await fixture();
     const tool = createProjectCommandToolForTesting({ configPath: fixtureData.configPath });
@@ -169,17 +238,15 @@ describe("project command tool authorization", () => {
 
   it("does not execute after a committed decision is followed by cancellation", async () => {
     const fixtureData = await fixture();
-    const base = createProjectCommandPolicyStoreForTesting({ configPath: fixtureData.configPath });
+    const base = createPolicyStoreForTesting({ configPath: fixtureData.configPath });
     const controller = new AbortController();
-    const policy: ProjectCommandPolicyStore = {
+    const policy: PolicyStore = {
       configPath: base.configPath,
       load: (cwd) => base.load(cwd),
-      recordDecision: async (projectPath, identity, decision, signal, globalSafe) => {
-        await base.recordDecision(projectPath, identity, decision, signal, globalSafe);
+      recordDecisions: async (projectPath, decisions, signal) => {
+        await base.recordDecisions(projectPath, decisions, signal);
         controller.abort();
       },
-      recordDecisions: (projectPath, decisions, signal) =>
-        base.recordDecisions(projectPath, decisions, signal),
     };
     const executor = successExecutor();
     const tool = createProjectCommandToolForTesting({ policy, executor });
