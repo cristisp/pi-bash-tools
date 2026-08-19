@@ -12,6 +12,11 @@ describe("project command definitions", () => {
     expect(definitions.map((definition) => definition.commandId)).toEqual([
       "workspace_path",
       "node_version",
+      "node_project_info",
+      "node_test",
+      "node_build",
+      "node_lint",
+      "node_typecheck",
     ]);
     expect(
       definitions.every((definition) => definition.namespace === PROJECT_COMMAND_NAMESPACE),
@@ -32,6 +37,20 @@ describe("project command definitions", () => {
       executable: process.execPath,
       args: ["--version"],
     });
+    expect(definitions.slice(2)).toMatchObject([
+      { commandId: "node_project_info", risk: "observe", globalSafe: true },
+      {
+        commandId: "node_test",
+        risk: "project-code",
+        globalSafe: false,
+        fixedScriptKey: "test",
+        truncationDirection: "tail",
+        environmentProfile: "node-v1",
+      },
+      { commandId: "node_build", fixedScriptKey: "build" },
+      { commandId: "node_lint", fixedScriptKey: "lint" },
+      { commandId: "node_typecheck", fixedScriptKey: "typecheck" },
+    ]);
   });
 
   it("keeps the catalog and its command arguments immutable", () => {
@@ -56,6 +75,29 @@ describe("project command definitions", () => {
     expect(fingerprintProjectCommandDefinition(changedDescription)).toBe(
       fingerprintProjectCommandDefinition(definition),
     );
+  });
+
+  it("includes static catalog metadata and resolved script hashes in identities", () => {
+    const definition = getProjectCommandDefinitions().find(
+      (candidate) => candidate.commandId === "node_test",
+    );
+    if (definition === undefined) throw new Error("missing node_test definition");
+    const base = fingerprintProjectCommandDefinition(definition);
+    const withHash = fingerprintProjectCommandDefinition(definition, {
+      executable: "/usr/bin/npm",
+      args: ["run", "test"],
+      fingerprintArgs: definition.argvTemplate,
+      scriptHash: "a".repeat(64),
+    });
+    expect(withHash).not.toBe(base);
+    expect(
+      fingerprintProjectCommandDefinition(definition, {
+        executable: "/usr/bin/npm",
+        args: ["run", "test", "--", "one.ts"],
+        fingerprintArgs: definition.argvTemplate,
+        scriptHash: "a".repeat(64),
+      }),
+    ).toBe(withHash);
   });
 
   it("uses stable sha-256 identities that distinguish definitions", () => {

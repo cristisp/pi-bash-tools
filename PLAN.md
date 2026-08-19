@@ -12,19 +12,23 @@ Every tool must define explicit input and output contracts, enforce workspace bo
 
 The extension currently registers six tools: environment, git_status, git_diff, git_log, git_show, and project_command.
 
+The project_command catalog currently supports seven extension-owned semantic commands: workspace_path, node_version, node_project_info, node_test, node_build, node_lint, and node_typecheck.
+
 The environment tool provides explicit-key access with fail-closed authorization, canonical project identity, restrictive policy storage, locking, atomic writes, cancellation, and timeout handling.
 
 The Git tools provide validated, bounded, cancellable, read-only repository inspection with temporary-repository integration coverage.
 
-The project_command tool currently supports exactly two extension-owned semantic commands: workspace_path and node_version.
+The project_command tool supports fixed workspace and Node runtime observation commands, in-process Node project discovery, and authorized Node project script commands.
 
-project_command accepts only a strict commandId and executes fixed definitions with direct spawn, shell disabled, canonical project working directories, a minimal static environment, bounded output, cancellation, timeouts, and process cleanup.
+project_command accepts a strict discriminated command schema and executes only catalog-defined operations.
+
+It uses direct spawn with shell disabled for executable commands, canonical project working directories, restricted environment profiles, bounded output, cancellation, timeouts, process cleanup, and an in-process path for node_project_info.
 
 Command authorization uses the user-owned policy at `getAgentDir()/bash-tools.json`, canonical project paths, command fingerprints, policy precedence, and interactive confirmation.
 
 Command decisions migrate a version 1 environment document to a version 2 document containing the unchanged nested environment version 1 policy and a version 1 project command policy namespace.
 
-Native macOS validation currently passes the full test suite, TypeScript checks, lint, formatting, Fallow analysis, Fallow audit, and git diff checks.
+Native macOS validation currently passes the 136-test suite, TypeScript checks, warning-free lint, formatting, Fallow analysis, Fallow audit, and git diff checks.
 
 Linux runtime validation remains deferred, and Windows and FreeBSD remain unsupported by design.
 
@@ -32,7 +36,9 @@ The simplification pass is complete: one policy store in `src/tools/policy/` ser
 
 The cleanup-failure execution status was removed from the tool contract because it was unreachable with real processes.
 
-The catalog architecture below is the next milestone and builds on this simplified base.
+The catalog architecture and the first Node command slice are complete.
+
+The next milestone is the separately reviewed dependency command slice for node_deps_list and node_deps_install, followed by the Fallow command family.
 
 ## Existing pi capabilities
 
@@ -61,7 +67,7 @@ Each extension tool has a dedicated source folder under `src/tools/`.
 | Git diff        | `src/tools/git/diff/tool.ts`                | Read bounded diffs for approved paths without changing the repository.                  |
 | Git log         | `src/tools/git/log/tool.ts`                 | Read bounded commit history with validated revision and path inputs.                    |
 | Git show        | `src/tools/git/show/tool.ts`                | Read a bounded object or file revision without executing repository content.            |
-| Project command | `src/tools/project-command/tool.ts`         | Run only fixed extension-owned semantic commands after user-owned policy authorization. |
+| Project command | `src/tools/project-command/tool.ts`         | Run only catalog-defined semantic commands after user-owned policy authorization. |
 
 ## Target command architecture
 
@@ -78,6 +84,8 @@ The v1 catalog covers the global and node ecosystems on the macOS runtime.
 The single `project_command` tool derives its input schema from the catalog as a discriminated union on commandId at load time.
 
 Applicability is enforced at execution time, and unknown or inapplicable commands fail with an error listing the commands applicable to the current project.
+
+The initial Node slice implements this behavior for node_project_info, node_test, node_build, node_lint, and node_typecheck.
 
 ### Resolution
 
@@ -219,7 +227,9 @@ The tool description and inapplicable-command errors steer agents toward node_pr
 
 A format check command is deliberately absent from v1 because format:check style script names are not standardized; demand from real sessions decides whether it joins the catalog.
 
-The v1 pattern parameter for node_test is deferred because the script hides the test runner and name-filter flags differ per runner; path selection covers the dominant case.
+The v1 pattern parameter for node_test remains deferred because the script hides the test runner and name-filter flags differ per runner; path selection covers the dominant case.
+
+The dependency command forms remain deferred until manager-specific list and frozen-lockfile behavior receives a separate security review.
 
 ## Requirements
 
@@ -252,24 +262,26 @@ The v1 pattern parameter for node_test is deferred because the script hides the 
 
 ### Catalog machinery
 
-- [ ] Define the data-driven command definition shape and migrate workspace_path and node_version onto it.
-- [ ] Derive the tool input schema from the catalog as a discriminated union on commandId.
-- [ ] Implement the resolution pipeline with stage-tagged errors.
-- [ ] Implement applicability probes and applicable-command error listings.
-- [ ] Implement node package manager detection and fail-closed binary resolution.
-- [ ] Implement the risk classes and their policy consequences.
-- [ ] Implement the parameter model with the closed validator and argv-mapping sets.
-- [ ] Include parameter schemas in definition fingerprints.
-- [ ] Implement repository-content binding through canonicalized scripts hashing.
-- [ ] Implement the node-v1 environment profile.
-- [ ] Implement tail-biased truncation for project-code commands.
-- [ ] Show resolved command lines and script text in confirmation prompts.
+- [x] Define the data-driven command definition shape and migrate workspace_path and node_version onto it.
+- [x] Derive the tool input schema from the catalog as a discriminated union on commandId.
+- [x] Implement the resolution pipeline with stage-tagged errors.
+- [x] Implement applicability probes and applicable-command error listings for the initial Node command slice.
+- [x] Implement node package manager detection and fail-closed binary resolution.
+- [x] Implement the observe and project-code risk classes and their policy consequences for the initial Node slice.
+- [x] Implement the initial closed parameter model with workspace-path validation and argv mapping for node_test.
+- [x] Include parameter schemas in definition fingerprints.
+- [x] Implement repository-content binding through canonicalized scripts hashing.
+- [x] Implement the node-v1 environment profile.
+- [x] Implement tail-biased truncation for project-code commands.
+- [x] Show resolved command lines and script text in confirmation prompts.
+- [ ] Implement project-code-network risk handling for dependency commands.
+- [ ] Add the remaining audited parameter validator kinds as additional catalog commands require them.
 
 ### Node commands
 
-- [ ] Implement node_project_info as an in-process command.
-- [ ] Implement node_test with the paths parameter.
-- [ ] Implement node_build, node_lint, and node_typecheck.
+- [x] Implement node_project_info as an in-process command.
+- [x] Implement node_test with the paths parameter.
+- [x] Implement node_build, node_lint, and node_typecheck.
 - [ ] Implement node_deps_list.
 - [ ] Implement node_deps_install with per-package-manager frozen-lockfile forms.
 - [ ] Implement the fallow command family including the audit base revision parameter.
@@ -301,6 +313,7 @@ The v1 pattern parameter for node_test is deferred because the script hides the 
 - [x] Add byte-exact serializer fixtures pinning the version 1 and version 2 policy document formats.
 - [x] Add dismissal and cancellation-race regression tests for the shared authorization flow.
 - [x] Add broad cross-tool tests under `test/` for policy composition and command execution behavior.
+- [x] Add initial fixture-project integration coverage for Node project discovery and authorized script execution.
 - [ ] Add fixture-project integration tests that run real package manager and runner binaries for every catalog command.
 - [ ] Add a scheduled job running the fixture suite against latest toolchains to catch ecosystem drift.
 - [ ] Add Vitest coverage reporting with `@vitest/coverage-v8`.
@@ -319,3 +332,5 @@ The v1 pattern parameter for node_test is deferred because the script hides the 
 - Git mutation commands such as commit and stage behind confirmation.
 - Format check and format write commands, pending demand and script-name standardization.
 - Test-name pattern filtering for node_test, pending runner detection.
+- node_deps_list and node_deps_install, pending manager-specific CLI and dependency-install risk review.
+- Fallow command family, pending command catalog and audit-base resolution implementation.

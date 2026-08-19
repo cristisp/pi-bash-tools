@@ -6,38 +6,111 @@ import {
   validateProjectCommandInput,
 } from "./schema.ts";
 
+type SchemaVariant = {
+  readonly additionalProperties: boolean;
+  readonly properties: {
+    readonly commandId: { readonly const: string };
+    readonly paths?: { readonly type: string; readonly items: { readonly type: string } };
+  };
+  readonly type: string;
+};
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null;
+}
+
+function isUnknownArray(value: unknown): value is readonly unknown[] {
+  return Array.isArray(value);
+}
+
+function isSchemaCommandId(value: unknown): value is { readonly const: string } {
+  return isRecord(value) && typeof value.const === "string";
+}
+
+function isSchemaPaths(
+  value: unknown,
+): value is { readonly type: string; readonly items: { readonly type: string } } | undefined {
+  return (
+    value === undefined ||
+    (isRecord(value) &&
+      value.type === "array" &&
+      isRecord(value.items) &&
+      value.items.type === "string")
+  );
+}
+
+function isSchemaVariant(value: unknown): value is SchemaVariant {
+  return (
+    isRecord(value) &&
+    typeof value.type === "string" &&
+    value.additionalProperties === false &&
+    isRecord(value.properties) &&
+    isSchemaCommandId(value.properties.commandId) &&
+    isSchemaPaths(value.properties.paths)
+  );
+}
+
+function schemaVariants(schema: unknown): readonly SchemaVariant[] {
+  if (!isRecord(schema) || !isUnknownArray(schema.anyOf) || !schema.anyOf.every(isSchemaVariant)) {
+    throw new Error("Project command schema does not contain valid variants");
+  }
+  return schema.anyOf.filter(isSchemaVariant);
+}
+
 describe("project command request contract", () => {
-  it("generates strict literal schemas from definition metadata", () => {
-    expect(projectCommandInputSchema).toMatchObject({
+  it("generates a strict discriminated union with one literal variant per command", () => {
+    const variants = schemaVariants(projectCommandInputSchema);
+    expect(variants.map((variant) => variant.properties.commandId.const)).toEqual([
+      "workspace_path",
+      "node_version",
+      "node_project_info",
+      "node_test",
+      "node_build",
+      "node_lint",
+      "node_typecheck",
+    ]);
+    expect(variants[0]).toMatchObject({
       type: "object",
       additionalProperties: false,
       properties: {
         commandId: {
-          anyOf: [
-            {
-              type: "string",
-              const: "workspace_path",
-              description:
-                "Report the canonical project directory. Use when the user asks where the project workspace is located.",
-            },
-            {
-              type: "string",
-              const: "node_version",
-              description:
-                "Report the Node.js runtime version. Use when the user asks which Node.js version is active.",
-            },
-          ],
+          const: "workspace_path",
+          description:
+            "Report the canonical project directory. Use when the user asks where the project workspace is located.",
         },
       },
     });
+    expect(variants[3]).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        commandId: { const: "node_test" },
+        paths: { type: "array", items: { type: "string" } },
+      },
+    });
+    expect(variants).toHaveLength(7);
+    expect(variants.every((variant) => !variant.additionalProperties)).toBe(true);
   });
 
-  it("accepts only the two semantic command IDs", () => {
-    expect(validateProjectCommandInput({ commandId: "workspace_path" })).toEqual({
-      commandId: "workspace_path",
+  it("accepts only the catalog command IDs and the optional test paths", () => {
+    for (const commandId of [
+      "workspace_path",
+      "node_version",
+      "node_project_info",
+      "node_build",
+      "node_lint",
+      "node_typecheck",
+    ]) {
+      expect(validateProjectCommandInput({ commandId })).toEqual({ commandId });
+    }
+    expect(
+      validateProjectCommandInput({ commandId: "node_test", paths: ["src/index.ts"] }),
+    ).toEqual({
+      commandId: "node_test",
+      paths: ["src/index.ts"],
     });
-    expect(validateProjectCommandInput({ commandId: "node_version" })).toEqual({
-      commandId: "node_version",
+    expect(validateProjectCommandInput({ commandId: "node_test", paths: [] })).toEqual({
+      commandId: "node_test",
     });
   });
 
@@ -46,6 +119,13 @@ describe("project command request contract", () => {
       {},
       { commandId: "unknown" },
       { commandId: "workspace_path", args: [] },
+      { commandId: "node_build", paths: [] },
+      { commandId: "node_test", executable: "/bin/sh" },
+      { commandId: "node_test", paths: ["../outside"] },
+      { commandId: "node_test", paths: ["-leading"] },
+      { commandId: "node_test", paths: ["src\\index.ts"] },
+      { commandId: "node_test", paths: ["src/*.ts"] },
+      { commandId: "node_test", paths: ["src/index.ts", "src/index.ts"] },
       { commandId: "workspace_path", executable: "/bin/sh" },
       { commandId: "workspace_path", cwd: "/tmp" },
       { commandId: "workspace_path", shell: true },

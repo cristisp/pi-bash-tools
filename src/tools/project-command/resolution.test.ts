@@ -174,7 +174,9 @@ describe("project command resolution", () => {
     expect(detectPackageManager({ lockfiles: ["pnpm-lock.yaml"] }, available)).toBe("pnpm");
     expect(detectPackageManager({ lockfiles: ["bun.lock"] }, available)).toBe("bun");
     expect(detectPackageManager({ lockfiles: ["bun.lockb"] }, available)).toBe("bun");
-    expect(detectPackageManager({ lockfiles: ["yarn.lock"] }, available)).toBe("npm");
+    expect(() => detectPackageManager({ lockfiles: ["yarn.lock"] }, available)).toThrowError(
+      expect.objectContaining({ stage: "detection", code: "ambiguous-yarn-lockfile" }),
+    );
     expect(detectPackageManager({ lockfiles: [] }, available)).toBe("npm");
     expect(() =>
       detectPackageManager({ lockfiles: ["package-lock.json", "pnpm-lock.yaml"] }, available),
@@ -215,6 +217,7 @@ describe("project command resolution", () => {
     ).rejects.toMatchObject({ stage: "detection", code: "package-manager-unavailable" });
 
     await writeFile(join(directory, "package.json"), JSON.stringify({ name: "fixture" }));
+    await rm(join(directory, "yarn.lock"));
     await writeFile(join(directory, "package-lock.json"), "{}");
     expect(
       await detectProjectPackageManager(directory, {

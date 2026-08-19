@@ -23,3 +23,13 @@ export function decodeUtf8Prefix(
   }
   return new TextDecoder().decode(bytes.subarray(0, end));
 }
+
+export function decodeUtf8Suffix(bytes: Uint8Array): string {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  for (let start = 0; start <= bytes.byteLength; start += 1) {
+    try {
+      return decoder.decode(bytes.subarray(start));
+    } catch {}
+  }
+  return "";
+}

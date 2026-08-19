@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { decodeUtf8Prefix } from "../truncation.ts";
+import { dirname } from "node:path";
+import { homedir } from "node:os";
+import { decodeUtf8Prefix, decodeUtf8Suffix } from "../truncation.ts";
 import {
   PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
   type ProjectCommandDefinition,
@@ -32,6 +34,7 @@ export interface ProjectCommandExecutionOutcome {
   readonly cancelled: boolean;
   readonly stdout: ProjectCommandOutput;
   readonly stderr: ProjectCommandOutput;
+  readonly structuredDetails?: unknown;
 }
 
 export interface ProjectCommandExecutorOptions {
@@ -52,6 +55,20 @@ const STATIC_ENVIRONMENT: NodeJS.ProcessEnv = Object.freeze({
   LANG: "C",
   LC_ALL: "C",
 });
+
+function environmentForProfile(
+  profile: ProjectCommandDefinition["sanitizedEnvironmentProfile"],
+): NodeJS.ProcessEnv {
+  if (profile !== "node-v1") {
+    return { ...STATIC_ENVIRONMENT };
+  }
+  return {
+    ...STATIC_ENVIRONMENT,
+    HOME: process.env.HOME ?? homedir(),
+    CI: "true",
+    PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
+  };
+}
 const DEFAULT_KILL_GRACE_MS = 150;
 
 class Capture {
@@ -61,8 +78,12 @@ class Capture {
   private lineBreaks = 0;
   private hasContentSinceLineBreak = false;
   private previousWasCarriageReturn = false;
+  private tailBytes = Buffer.alloc(0);
 
-  constructor(private readonly limit: number) {}
+  constructor(
+    private readonly limit: number,
+    private readonly direction: "head" | "tail",
+  ) {}
 
   append(value: Buffer | string): void {
     const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
@@ -83,19 +104,31 @@ class Capture {
         this.previousWasCarriageReturn = false;
       }
     }
-    if (this.retainedBytes >= this.limit) {
+    if (this.direction === "head") {
+      if (this.retainedBytes >= this.limit) {
+        return;
+      }
+      const retained = chunk.subarray(0, this.limit - this.retainedBytes);
+      this.chunks.push(retained);
+      this.retainedBytes += retained.byteLength;
       return;
     }
-    const retained = chunk.subarray(0, this.limit - this.retainedBytes);
-    this.chunks.push(retained);
-    this.retainedBytes += retained.byteLength;
+    if (this.limit === 0) {
+      return;
+    }
+    const combined = Buffer.concat([this.tailBytes, chunk]);
+    this.tailBytes = combined.subarray(Math.max(0, combined.byteLength - this.limit));
   }
 
   output(): ProjectCommandOutput {
-    const bytes = Buffer.concat(this.chunks, this.retainedBytes);
+    const bytes =
+      this.direction === "head" ? Buffer.concat(this.chunks, this.retainedBytes) : this.tailBytes;
     const truncated = this.totalBytes > this.limit;
     return {
-      text: decodeUtf8Prefix(bytes, this.limit, truncated),
+      text:
+        this.direction === "head"
+          ? decodeUtf8Prefix(bytes, this.limit, truncated)
+          : decodeUtf8Suffix(bytes),
       truncated,
       totalBytes: this.totalBytes,
       totalLines:
@@ -333,19 +366,26 @@ async function executeProjectCommand(
   if (signal?.aborted) {
     return emptyOutcome("cancelled");
   }
-  const stdout = new Capture(
-    Math.min(resolved.definition.outputLimitBytes, PROJECT_COMMAND_OUTPUT_LIMIT_BYTES),
-  );
-  const stderr = new Capture(
-    Math.min(resolved.definition.outputLimitBytes, PROJECT_COMMAND_OUTPUT_LIMIT_BYTES),
-  );
+  const limit = Math.min(resolved.definition.outputLimitBytes, PROJECT_COMMAND_OUTPUT_LIMIT_BYTES);
+  const direction = resolved.definition.truncationDirection ?? "head";
+  const stdout = new Capture(limit, direction);
+  const stderr = new Capture(limit, direction);
+  if (resolved.definition.executionKind === "in-process") {
+    if (signal?.aborted) {
+      return emptyOutcome("cancelled");
+    }
+    return {
+      ...emptyOutcome("success"),
+      structuredDetails: resolved.structuredDetails,
+    };
+  }
   let child: ChildProcess;
   try {
     child = spawnCommand(resolved.executable, resolved.args, {
       cwd,
       shell: false,
       detached: platform === "darwin",
-      env: { ...STATIC_ENVIRONMENT },
+      env: environmentForProfile(resolved.definition.sanitizedEnvironmentProfile),
       stdio: ["ignore", "pipe", "pipe"],
       signal,
     });

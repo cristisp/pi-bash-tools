@@ -1,23 +1,45 @@
-import { Type, type Static, type TLiteral, type TObject, type TUnion } from "typebox";
+import { Type, type Static, type TObject, type TUnion } from "typebox";
 import {
   getProjectCommandDefinitions,
   type ProjectCommandDefinition,
   type ProjectCommandId,
 } from "./definitions.ts";
+import { NODE_TEST_PATH_PATTERN, validateNodeTestPaths } from "./parameters.ts";
 
 export type ProjectCommandInputSchema<
   Definitions extends readonly ProjectCommandDefinition[] =
     readonly ProjectCommandDefinition<ProjectCommandId>[],
-> = TObject<{
-  commandId: TUnion<[TLiteral<Definitions[number]["commandId"]>]>;
-}>;
+> = Definitions extends readonly ProjectCommandDefinition[] ? TUnion : never;
+
+type InputForDefinition<Definition extends ProjectCommandDefinition> =
+  Definition extends ProjectCommandDefinition
+    ? Definition["commandId"] extends "node_test"
+      ? { readonly commandId: Definition["commandId"]; readonly paths?: readonly string[] }
+      : { readonly commandId: Definition["commandId"] }
+    : never;
 
 export type ProjectCommandInputFor<Definitions extends readonly ProjectCommandDefinition[]> =
-  Static<ProjectCommandInputSchema<Definitions>>;
+  InputForDefinition<Definitions[number]>;
 
-type ProjectCommandRuntimeInputSchema = TObject<{
-  commandId: TUnion<[] | [TLiteral<string>, ...TLiteral<string>[]]>;
-}>;
+type ProjectCommandRuntimeInputSchema = TUnion;
+
+function variantForDefinition(definition: ProjectCommandDefinition): TObject {
+  const commandId = Type.Literal(definition.commandId, { description: definition.description });
+  if (definition.commandId === "node_test") {
+    return Type.Object(
+      {
+        commandId,
+        paths: Type.Optional(
+          Type.Array(Type.String({ pattern: NODE_TEST_PATH_PATTERN }), {
+            description: "Optional workspace-relative test paths.",
+          }),
+        ),
+      },
+      { additionalProperties: false },
+    );
+  }
+  return Type.Object({ commandId }, { additionalProperties: false });
+}
 
 export function createProjectCommandInputSchema<
   const Definitions extends readonly ProjectCommandDefinition[],
@@ -28,12 +50,11 @@ export function createProjectCommandInputSchema(
 export function createProjectCommandInputSchema(
   definitions: readonly ProjectCommandDefinition[],
 ): ProjectCommandRuntimeInputSchema {
-  const literals = definitions.map((definition) =>
-    Type.Literal(definition.commandId, { description: definition.description }),
-  );
-  const commandId =
-    literals.length === 0 ? Type.Union([]) : Type.Union([literals[0], ...literals.slice(1)]);
-  return Type.Object({ commandId }, { additionalProperties: false });
+  const variants = definitions.map(variantForDefinition);
+  if (variants.length === 0) {
+    return Type.Union([Type.Never()]);
+  }
+  return Type.Union(variants);
 }
 
 export const projectCommandInputSchema = createProjectCommandInputSchema(
@@ -52,6 +73,47 @@ export class ProjectCommandToolError extends Error {
   }
 }
 
+function invalidRequest(): ProjectCommandToolError {
+  return new ProjectCommandToolError("Project command request is invalid");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function findDefinition(
+  commandId: string,
+  definitions: readonly ProjectCommandDefinition[],
+): ProjectCommandDefinition {
+  const matches = definitions.filter((definition) => definition.commandId === commandId);
+  if (matches.length !== 1) {
+    throw invalidRequest();
+  }
+  const definition = matches[0];
+  if (definition === undefined) {
+    throw invalidRequest();
+  }
+  return definition;
+}
+
+function validateRequestKeys(keys: readonly string[], commandId: string): void {
+  const expectedKeys = commandId === "node_test" ? ["commandId", "paths"] : ["commandId"];
+  if (!keys.includes("commandId") || keys.some((key) => !expectedKeys.includes(key))) {
+    throw invalidRequest();
+  }
+}
+
+function normalizedRequest(
+  params: Record<string, unknown>,
+  commandId: string,
+): { readonly commandId: string; readonly paths?: readonly string[] } {
+  if (commandId !== "node_test") {
+    return { commandId };
+  }
+  const paths = validateNodeTestPaths(params.paths);
+  return paths.length === 0 ? { commandId } : { commandId, paths };
+}
+
 export function validateProjectCommandInput(params: unknown): ProjectCommandInput;
 export function validateProjectCommandInput<
   const Definitions extends readonly ProjectCommandDefinition[],
@@ -59,38 +121,24 @@ export function validateProjectCommandInput<
 export function validateProjectCommandInput(
   params: unknown,
   definitions: readonly ProjectCommandDefinition[] = getProjectCommandDefinitions(),
-): { readonly commandId: string } {
+): { readonly commandId: string; readonly paths?: readonly string[] } {
   try {
-    if (typeof params !== "object" || params === null || Array.isArray(params)) {
-      throw new ProjectCommandToolError("Project command request is invalid");
+    if (!isRecord(params)) {
+      throw invalidRequest();
     }
-    const keys = Object.keys(params);
-    if (keys.length !== 1 || keys[0] !== "commandId") {
-      throw new ProjectCommandToolError("Project command request is invalid");
-    }
-    const commandId = (params as { readonly commandId?: unknown }).commandId;
+    const request = params;
+    const commandId = request.commandId;
     if (typeof commandId !== "string") {
-      throw new ProjectCommandToolError("Project command request is invalid");
+      throw invalidRequest();
     }
-    let definition: ProjectCommandDefinition | undefined;
-    for (const candidate of definitions) {
-      if (candidate.commandId !== commandId) {
-        continue;
-      }
-      if (definition !== undefined) {
-        throw new ProjectCommandToolError("Project command request is invalid");
-      }
-      definition = candidate;
-    }
-    if (definition === undefined) {
-      throw new ProjectCommandToolError("Project command request is invalid");
-    }
-    return { commandId: definition.commandId };
+    findDefinition(commandId, definitions);
+    validateRequestKeys(Object.keys(request), commandId);
+    return normalizedRequest(request, commandId);
   } catch (error) {
     if (error instanceof ProjectCommandToolError) {
       throw error;
     }
-    throw new ProjectCommandToolError("Project command request is invalid");
+    throw invalidRequest();
   }
 }
 

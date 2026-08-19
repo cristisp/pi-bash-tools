@@ -40,6 +40,14 @@ export interface ProjectCommandOutputDetails {
   readonly cancelled: boolean;
   readonly stdout: ProjectCommandExecutionOutcome["stdout"];
   readonly stderr: ProjectCommandExecutionOutcome["stderr"];
+  readonly resolvedCommand: string;
+  readonly parameters: Readonly<Record<string, unknown>>;
+  readonly projectInfo?: unknown;
+  readonly nodeVersion?: string;
+  readonly manifestPresent?: boolean;
+  readonly packageManager?: unknown;
+  readonly scripts?: readonly string[];
+  readonly applicableCommands?: readonly string[];
 }
 
 export type ProjectCommandToolContext = Omit<
@@ -90,11 +98,26 @@ function result(
   };
 }
 
+function displayCommand(resolved: ResolvedProjectCommand): string {
+  return resolved.displayCommand ?? [resolved.executable, ...resolved.args].join(" ");
+}
+
 function outputDetails(
   identity: CommandIdentity,
   projectPath: string,
+  resolved: ResolvedProjectCommand,
   outcome: ProjectCommandExecutionOutcome,
 ): ProjectCommandOutputDetails {
+  const projectInfo =
+    typeof outcome.structuredDetails === "object" && outcome.structuredDetails !== null
+      ? (outcome.structuredDetails as {
+          readonly nodeVersion?: string;
+          readonly manifestPresent?: boolean;
+          readonly packageManager?: unknown;
+          readonly scripts?: readonly string[];
+          readonly applicableCommands?: readonly string[];
+        })
+      : undefined;
   return {
     commandId: identity.commandId,
     projectPath: displayPath(projectPath),
@@ -105,6 +128,22 @@ function outputDetails(
     cancelled: outcome.cancelled,
     stdout: outcome.stdout,
     stderr: outcome.stderr,
+    resolvedCommand: displayCommand(resolved),
+    parameters: resolved.effectiveParameters ?? Object.freeze({}),
+    ...(outcome.structuredDetails === undefined
+      ? {}
+      : {
+          projectInfo: outcome.structuredDetails,
+          ...(projectInfo?.nodeVersion === undefined
+            ? {}
+            : {
+                nodeVersion: projectInfo.nodeVersion,
+                manifestPresent: projectInfo.manifestPresent,
+                packageManager: projectInfo.packageManager,
+                scripts: projectInfo.scripts,
+                applicableCommands: projectInfo.applicableCommands,
+              }),
+        }),
   };
 }
 
@@ -112,9 +151,13 @@ function failure(
   message: string,
   identity: CommandIdentity,
   projectPath: string,
+  resolved: ResolvedProjectCommand,
   outcome: ProjectCommandExecutionOutcome,
 ): ProjectCommandToolError {
-  return new ProjectCommandToolError(message, outputDetails(identity, projectPath, outcome));
+  return new ProjectCommandToolError(
+    message,
+    outputDetails(identity, projectPath, resolved, outcome),
+  );
 }
 
 function commandCancellationError(): ProjectCommandToolError {
@@ -170,6 +213,7 @@ async function authorizeCommand(
   loaded: Awaited<ReturnType<PolicyStore["load"]>>,
   definition: ProjectCommandDefinition,
   identity: CommandIdentity,
+  resolved: ResolvedProjectCommand,
   ctx: ProjectCommandToolContext,
   signal: AbortSignal | undefined,
 ): Promise<void> {
@@ -193,7 +237,10 @@ async function authorizeCommand(
       decision,
       globalSafe: definition.globalSafe,
     }),
-    promptText: (currentIdentity) => `Authorize project command ${currentIdentity.commandId}`,
+    promptText: (currentIdentity) =>
+      `Authorize project command ${currentIdentity.commandId}: ${displayCommand(resolved)}${
+        resolved.script === undefined ? "" : `\nScript: ${resolved.script}`
+      }`,
     error: authorizationError,
   });
 }
@@ -276,15 +323,16 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
     name: "project_command",
     label: "Project command",
     description:
-      "Run one of two fixed, user-authorized project commands: workspace_path reports the canonical project directory, and node_version reports the active Node.js runtime version. Do not use this tool for arbitrary shell commands, file access, Git inspection, environment inspection, package scripts, or project mutation.",
+      "Run one of five fixed, user-authorized Node project commands or the existing workspace_path and node_version observations. node_project_info reports project state in process; node_test, node_build, node_lint, and node_typecheck run only exact package.json scripts. Do not use this tool for arbitrary shell commands, dependency changes, Fallow commands, file access, Git inspection, environment inspection, or project mutation.",
     promptSnippet:
-      "Get the project path or Node.js version through a fixed, user-authorized command",
+      "Inspect Node project state or run one exact, user-authorized Node package script",
     promptGuidelines: [
       "Use project_command with commandId workspace_path when you need the current project workspace path.",
       "Use project_command with commandId node_version when you need the active Node.js runtime version.",
-      "Do not use project_command for Git inspection; use git_status, git_diff, git_log, or git_show instead.",
-      "Do not use project_command for file or directory inspection; use read, grep, find, or ls instead.",
-      "Do not use project_command for arbitrary commands, package scripts, environment access, or project mutation.",
+      "Use project_command with commandId node_project_info before selecting an applicable Node package script.",
+      "Use node_test with optional workspace-relative paths only when package.json has an exact test script.",
+      "Use node_build, node_lint, or node_typecheck only when package.json has the exact corresponding script.",
+      "Do not use project_command for dependency listing or installation, Fallow commands, Git inspection, file inspection, arbitrary commands, environment access, or project mutation.",
     ],
     parameters,
     executionMode: "sequential",
@@ -296,10 +344,10 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
       }
       const requestSignal = signal ?? ctx.signal;
       const loaded = await loadPolicy(policy, ctx.cwd, requestSignal);
-      const resolved = await resolver(definition, loaded.projectPath, requestSignal);
+      const resolved = await resolver(definition, loaded.projectPath, requestSignal, params);
       throwIfRequestAborted(requestSignal);
       const identity = projectCommandIdentity(definition, resolved);
-      await authorizeCommand(policy, loaded, definition, identity, ctx, requestSignal);
+      await authorizeCommand(policy, loaded, definition, identity, resolved, ctx, requestSignal);
       throwIfRequestAborted(requestSignal);
       const outcome = await executeAuthorizedCommand(
         executor,
@@ -307,12 +355,18 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
         loaded.projectPath,
         requestSignal,
       );
-      const details = outputDetails(identity, loaded.projectPath, outcome);
+      const details = outputDetails(identity, loaded.projectPath, resolved, outcome);
       if (outcome.status === "cancelled" || requestSignal?.aborted) {
         throw cancellationError(details);
       }
       if (outcome.status !== "success") {
-        throw failure(failureMessage(outcome.status), identity, loaded.projectPath, outcome);
+        throw failure(
+          failureMessage(outcome.status),
+          identity,
+          loaded.projectPath,
+          resolved,
+          outcome,
+        );
       }
       return result(details);
     },

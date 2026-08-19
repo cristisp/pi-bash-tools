@@ -86,6 +86,18 @@ describe("project command execution", () => {
     expect(JSON.stringify(result)).not.toContain("/canonical/project");
   });
 
+  it("executes in-process details without spawning a child", async () => {
+    const spawnCommand = vi.fn<ProjectCommandSpawn>();
+    const nodeInfoDefinition = getProjectCommandDefinition("node_project_info");
+    if (nodeInfoDefinition === undefined) throw new Error("missing node_project_info definition");
+    const result = await createProjectCommandExecutor({ spawn: spawnCommand })(
+      nodeInfoDefinition,
+      "/project",
+    );
+    expect(result).toMatchObject({ status: "success", stdout: { text: "" } });
+    expect(spawnCommand).not.toHaveBeenCalled();
+  });
+
   it("counts CR, LF, CRLF, chunk boundaries, and partial lines", async () => {
     const child = childProcess();
     const resultPromise = createProjectCommandExecutor({
@@ -104,6 +116,23 @@ describe("project command execution", () => {
       totalBytes: 20,
       totalLines: 4,
       truncated: false,
+    });
+  });
+
+  it("keeps the tail of project-code output while preserving UTF-8", async () => {
+    const child = childProcess();
+    const result = await createProjectCommandExecutor({
+      spawn: spawnWith(child, () =>
+        setImmediate(() => {
+          child.stdout.write("prefix-😀-suffix");
+          child.emit("close", 0, null);
+        }),
+      ),
+    })(definition({ truncationDirection: "tail", outputLimitBytes: 8 }), "/project");
+    expect(result.stdout).toMatchObject({
+      text: "-suffix",
+      truncated: true,
+      totalBytes: Buffer.byteLength("prefix-😀-suffix"),
     });
   });
 
