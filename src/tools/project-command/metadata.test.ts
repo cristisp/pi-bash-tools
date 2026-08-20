@@ -23,10 +23,10 @@ describe("project command metadata", () => {
     expect(tool.description).toContain("six fixed Fallow analyses");
     expect(tool.description).not.toContain("node_deps_install");
     expect(tool.promptSnippet).toBe(
-      "Inspect Node project state, run one exact Node package script, or run one fixed Fallow analysis",
+      "Inspect Node project state, list top-level dependencies, run one exact Node package script, or run one fixed Fallow analysis",
     );
     expect(tool.promptGuidelines).toContain(
-      "Use project_command with commandId node_project_info before selecting an applicable Node package script.",
+      "Use project_command with commandId node_project_info before selecting an applicable Node command.",
     );
   });
 });

@@ -145,7 +145,11 @@ export async function resolveProjectCommand(
   if (definition.applicability === "fallow-binary") {
     return resolveFallowProjectCommand(definition, projectPath, parameters);
   }
-  if (definition.applicability === "node-script" || definition.commandId === "node_project_info") {
+  if (
+    definition.applicability === "node-script" ||
+    definition.applicability === "node-dependency-list" ||
+    definition.commandId === "node_project_info"
+  ) {
     const { resolveNodeProjectCommand } = await import("./node.ts");
     return resolveNodeProjectCommand(definition, projectPath, parameters);
   }

@@ -12,7 +12,7 @@ Every tool must define explicit input and output contracts, enforce workspace bo
 
 The extension currently registers six tools: environment, git_status, git_diff, git_log, git_show, and project_command.
 
-The project_command catalog currently supports thirteen extension-owned semantic commands: workspace_path, node_version, node_project_info, node_test, node_build, node_lint, node_typecheck, fallow_dead_code, fallow_dupes, fallow_health, fallow_audit, fallow_list_entry_points, and fallow_list_boundaries.
+The project_command catalog currently supports fourteen extension-owned semantic commands: workspace_path, node_version, node_project_info, node_deps_list, node_test, node_build, node_lint, node_typecheck, fallow_dead_code, fallow_dupes, fallow_health, fallow_audit, fallow_list_entry_points, and fallow_list_boundaries.
 
 The environment tool provides explicit-key access with fail-closed authorization, canonical project identity, restrictive policy storage, locking, atomic writes, cancellation, and timeout handling.
 
@@ -28,7 +28,7 @@ Command authorization uses the user-owned policy at `getAgentDir()/bash-tools.js
 
 Command decisions migrate a version 1 environment document to a version 2 document containing the unchanged nested environment version 1 policy and a version 1 project command policy namespace.
 
-Native macOS validation currently passes the 145-test suite, TypeScript checks, warning-free lint, formatting, Fallow analysis, Fallow audit, and git diff checks.
+Native macOS validation currently passes the 150-test suite, V8 coverage thresholds, TypeScript checks, warning-free lint, formatting, Fallow analysis, Fallow audit, and git diff checks.
 
 Linux runtime validation remains deferred, and Windows and FreeBSD remain unsupported by design.
 
@@ -36,9 +36,9 @@ The simplification pass is complete: one policy store in `src/tools/policy/` ser
 
 The cleanup-failure execution status was removed from the tool contract because it was unreachable with real processes.
 
-The catalog architecture, the first Node command slice, and the Fallow command slice are complete.
+The catalog architecture, the Node command slice, the read-only dependency-list command, and the Fallow command slice are complete.
 
-The next milestone is the separately reviewed dependency command slice for node_deps_list and node_deps_install.
+The next milestone is the separately reviewed dependency-install command for node_deps_install, which remains deferred because it contacts registries, mutates project state, and executes dependency lifecycle code.
 
 ## Existing pi capabilities
 
@@ -210,7 +210,7 @@ No Magento or Symfony application-level commands until the external-state risk c
 | workspace_path           | `/bin/pwd` (existing)                                                     | observe              | none                      |
 | node_version             | `node --version` (existing)                                               | observe              | none                      |
 | node_project_info        | in-process: PM detection, script names, applicable commands, node version | observe              | none                      |
-| node_deps_list           | `<pm> ls --depth=0`                                                       | observe              | none                      |
+| node_deps_list           | manager-specific top-level dependency listing                             | observe              | none                      |
 | node_test                | `<pm> run test -- ...`                                                    | project-code         | paths (workspace-paths)   |
 | node_build               | `<pm> run build`                                                          | project-code         | none                      |
 | node_lint                | `<pm> run lint`                                                           | project-code         | none                      |
@@ -231,7 +231,7 @@ A format check command is deliberately absent from v1 because format:check style
 
 The v1 pattern parameter for node_test remains deferred because the script hides the test runner and name-filter flags differ per runner; path selection covers the dominant case.
 
-The dependency command forms remain deferred until manager-specific list and frozen-lockfile behavior receives a separate security review.
+The dependency-install command remains deferred until manager-specific frozen-lockfile behavior and network/install-script risk receive a separate security review.
 
 ## Requirements
 
@@ -269,6 +269,7 @@ The dependency command forms remain deferred until manager-specific list and fro
 - [x] Implement the resolution pipeline with stage-tagged errors.
 - [x] Implement applicability probes and applicable-command error listings for the initial Node command slice.
 - [x] Implement node package manager detection and fail-closed binary resolution.
+- [x] Implement manager-specific read-only dependency listing and Yarn Classic version gating.
 - [x] Implement the observe and project-code risk classes and their policy consequences for the initial Node slice.
 - [x] Implement the initial closed parameter model with workspace-path validation and argv mapping for node_test.
 - [x] Include parameter schemas in definition fingerprints.
@@ -284,7 +285,7 @@ The dependency command forms remain deferred until manager-specific list and fro
 - [x] Implement node_project_info as an in-process command.
 - [x] Implement node_test with the paths parameter.
 - [x] Implement node_build, node_lint, and node_typecheck.
-- [ ] Implement node_deps_list.
+- [x] Implement node_deps_list with manager-specific read-only forms.
 - [ ] Implement node_deps_install with per-package-manager frozen-lockfile forms.
 - [x] Implement the Fallow command family including the audit base revision parameter.
 
@@ -317,10 +318,10 @@ The dependency command forms remain deferred until manager-specific list and fro
 - [x] Add broad cross-tool tests under `test/` for policy composition and command execution behavior.
 - [x] Add initial fixture-project integration coverage for Node project discovery and authorized script execution.
 - [x] Add fixture-project integration coverage for Fallow binary resolution, fixed argv, and audit exit-code behavior.
-- [ ] Add fixture-project integration tests that run real package manager and runner binaries for every catalog command.
+- [x] Add fixture-project integration tests for all practical implemented catalog commands using real package manager, Node runner, and Fallow binaries.
 - [ ] Add a scheduled job running the fixture suite against latest toolchains to catch ecosystem drift.
-- [ ] Add Vitest coverage reporting with `@vitest/coverage-v8`.
-- [ ] Add a coverage script and enforce at least 75% lines, functions, statements, and branches.
+- [x] Add Vitest coverage reporting with `@vitest/coverage-v8`.
+- [x] Add a coverage script and enforce at least 75% lines, functions, statements, and branches.
 - [x] Keep the available test, type, lint, format, and Fallow checks passing before committing.
 - [x] Run the Fallow audit and targeted checks before committing AI-generated changes.
 
@@ -335,4 +336,4 @@ The dependency command forms remain deferred until manager-specific list and fro
 - Git mutation commands such as commit and stage behind confirmation.
 - Format check and format write commands, pending demand and script-name standardization.
 - Test-name pattern filtering for node_test, pending runner detection.
-- node_deps_list and node_deps_install, pending manager-specific CLI and dependency-install risk review.
+- node_deps_install, pending manager-specific frozen-lockfile and dependency-install risk review.

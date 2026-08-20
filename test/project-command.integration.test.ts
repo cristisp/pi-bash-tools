@@ -9,6 +9,8 @@ import {
   projectCommandIdentity,
 } from "../src/tools/project-command/definitions.ts";
 import { resolveNodeProjectCommand } from "../src/tools/project-command/node.ts";
+import { resolveProjectCommand } from "../src/tools/project-command/resolution.ts";
+import { createNodeProjectIntegrationFixture } from "./node-project.integration-fixtures.ts";
 
 const directories: string[] = [];
 
@@ -19,6 +21,196 @@ afterEach(async () => {
 });
 
 describe("project command integration", () => {
+  it("runs every practical catalog command against a real temporary fixture project", async () => {
+    const fixture = await createNodeProjectIntegrationFixture();
+    const userAgent = await mkdtemp(join(tmpdir(), "bash-tools-node-project-integration-policy-"));
+    directories.push(fixture.directory, userAgent);
+    const requests = [
+      { commandId: "workspace_path", params: { commandId: "workspace_path" } },
+      { commandId: "node_version", params: { commandId: "node_version" } },
+      { commandId: "node_project_info", params: { commandId: "node_project_info" } },
+      { commandId: "node_deps_list", params: { commandId: "node_deps_list" } },
+      {
+        commandId: "node_test",
+        params: { commandId: "node_test", paths: ["fixture-runner.js"] },
+      },
+      { commandId: "node_build", params: { commandId: "node_build" } },
+      { commandId: "node_lint", params: { commandId: "node_lint" } },
+      { commandId: "node_typecheck", params: { commandId: "node_typecheck" } },
+      { commandId: "fallow_dead_code", params: { commandId: "fallow_dead_code" } },
+      { commandId: "fallow_dupes", params: { commandId: "fallow_dupes" } },
+      { commandId: "fallow_health", params: { commandId: "fallow_health" } },
+      { commandId: "fallow_audit", params: { commandId: "fallow_audit", base: "HEAD~1" } },
+      {
+        commandId: "fallow_list_entry_points",
+        params: { commandId: "fallow_list_entry_points" },
+      },
+      { commandId: "fallow_list_boundaries", params: { commandId: "fallow_list_boundaries" } },
+    ] as const;
+    const identities = await Promise.all(
+      requests.map(async (request) => {
+        const definition = getProjectCommandDefinition(request.commandId);
+        if (definition === undefined) throw new Error(`missing ${request.commandId} definition`);
+        const resolved = await resolveProjectCommand(
+          definition,
+          fixture.projectPath,
+          undefined,
+          request.params,
+        );
+        return projectCommandIdentity(definition, resolved);
+      }),
+    );
+    const configPath = join(await realpath(userAgent), "bash-tools.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        version: 2,
+        environment: { version: 1 },
+        projectCommands: {
+          version: 1,
+          global: { allow: [], deny: [] },
+          projects: { [fixture.projectPath]: { allow: identities, deny: [] } },
+        },
+      }),
+    );
+    const tool = createProjectCommandToolForTesting({ configPath });
+    const responseEntries = await Promise.all(
+      requests.map(async (request) => {
+        const response = await tool.execute(
+          request.commandId,
+          request.params,
+          undefined,
+          undefined,
+          {
+            cwd: fixture.directory,
+            mode: "print",
+            hasUI: false,
+            signal: undefined,
+            ui: { select: async () => undefined },
+          },
+        );
+        return [request.commandId, response.details] as const;
+      }),
+    );
+    const responses = new Map(responseEntries);
+
+    expect(responses.get("workspace_path")).toMatchObject({
+      status: "success",
+      stdout: { text: `${fixture.projectPath}\n` },
+    });
+    expect(responses.get("node_version")).toMatchObject({
+      status: "success",
+      stdout: { text: expect.stringMatching(/^v\d+(?:\.\d+){2}\n$/u) },
+    });
+    expect(responses.get("node_project_info")).toMatchObject({
+      status: "success",
+      projectInfo: {
+        packageManager: { manager: "npm", executableAvailable: true },
+        applicableCommands: [
+          "node_project_info",
+          "node_deps_list",
+          "node_test",
+          "node_build",
+          "node_lint",
+          "node_typecheck",
+          "fallow_dead_code",
+          "fallow_dupes",
+          "fallow_health",
+          "fallow_audit",
+          "fallow_list_entry_points",
+          "fallow_list_boundaries",
+        ],
+      },
+    });
+    expect(responses.get("node_deps_list")).toMatchObject({
+      status: "success",
+      exit: { code: 0 },
+      resolvedCommand: expect.stringContaining(" ls --depth=0"),
+    });
+    for (const commandId of ["node_build", "node_lint", "node_typecheck"] as const) {
+      expect(responses.get(commandId)).toMatchObject({
+        status: "success",
+        stdout: { text: expect.stringContaining(`${commandId.replace("node_", "")}:none\n`) },
+      });
+    }
+    expect(responses.get("node_test")).toMatchObject({
+      status: "success",
+      stdout: { text: expect.stringContaining("test:fixture-runner.js\n") },
+    });
+    for (const commandId of [
+      "fallow_dead_code",
+      "fallow_dupes",
+      "fallow_health",
+      "fallow_list_entry_points",
+      "fallow_list_boundaries",
+    ] as const) {
+      const fallowCommand = commandId.startsWith("fallow_list")
+        ? "list"
+        : commandId.replace("fallow_", "").replaceAll("_", "-");
+      expect(responses.get(commandId)).toMatchObject({
+        status: "success",
+        stdout: { text: expect.stringContaining(`"command":"${fallowCommand}"`) },
+      });
+    }
+    expect(responses.get("fallow_audit")).toMatchObject({
+      status: "nonzero",
+      exit: { code: 1 },
+    });
+  });
+
+  it("runs the real package manager list command when node_modules is absent", async () => {
+    const project = await mkdtemp(join(tmpdir(), "bash-tools-node-deps-integration-project-"));
+    const userAgent = await mkdtemp(join(tmpdir(), "bash-tools-node-deps-integration-policy-"));
+    directories.push(project, userAgent);
+    const projectPath = await realpath(project);
+    await writeFile(
+      join(project, "package.json"),
+      JSON.stringify({ packageManager: "npm@10.0.0", dependencies: { missing: "1.0.0" } }),
+    );
+    const definition = getProjectCommandDefinition("node_deps_list");
+    if (definition === undefined) throw new Error("missing node_deps_list definition");
+    const resolved = await resolveNodeProjectCommand(definition, projectPath, {
+      commandId: "node_deps_list",
+    });
+    const configPath = join(await realpath(userAgent), "bash-tools.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        version: 2,
+        environment: { version: 1 },
+        projectCommands: {
+          version: 1,
+          global: { allow: [], deny: [] },
+          projects: {
+            [projectPath]: {
+              allow: [projectCommandIdentity(definition, resolved)],
+              deny: [],
+            },
+          },
+        },
+      }),
+    );
+    const response = await createProjectCommandToolForTesting({ configPath }).execute(
+      "node-deps",
+      { commandId: "node_deps_list" },
+      undefined,
+      undefined,
+      {
+        cwd: project,
+        mode: "print",
+        hasUI: false,
+        signal: undefined,
+        ui: { select: async () => undefined },
+      },
+    );
+    expect(response.details).toMatchObject({
+      status: "nonzero",
+      exit: { code: 1, signal: null },
+      resolvedCommand: expect.stringContaining(" ls --depth=0"),
+      stderr: { text: expect.any(String) },
+    });
+  });
+
   it("runs an authorized exact Node test script with a validated path", async () => {
     const project = await mkdtemp(join(tmpdir(), "bash-tools-node-script-integration-project-"));
     const userAgent = await mkdtemp(join(tmpdir(), "bash-tools-node-script-integration-policy-"));

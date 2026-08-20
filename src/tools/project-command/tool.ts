@@ -334,17 +334,18 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
     name: "project_command",
     label: "Project command",
     description:
-      "Run one of five fixed, user-authorized Node project commands, six fixed Fallow analyses, or the existing workspace_path and node_version observations. node_project_info reports project state in process; node_test, node_build, node_lint, and node_typecheck run only exact package.json scripts. Fallow commands run only the project-local Fallow binary with fixed machine-readable arguments. Do not use this tool for arbitrary shell commands, dependency changes, file access, Git inspection, environment inspection, or project mutation.",
+      "Run one fixed Node dependency listing or package script, six fixed Fallow analyses, or the existing workspace_path, node_version, and node_project_info observations. node_project_info reports project state in process; node_deps_list uses a detected package manager's fixed read-only list form; node_test, node_build, node_lint, and node_typecheck run only exact package.json scripts. Fallow commands run only the project-local Fallow binary with fixed machine-readable arguments. Do not use this tool for dependency installation, Git inspection, file access, arbitrary commands, environment inspection, or project mutation.",
     promptSnippet:
-      "Inspect Node project state, run one exact Node package script, or run one fixed Fallow analysis",
+      "Inspect Node project state, list top-level dependencies, run one exact Node package script, or run one fixed Fallow analysis",
     promptGuidelines: [
       "Use project_command with commandId workspace_path when you need the current project workspace path.",
       "Use project_command with commandId node_version when you need the active Node.js runtime version.",
-      "Use project_command with commandId node_project_info before selecting an applicable Node package script.",
+      "Use project_command with commandId node_project_info before selecting an applicable Node command.",
+      "Use node_deps_list to inspect top-level dependencies when node_project_info reports it as applicable.",
       "Use node_test with optional workspace-relative paths only when package.json has an exact test script.",
       "Use node_build, node_lint, or node_typecheck only when package.json has the exact corresponding script.",
       "Use fallow_dead_code, fallow_dupes, fallow_health, fallow_audit, fallow_list_entry_points, or fallow_list_boundaries only with their fixed machine-readable Fallow forms.",
-      "Do not use project_command for dependency listing or installation, Git inspection, file inspection, arbitrary commands, environment access, or project mutation.",
+      "Do not use project_command for dependency installation, Git inspection, file inspection, arbitrary commands, environment access, or project mutation.",
     ],
     parameters,
     executionMode: "sequential",

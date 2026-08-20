@@ -29,6 +29,36 @@ export interface DetectedPackageManager {
   readonly source: "packageManager" | "lockfile" | "default";
 }
 
+export function supportsNodeDependencyList(
+  manager: PackageManager,
+  version: string | undefined,
+): boolean {
+  return manager !== "yarn" || (version !== undefined && /^1\./u.test(version));
+}
+
+export function nodeDependencyListArgs(
+  manager: PackageManager,
+  version: string | undefined,
+): readonly string[] {
+  if (!supportsNodeDependencyList(manager, version)) {
+    throw detectionError("unsupported-yarn-version", {
+      manager,
+      version: version ?? null,
+    });
+  }
+  switch (manager) {
+    case "npm":
+      return ["ls", "--depth=0"];
+    case "pnpm":
+      return ["list", "--depth=0"];
+    case "bun":
+      return ["pm", "ls"];
+    case "yarn":
+      return ["list", "--depth=0"];
+  }
+  throw detectionError("unsupported-package-manager");
+}
+
 export interface PackageManagerFileSystem {
   readonly readFile: (path: string, encoding: "utf8") => Promise<string>;
   readonly stat: (path: string) => Promise<import("node:fs").Stats>;

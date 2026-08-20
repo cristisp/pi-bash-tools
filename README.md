@@ -13,7 +13,7 @@ The extension registers exactly these custom tools:
 - `git_log` reads bounded commit IDs, authors, dates, and subjects.
 - `git_show` reads bounded output from a revision, optionally filtered by a path.
 - `environment` reads only explicitly requested environment variables after policy authorization.
-- `project_command` runs the fixed `workspace_path` and `node_version` observations, discovers Node project state with `node_project_info`, runs only exact `test`, `build`, `lint`, or `typecheck` package scripts, and runs six fixed Fallow analyses after policy authorization.
+- `project_command` runs the fixed `workspace_path` and `node_version` observations, discovers Node project state with `node_project_info`, lists top-level dependencies with `node_deps_list`, runs only exact `test`, `build`, `lint`, or `typecheck` package scripts, and runs six fixed Fallow analyses after policy authorization.
 
 ## Environment policy
 
@@ -76,16 +76,20 @@ If a process crashes while holding the lock, remove `bash-tools.json.lock` manua
 ## Project command policy and execution
 
 The project command tool accepts a strict discriminated input union.
-The catalog contains exactly `workspace_path`, `node_version`, `node_project_info`, `node_test`, `node_build`, `node_lint`, `node_typecheck`, `fallow_dead_code`, `fallow_dupes`, `fallow_health`, `fallow_audit`, `fallow_list_entry_points`, and `fallow_list_boundaries`.
+The catalog contains exactly `workspace_path`, `node_version`, `node_project_info`, `node_deps_list`, `node_test`, `node_build`, `node_lint`, `node_typecheck`, `fallow_dead_code`, `fallow_dupes`, `fallow_health`, `fallow_audit`, `fallow_list_entry_points`, and `fallow_list_boundaries`.
 `node_test` accepts optional `paths` validated as workspace-relative paths, and `fallow_audit` requires the validated `base` revision parameter.
 
 The extension owns the complete command catalog and never reads repository configuration to define commands.
 `node_project_info` reads package.json and supported lockfiles in process and reports the active Node version, package manager state, sorted script names, and applicable Node command IDs.
+
+`node_deps_list` invokes only npm `ls --depth=0`, pnpm `list --depth=0`, bun `pm ls`, or Yarn Classic 1.x `list --depth=0` through a fixed absolute executable.
 A missing package.json is reported as a non-Node project.
 
 `workspace_path` directly spawns `/bin/pwd` without arguments.
 `node_version` directly spawns the current Node executable with `--version`.
 The four script commands invoke only the exact corresponding package.json scripts through a detected npm, pnpm, bun, or explicitly selected Yarn executable.
+
+Yarn lockfile-only projects and explicit Yarn versions other than Classic 1.x are rejected for dependency listing.
 The six Fallow commands invoke only the project-local `node_modules/.bin/fallow` target through the active Node executable with fixed JSON and quiet flags.
 `fallow_audit` requires a safe revision value for its fixed `--base` option.
 Missing scripts, malformed manifests, ambiguous managers, unavailable fixed executables, and missing or escaping Fallow binaries fail closed.
@@ -108,7 +112,7 @@ Interactive prompts use exactly `Deny globally`, `Deny for this project`, `Allow
 Command decisions migrate a version 1 environment document to a version 2 document containing the unchanged nested environment version 1 policy and a version 1 project command policy namespace.
 
 The command executor never calls `pi.exec`, performs PATH lookup, invokes npx or Corepack downloads, runs a shell, or returns raw spawn errors.
-Dependency listing, dependency installation, arbitrary package script names, aliases, watch modes, and inline scripts are intentionally not in this catalog.
+Dependency installation, arbitrary package script names, aliases, watch modes, and inline scripts are intentionally not in this catalog.
 
 The corresponding Bash behavior is equivalent to the following examples, but the extension does not execute these command strings:
 

@@ -64,6 +64,7 @@ describe("project command request contract", () => {
       "workspace_path",
       "node_version",
       "node_project_info",
+      "node_deps_list",
       "node_test",
       "node_build",
       "node_lint",
@@ -86,7 +87,7 @@ describe("project command request contract", () => {
         },
       },
     });
-    expect(variants[3]).toMatchObject({
+    expect(variants[4]).toMatchObject({
       type: "object",
       additionalProperties: false,
       properties: {
@@ -94,7 +95,7 @@ describe("project command request contract", () => {
         paths: { type: "array", items: { type: "string" } },
       },
     });
-    expect(variants[10]).toMatchObject({
+    expect(variants[11]).toMatchObject({
       type: "object",
       additionalProperties: false,
       properties: {
@@ -103,7 +104,7 @@ describe("project command request contract", () => {
       },
       required: ["commandId", "base"],
     });
-    expect(variants).toHaveLength(13);
+    expect(variants).toHaveLength(14);
     expect(variants.every((variant) => !variant.additionalProperties)).toBe(true);
   });
 
@@ -112,6 +113,7 @@ describe("project command request contract", () => {
       "workspace_path",
       "node_version",
       "node_project_info",
+      "node_deps_list",
       "node_build",
       "node_lint",
       "node_typecheck",
@@ -142,7 +144,6 @@ describe("project command request contract", () => {
     const invalidRequests: unknown[] = [
       {},
       { commandId: "unknown" },
-      { commandId: "node_deps_list" },
       { commandId: "node_deps_install" },
       { commandId: "fallow" },
       { commandId: "workspace_path", args: [] },

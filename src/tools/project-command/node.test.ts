@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -46,6 +46,7 @@ describe("Node project command resolution", () => {
     await expect(readNodeProjectInfo(directory)).resolves.toMatchObject({
       applicableCommands: [
         "node_project_info",
+        "node_deps_list",
         "fallow_dead_code",
         "fallow_dupes",
         "fallow_health",
@@ -67,7 +68,7 @@ describe("Node project command resolution", () => {
     ];
     const missingProject = await project({ scripts: {} });
     await expect(readNodeProjectInfo(missingProject)).resolves.toMatchObject({
-      applicableCommands: ["node_project_info"],
+      applicableCommands: ["node_project_info", "node_deps_list"],
     });
 
     const escapingProject = await project({ scripts: {} });
@@ -76,7 +77,7 @@ describe("Node project command resolution", () => {
     await mkdir(join(escapingProject, "node_modules", ".bin"), { recursive: true });
     await symlink(join(outside, "fallow"), join(escapingProject, "node_modules", ".bin", "fallow"));
     await expect(readNodeProjectInfo(escapingProject)).resolves.toMatchObject({
-      applicableCommands: ["node_project_info"],
+      applicableCommands: ["node_project_info", "node_deps_list"],
     });
 
     const danglingProject = await project({ scripts: {} });
@@ -86,20 +87,20 @@ describe("Node project command resolution", () => {
       join(danglingProject, "node_modules", ".bin", "fallow"),
     );
     await expect(readNodeProjectInfo(danglingProject)).resolves.toMatchObject({
-      applicableCommands: ["node_project_info"],
+      applicableCommands: ["node_project_info", "node_deps_list"],
     });
 
     const nonFileProject = await project({ scripts: {} });
     await mkdir(join(nonFileProject, "node_modules", ".bin", "fallow"), { recursive: true });
     await expect(readNodeProjectInfo(nonFileProject)).resolves.toMatchObject({
-      applicableCommands: ["node_project_info"],
+      applicableCommands: ["node_project_info", "node_deps_list"],
     });
 
     const validProject = await project({ scripts: {} });
     await mkdir(join(validProject, "node_modules", ".bin"), { recursive: true });
     await writeFile(join(validProject, "node_modules", ".bin", "fallow"), "fallow");
     await expect(readNodeProjectInfo(validProject)).resolves.toMatchObject({
-      applicableCommands: ["node_project_info", ...fallowCommandIds],
+      applicableCommands: ["node_project_info", "node_deps_list", ...fallowCommandIds],
     });
   });
 
@@ -134,6 +135,86 @@ describe("Node project command resolution", () => {
     expect(projectCommandIdentity(definition, changedResolved)).not.toEqual(
       projectCommandIdentity(definition, withoutPath),
     );
+  });
+
+  it("resolves each supported dependency-list form without requiring node_modules", async () => {
+    const cases = [
+      { manager: "npm", version: "10.0.0", args: ["ls", "--depth=0"] },
+      { manager: "pnpm", version: "9.0.0", args: ["list", "--depth=0"] },
+      { manager: "bun", version: "1.0.0", args: ["pm", "ls"] },
+      { manager: "yarn", version: "1.22.22", args: ["list", "--depth=0"] },
+    ] as const;
+    await Promise.all(
+      cases.map(async (entry) => {
+        const directory = await project({ packageManager: `${entry.manager}@${entry.version}` });
+        const toolchain = join(directory, "toolchain");
+        await mkdir(toolchain);
+        const executable = join(toolchain, entry.manager);
+        await writeFile(executable, "manager");
+        await chmod(executable, 0o755);
+        const definition = getProjectCommandDefinition("node_deps_list");
+        if (definition === undefined) throw new Error("missing node_deps_list definition");
+        const resolved = await resolveNodeProjectCommand(
+          definition,
+          directory,
+          { commandId: "node_deps_list" },
+          {
+            nodeExecutable: join(toolchain, "node"),
+            approvedPackageManagerDirectories: [],
+          },
+        );
+        expect(resolved).toMatchObject({
+          executable,
+          args: entry.args,
+          fingerprintArgs: [entry.manager, ...entry.args],
+        });
+      }),
+    );
+  });
+
+  it("fails closed for unsupported Yarn versions and omits the command from discovery", async () => {
+    const directory = await project({ packageManager: "yarn@4.2.0" });
+    const toolchain = join(directory, "toolchain");
+    await mkdir(toolchain);
+    const executable = join(toolchain, "yarn");
+    await writeFile(executable, "yarn");
+    await chmod(executable, 0o755);
+    const options = {
+      nodeExecutable: join(toolchain, "node"),
+      approvedPackageManagerDirectories: [],
+    };
+    const definition = getProjectCommandDefinition("node_deps_list");
+    if (definition === undefined) throw new Error("missing node_deps_list definition");
+    await expect(
+      resolveNodeProjectCommand(definition, directory, { commandId: "node_deps_list" }, options),
+    ).rejects.toMatchObject({
+      stage: "detection",
+      code: "unsupported-yarn-version",
+    });
+    await expect(readNodeProjectInfo(directory, options)).resolves.toMatchObject({
+      packageManager: { manager: "yarn", version: "4.2.0", executableAvailable: true },
+      applicableCommands: ["node_project_info"],
+    });
+  });
+
+  it("keeps an unavailable manager distinct from dependency-list command results", async () => {
+    const directory = await project({ packageManager: "pnpm@9.0.0" });
+    const definition = getProjectCommandDefinition("node_deps_list");
+    if (definition === undefined) throw new Error("missing node_deps_list definition");
+    await expect(
+      resolveNodeProjectCommand(
+        definition,
+        directory,
+        { commandId: "node_deps_list" },
+        {
+          nodeExecutable: join(directory, "missing-node"),
+          approvedPackageManagerDirectories: [],
+        },
+      ),
+    ).rejects.toMatchObject({
+      stage: "binary-resolution",
+      code: "package-manager-executable-unavailable",
+    });
   });
 
   it("canonicalizes script key order while retaining script string identity", () => {

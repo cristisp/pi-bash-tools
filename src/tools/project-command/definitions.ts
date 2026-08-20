@@ -11,7 +11,11 @@ const PROJECT_COMMAND_PROCESS_TIMEOUT_MS = 30_000;
 export const PROJECT_COMMAND_OUTPUT_LIMIT_BYTES = 50 * 1024;
 
 export type ProjectCommandExecutionKind = "process" | "in-process";
-export type ProjectCommandApplicability = "always" | "node-script" | "fallow-binary";
+export type ProjectCommandApplicability =
+  | "always"
+  | "node-script"
+  | "node-dependency-list"
+  | "fallow-binary";
 export type ProjectCommandRisk =
   | "workspace-observation"
   | "runtime-observation"
@@ -131,6 +135,29 @@ const definitions = Object.freeze([
     truncationDirection: "head",
     parameters: [],
     argvTemplate: ["node_project_info"],
+  }),
+  freezeDefinition({
+    namespace: PROJECT_COMMAND_NAMESPACE,
+    commandId: "node_deps_list",
+    description:
+      "List the top-level Node project dependencies through the detected package manager without changing the project.",
+    executable: "",
+    args: [],
+    cwdStrategy: "canonical-project",
+    sanitizedEnvironmentProfile: "node-v1",
+    environmentProfile: "node-v1",
+    processTimeoutMs: PROJECT_COMMAND_PROCESS_TIMEOUT_MS,
+    outputLimitBytes: PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
+    risk: "observe",
+    globalSafe: true,
+    executionKind: "process",
+    applicability: "node-dependency-list",
+    bindsRepoContent: false,
+    scriptBinding: "none",
+    acceptedExitCodes: [1],
+    truncationDirection: "head",
+    parameters: [],
+    argvTemplate: ["<package-manager>", "<fixed-list-args>"],
   }),
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,

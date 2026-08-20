@@ -9,6 +9,8 @@ import {
 import {
   detectPackageManagerDetailsInternal as detectPackageManagerDetails,
   findPackageManagerExecutableInternal as findPackageManagerExecutable,
+  nodeDependencyListArgs as nodeDependencyListArgsInternal,
+  supportsNodeDependencyList,
   type DetectedPackageManager,
   type PackageManager,
   type PackageManagerAvailabilityInput,
@@ -199,12 +201,16 @@ export function hashNodeScripts(scripts: Readonly<Record<string, string>>): stri
 function applicableCommands(
   scripts: Readonly<Record<string, string>>,
   fallowBinaryAvailable: boolean,
+  dependencyListAvailable: boolean,
 ): readonly string[] {
   const ids = new Set<string>(["node_project_info"]);
   for (const command of NODE_SCRIPT_COMMANDS) {
     if (Object.prototype.hasOwnProperty.call(scripts, command.script)) {
       ids.add(command.commandId);
     }
+  }
+  if (dependencyListAvailable) {
+    ids.add("node_deps_list");
   }
   if (fallowBinaryAvailable) {
     for (const commandId of FALLOW_COMMAND_IDS) {
@@ -289,7 +295,12 @@ async function projectState(
       executableAvailable: managerExecutable !== undefined,
     }),
     scripts: Object.freeze(Object.keys(manifest.scripts).sort()),
-    applicableCommands: applicableCommands(manifest.scripts, fallowBinaryAvailable),
+    applicableCommands: applicableCommands(
+      manifest.scripts,
+      fallowBinaryAvailable,
+      managerExecutable !== undefined &&
+        supportsNodeDependencyList(detected.manager, detected.version),
+    ),
   });
   return {
     manifest,
@@ -367,24 +378,42 @@ export async function resolveNodeProjectCommand(
       structuredDetails: state.info,
     });
   }
-  const script = commandScript(definition);
-  const fileSystem = options.fileSystem ?? nodeFileSystem;
-  const preliminaryManifest = await readManifest(projectPath, fileSystem, false);
-  if (preliminaryManifest === null) {
-    throw resolutionError("probe", "missing-package-manifest");
+  const state = await projectState(projectPath, options, false);
+  if (state.detected === null || state.manifest === null) {
+    throw resolutionError("detection", "package-manager-unavailable");
   }
-  if (!Object.prototype.hasOwnProperty.call(preliminaryManifest.scripts, script)) {
+  if (definition.commandId === "node_deps_list") {
+    const args = [
+      ...nodeDependencyListArgsInternal(state.detected.manager, state.detected.version),
+    ];
+    if (state.managerExecutable === undefined) {
+      throw resolutionError("binary-resolution", "package-manager-executable-unavailable", {
+        manager: state.detected.manager,
+      });
+    }
+    const resolved: ResolvedCommandLine = {
+      executable: state.managerExecutable,
+      args,
+      fingerprintArgs: [state.detected.manager, ...args],
+    };
+    return Object.freeze({
+      definition,
+      ...resolved,
+      displayCommand: displayCommand(resolved.executable, resolved.args),
+      effectiveParameters: Object.freeze({}),
+    });
+  }
+  const script = commandScript(definition);
+  if (!Object.prototype.hasOwnProperty.call(state.manifest.scripts, script)) {
     throw resolutionError("probe", "inapplicable-command", {
       commandId: definition.commandId,
       applicableCommands: applicableCommands(
-        preliminaryManifest.scripts,
-        await projectBinaryAvailable(projectPath, fileSystem),
+        state.manifest.scripts,
+        state.fallowBinaryAvailable,
+        state.managerExecutable !== undefined &&
+          supportsNodeDependencyList(state.detected.manager, state.detected.version),
       ),
     });
-  }
-  const state = await projectState(projectPath, options, false);
-  if (state.detected === null) {
-    throw resolutionError("detection", "package-manager-unavailable");
   }
   if (state.managerExecutable === undefined) {
     throw resolutionError("binary-resolution", "package-manager-executable-unavailable", {
@@ -407,6 +436,6 @@ export async function resolveNodeProjectCommand(
     ...resolved,
     displayCommand: displayCommand(resolved.executable, resolved.args),
     effectiveParameters: nodeParameters.effective,
-    script: preliminaryManifest.scripts[script],
+    script: state.manifest.scripts[script],
   });
 }
