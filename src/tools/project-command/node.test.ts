@@ -1,7 +1,18 @@
-import { chmod, mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   canonicalizeNodeScripts,
   hashNodeScripts,
@@ -104,6 +115,59 @@ describe("Node project command resolution", () => {
     });
   });
 
+  it("does not probe Fallow while resolving an exact Node script", async () => {
+    const directory = await project({
+      packageManager: "npm@10.0.0",
+      scripts: { "lint:fix": "node lint-fix.js" },
+    });
+    await mkdir(join(directory, "node_modules", ".bin"), { recursive: true });
+    await writeFile(join(directory, "node_modules", ".bin", "fallow"), "fallow");
+    const realpathProbe = vi.fn(async (path: string) => await realpath(path));
+    const lstatProbe = vi.fn(async (path: string) => await lstat(path));
+    const definition = getProjectCommandDefinition("node_lint_fix");
+    if (definition === undefined) throw new Error("missing node_lint_fix definition");
+
+    const resolved = await resolveNodeProjectCommand(
+      definition,
+      directory,
+      { commandId: "node_lint_fix" },
+      {
+        fileSystem: {
+          readFile: (path, encoding) => readFile(path, encoding),
+          stat,
+          realpath: realpathProbe,
+          lstat: lstatProbe,
+        },
+      },
+    );
+
+    expect(resolved.args).toEqual(["run", "lint:fix"]);
+    expect(realpathProbe).not.toHaveBeenCalled();
+    expect(lstatProbe).not.toHaveBeenCalled();
+  });
+
+  it("omits unprobed Fallow commands from missing-script diagnostics", async () => {
+    const directory = await project({
+      packageManager: "npm@10.0.0",
+      scripts: { lint: "node lint.js" },
+    });
+    await mkdir(join(directory, "node_modules", ".bin"), { recursive: true });
+    await writeFile(join(directory, "node_modules", ".bin", "fallow"), "fallow");
+    const definition = getProjectCommandDefinition("node_lint_fix");
+    if (definition === undefined) throw new Error("missing node_lint_fix definition");
+
+    await expect(
+      resolveNodeProjectCommand(definition, directory, { commandId: "node_lint_fix" }),
+    ).rejects.toMatchObject({
+      stage: "probe",
+      code: "inapplicable-command",
+      details: {
+        requiredPackageScript: "lint:fix",
+        applicableCommands: ["node_project_info", "node_deps_list", "node_lint"],
+      },
+    });
+  });
+
   it("reports exact scripts and resolves fixed manager-mediated argv", async () => {
     const directory = await project({
       packageManager: "npm@10.0.0",
@@ -179,6 +243,44 @@ describe("Node project command resolution", () => {
     });
   });
 
+  it("reports and resolves only the exact lint:fix script", async () => {
+    const directory = await project({
+      packageManager: "npm@10.0.0",
+      scripts: {
+        lint: "node lint.js",
+        "lint:fix": "node lint-fix.js",
+        "lint:fix:extra": "node extra.js",
+        linter: "node linter.js",
+      },
+    });
+    await expect(readNodeProjectInfo(directory)).resolves.toMatchObject({
+      scripts: ["lint", "lint:fix", "lint:fix:extra", "linter"],
+      applicableCommands: ["node_project_info", "node_deps_list", "node_lint", "node_lint_fix"],
+    });
+    const definition = getProjectCommandDefinition("node_lint_fix");
+    if (definition === undefined) throw new Error("missing node_lint_fix definition");
+    const resolved = await resolveNodeProjectCommand(definition, directory, {
+      commandId: "node_lint_fix",
+    });
+    expect(resolved).toMatchObject({
+      args: ["run", "lint:fix"],
+      fingerprintArgs: ["<package-manager>", "run", "lint:fix"],
+      script: "node lint-fix.js",
+    });
+    expect(resolved.executable.startsWith("/")).toBe(true);
+  });
+
+  it("does not report lint fix for similarly named scripts", async () => {
+    const directory = await project({
+      packageManager: "npm@10.0.0",
+      scripts: { "lint:fixer": "node lint-fixer.js", lintfix: "node lintfix.js" },
+    });
+    await expect(readNodeProjectInfo(directory)).resolves.toMatchObject({
+      scripts: ["lint:fixer", "lintfix"],
+      applicableCommands: ["node_project_info", "node_deps_list"],
+    });
+  });
+
   it("does not report formatting commands for similarly named scripts", async () => {
     const directory = await project({
       packageManager: "npm@10.0.0",
@@ -203,6 +305,7 @@ describe("Node project command resolution", () => {
     const cases = [
       { commandId: "node_format_check", script: "format:check" },
       { commandId: "node_format_write", script: "format" },
+      { commandId: "node_lint_fix", script: "lint:fix" },
       { commandId: "node_test", script: "test" },
     ] as const;
 

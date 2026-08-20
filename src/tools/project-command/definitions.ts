@@ -46,7 +46,14 @@ export interface ProjectCommandDefinition<CommandId extends string = string> {
   readonly truncationDirection?: ProjectCommandTruncationDirection;
   readonly parameters?: readonly ProjectCommandParameterDeclaration[];
   readonly argvTemplate?: readonly string[];
-  readonly fixedScriptKey?: "test" | "build" | "lint" | "typecheck" | "format:check" | "format";
+  readonly fixedScriptKey?:
+    | "test"
+    | "build"
+    | "lint"
+    | "lint:fix"
+    | "typecheck"
+    | "format:check"
+    | "format";
 }
 
 function freezeDefinition<const Definition extends ProjectCommandDefinition>(
@@ -224,6 +231,28 @@ const definitions = Object.freeze([
     parameters: [],
     argvTemplate: ["<package-manager>", "run", "lint"],
     fixedScriptKey: "lint",
+  }),
+  freezeDefinition({
+    namespace: PROJECT_COMMAND_NAMESPACE,
+    commandId: "node_lint_fix",
+    description: "Run the exact package.json lint:fix script to write lint fixes.",
+    executable: "",
+    args: ["run", "lint:fix"],
+    cwdStrategy: "canonical-project",
+    sanitizedEnvironmentProfile: "node-v1",
+    environmentProfile: "node-v1",
+    processTimeoutMs: PROJECT_COMMAND_PROCESS_TIMEOUT_MS,
+    outputLimitBytes: PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
+    risk: "project-code",
+    globalSafe: false,
+    executionKind: "process",
+    applicability: "node-script",
+    bindsRepoContent: true,
+    scriptBinding: "package-script",
+    truncationDirection: "tail",
+    parameters: [],
+    argvTemplate: ["<package-manager>", "run", "lint:fix"],
+    fixedScriptKey: "lint:fix",
   }),
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,

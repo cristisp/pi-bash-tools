@@ -17,7 +17,9 @@ import {
 } from "./definitions.ts";
 import { createProjectCommandExecutor, type ProjectCommandExecutionOutcome } from "./execution.ts";
 import {
+  isProjectCommandResolutionError,
   resolveProjectCommand,
+  type ProjectCommandResolutionError,
   type ProjectCommandResolver,
   type ResolvedProjectCommand,
 } from "./resolution.ts";
@@ -147,17 +149,122 @@ function outputDetails(
   };
 }
 
+function serializeDiagnostic(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? "undefined";
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+function outputDiagnostic(
+  label: "stdout" | "stderr",
+  output: ProjectCommandExecutionOutcome["stdout"],
+): string | undefined {
+  if (output.text.length === 0) {
+    return undefined;
+  }
+  const truncation = output.truncated
+    ? ` (truncated; ${output.totalBytes.toString(10)} bytes total)`
+    : "";
+  return `${label}: ${serializeDiagnostic(output.text)}${truncation}`;
+}
+
+function executionFailureReason(status: ProjectCommandExecutionOutcome["status"]): string {
+  switch (status) {
+    case "nonzero":
+      return "the command exited with a nonzero status";
+    case "timeout":
+      return "the command timed out";
+    case "spawn-failure":
+      return "the command could not be started";
+    case "cancelled":
+      return "the command was cancelled";
+    case "success":
+      return "the command completed successfully";
+  }
+  return "the command failed";
+}
+
+function executionFailureMessage(details: ProjectCommandOutputDetails): string {
+  const exit = [
+    details.exit.code === null ? undefined : `code ${details.exit.code.toString(10)}`,
+    details.exit.signal === null ? undefined : `signal ${details.exit.signal}`,
+  ].filter((part): part is string => part !== undefined);
+  const diagnostic =
+    outputDiagnostic("stderr", details.stderr) ?? outputDiagnostic("stdout", details.stdout);
+  return [
+    "Project command failed",
+    `status: ${details.status}`,
+    `reason: ${executionFailureReason(details.status)}`,
+    `commandId: ${details.commandId}`,
+    `resolvedCommand: ${details.resolvedCommand}`,
+    `parameters: ${serializeDiagnostic(details.parameters)}`,
+    `exit: ${exit.length === 0 ? "unavailable" : exit.join(", ")}`,
+    diagnostic,
+  ]
+    .filter((part): part is string => part !== undefined)
+    .join("; ");
+}
+
 function failure(
-  message: string,
   identity: CommandIdentity,
   projectPath: string,
   resolved: ResolvedProjectCommand,
   outcome: ProjectCommandExecutionOutcome,
 ): ProjectCommandToolError {
-  return new ProjectCommandToolError(
-    message,
-    outputDetails(identity, projectPath, resolved, outcome),
-  );
+  const details = outputDetails(identity, projectPath, resolved, outcome);
+  return new ProjectCommandToolError(executionFailureMessage(details), details);
+}
+
+type ProjectCommandRequestParameters = Readonly<Record<string, unknown>> & {
+  readonly commandId: string;
+};
+
+function resolutionFailure(
+  params: ProjectCommandRequestParameters,
+  error: ProjectCommandResolutionError,
+): ProjectCommandToolError {
+  const details = Object.freeze({
+    ...error.details,
+    status: "resolution-failure" as const,
+    executed: false as const,
+    commandId: params.commandId,
+    requestedParameters: params,
+    parameters: params,
+    stage: error.stage,
+    code: error.code,
+    resolution: error.details,
+    resolutionDetails: error.details,
+  });
+  const message = [
+    "Project command resolution failed",
+    "status: resolution-failure",
+    `commandId: ${params.commandId}`,
+    `requested parameters: ${serializeDiagnostic(params)}`,
+    `stage: ${error.stage}`,
+    `code: ${error.code}`,
+    "execution: not attempted",
+    `details: ${serializeDiagnostic(error.details)}`,
+  ].join("; ");
+  return new ProjectCommandToolError(message, details);
+}
+
+async function resolveCommandForTool(
+  resolver: ProjectCommandResolver,
+  definition: ProjectCommandDefinition,
+  projectPath: string,
+  signal: AbortSignal | undefined,
+  params: ProjectCommandRequestParameters,
+): Promise<ResolvedProjectCommand> {
+  try {
+    return await resolver(definition, projectPath, signal, params);
+  } catch (error) {
+    if (isProjectCommandResolutionError(error)) {
+      throw resolutionFailure(params, error);
+    }
+    throw error;
+  }
 }
 
 function commandCancellationError(): ProjectCommandToolError {
@@ -280,21 +387,6 @@ function hasAcceptedExitCode(
   );
 }
 
-function failureMessage(
-  status: Exclude<ProjectCommandExecutionOutcome["status"], "success" | "cancelled">,
-): string {
-  switch (status) {
-    case "nonzero":
-      return "Project command exited unsuccessfully";
-    case "timeout":
-      return "Project command timed out";
-    case "spawn-failure":
-      return "Project command could not be started";
-    default:
-      return "Project command failed";
-  }
-}
-
 function captureDefinitions<const Definitions extends readonly ProjectCommandDefinition[]>(
   definitions: Definitions,
 ): Definitions;
@@ -334,9 +426,9 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
     name: "project_command",
     label: "Project command",
     description:
-      "Run one fixed Node dependency listing or package script, six fixed Fallow analyses, or the existing workspace_path, node_version, and node_project_info observations. node_project_info reports project state in process; node_deps_list uses a detected package manager's fixed read-only list form; node_test, node_build, node_lint, node_typecheck, node_format_check, and node_format_write run only exact package.json scripts, with node_format_write changing project files. Fallow commands run only the project-local Fallow binary with fixed machine-readable arguments. Do not use this tool for dependency installation, Git inspection, file access, arbitrary commands, environment inspection, or project mutation outside node_format_write.",
+      "Run one fixed Node dependency listing or package script, six fixed Fallow analyses, or the existing workspace_path, node_version, and node_project_info observations. node_project_info reports project state in process; node_deps_list uses a detected package manager's fixed read-only list form; node_test, node_build, node_lint, node_lint_fix, node_typecheck, node_format_check, and node_format_write run only exact package.json scripts, with node_lint_fix and node_format_write changing project files. Fallow commands run only the project-local Fallow binary with fixed machine-readable arguments. Do not use this tool for dependency installation, Git inspection, file access, arbitrary commands, environment inspection, or project mutation outside node_lint_fix and node_format_write.",
     promptSnippet:
-      "Inspect Node project state, list top-level dependencies, run one exact Node package script including formatting, or run one fixed Fallow analysis",
+      "Inspect Node project state, list top-level dependencies, run one exact Node package script including lint fixes and formatting, or run one fixed Fallow analysis",
     promptGuidelines: [
       "Use project_command with commandId workspace_path when you need the current project workspace path.",
       "Use project_command with commandId node_version when you need the active Node.js runtime version.",
@@ -344,10 +436,11 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
       "Use node_deps_list to inspect top-level dependencies when node_project_info reports it as applicable.",
       "Use node_test with optional workspace-relative paths only when package.json has an exact test script.",
       "Use node_build, node_lint, or node_typecheck only when package.json has the exact corresponding script.",
+      "Use node_lint_fix only when package.json has the exact lint:fix script and you intend to modify project files.",
       "Use node_format_check only when package.json has the exact format:check script.",
       "Use node_format_write only when package.json has the exact format script and you intend to modify project files.",
       "Use fallow_dead_code, fallow_dupes, fallow_health, fallow_audit, fallow_list_entry_points, or fallow_list_boundaries only with their fixed machine-readable Fallow forms.",
-      "Do not use project_command for dependency installation, Git inspection, file inspection, arbitrary commands, environment access, or project mutation outside node_format_write.",
+      "Do not use project_command for dependency installation, Git inspection, file inspection, arbitrary commands, environment access, or project mutation outside node_lint_fix and node_format_write.",
     ],
     parameters,
     executionMode: "sequential",
@@ -359,7 +452,13 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
       }
       const requestSignal = signal ?? ctx.signal;
       const loaded = await loadPolicy(policy, ctx.cwd, requestSignal);
-      const resolved = await resolver(definition, loaded.projectPath, requestSignal, params);
+      const resolved = await resolveCommandForTool(
+        resolver,
+        definition,
+        loaded.projectPath,
+        requestSignal,
+        params,
+      );
       throwIfRequestAborted(requestSignal);
       const identity = projectCommandIdentity(definition, resolved);
       await authorizeCommand(policy, loaded, definition, identity, resolved, ctx, requestSignal);
@@ -375,13 +474,7 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
         throw cancellationError(details);
       }
       if (outcome.status !== "success" && !hasAcceptedExitCode(resolved, outcome)) {
-        throw failure(
-          failureMessage(outcome.status),
-          identity,
-          loaded.projectPath,
-          resolved,
-          outcome,
-        );
+        throw failure(identity, loaded.projectPath, resolved, outcome);
       }
       return result(details);
     },

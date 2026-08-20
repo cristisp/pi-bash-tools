@@ -1,16 +1,21 @@
 import { isAbsolute, normalize, parse } from "node:path";
 import {
   ENVIRONMENT_POLICY_VERSION,
+  FILESYSTEM_POLICY_VERSION,
   type EnvironmentPolicyData,
   type EnvironmentPolicyScope,
+  type FilesystemPolicyData,
+  type FilesystemPolicyScope,
 } from "./types.ts";
 
 export const DEFAULT_CONFIRMATION_TIMEOUT_MS = 120_000;
 export const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 
 const ROOT_KEYS = new Set(["version", "confirmationTimeoutMs", "global", "projects"]);
+const FILESYSTEM_ROOT_KEYS = new Set(["version", "global", "projects"]);
 const SCOPE_KEYS = new Set(["allow", "deny"]);
 const DEFAULT_SCOPE: EnvironmentPolicyScope = { allow: [], deny: [] };
+const DEFAULT_FILESYSTEM_SCOPE: FilesystemPolicyScope = { allow: [], deny: [] };
 
 export function policyError(): Error {
   return new Error("Environment policy is invalid or unreadable");
@@ -125,11 +130,59 @@ function parseProjects(value: unknown): Readonly<Record<string, EnvironmentPolic
   return projects;
 }
 
+function parseFilesystemPaths(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw policyError();
+  }
+  const paths = value.map((item) => {
+    if (typeof item !== "string") {
+      throw policyError();
+    }
+    return validatePolicyPath(item);
+  });
+  if (new Set(paths).size !== paths.length) {
+    throw policyError();
+  }
+  return paths;
+}
+
+function parseFilesystemScope(value: unknown): FilesystemPolicyScope {
+  if (!isPolicyRecord(value)) {
+    throw policyError();
+  }
+  assertPolicyAllowedKeys(value, SCOPE_KEYS);
+  const allow = value.allow === undefined ? [] : parseFilesystemPaths(value.allow);
+  const deny = value.deny === undefined ? [] : parseFilesystemPaths(value.deny);
+  if (allow.some((path) => deny.includes(path))) {
+    throw policyError();
+  }
+  return { allow, deny };
+}
+
+function parseFilesystemProjects(value: unknown): Readonly<Record<string, FilesystemPolicyScope>> {
+  if (!isPolicyRecord(value)) {
+    throw policyError();
+  }
+  const projects: Record<string, FilesystemPolicyScope> = {};
+  for (const [path, scope] of Object.entries(value)) {
+    projects[validateProjectPath(path)] = parseFilesystemScope(scope);
+  }
+  return projects;
+}
+
 export function createEmptyEnvironmentPolicy(): EnvironmentPolicyData {
   return {
     version: ENVIRONMENT_POLICY_VERSION,
     confirmationTimeoutMs: DEFAULT_CONFIRMATION_TIMEOUT_MS,
     global: { ...DEFAULT_SCOPE },
+    projects: {},
+  };
+}
+
+export function createEmptyFilesystemPolicy(): FilesystemPolicyData {
+  return {
+    version: FILESYSTEM_POLICY_VERSION,
+    global: { ...DEFAULT_FILESYSTEM_SCOPE },
     projects: {},
   };
 }
@@ -163,6 +216,26 @@ export function parseEnvironmentPolicy(text: string): EnvironmentPolicyData {
   return {
     version: ENVIRONMENT_POLICY_VERSION,
     confirmationTimeoutMs: typeof timeout === "number" ? timeout : DEFAULT_CONFIRMATION_TIMEOUT_MS,
+    global,
+    projects,
+  };
+}
+
+export function parseFilesystemPolicy(value: unknown): FilesystemPolicyData {
+  if (!isPolicyRecord(value)) {
+    throw policyError();
+  }
+  assertPolicyAllowedKeys(value, FILESYSTEM_ROOT_KEYS);
+  if (value.version !== FILESYSTEM_POLICY_VERSION) {
+    throw policyError();
+  }
+  const global =
+    value.global === undefined
+      ? { ...DEFAULT_FILESYSTEM_SCOPE }
+      : parseFilesystemScope(value.global);
+  const projects = value.projects === undefined ? {} : parseFilesystemProjects(value.projects);
+  return {
+    version: FILESYSTEM_POLICY_VERSION,
     global,
     projects,
   };

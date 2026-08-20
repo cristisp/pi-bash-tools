@@ -2,24 +2,29 @@ import {
   assertPolicyAllowedKeys,
   isPolicyRecord,
   parseEnvironmentPolicy,
+  parseFilesystemPolicy,
   policyError,
   serializePolicy,
   validateProjectPath,
 } from "./format.ts";
 import {
   COMMAND_POLICY_VERSION,
+  FILESYSTEM_POLICY_VERSION,
   type CommandIdentity,
   type CommandPolicyData,
   type CommandPolicyScope,
   type EnvironmentPolicyData,
+  type FilesystemPolicyData,
+  type FilesystemPolicyScope,
   type PolicyDocument,
 } from "./types.ts";
 
-const POLICY_DOCUMENT_VERSION = 2 as const;
+const POLICY_DOCUMENT_VERSION = 3 as const;
 
 const PROJECT_COMMAND_ID_PATTERN = /^[a-z][a-z0-9_]*$/u;
 const FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/u;
-const DOCUMENT_KEYS = new Set(["version", "environment", "projectCommands"]);
+const V2_DOCUMENT_KEYS = new Set(["version", "environment", "projectCommands"]);
+const V3_DOCUMENT_KEYS = new Set(["version", "environment", "projectCommands", "filesystem"]);
 const COMMAND_POLICY_KEYS = new Set(["version", "global", "projects"]);
 const COMMAND_SCOPE_KEYS = new Set(["allow", "deny"]);
 const DEFAULT_COMMAND_SCOPE: CommandPolicyScope = { allow: [], deny: [] };
@@ -137,13 +142,20 @@ export function parsePolicyDocument(text: string): PolicyDocument {
   if (value.version === 1) {
     return { version: 1, environment: parseEnvironmentPolicy(text) };
   }
-  assertPolicyAllowedKeys(value, DOCUMENT_KEYS);
-  if (value.version !== POLICY_DOCUMENT_VERSION || !isPolicyRecord(value.environment)) {
+  if (value.version !== 2 && value.version !== POLICY_DOCUMENT_VERSION) {
+    throw policyError();
+  }
+  assertPolicyAllowedKeys(value, value.version === 2 ? V2_DOCUMENT_KEYS : V3_DOCUMENT_KEYS);
+  if (!isPolicyRecord(value.environment)) {
     throw policyError();
   }
   const environment = parseEnvironmentPolicy(JSON.stringify(value.environment));
   const projectCommands = parseCommandPolicy(value.projectCommands);
-  return { version: POLICY_DOCUMENT_VERSION, environment, projectCommands };
+  if (value.version === 2) {
+    return { version: 2, environment, projectCommands };
+  }
+  const filesystem = parseFilesystemPolicy(value.filesystem);
+  return { version: POLICY_DOCUMENT_VERSION, environment, projectCommands, filesystem };
 }
 
 function serializeCommandIdentity(identity: CommandIdentity): CommandIdentity {
@@ -172,18 +184,58 @@ function serializeCommandProjects(
   return result;
 }
 
+function serializeFilesystemScope(scope: FilesystemPolicyScope): FilesystemPolicyScope {
+  return {
+    allow: [...scope.allow].sort(),
+    deny: [...scope.deny].sort(),
+  };
+}
+
+function serializeFilesystemProjects(
+  projects: Readonly<Record<string, FilesystemPolicyScope>>,
+): Readonly<Record<string, FilesystemPolicyScope>> {
+  const result: Record<string, FilesystemPolicyScope> = {};
+  for (const path of Object.keys(projects).sort()) {
+    const scope = projects[path];
+    if (scope !== undefined) {
+      result[path] = serializeFilesystemScope(scope);
+    }
+  }
+  return result;
+}
+
+function serializeProjectCommands(policy: CommandPolicyData): CommandPolicyData {
+  return {
+    version: COMMAND_POLICY_VERSION,
+    global: serializeCommandScope(policy.global),
+    projects: serializeCommandProjects(policy.projects),
+  };
+}
+
 export function serializePolicyDocument(document: PolicyDocument): string {
   if (document.version === 1) {
     return serializePolicy(document.environment);
   }
+  if (document.version === 2) {
+    return `${JSON.stringify(
+      {
+        version: 2,
+        environment: document.environment,
+        projectCommands: serializeProjectCommands(document.projectCommands),
+      },
+      null,
+      2,
+    )}\n`;
+  }
   return `${JSON.stringify(
     {
-      version: 2,
+      version: POLICY_DOCUMENT_VERSION,
       environment: document.environment,
-      projectCommands: {
-        version: COMMAND_POLICY_VERSION,
-        global: serializeCommandScope(document.projectCommands.global),
-        projects: serializeCommandProjects(document.projectCommands.projects),
+      projectCommands: serializeProjectCommands(document.projectCommands),
+      filesystem: {
+        version: FILESYSTEM_POLICY_VERSION,
+        global: serializeFilesystemScope(document.filesystem.global),
+        projects: serializeFilesystemProjects(document.filesystem.projects),
       },
     },
     null,
@@ -195,19 +247,55 @@ export function copyEnvironmentIntoPolicyDocument(
   document: PolicyDocument,
   environment: EnvironmentPolicyData,
 ): PolicyDocument {
-  return document.version === 1
-    ? { version: 1, environment }
-    : { version: POLICY_DOCUMENT_VERSION, environment, projectCommands: document.projectCommands };
+  if (document.version === 1) {
+    return { version: 1, environment };
+  }
+  if (document.version === 2) {
+    return { version: 2, environment, projectCommands: document.projectCommands };
+  }
+  return {
+    version: POLICY_DOCUMENT_VERSION,
+    environment,
+    projectCommands: document.projectCommands,
+    filesystem: document.filesystem,
+  };
 }
 
 export function copyProjectCommandsIntoPolicyDocument(
   document: PolicyDocument,
   projectCommands: CommandPolicyData,
-): Extract<PolicyDocument, { version: 2 }> {
+): PolicyDocument {
+  if (document.version === 1) {
+    return {
+      version: 2,
+      environment: document.environment,
+      projectCommands,
+    };
+  }
+  if (document.version === 2) {
+    return {
+      version: 2,
+      environment: document.environment,
+      projectCommands,
+    };
+  }
   return {
     version: POLICY_DOCUMENT_VERSION,
     environment: document.environment,
     projectCommands,
+    filesystem: document.filesystem,
+  };
+}
+
+export function copyFilesystemIntoPolicyDocument(
+  document: PolicyDocument,
+  filesystem: FilesystemPolicyData,
+): Extract<PolicyDocument, { version: 3 }> {
+  return {
+    version: POLICY_DOCUMENT_VERSION,
+    environment: document.environment,
+    projectCommands: document.version === 1 ? createEmptyCommandPolicy() : document.projectCommands,
+    filesystem,
   };
 }
 

@@ -12,7 +12,7 @@ Every tool must define explicit input and output contracts, enforce workspace bo
 
 The extension currently registers six tools: environment, git_status, git_diff, git_log, git_show, and project_command.
 
-The project_command catalog currently supports sixteen extension-owned semantic commands: workspace_path, node_version, node_project_info, node_deps_list, node_test, node_build, node_lint, node_typecheck, node_format_check, node_format_write, fallow_dead_code, fallow_dupes, fallow_health, fallow_audit, fallow_list_entry_points, and fallow_list_boundaries.
+The project_command catalog currently supports seventeen extension-owned semantic commands: workspace_path, node_version, node_project_info, node_deps_list, node_test, node_build, node_lint, node_lint_fix, node_typecheck, node_format_check, node_format_write, fallow_dead_code, fallow_dupes, fallow_health, fallow_audit, fallow_list_entry_points, and fallow_list_boundaries.
 
 The environment tool provides explicit-key access with fail-closed authorization, canonical project identity, restrictive policy storage, locking, atomic writes, cancellation, and timeout handling.
 
@@ -20,15 +20,17 @@ The Git tools provide validated, bounded, cancellable, read-only repository insp
 
 The project_command tool supports fixed workspace and Node runtime observation commands, in-process Node project discovery, authorized Node project script commands, and authorized Fallow analysis commands.
 
+A filesystem access-policy interceptor protects built-in ls, find, and grep calls with canonical path validation, user-owned allow and deny rules, interactive approval where available, persisted project decisions, and non-terminating blocked results.
+
 project_command accepts a strict discriminated command schema and executes only catalog-defined operations.
 
 It uses direct spawn with shell disabled for executable commands, canonical project working directories, restricted environment profiles, bounded output, cancellation, timeouts, process cleanup, and an in-process path for node_project_info.
 
 Command authorization uses the user-owned policy at `getAgentDir()/bash-tools.json`, canonical project paths, command fingerprints, policy precedence, and interactive confirmation.
 
-Command decisions migrate a version 1 environment document to a version 2 document containing the unchanged nested environment version 1 policy and a version 1 project command policy namespace.
+Policy decisions migrate a version 1 environment document to a version 3 document containing the unchanged nested environment version 1 policy, a version 1 project command policy namespace, and a version 1 filesystem policy namespace.
 
-Native macOS validation currently passes the 154-test suite, with V8 coverage remaining above the 75% lines, functions, statements, and branches thresholds, alongside TypeScript checks, warning-free lint, formatting, Fallow analysis, Fallow audit, and git diff checks.
+Native macOS validation currently passes the 166-test suite with 89.01% statements, 80.88% branches, 96.19% functions, and 89.17% lines, alongside TypeScript checks, warning-free lint, formatting, Fallow analysis, Fallow audit, and git diff checks.
 
 Linux runtime validation remains deferred, and Windows and FreeBSD remain unsupported by design.
 
@@ -36,7 +38,7 @@ The simplification pass is complete: one policy store in `src/tools/policy/` ser
 
 The cleanup-failure execution status was removed from the tool contract because it was unreachable with real processes.
 
-The catalog architecture, the Node command slice, the read-only dependency-list command, and the Fallow command slice are complete.
+The catalog architecture, the Node command slice, the read-only dependency-list command, the lint-fix and formatting command slices, the Fallow command slice, and the filesystem access-policy implementation are complete.
 
 The next milestone is the separately reviewed dependency-install command for node_deps_install, which remains deferred because it contacts registries, mutates project state, and executes dependency lifecycle code.
 
@@ -214,6 +216,7 @@ No Magento or Symfony application-level commands until the external-state risk c
 | node_test                | `<pm> run test -- ...`                                                    | project-code         | paths (workspace-paths)   |
 | node_build               | `<pm> run build`                                                          | project-code         | none                      |
 | node_lint                | `<pm> run lint`                                                           | project-code         | none                      |
+| node_lint_fix            | `<pm> run lint:fix` (exact script name)                                   | project-code         | none                      |
 | node_typecheck           | `<pm> run typecheck` (exact script name)                                  | project-code         | none                      |
 | node_format_check        | `<pm> run format:check` (exact script name)                               | project-code         | none                      |
 | node_format_write        | `<pm> run format` (exact script name)                                     | project-code         | none                      |
@@ -262,6 +265,12 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 - [x] Shorten redundant `ProjectCommand` symbol prefixes inside the module.
 - [x] Reduce input validation to the catalog lookup and plain shape checks.
 
+### Filesystem access policy
+
+- [x] Intercept built-in ls, find, and grep calls with canonical path validation and user-owned authorization.
+- [x] Persist filesystem allow and deny decisions in the version 3 policy document without terminating blocked tool calls.
+- [x] Cover filesystem policy approval, denial, timeout persistence, cancellation, path handling, and non-filesystem passthrough behavior.
+
 ### Catalog machinery
 
 - [x] Define the data-driven command definition shape and migrate workspace_path and node_version onto it.
@@ -269,6 +278,7 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 - [x] Implement the resolution pipeline with stage-tagged errors.
 - [x] Implement applicability probes and applicable-command error listings for the initial Node command slice.
 - [x] Report required package.json scripts and fixed package-manager commands when Node script commands are inapplicable.
+- [x] Report bounded command, parameter, exit, and captured-output diagnostics for project-command failures and resolution details for commands that cannot execute.
 - [x] Implement node package manager detection and fail-closed binary resolution.
 - [x] Implement manager-specific read-only dependency listing and Yarn Classic version gating.
 - [x] Implement the observe and project-code risk classes and their policy consequences for the initial Node slice.
@@ -286,6 +296,7 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 - [x] Implement node_project_info as an in-process command.
 - [x] Implement node_test with the paths parameter.
 - [x] Implement node_build, node_lint, and node_typecheck.
+- [x] Implement node_lint_fix with exact package-script resolution and project-code authorization.
 - [x] Implement node_format_check and node_format_write with exact package-script resolution.
 - [x] Implement node_deps_list with manager-specific read-only forms.
 - [ ] Implement node_deps_install with per-package-manager frozen-lockfile forms.
@@ -319,6 +330,8 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 - [x] Add initial fixture-project integration coverage for Node project discovery and authorized script execution.
 - [x] Add fixture-project integration coverage for Fallow binary resolution, fixed argv, and audit exit-code behavior.
 - [x] Add fixture-project integration tests for all practical implemented catalog commands using real package manager, Node runner, and Fallow binaries.
+- [x] Add fixture-project integration coverage for authorized lint-fix mutation and non-authorized behavior.
+- [x] Add filesystem access-policy tests for path validation, authorization, timeout persistence, cancellation, and non-filesystem tool calls.
 - [x] Add Vitest coverage reporting with `@vitest/coverage-v8`.
 - [x] Add a coverage script and enforce at least 75% lines, functions, statements, and branches.
 - [x] Keep the available test, type, lint, format, and Fallow checks passing before committing.

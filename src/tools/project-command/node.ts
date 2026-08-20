@@ -24,6 +24,7 @@ const NODE_SCRIPT_COMMANDS = [
   { commandId: "node_test", script: "test" },
   { commandId: "node_build", script: "build" },
   { commandId: "node_lint", script: "lint" },
+  { commandId: "node_lint_fix", script: "lint:fix" },
   { commandId: "node_typecheck", script: "typecheck" },
   { commandId: "node_format_check", script: "format:check" },
   { commandId: "node_format_write", script: "format" },
@@ -86,6 +87,11 @@ interface NodeProjectState {
   readonly managerExecutable: string | undefined;
   readonly scriptHash: string | null;
   readonly info: NodeProjectInfo;
+}
+
+interface NodeProjectStateOptions {
+  readonly allowMissing: boolean;
+  readonly probeFallow: boolean;
 }
 
 export interface NodeProjectResolutionOptions {
@@ -253,10 +259,10 @@ async function projectBinaryAvailable(
 async function projectState(
   projectPath: string,
   options: NodeProjectResolutionOptions,
-  allowMissing: boolean,
+  stateOptions: NodeProjectStateOptions,
 ): Promise<NodeProjectState> {
   const fileSystem = options.fileSystem ?? nodeFileSystem;
-  const manifest = await readManifest(projectPath, fileSystem, allowMissing);
+  const manifest = await readManifest(projectPath, fileSystem, stateOptions.allowMissing);
   if (manifest === null) {
     return {
       manifest: null,
@@ -275,7 +281,9 @@ async function projectState(
     };
   }
   const lockfiles = await readLockfiles(projectPath, fileSystem);
-  const fallowBinaryAvailable = await projectBinaryAvailable(projectPath, fileSystem);
+  const fallowBinaryAvailable = stateOptions.probeFallow
+    ? await projectBinaryAvailable(projectPath, fileSystem)
+    : false;
   const detected = detectPackageManagerDetails(
     manifest.hasPackageManager
       ? { packageManager: manifest.packageManager, lockfiles }
@@ -319,7 +327,12 @@ export async function readNodeProjectInfo(
   projectPath: string,
   options: NodeProjectResolutionOptions = {},
 ): Promise<NodeProjectInfo> {
-  return (await projectState(projectPath, options, true)).info;
+  return (
+    await projectState(projectPath, options, {
+      allowMissing: true,
+      probeFallow: true,
+    })
+  ).info;
 }
 
 function commandScript(definition: ProjectCommandDefinition): string {
@@ -369,7 +382,10 @@ export async function resolveNodeProjectCommand(
   options: NodeProjectResolutionOptions = {},
 ): Promise<ResolvedProjectCommand> {
   if (definition.commandId === "node_project_info") {
-    const state = await projectState(projectPath, options, true);
+    const state = await projectState(projectPath, options, {
+      allowMissing: true,
+      probeFallow: true,
+    });
     return Object.freeze({
       definition,
       executable: "in-process",
@@ -380,7 +396,10 @@ export async function resolveNodeProjectCommand(
       structuredDetails: state.info,
     });
   }
-  const state = await projectState(projectPath, options, false);
+  const state = await projectState(projectPath, options, {
+    allowMissing: false,
+    probeFallow: false,
+  });
   if (state.detected === null || state.manifest === null) {
     throw resolutionError("detection", "package-manager-unavailable");
   }

@@ -36,6 +36,7 @@ describe("project command integration", () => {
       },
       { commandId: "node_build", params: { commandId: "node_build" } },
       { commandId: "node_lint", params: { commandId: "node_lint" } },
+      { commandId: "node_lint_fix", params: { commandId: "node_lint_fix" } },
       { commandId: "node_typecheck", params: { commandId: "node_typecheck" } },
       {
         commandId: "node_format_check",
@@ -120,6 +121,7 @@ describe("project command integration", () => {
           "node_test",
           "node_build",
           "node_lint",
+          "node_lint_fix",
           "node_typecheck",
           "node_format_check",
           "node_format_write",
@@ -143,6 +145,12 @@ describe("project command integration", () => {
         stdout: { text: expect.stringContaining(`${commandId.replace("node_", "")}:none\n`) },
       });
     }
+    expect(responses.get("node_lint_fix")).toMatchObject({
+      status: "success",
+      stdout: { text: expect.stringContaining("lint:fix\n") },
+      resolvedCommand: expect.stringContaining(" run lint:fix"),
+    });
+    expect(await readFile(join(fixture.directory, "lint-fix-target.txt"), "utf8")).toBe("after\n");
     expect(responses.get("node_format_check")).toMatchObject({
       status: "success",
       stdout: { text: expect.stringContaining("format:check:none\n") },
@@ -179,6 +187,76 @@ describe("project command integration", () => {
     });
   });
 
+  it("requires project authorization before executing the mutating lint fix script", async () => {
+    const fixture = await createNodeProjectIntegrationFixture();
+    const userAgent = await mkdtemp(join(tmpdir(), "bash-tools-node-lint-fix-policy-"));
+    directories.push(fixture.directory, userAgent);
+    const configPath = join(await realpath(userAgent), "bash-tools.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        version: 2,
+        environment: { version: 1 },
+        projectCommands: {
+          version: 1,
+          global: { allow: [], deny: [] },
+          projects: { [fixture.projectPath]: { allow: [], deny: [] } },
+        },
+      }),
+    );
+    const tool = createProjectCommandToolForTesting({ configPath });
+    const context = {
+      cwd: fixture.directory,
+      mode: "print" as const,
+      hasUI: false,
+      signal: undefined,
+      ui: { select: async () => undefined },
+    };
+    await expect(
+      tool.execute("node-lint-fix", { commandId: "node_lint_fix" }, undefined, undefined, context),
+    ).rejects.toMatchObject({
+      name: "ProjectCommandToolError",
+      message: "Project command is not authorized in this mode",
+    });
+    expect(await readFile(join(fixture.directory, "lint-fix-target.txt"), "utf8")).toBe("before\n");
+
+    const definition = getProjectCommandDefinition("node_lint_fix");
+    if (definition === undefined) throw new Error("missing node_lint_fix definition");
+    const resolved = await resolveNodeProjectCommand(definition, fixture.projectPath, {
+      commandId: "node_lint_fix",
+    });
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        version: 2,
+        environment: { version: 1 },
+        projectCommands: {
+          version: 1,
+          global: { allow: [], deny: [] },
+          projects: {
+            [fixture.projectPath]: {
+              allow: [projectCommandIdentity(definition, resolved)],
+              deny: [],
+            },
+          },
+        },
+      }),
+    );
+    const response = await tool.execute(
+      "node-lint-fix",
+      { commandId: "node_lint_fix" },
+      undefined,
+      undefined,
+      context,
+    );
+    expect(response.details).toMatchObject({
+      commandId: "node_lint_fix",
+      status: "success",
+      resolvedCommand: expect.stringContaining(" run lint:fix"),
+    });
+    expect(await readFile(join(fixture.directory, "lint-fix-target.txt"), "utf8")).toBe("after\n");
+  });
+
   it("reports missing fixed Node scripts through the tool resolution error details", async () => {
     const project = await mkdtemp(
       join(tmpdir(), "bash-tools-node-missing-script-integration-project-"),
@@ -204,6 +282,7 @@ describe("project command integration", () => {
     const cases = [
       { commandId: "node_format_check", script: "format:check" },
       { commandId: "node_format_write", script: "format" },
+      { commandId: "node_lint_fix", script: "lint:fix" },
       { commandId: "node_test", script: "test" },
     ] as const;
 
@@ -218,16 +297,27 @@ describe("project command integration", () => {
             ui: { select: async () => undefined },
           }),
         ).rejects.toMatchObject({
-          name: "ProjectCommandResolutionError",
-          message: "Project command resolution failed during probe",
-          stage: "probe",
-          code: "inapplicable-command",
+          name: "ProjectCommandToolError",
+          message: expect.stringMatching(
+            new RegExp(
+              `commandId: ${commandId}.*stage: probe.*code: inapplicable-command.*not attempted`,
+              "u",
+            ),
+          ),
           details: {
+            status: "resolution-failure",
+            executed: false,
             commandId,
-            requiredPackageScript: script,
-            packageManagerCommand: `npm run ${script}`,
-            availableScripts: ["build", "format:checker", "zed"],
-            applicableCommands: expect.arrayContaining(["node_project_info"]),
+            requestedParameters: { commandId },
+            stage: "probe",
+            code: "inapplicable-command",
+            resolutionDetails: {
+              commandId,
+              requiredPackageScript: script,
+              packageManagerCommand: `npm run ${script}`,
+              availableScripts: ["build", "format:checker", "zed"],
+              applicableCommands: expect.arrayContaining(["node_project_info"]),
+            },
           },
         });
       }),
@@ -343,6 +433,17 @@ describe("project command integration", () => {
       status: "success",
       parameters: { paths: ["runner.js"] },
       resolvedCommand: expect.stringContaining(" run test -- runner.js"),
+    });
+    const serializedEntry = response.content[0];
+    if (serializedEntry?.type !== "text") {
+      throw new Error("project command response did not contain serialized text");
+    }
+    const serialized = JSON.parse(serializedEntry.text);
+    expect(serialized).toMatchObject({
+      commandId: "node_test",
+      status: "success",
+      parameters: { paths: ["runner.js"] },
+      resolvedCommand: response.details.resolvedCommand,
     });
     expect(response.details.stdout.text).toContain("true:runner.js");
   });

@@ -3,8 +3,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   applyEnvironmentPolicyDecision,
+  applyFilesystemPolicyDecision,
   applyProjectCommandPolicyDecision,
   findEnvironmentPolicyDecision,
+  findFilesystemPolicyDecision,
   findProjectCommandPolicyDecision,
 } from "./decisions.ts";
 import { createEmptyCommandPolicy, parsePolicyDocument } from "./document.ts";
@@ -146,6 +148,31 @@ describe("shared policy decisions", () => {
     expect(findProjectCommandPolicyDecision(policy, identity, true)).toBe("allow-project");
     expect(findEnvironmentPolicyDecision(policy, "NEW_KEY")).toBe("allow-project");
     expect(policy.document.version).toBe(2);
+  });
+
+  it("uses filesystem path precedence and migrates the policy namespace", () => {
+    let document = emptyDocument();
+    document = applyFilesystemPolicyDecision(
+      document,
+      projectPath,
+      "/tmp/filesystem-root",
+      "allow-global",
+    );
+    document = applyFilesystemPolicyDecision(
+      document,
+      projectPath,
+      "/tmp/filesystem-root/private",
+      "deny-project",
+    );
+    const view = loaded(document);
+    expect(document.version).toBe(3);
+    expect(findFilesystemPolicyDecision(view, "/tmp/filesystem-root/public/file")).toBe(
+      "allow-global",
+    );
+    expect(findFilesystemPolicyDecision(view, "/tmp/filesystem-root/private/file")).toBe(
+      "deny-project",
+    );
+    expect(findFilesystemPolicyDecision(view, "/tmp/unlisted")).toBe("unknown");
   });
 
   it("provides an empty command namespace for new documents", () => {

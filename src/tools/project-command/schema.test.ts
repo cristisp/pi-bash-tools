@@ -68,6 +68,7 @@ describe("project command request contract", () => {
       "node_test",
       "node_build",
       "node_lint",
+      "node_lint_fix",
       "node_typecheck",
       "node_format_check",
       "node_format_write",
@@ -97,17 +98,22 @@ describe("project command request contract", () => {
         paths: { type: "array", items: { type: "string" } },
       },
     });
-    expect(variants[8]).toMatchObject({
+    expect(variants[7]).toMatchObject({
       type: "object",
       additionalProperties: false,
-      properties: { commandId: { const: "node_format_check" } },
+      properties: { commandId: { const: "node_lint_fix" } },
     });
     expect(variants[9]).toMatchObject({
       type: "object",
       additionalProperties: false,
+      properties: { commandId: { const: "node_format_check" } },
+    });
+    expect(variants[10]).toMatchObject({
+      type: "object",
+      additionalProperties: false,
       properties: { commandId: { const: "node_format_write" } },
     });
-    expect(variants[13]).toMatchObject({
+    expect(variants[14]).toMatchObject({
       type: "object",
       additionalProperties: false,
       properties: {
@@ -116,7 +122,7 @@ describe("project command request contract", () => {
       },
       required: ["commandId", "base"],
     });
-    expect(variants).toHaveLength(16);
+    expect(variants).toHaveLength(17);
     expect(variants.every((variant) => !variant.additionalProperties)).toBe(true);
   });
 
@@ -128,6 +134,7 @@ describe("project command request contract", () => {
       "node_deps_list",
       "node_build",
       "node_lint",
+      "node_lint_fix",
       "node_typecheck",
       "node_format_check",
       "node_format_write",
@@ -164,6 +171,7 @@ describe("project command request contract", () => {
       { commandId: "node_build", paths: [] },
       { commandId: "node_format_check", paths: [] },
       { commandId: "node_format_write", args: ["run", "format"] },
+      { commandId: "node_lint_fix", args: ["run", "lint:fix"] },
       { commandId: "fallow_audit" },
       { commandId: "fallow_audit", base: "" },
       { commandId: "fallow_audit", base: "--help" },

@@ -21,6 +21,7 @@ export async function createNodeProjectIntegrationFixture(): Promise<NodeProject
         test: "node fixture-runner.js test",
         build: "node fixture-runner.js build",
         lint: "node fixture-runner.js lint",
+        "lint:fix": "node lint-fix-fixture.js",
         typecheck: "node fixture-runner.js typecheck",
         "format:check": "node fixture-runner.js format:check",
         format: "node format-fixture.js",
@@ -32,6 +33,7 @@ export async function createNodeProjectIntegrationFixture(): Promise<NodeProject
     'process.stdout.write(`${process.argv[2]}:${process.argv[3] || "none"}\\n`);\n',
   );
   await writeFile(join(directory, "format-target.txt"), "before\n");
+  await writeFile(join(directory, "lint-fix-target.txt"), "before\n");
   await writeFile(
     join(directory, "format-fixture.js"),
     [
@@ -40,6 +42,15 @@ export async function createNodeProjectIntegrationFixture(): Promise<NodeProject
       'const source = readFileSync(target, "utf8");',
       'writeFileSync(target, source.replace("before", "after"));',
       'process.stdout.write("format:write\\n");',
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(directory, "lint-fix-fixture.js"),
+    [
+      'const { writeFileSync } = require("node:fs");',
+      'writeFileSync("lint-fix-target.txt", "after\\n");',
+      'process.stdout.write("lint:fix\\n");',
       "",
     ].join("\n"),
   );

@@ -17,6 +17,7 @@ describe("project command definitions", () => {
       "node_test",
       "node_build",
       "node_lint",
+      "node_lint_fix",
       "node_typecheck",
       "node_format_check",
       "node_format_write",
@@ -46,7 +47,7 @@ describe("project command definitions", () => {
       executable: process.execPath,
       args: ["--version"],
     });
-    expect(definitions.slice(2, 10)).toMatchObject([
+    expect(definitions.slice(2, 11)).toMatchObject([
       { commandId: "node_project_info", risk: "observe", globalSafe: true },
       {
         commandId: "node_deps_list",
@@ -70,6 +71,26 @@ describe("project command definitions", () => {
       },
       { commandId: "node_build", fixedScriptKey: "build" },
       { commandId: "node_lint", fixedScriptKey: "lint" },
+      {
+        commandId: "node_lint_fix",
+        description: "Run the exact package.json lint:fix script to write lint fixes.",
+        executable: "",
+        args: ["run", "lint:fix"],
+        cwdStrategy: "canonical-project",
+        sanitizedEnvironmentProfile: "node-v1",
+        environmentProfile: "node-v1",
+        processTimeoutMs: 30_000,
+        outputLimitBytes: 50 * 1024,
+        risk: "project-code",
+        globalSafe: false,
+        applicability: "node-script",
+        bindsRepoContent: true,
+        scriptBinding: "package-script",
+        parameters: [],
+        argvTemplate: ["<package-manager>", "run", "lint:fix"],
+        fixedScriptKey: "lint:fix",
+        truncationDirection: "tail",
+      },
       { commandId: "node_typecheck", fixedScriptKey: "typecheck" },
       {
         commandId: "node_format_check",
@@ -86,7 +107,7 @@ describe("project command definitions", () => {
         fixedScriptKey: "format",
       },
     ]);
-    expect(definitions.slice(10)).toMatchObject([
+    expect(definitions.slice(11)).toMatchObject([
       {
         commandId: "fallow_dead_code",
         executable: process.execPath,

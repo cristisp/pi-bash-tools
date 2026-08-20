@@ -2,7 +2,8 @@
 
 A pi package that provides narrowly scoped, read-only Git tools instead of exposing another shell interface.
 
-Pi's built-in `read`, `write`, `edit`, `grep`, `find`, `ls`, and `bash` tools remain unchanged.
+Pi's built-in `read`, `write`, `edit`, `grep`, `find`, `ls`, and `bash` tool implementations remain unchanged.
+The `grep`, `find`, and `ls` calls are intercepted by the filesystem access policy before execution.
 
 ## Tool catalog
 
@@ -60,6 +61,47 @@ A cancellation after the commit rejects without returning environment values, bu
 A confirmation timeout records a project-level deny and returns no environment values.
 Print, JSON, and other no-UI modes reject unknown keys without modifying policy.
 
+## Filesystem access policy
+
+The interceptor guards the built-in `ls`, `find`, and `grep` tool calls before they execute.
+It does not intercept `bash` or `user_bash`.
+
+Filesystem rules are stored in the same user-owned `~/.pi/agent/bash-tools.json` policy file.
+A filesystem decision migrates the document to version 3 while preserving the environment and project command namespaces.
+The filesystem namespace has version `1`, with `global` and `projects` scopes containing `allow` and `deny` arrays of canonical absolute paths.
+
+```json
+{
+  "version": 3,
+  "environment": {
+    "version": 1,
+    "confirmationTimeoutMs": 120000,
+    "global": {},
+    "projects": {}
+  },
+  "projectCommands": {
+    "version": 1,
+    "global": {},
+    "projects": {}
+  },
+  "filesystem": {
+    "version": 1,
+    "global": {
+      "allow": ["/Users/example/shared"],
+      "deny": ["/Users/example/shared/private"]
+    },
+    "projects": {}
+  }
+}
+```
+
+A rule applies to the path itself and its descendants.
+Deny rules take precedence over allow rules, and overlapping denied locations block a listing or recursive search of the containing location.
+Unknown locations are prompted for only in TUI or RPC mode.
+The existing `confirmationTimeoutMs` setting applies to filesystem prompts and defaults to 120000 milliseconds.
+A timeout automatically records a project-level deny and blocks only the current tool call.
+Blocked calls report `Tool call blocked by access policy` with the tool, path, and reason.
+
 Every key in a multi-key request is authorized before any environment value is read.
 An authorization denial, cancellation, timeout, or policy persistence failure rejects the entire request without partial output.
 Missing environment variables are returned as explicit `null`, while present empty strings remain empty strings.
@@ -76,9 +118,9 @@ If a process crashes while holding the lock, remove `bash-tools.json.lock` manua
 ## Project command policy and execution
 
 The project command tool accepts a strict discriminated input union.
-The catalog contains exactly `workspace_path`, `node_version`, `node_project_info`, `node_deps_list`, `node_test`, `node_build`, `node_lint`, `node_typecheck`, `node_format_check`, `node_format_write`, `fallow_dead_code`, `fallow_dupes`, `fallow_health`, `fallow_audit`, `fallow_list_entry_points`, and `fallow_list_boundaries`.
+The catalog contains exactly `workspace_path`, `node_version`, `node_project_info`, `node_deps_list`, `node_test`, `node_build`, `node_lint`, `node_lint_fix`, `node_typecheck`, `node_format_check`, `node_format_write`, `fallow_dead_code`, `fallow_dupes`, `fallow_health`, `fallow_audit`, `fallow_list_entry_points`, and `fallow_list_boundaries`.
 `node_test` accepts optional `paths` validated as workspace-relative paths, and `fallow_audit` requires the validated `base` revision parameter.
-`node_format_check` and `node_format_write` accept no parameters and require the exact `format:check` and `format` package scripts, respectively.
+`node_lint_fix`, `node_format_check`, and `node_format_write` accept no parameters and require the exact `lint:fix`, `format:check`, and `format` package scripts, respectively.
 
 The extension owns the complete command catalog and never reads repository configuration to define commands.
 `node_project_info` reads package.json and supported lockfiles in process and reports the active Node version, package manager state, sorted script names, and applicable Node command IDs.
@@ -88,8 +130,8 @@ A missing package.json is reported as a non-Node project.
 
 `workspace_path` directly spawns `/bin/pwd` without arguments.
 `node_version` directly spawns the current Node executable with `--version`.
-The six script commands invoke only the exact corresponding package.json scripts through a detected npm, pnpm, bun, or explicitly selected Yarn executable.
-`node_format_write` can change project files and is never globally safe.
+The seven script commands invoke only the exact corresponding package.json scripts through a detected npm, pnpm, bun, or explicitly selected Yarn executable.
+`node_lint_fix` and `node_format_write` can change project files and are never globally safe.
 
 Yarn lockfile-only projects and explicit Yarn versions other than Classic 1.x are rejected for dependency listing.
 The six Fallow commands invoke only the project-local `node_modules/.bin/fallow` target through the active Node executable with fixed JSON and quiet flags.
@@ -114,7 +156,7 @@ Interactive prompts use exactly `Deny globally`, `Deny for this project`, `Allow
 Command decisions migrate a version 1 environment document to a version 2 document containing the unchanged nested environment version 1 policy and a version 1 project command policy namespace.
 
 The command executor never calls `pi.exec`, performs PATH lookup, invokes npx or Corepack downloads, runs a shell, or returns raw spawn errors.
-Dependency installation, arbitrary package script names, aliases, watch modes, and inline scripts are intentionally not in this catalog.
+Dependency installation, arbitrary package script names, aliases, watch modes, inline scripts, and project mutation outside `node_lint_fix` and `node_format_write` are intentionally not in this catalog.
 
 The corresponding Bash behavior is equivalent to the following examples, but the extension does not execute these command strings:
 

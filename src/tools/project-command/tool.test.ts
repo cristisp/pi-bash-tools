@@ -88,7 +88,21 @@ describe("project command tool authorization", () => {
         undefined,
         context(fixtureData.directory),
       ),
-    ).rejects.toBe(resolutionError);
+    ).rejects.toMatchObject({
+      name: "ProjectCommandToolError",
+      message: expect.stringMatching(
+        /commandId: workspace_path.*stage: binary-resolution.*code: missing-binary.*not attempted/u,
+      ),
+      details: {
+        status: "resolution-failure",
+        executed: false,
+        commandId: "workspace_path",
+        requestedParameters: { commandId: "workspace_path" },
+        stage: "binary-resolution",
+        code: "missing-binary",
+        resolutionDetails: resolutionError.details,
+      },
+    });
     expect(executor).not.toHaveBeenCalled();
   });
 
@@ -477,6 +491,16 @@ describe("project command tool authorization", () => {
       status: "nonzero",
       exit: { code: 1, signal: null },
       stdout: { text: '{"kind":"health","findings":[{}]}' },
+      resolvedCommand: expect.stringContaining("health --format json --quiet"),
+      parameters: {},
+    });
+    expect(response.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining('"resolvedCommand":"'),
+    });
+    expect(response.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining('"parameters":{}'),
     });
   });
 
@@ -525,7 +549,79 @@ describe("project command tool authorization", () => {
         undefined,
         context(fixtureData.directory),
       ),
-    ).rejects.toMatchObject({ message: "Project command exited unsuccessfully" });
+    ).rejects.toMatchObject({
+      message: expect.stringMatching(
+        /status: nonzero.*commandId: fallow_health.*resolvedCommand: .*health --format json --quiet.*parameters: \{\}.*exit: code 2.*stderr: "invalid options"/u,
+      ),
+      details: {
+        commandId: "fallow_health",
+        status: "nonzero",
+        resolvedCommand: expect.stringContaining("health --format json --quiet"),
+        parameters: {},
+        exit: { code: 2, signal: null },
+        stderr: { text: "invalid options" },
+      },
+    });
+  });
+
+  it("includes timeout diagnostics with resolved parameters and stdout fallback", async () => {
+    const fixtureData = await fixture();
+    const definition = getProjectCommandDefinition("fallow_audit");
+    if (definition === undefined) throw new Error("missing fallow_audit definition");
+    const resolved = {
+      ...resolveFixedProjectCommand(definition),
+      executable: "/bin/fallow",
+      args: ["audit", "--format", "json", "--quiet", "--base", "HEAD~1"],
+      effectiveParameters: { base: "HEAD~1" },
+    } satisfies ResolvedProjectCommand;
+    const projectPath = await realpath(fixtureData.directory);
+    await writeFile(
+      fixtureData.configPath,
+      JSON.stringify({
+        version: 2,
+        environment: { version: 1 },
+        projectCommands: {
+          version: 1,
+          global: { allow: [], deny: [] },
+          projects: {
+            [projectPath]: { allow: [projectCommandIdentity(definition, resolved)], deny: [] },
+          },
+        },
+      }),
+    );
+    const tool = createProjectCommandToolForTesting({
+      configPath: fixtureData.configPath,
+      resolver: async () => resolved,
+      executor: async () => ({
+        status: "timeout" as const,
+        exit: { code: null, signal: "SIGTERM" },
+        timedOut: true,
+        cancelled: false,
+        stdout: { text: "diagnostic output", truncated: false, totalBytes: 16, totalLines: 1 },
+        stderr: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
+      }),
+    });
+    await expect(
+      tool.execute(
+        "fallow-audit",
+        { commandId: "fallow_audit", base: "HEAD~1" },
+        undefined,
+        undefined,
+        context(fixtureData.directory),
+      ),
+    ).rejects.toMatchObject({
+      message: expect.stringMatching(
+        /status: timeout.*reason: the command timed out.*commandId: fallow_audit.*resolvedCommand: \/bin\/fallow audit --format json --quiet --base HEAD~1.*parameters: \{"base":"HEAD~1"\}.*exit: signal SIGTERM.*stdout: "diagnostic output"/u,
+      ),
+      details: {
+        status: "timeout",
+        commandId: "fallow_audit",
+        resolvedCommand: "/bin/fallow audit --format json --quiet --base HEAD~1",
+        parameters: { base: "HEAD~1" },
+        exit: { code: null, signal: "SIGTERM" },
+        stdout: { text: "diagnostic output" },
+      },
+    });
   });
 
   it("returns bounded execution details and marks execution cancellation as abort", async () => {

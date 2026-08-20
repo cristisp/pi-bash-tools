@@ -1,6 +1,10 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import { applyEnvironmentPolicyDecision, applyProjectCommandPolicyDecision } from "./decisions.ts";
+import {
+  applyEnvironmentPolicyDecision,
+  applyFilesystemPolicyDecision,
+  applyProjectCommandPolicyDecision,
+} from "./decisions.ts";
 import { createNodePolicyFileSystem, type PolicyFileSystem } from "./filesystem.ts";
 import {
   isEnvironmentVariableName,
@@ -37,6 +41,10 @@ function validateRequest(request: PolicyDecisionRequest): void {
     return;
   }
   if (request.kind === "project-command") {
+    return;
+  }
+  if (request.kind === "filesystem") {
+    validatePolicyPath(request.path);
     return;
   }
   throw policyError();
@@ -78,13 +86,15 @@ function createPolicyStoreWithFileSystem(
         next =
           request.kind === "environment"
             ? applyEnvironmentPolicyDecision(next, canonicalPath, request.key, request.decision)
-            : applyProjectCommandPolicyDecision(
-                next,
-                canonicalPath,
-                request.identity,
-                request.decision,
-                request.globalSafe,
-              );
+            : request.kind === "project-command"
+              ? applyProjectCommandPolicyDecision(
+                  next,
+                  canonicalPath,
+                  request.identity,
+                  request.decision,
+                  request.globalSafe,
+                )
+              : applyFilesystemPolicyDecision(next, canonicalPath, request.path, request.decision);
       }
       if (next !== document) {
         await writePolicyDocumentAtomically(configPath, next, fileSystem, parent, signal);
