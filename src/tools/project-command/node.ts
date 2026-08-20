@@ -17,7 +17,7 @@ import {
 } from "./package-manager.ts";
 import { resolveProjectBinary } from "./binary.ts";
 import type { ProjectResolutionFileSystem, ResolvedProjectCommand } from "./resolution.ts";
-import { ProjectCommandResolutionError } from "./errors.ts";
+import { ProjectCommandResolutionError, type ResolutionErrorDetails } from "./errors.ts";
 import { normalizeNodeTestParameters, validateNodeTestPaths } from "./parameters.ts";
 
 const NODE_SCRIPT_COMMANDS = [
@@ -25,6 +25,8 @@ const NODE_SCRIPT_COMMANDS = [
   { commandId: "node_build", script: "build" },
   { commandId: "node_lint", script: "lint" },
   { commandId: "node_typecheck", script: "typecheck" },
+  { commandId: "node_format_check", script: "format:check" },
+  { commandId: "node_format_write", script: "format" },
 ] as const;
 
 const FALLOW_COMMAND_IDS = [
@@ -96,7 +98,7 @@ export interface NodeProjectResolutionOptions {
 function resolutionError(
   stage: "probe" | "detection" | "binary-resolution",
   code: string,
-  details: Readonly<Record<string, string | number | boolean | null | readonly string[]>> = {},
+  details: ResolutionErrorDetails = {},
 ): ProjectCommandResolutionError {
   return new ProjectCommandResolutionError(stage, code, details);
 }
@@ -407,6 +409,9 @@ export async function resolveNodeProjectCommand(
   if (!Object.prototype.hasOwnProperty.call(state.manifest.scripts, script)) {
     throw resolutionError("probe", "inapplicable-command", {
       commandId: definition.commandId,
+      requiredPackageScript: script,
+      packageManagerCommand: `${state.detected.manager} run ${script}`,
+      availableScripts: Object.keys(state.manifest.scripts).sort(),
       applicableCommands: applicableCommands(
         state.manifest.scripts,
         state.fallowBinaryAvailable,

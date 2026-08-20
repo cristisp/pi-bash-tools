@@ -46,7 +46,7 @@ export interface ProjectCommandDefinition<CommandId extends string = string> {
   readonly truncationDirection?: ProjectCommandTruncationDirection;
   readonly parameters?: readonly ProjectCommandParameterDeclaration[];
   readonly argvTemplate?: readonly string[];
-  readonly fixedScriptKey?: "test" | "build" | "lint" | "typecheck";
+  readonly fixedScriptKey?: "test" | "build" | "lint" | "typecheck" | "format:check" | "format";
 }
 
 function freezeDefinition<const Definition extends ProjectCommandDefinition>(
@@ -246,6 +246,50 @@ const definitions = Object.freeze([
     parameters: [],
     argvTemplate: ["<package-manager>", "run", "typecheck"],
     fixedScriptKey: "typecheck",
+  }),
+  freezeDefinition({
+    namespace: PROJECT_COMMAND_NAMESPACE,
+    commandId: "node_format_check",
+    description: "Run the exact package.json format:check script.",
+    executable: "",
+    args: ["run", "format:check"],
+    cwdStrategy: "canonical-project",
+    sanitizedEnvironmentProfile: "node-v1",
+    environmentProfile: "node-v1",
+    processTimeoutMs: PROJECT_COMMAND_PROCESS_TIMEOUT_MS,
+    outputLimitBytes: PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
+    risk: "project-code",
+    globalSafe: false,
+    executionKind: "process",
+    applicability: "node-script",
+    bindsRepoContent: true,
+    scriptBinding: "package-script",
+    truncationDirection: "tail",
+    parameters: [],
+    argvTemplate: ["<package-manager>", "run", "format:check"],
+    fixedScriptKey: "format:check",
+  }),
+  freezeDefinition({
+    namespace: PROJECT_COMMAND_NAMESPACE,
+    commandId: "node_format_write",
+    description: "Run the exact package.json format script to write formatting changes.",
+    executable: "",
+    args: ["run", "format"],
+    cwdStrategy: "canonical-project",
+    sanitizedEnvironmentProfile: "node-v1",
+    environmentProfile: "node-v1",
+    processTimeoutMs: PROJECT_COMMAND_PROCESS_TIMEOUT_MS,
+    outputLimitBytes: PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
+    risk: "project-code",
+    globalSafe: false,
+    executionKind: "process",
+    applicability: "node-script",
+    bindsRepoContent: true,
+    scriptBinding: "package-script",
+    truncationDirection: "tail",
+    parameters: [],
+    argvTemplate: ["<package-manager>", "run", "format"],
+    fixedScriptKey: "format",
   }),
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,

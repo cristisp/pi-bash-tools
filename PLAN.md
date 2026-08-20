@@ -12,7 +12,7 @@ Every tool must define explicit input and output contracts, enforce workspace bo
 
 The extension currently registers six tools: environment, git_status, git_diff, git_log, git_show, and project_command.
 
-The project_command catalog currently supports fourteen extension-owned semantic commands: workspace_path, node_version, node_project_info, node_deps_list, node_test, node_build, node_lint, node_typecheck, fallow_dead_code, fallow_dupes, fallow_health, fallow_audit, fallow_list_entry_points, and fallow_list_boundaries.
+The project_command catalog currently supports sixteen extension-owned semantic commands: workspace_path, node_version, node_project_info, node_deps_list, node_test, node_build, node_lint, node_typecheck, node_format_check, node_format_write, fallow_dead_code, fallow_dupes, fallow_health, fallow_audit, fallow_list_entry_points, and fallow_list_boundaries.
 
 The environment tool provides explicit-key access with fail-closed authorization, canonical project identity, restrictive policy storage, locking, atomic writes, cancellation, and timeout handling.
 
@@ -28,7 +28,7 @@ Command authorization uses the user-owned policy at `getAgentDir()/bash-tools.js
 
 Command decisions migrate a version 1 environment document to a version 2 document containing the unchanged nested environment version 1 policy and a version 1 project command policy namespace.
 
-Native macOS validation currently passes the 150-test suite, V8 coverage thresholds, TypeScript checks, warning-free lint, formatting, Fallow analysis, Fallow audit, and git diff checks.
+Native macOS validation currently passes the 154-test suite, with V8 coverage remaining above the 75% lines, functions, statements, and branches thresholds, alongside TypeScript checks, warning-free lint, formatting, Fallow analysis, Fallow audit, and git diff checks.
 
 Linux runtime validation remains deferred, and Windows and FreeBSD remain unsupported by design.
 
@@ -215,6 +215,8 @@ No Magento or Symfony application-level commands until the external-state risk c
 | node_build               | `<pm> run build`                                                          | project-code         | none                      |
 | node_lint                | `<pm> run lint`                                                           | project-code         | none                      |
 | node_typecheck           | `<pm> run typecheck` (exact script name)                                  | project-code         | none                      |
+| node_format_check        | `<pm> run format:check` (exact script name)                               | project-code         | none                      |
+| node_format_write        | `<pm> run format` (exact script name)                                     | project-code         | none                      |
 | node_deps_install        | `npm ci` / per-PM frozen-lockfile equivalent                              | project-code-network | none                      |
 | fallow_dead_code         | `node_modules/.bin/fallow dead-code --format json --quiet`                | project-code         | none                      |
 | fallow_dupes             | `fallow dupes --format json --quiet`                                      | project-code         | none                      |
@@ -226,8 +228,6 @@ No Magento or Symfony application-level commands until the external-state risk c
 node_project_info is the discovery command: agents run it first to learn the detected package manager, available script names, and which catalog commands apply to the current project.
 
 The tool description and inapplicable-command errors steer agents toward node_project_info.
-
-A format check command is deliberately absent from v1 because format:check style script names are not standardized; demand from real sessions decides whether it joins the catalog.
 
 The v1 pattern parameter for node_test remains deferred because the script hides the test runner and name-filter flags differ per runner; path selection covers the dominant case.
 
@@ -268,6 +268,7 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 - [x] Derive the tool input schema from the catalog as a discriminated union on commandId.
 - [x] Implement the resolution pipeline with stage-tagged errors.
 - [x] Implement applicability probes and applicable-command error listings for the initial Node command slice.
+- [x] Report required package.json scripts and fixed package-manager commands when Node script commands are inapplicable.
 - [x] Implement node package manager detection and fail-closed binary resolution.
 - [x] Implement manager-specific read-only dependency listing and Yarn Classic version gating.
 - [x] Implement the observe and project-code risk classes and their policy consequences for the initial Node slice.
@@ -285,6 +286,7 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 - [x] Implement node_project_info as an in-process command.
 - [x] Implement node_test with the paths parameter.
 - [x] Implement node_build, node_lint, and node_typecheck.
+- [x] Implement node_format_check and node_format_write with exact package-script resolution.
 - [x] Implement node_deps_list with manager-specific read-only forms.
 - [ ] Implement node_deps_install with per-package-manager frozen-lockfile forms.
 - [x] Implement the Fallow command family including the audit base revision parameter.
@@ -294,7 +296,6 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 - [x] Implement allowlisted project-command execution with fixed argument arrays instead of shell strings.
 - [x] Add timeout, cancellation, process cleanup, and output truncation behavior.
 - [x] Keep timeout, cancellation, cleanup, and truncation behavior green through the executor rewrite.
-- [ ] Support long-running development servers and smoke checks through a dedicated bounded-lifetime command class.
 
 ### Pi integration
 
@@ -303,7 +304,6 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 - [x] Use Pi's default tool rendering where custom rendering is not necessary.
 - [x] Add session-safe details for structured tool results.
 - [x] Add a migration path for policy and contract changes.
-- [ ] Verify the package loads and behaves correctly in interactive, print, JSON, and RPC modes.
 
 ### Testing and quality
 
@@ -319,7 +319,6 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 - [x] Add initial fixture-project integration coverage for Node project discovery and authorized script execution.
 - [x] Add fixture-project integration coverage for Fallow binary resolution, fixed argv, and audit exit-code behavior.
 - [x] Add fixture-project integration tests for all practical implemented catalog commands using real package manager, Node runner, and Fallow binaries.
-- [ ] Add a scheduled job running the fixture suite against latest toolchains to catch ecosystem drift.
 - [x] Add Vitest coverage reporting with `@vitest/coverage-v8`.
 - [x] Add a coverage script and enforce at least 75% lines, functions, statements, and branches.
 - [x] Keep the available test, type, lint, format, and Fallow checks passing before committing.
@@ -334,6 +333,8 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 - external-state risk class and application-level commands.
 - User-owned customCommands namespace as a measured escape hatch.
 - Git mutation commands such as commit and stage behind confirmation.
-- Format check and format write commands, pending demand and script-name standardization.
 - Test-name pattern filtering for node_test, pending runner detection.
 - node_deps_install, pending manager-specific frozen-lockfile and dependency-install risk review.
+- Interactive, print, JSON, and RPC mode verification, deferred in favor of manual monitoring.
+- Scheduled latest-toolchain fixture-suite runs, skipped for now.
+- Long-running development servers and smoke checks, deferred because they should remain manually controlled for now.

@@ -69,6 +69,8 @@ describe("project command request contract", () => {
       "node_build",
       "node_lint",
       "node_typecheck",
+      "node_format_check",
+      "node_format_write",
       "fallow_dead_code",
       "fallow_dupes",
       "fallow_health",
@@ -95,7 +97,17 @@ describe("project command request contract", () => {
         paths: { type: "array", items: { type: "string" } },
       },
     });
-    expect(variants[11]).toMatchObject({
+    expect(variants[8]).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      properties: { commandId: { const: "node_format_check" } },
+    });
+    expect(variants[9]).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      properties: { commandId: { const: "node_format_write" } },
+    });
+    expect(variants[13]).toMatchObject({
       type: "object",
       additionalProperties: false,
       properties: {
@@ -104,7 +116,7 @@ describe("project command request contract", () => {
       },
       required: ["commandId", "base"],
     });
-    expect(variants).toHaveLength(14);
+    expect(variants).toHaveLength(16);
     expect(variants.every((variant) => !variant.additionalProperties)).toBe(true);
   });
 
@@ -117,6 +129,8 @@ describe("project command request contract", () => {
       "node_build",
       "node_lint",
       "node_typecheck",
+      "node_format_check",
+      "node_format_write",
       "fallow_dead_code",
       "fallow_dupes",
       "fallow_health",
@@ -148,6 +162,8 @@ describe("project command request contract", () => {
       { commandId: "fallow" },
       { commandId: "workspace_path", args: [] },
       { commandId: "node_build", paths: [] },
+      { commandId: "node_format_check", paths: [] },
+      { commandId: "node_format_write", args: ["run", "format"] },
       { commandId: "fallow_audit" },
       { commandId: "fallow_audit", base: "" },
       { commandId: "fallow_audit", base: "--help" },

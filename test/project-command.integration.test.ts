@@ -37,6 +37,14 @@ describe("project command integration", () => {
       { commandId: "node_build", params: { commandId: "node_build" } },
       { commandId: "node_lint", params: { commandId: "node_lint" } },
       { commandId: "node_typecheck", params: { commandId: "node_typecheck" } },
+      {
+        commandId: "node_format_check",
+        params: { commandId: "node_format_check" },
+      },
+      {
+        commandId: "node_format_write",
+        params: { commandId: "node_format_write" },
+      },
       { commandId: "fallow_dead_code", params: { commandId: "fallow_dead_code" } },
       { commandId: "fallow_dupes", params: { commandId: "fallow_dupes" } },
       { commandId: "fallow_health", params: { commandId: "fallow_health" } },
@@ -113,6 +121,8 @@ describe("project command integration", () => {
           "node_build",
           "node_lint",
           "node_typecheck",
+          "node_format_check",
+          "node_format_write",
           "fallow_dead_code",
           "fallow_dupes",
           "fallow_health",
@@ -133,6 +143,17 @@ describe("project command integration", () => {
         stdout: { text: expect.stringContaining(`${commandId.replace("node_", "")}:none\n`) },
       });
     }
+    expect(responses.get("node_format_check")).toMatchObject({
+      status: "success",
+      stdout: { text: expect.stringContaining("format:check:none\n") },
+      resolvedCommand: expect.stringContaining(" run format:check"),
+    });
+    expect(responses.get("node_format_write")).toMatchObject({
+      status: "success",
+      stdout: { text: expect.stringContaining("format:write\n") },
+      resolvedCommand: expect.stringContaining(" run format"),
+    });
+    expect(await readFile(join(fixture.directory, "format-target.txt"), "utf8")).toBe("after\n");
     expect(responses.get("node_test")).toMatchObject({
       status: "success",
       stdout: { text: expect.stringContaining("test:fixture-runner.js\n") },
@@ -156,6 +177,61 @@ describe("project command integration", () => {
       status: "nonzero",
       exit: { code: 1 },
     });
+  });
+
+  it("reports missing fixed Node scripts through the tool resolution error details", async () => {
+    const project = await mkdtemp(
+      join(tmpdir(), "bash-tools-node-missing-script-integration-project-"),
+    );
+    const userAgent = await mkdtemp(
+      join(tmpdir(), "bash-tools-node-missing-script-integration-policy-"),
+    );
+    directories.push(project, userAgent);
+    await writeFile(
+      join(project, "package.json"),
+      JSON.stringify({
+        packageManager: "npm@10.0.0",
+        scripts: {
+          build: "node build.js",
+          "format:checker": "node check-format.js",
+          zed: "node zed.js",
+        },
+      }),
+    );
+    const configPath = join(await realpath(userAgent), "bash-tools.json");
+    await writeFile(configPath, JSON.stringify({ version: 1 }));
+    const tool = createProjectCommandToolForTesting({ configPath });
+    const cases = [
+      { commandId: "node_format_check", script: "format:check" },
+      { commandId: "node_format_write", script: "format" },
+      { commandId: "node_test", script: "test" },
+    ] as const;
+
+    await Promise.all(
+      cases.map(async ({ commandId, script }) => {
+        await expect(
+          tool.execute(commandId, { commandId }, undefined, undefined, {
+            cwd: project,
+            mode: "print",
+            hasUI: false,
+            signal: undefined,
+            ui: { select: async () => undefined },
+          }),
+        ).rejects.toMatchObject({
+          name: "ProjectCommandResolutionError",
+          message: "Project command resolution failed during probe",
+          stage: "probe",
+          code: "inapplicable-command",
+          details: {
+            commandId,
+            requiredPackageScript: script,
+            packageManagerCommand: `npm run ${script}`,
+            availableScripts: ["build", "format:checker", "zed"],
+            applicableCommands: expect.arrayContaining(["node_project_info"]),
+          },
+        });
+      }),
+    );
   });
 
   it("runs the real package manager list command when node_modules is absent", async () => {

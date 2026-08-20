@@ -22,12 +22,26 @@ export async function createNodeProjectIntegrationFixture(): Promise<NodeProject
         build: "node fixture-runner.js build",
         lint: "node fixture-runner.js lint",
         typecheck: "node fixture-runner.js typecheck",
+        "format:check": "node fixture-runner.js format:check",
+        format: "node format-fixture.js",
       },
     }),
   );
   await writeFile(
     join(directory, "fixture-runner.js"),
     'process.stdout.write(`${process.argv[2]}:${process.argv[3] || "none"}\\n`);\n',
+  );
+  await writeFile(join(directory, "format-target.txt"), "before\n");
+  await writeFile(
+    join(directory, "format-fixture.js"),
+    [
+      'const { readFileSync, writeFileSync } = require("node:fs");',
+      'const target = "format-target.txt";',
+      'const source = readFileSync(target, "utf8");',
+      'writeFileSync(target, source.replace("before", "after"));',
+      'process.stdout.write("format:write\\n");',
+      "",
+    ].join("\n"),
   );
   await mkdir(join(directory, "node_modules", ".bin"), { recursive: true });
   await mkdir(join(directory, "node_modules", "fallow", "bin"), { recursive: true });

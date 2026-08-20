@@ -137,6 +137,97 @@ describe("Node project command resolution", () => {
     );
   });
 
+  it("reports and resolves only the exact formatting scripts", async () => {
+    const directory = await project({
+      packageManager: "npm@10.0.0",
+      scripts: {
+        "format:check": "node check-format.js",
+        format: "node write-format.js",
+        "format:check:extra": "node extra.js",
+      },
+    });
+    await expect(readNodeProjectInfo(directory)).resolves.toMatchObject({
+      scripts: ["format", "format:check", "format:check:extra"],
+      applicableCommands: [
+        "node_project_info",
+        "node_deps_list",
+        "node_format_check",
+        "node_format_write",
+      ],
+    });
+
+    const checkDefinition = getProjectCommandDefinition("node_format_check");
+    const writeDefinition = getProjectCommandDefinition("node_format_write");
+    if (checkDefinition === undefined || writeDefinition === undefined) {
+      throw new Error("missing formatting definition");
+    }
+    const check = await resolveNodeProjectCommand(checkDefinition, directory, {
+      commandId: "node_format_check",
+    });
+    const write = await resolveNodeProjectCommand(writeDefinition, directory, {
+      commandId: "node_format_write",
+    });
+    expect(check).toMatchObject({
+      args: ["run", "format:check"],
+      fingerprintArgs: ["<package-manager>", "run", "format:check"],
+      script: "node check-format.js",
+    });
+    expect(write).toMatchObject({
+      args: ["run", "format"],
+      fingerprintArgs: ["<package-manager>", "run", "format"],
+      script: "node write-format.js",
+    });
+  });
+
+  it("does not report formatting commands for similarly named scripts", async () => {
+    const directory = await project({
+      packageManager: "npm@10.0.0",
+      scripts: { "format:checker": "node check-format.js", formatter: "node format.js" },
+    });
+    await expect(readNodeProjectInfo(directory)).resolves.toMatchObject({
+      scripts: ["format:checker", "formatter"],
+      applicableCommands: ["node_project_info", "node_deps_list"],
+    });
+  });
+
+  it("reports the required script and fixed manager command for every missing Node script", async () => {
+    const directory = await project({
+      packageManager: "npm@10.0.0",
+      scripts: {
+        zed: "node zed.js",
+        build: "node build.js",
+        "format:checker": "node check-format.js",
+      },
+    });
+    const info = await readNodeProjectInfo(directory);
+    const cases = [
+      { commandId: "node_format_check", script: "format:check" },
+      { commandId: "node_format_write", script: "format" },
+      { commandId: "node_test", script: "test" },
+    ] as const;
+
+    await Promise.all(
+      cases.map(async ({ commandId, script }) => {
+        const definition = getProjectCommandDefinition(commandId);
+        if (definition === undefined) throw new Error(`missing ${commandId} definition`);
+        await expect(
+          resolveNodeProjectCommand(definition, directory, { commandId }),
+        ).rejects.toMatchObject({
+          name: "ProjectCommandResolutionError",
+          stage: "probe",
+          code: "inapplicable-command",
+          details: {
+            commandId,
+            requiredPackageScript: script,
+            packageManagerCommand: `npm run ${script}`,
+            availableScripts: ["build", "format:checker", "zed"],
+            applicableCommands: info.applicableCommands,
+          },
+        });
+      }),
+    );
+  });
+
   it("resolves each supported dependency-list form without requiring node_modules", async () => {
     const cases = [
       { manager: "npm", version: "10.0.0", args: ["ls", "--depth=0"] },

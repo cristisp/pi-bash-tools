@@ -13,7 +13,7 @@ The extension registers exactly these custom tools:
 - `git_log` reads bounded commit IDs, authors, dates, and subjects.
 - `git_show` reads bounded output from a revision, optionally filtered by a path.
 - `environment` reads only explicitly requested environment variables after policy authorization.
-- `project_command` runs the fixed `workspace_path` and `node_version` observations, discovers Node project state with `node_project_info`, lists top-level dependencies with `node_deps_list`, runs only exact `test`, `build`, `lint`, or `typecheck` package scripts, and runs six fixed Fallow analyses after policy authorization.
+- `project_command` runs the fixed `workspace_path` and `node_version` observations, discovers Node project state with `node_project_info`, lists top-level dependencies with `node_deps_list`, runs only exact `test`, `build`, `lint`, `typecheck`, `format:check`, or `format` package scripts, and runs six fixed Fallow analyses after policy authorization.
 
 ## Environment policy
 
@@ -76,8 +76,9 @@ If a process crashes while holding the lock, remove `bash-tools.json.lock` manua
 ## Project command policy and execution
 
 The project command tool accepts a strict discriminated input union.
-The catalog contains exactly `workspace_path`, `node_version`, `node_project_info`, `node_deps_list`, `node_test`, `node_build`, `node_lint`, `node_typecheck`, `fallow_dead_code`, `fallow_dupes`, `fallow_health`, `fallow_audit`, `fallow_list_entry_points`, and `fallow_list_boundaries`.
+The catalog contains exactly `workspace_path`, `node_version`, `node_project_info`, `node_deps_list`, `node_test`, `node_build`, `node_lint`, `node_typecheck`, `node_format_check`, `node_format_write`, `fallow_dead_code`, `fallow_dupes`, `fallow_health`, `fallow_audit`, `fallow_list_entry_points`, and `fallow_list_boundaries`.
 `node_test` accepts optional `paths` validated as workspace-relative paths, and `fallow_audit` requires the validated `base` revision parameter.
+`node_format_check` and `node_format_write` accept no parameters and require the exact `format:check` and `format` package scripts, respectively.
 
 The extension owns the complete command catalog and never reads repository configuration to define commands.
 `node_project_info` reads package.json and supported lockfiles in process and reports the active Node version, package manager state, sorted script names, and applicable Node command IDs.
@@ -87,7 +88,8 @@ A missing package.json is reported as a non-Node project.
 
 `workspace_path` directly spawns `/bin/pwd` without arguments.
 `node_version` directly spawns the current Node executable with `--version`.
-The four script commands invoke only the exact corresponding package.json scripts through a detected npm, pnpm, bun, or explicitly selected Yarn executable.
+The six script commands invoke only the exact corresponding package.json scripts through a detected npm, pnpm, bun, or explicitly selected Yarn executable.
+`node_format_write` can change project files and is never globally safe.
 
 Yarn lockfile-only projects and explicit Yarn versions other than Classic 1.x are rejected for dependency listing.
 The six Fallow commands invoke only the project-local `node_modules/.bin/fallow` target through the active Node executable with fixed JSON and quiet flags.

@@ -18,6 +18,8 @@ describe("project command definitions", () => {
       "node_build",
       "node_lint",
       "node_typecheck",
+      "node_format_check",
+      "node_format_write",
       "fallow_dead_code",
       "fallow_dupes",
       "fallow_health",
@@ -44,7 +46,7 @@ describe("project command definitions", () => {
       executable: process.execPath,
       args: ["--version"],
     });
-    expect(definitions.slice(2, 8)).toMatchObject([
+    expect(definitions.slice(2, 10)).toMatchObject([
       { commandId: "node_project_info", risk: "observe", globalSafe: true },
       {
         commandId: "node_deps_list",
@@ -69,8 +71,22 @@ describe("project command definitions", () => {
       { commandId: "node_build", fixedScriptKey: "build" },
       { commandId: "node_lint", fixedScriptKey: "lint" },
       { commandId: "node_typecheck", fixedScriptKey: "typecheck" },
+      {
+        commandId: "node_format_check",
+        args: ["run", "format:check"],
+        risk: "project-code",
+        globalSafe: false,
+        fixedScriptKey: "format:check",
+      },
+      {
+        commandId: "node_format_write",
+        args: ["run", "format"],
+        risk: "project-code",
+        globalSafe: false,
+        fixedScriptKey: "format",
+      },
     ]);
-    expect(definitions.slice(8)).toMatchObject([
+    expect(definitions.slice(10)).toMatchObject([
       {
         commandId: "fallow_dead_code",
         executable: process.execPath,
