@@ -33,7 +33,7 @@ gitIntegration("Git diff with a real Git process", () => {
 
     const response = await createGitDiffTool(makeRealGitExec()).execute(
       "diff",
-      { path: "space name.txt", maxBytes: 1024 },
+      { paths: ["space name.txt"], maxBytes: 1024 },
       undefined,
       undefined,
       repository.context,
@@ -53,49 +53,78 @@ gitIntegration("Git diff with a real Git process", () => {
     await writeFile(join(repository.directory, "space name.txt"), "space change\n");
 
     const tool = createGitDiffTool(makeRealGitExec());
+    const wholeRepository = await tool.execute(
+      "whole",
+      { maxBytes: 4096 },
+      undefined,
+      undefined,
+      repository.context,
+    );
+    const selected = await tool.execute(
+      "selected",
+      { paths: ["README.md", "space name.txt"], maxBytes: 4096 },
+      undefined,
+      undefined,
+      repository.context,
+    );
+    const legacy = await tool.execute(
+      "legacy",
+      { path: "README.md", maxBytes: 4096 },
+      undefined,
+      undefined,
+      repository.context,
+    );
     const unstaged = await tool.execute(
       "unstaged",
-      { path: "README.md", maxBytes: 4096 },
+      { paths: ["README.md"], maxBytes: 4096 },
       undefined,
       undefined,
       repository.context,
     );
     const staged = await tool.execute(
       "staged",
-      { staged: true, path: "README.md", maxBytes: 4096 },
+      { staged: true, paths: ["README.md"], maxBytes: 4096 },
       undefined,
       undefined,
       repository.context,
     );
     const binary = await tool.execute(
       "binary",
-      { path: "binary.bin", maxBytes: 4096 },
+      { paths: ["binary.bin"], maxBytes: 4096 },
       undefined,
       undefined,
       repository.context,
     );
     const spaces = await tool.execute(
       "spaces",
-      { path: "space name.txt", maxBytes: 4096 },
+      { paths: ["space name.txt"], maxBytes: 4096 },
       undefined,
       undefined,
       repository.context,
     );
     const empty = await tool.execute(
       "empty",
-      { path: "does-not-exist.txt", maxBytes: 4096 },
+      { paths: ["does-not-exist.txt"], maxBytes: 4096 },
       undefined,
       undefined,
       repository.context,
     );
     const truncated = await tool.execute(
       "truncated",
-      { path: "README.md", maxBytes: 5 },
+      { paths: ["README.md"], maxBytes: 5 },
       undefined,
       undefined,
       repository.context,
     );
 
+    expect(wholeRepository.details.patch).toContain("README.md");
+    expect(wholeRepository.details.patch).toContain("space name.txt");
+    expect(wholeRepository.details.patch).toContain("binary.bin");
+    expect(selected.details.patch).toContain("README.md");
+    expect(selected.details.patch).toContain("space name.txt");
+    expect(selected.details.patch).not.toContain("binary.bin");
+    expect(legacy.details.patch).toContain("README.md");
+    expect(legacy.details.patch).toContain("unstaged change again");
     expect(unstaged.details.patch).toContain("unstaged change again");
     expect(staged.details.patch).toContain("unstaged change");
     expect(binary.details.patch).toMatch(/binary files|git binary patch/iu);

@@ -11,7 +11,7 @@ The interceptor does not intercept `bash` or `user_bash`.
 The extension registers exactly these custom tools:
 
 - `git_status` reads porcelain Git status entries and the canonical repository root.
-- `git_diff` reads a working-tree or staged diff for one or more paths.
+- `git_diff` reads a working-tree or staged diff for the whole repository, a legacy single `path`, or one or more new `paths`.
 - `git_log` reads bounded commit IDs, authors, dates, and subjects.
 - `git_show` reads bounded output from a revision, optionally filtered by a path.
 - `environment` reads only explicitly requested environment variables after policy authorization.
@@ -192,7 +192,11 @@ Paths must be workspace-relative, must remain inside the repository, and must no
 
 A `--` argument separates revisions and options from path filters.
 
-`git_diff` accepts either `path` or `paths`, not both, and rejects empty or duplicate path lists.
+`git_diff` accepts omitted paths, the legacy single `path` field, or a new `paths` array, but never both path fields together.
+Omit both fields to diff the whole repository.
+For new calls, use `paths: ["file"]` for one path or `paths: ["first", "second"]` for multiple paths.
+The legacy `path` field remains supported for compatibility.
+Empty and duplicate `paths` arrays are rejected.
 
 Revisions must be non-empty, non-option-like Git revision expressions without whitespace, path extraction colons, shell-like wildcard characters, or control characters.
 

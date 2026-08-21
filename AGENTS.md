@@ -34,7 +34,9 @@ Keep broader cross-cutting or integration tests in `test/`.
 
 ## Pi tool boundaries
 
-Pi already provides `read`, `write`, `edit`, `grep`, `find`, `ls`, and `bash`.
+Pi provides `read`, `write`, `edit`, `grep`, `find`, and `ls` in this workspace.
+
+The built-in `bash` tool is intentionally disabled in this workspace and is not available to agents.
 
 Do not implement duplicate tools or register replacements for those built-ins by default.
 
