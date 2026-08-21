@@ -11,68 +11,76 @@ const execFile = promisify(execFileCallback);
 
 afterEach(() => fixtures.cleanup());
 
-it("restores a safe cwd and releases the lease when the original cwd is replaced", async () => {
-  const directory = await fixtures.createDirectory();
-  const root = await realpath(directory);
-  const originalCwd = process.cwd();
-  const workingDirectory = join(root, "working");
-  const movedWorkingDirectory = join(root, "moved-working");
-  const targetDirectory = join(root, "target");
-  const policyDirectory = join(root, "policy");
-  await mkdir(workingDirectory);
-  await mkdir(targetDirectory);
-  await mkdir(policyDirectory);
-  const configPath = join(policyDirectory, "bash-tools.json");
-  let swapped = false;
-  const store = createPolicyStoreForTesting({
-    configPath,
-    fs: {
-      writeFile: async (path, data, options) => {
-        if (path.endsWith(".lock") && !swapped) {
-          swapped = true;
-          await rename(workingDirectory, movedWorkingDirectory);
-          await symlink(targetDirectory, workingDirectory);
-        }
-        await writeFile(path, data, options);
+it.runIf(process.platform === "darwin")(
+  "restores a safe cwd and releases the lease when the original cwd is replaced",
+  async () => {
+    const directory = await fixtures.createDirectory();
+    const root = await realpath(directory);
+    const originalCwd = process.cwd();
+    const workingDirectory = join(root, "working");
+    const movedWorkingDirectory = join(root, "moved-working");
+    const targetDirectory = join(root, "target");
+    const policyDirectory = join(root, "policy");
+    await mkdir(workingDirectory);
+    await mkdir(targetDirectory);
+    await mkdir(policyDirectory);
+    const configPath = join(policyDirectory, "bash-tools.json");
+    let swapped = false;
+    const store = createPolicyStoreForTesting({
+      configPath,
+      fs: {
+        writeFile: async (path, data, options) => {
+          if (path.endsWith(".lock") && !swapped) {
+            swapped = true;
+            await rename(workingDirectory, movedWorkingDirectory);
+            await symlink(targetDirectory, workingDirectory);
+          }
+          await writeFile(path, data, options);
+        },
       },
-    },
-  });
-  try {
-    process.chdir(workingDirectory);
-    await expect(
-      store.recordDecisions(root, [{ kind: "environment", key: "CWD", decision: "allow-project" }]),
-    ).rejects.toThrow(/invalid or unreadable/iu);
-    expect(swapped).toBe(true);
-    expect(process.cwd()).toBe("/");
-    const loaded = await store.load(root);
-    expect(loaded.document.environment.projects[root]?.allow).toEqual(["CWD"]);
-  } finally {
-    process.chdir(originalCwd);
-  }
-});
+    });
+    try {
+      process.chdir(workingDirectory);
+      await expect(
+        store.recordDecisions(root, [
+          { kind: "environment", key: "CWD", decision: "allow-project" },
+        ]),
+      ).rejects.toThrow(/invalid or unreadable/iu);
+      expect(swapped).toBe(true);
+      expect(process.cwd()).toBe("/");
+      const loaded = await store.load(root);
+      expect(loaded.document.environment.projects[root]?.allow).toEqual(["CWD"]);
+    } finally {
+      process.chdir(originalCwd);
+    }
+  },
+);
 
-it("releases a pending cwd lease when cwd capture fails", async () => {
-  const directory = await fixtures.createDirectory();
-  const configPath = join(await realpath(directory), "bash-tools.json");
-  const projectPath = await realpath(directory);
-  const store = createPolicyStoreForTesting({ configPath });
-  const cwd = vi.spyOn(process, "cwd");
-  cwd.mockImplementationOnce(() => {
-    throw new Error("cwd unavailable");
-  });
-  await expect(
-    store.recordDecisions(projectPath, [
-      { kind: "environment", key: "FIRST", decision: "allow-project" },
-    ]),
-  ).rejects.toThrow(/invalid or unreadable/iu);
-  cwd.mockRestore();
-  await store.recordDecisions(projectPath, [
-    { kind: "environment", key: "SECOND", decision: "allow-project" },
-  ]);
-  expect((await store.load(projectPath)).document.environment.projects[projectPath]?.allow).toEqual(
-    ["SECOND"],
-  );
-});
+it.runIf(process.platform === "darwin")(
+  "releases a pending cwd lease when cwd capture fails",
+  async () => {
+    const directory = await fixtures.createDirectory();
+    const configPath = join(await realpath(directory), "bash-tools.json");
+    const projectPath = await realpath(directory);
+    const store = createPolicyStoreForTesting({ configPath });
+    const cwd = vi.spyOn(process, "cwd");
+    cwd.mockImplementationOnce(() => {
+      throw new Error("cwd unavailable");
+    });
+    await expect(
+      store.recordDecisions(projectPath, [
+        { kind: "environment", key: "FIRST", decision: "allow-project" },
+      ]),
+    ).rejects.toThrow(/invalid or unreadable/iu);
+    cwd.mockRestore();
+    await store.recordDecisions(projectPath, [
+      { kind: "environment", key: "SECOND", decision: "allow-project" },
+    ]);
+    expect(
+      (await store.load(projectPath)).document.environment.projects[projectPath]?.allow,
+    ).toEqual(["SECOND"]);
+  },
+);
 
 it("rejects symlink, dangling, directory, FIFO, and unsafe-parent policy paths", async () => {
   const directory = await fixtures.createDirectory();

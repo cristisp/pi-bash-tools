@@ -2,6 +2,7 @@ import { chmod, readFile, realpath, stat, unlink, writeFile } from "node:fs/prom
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { createNodePolicyFileSystem } from "../../src/tools/policy/filesystem.ts";
 import { createPolicyStore, createPolicyStoreForTesting } from "../../src/tools/policy/store.ts";
 import { createPolicyTestFixtures } from "./test-fixtures.ts";
 
@@ -78,13 +79,20 @@ it("fails closed for unreadable policy files", async () => {
   const directory = await fixtures.createDirectory();
   const configPath = join(await realpath(directory), "bash-tools.json");
   await writeFile(configPath, '{"version":1,"global":{"allow":["SECRET"]}}');
-  await chmod(configPath, 0o000);
-  const store = createPolicyStoreForTesting({ configPath });
-  try {
-    await expect(store.load(directory)).rejects.toThrow(/invalid or unreadable/iu);
-  } finally {
-    await chmod(configPath, 0o600);
-  }
+  const fileSystem = createNodePolicyFileSystem();
+  const store = createPolicyStoreForTesting({
+    configPath,
+    fs: {
+      open: async (path, flags) => {
+        if (path.endsWith("bash-tools.json")) {
+          throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+        }
+        return fileSystem.open(path, flags);
+      },
+    },
+  });
+
+  await expect(store.load(directory)).rejects.toThrow(/invalid or unreadable/iu);
 });
 
 it("uses only the fixed production policy path", () => {
