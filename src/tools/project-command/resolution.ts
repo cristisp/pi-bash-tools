@@ -1,4 +1,5 @@
-import type { ProjectCommandDefinition, ResolvedCommandLine } from "./definitions.ts";
+import type { ProjectCommandDefinition } from "./definitions.ts";
+import type { ResolvedProjectCommand } from "./resolution/types.ts";
 import { ProjectCommandResolutionError } from "./errors.ts";
 import { validateProjectCommandRevision } from "./parameters.ts";
 import { resolveProjectBinary } from "./binary.ts";
@@ -59,13 +60,7 @@ export function findPackageManagerExecutable(
   return findPackageManagerExecutableImpl(manager, options);
 }
 
-export interface ResolvedProjectCommand extends ResolvedCommandLine {
-  readonly definition: ProjectCommandDefinition;
-  readonly displayCommand?: string;
-  readonly effectiveParameters?: Readonly<Record<string, unknown>>;
-  readonly script?: string;
-  readonly structuredDetails?: unknown;
-}
+export type { ProjectCommandResolver, ResolvedProjectCommand } from "./resolution/types.ts";
 
 export function resolveFixedProjectCommand(
   definition: ProjectCommandDefinition,
@@ -127,13 +122,6 @@ async function resolveFallowProjectCommand(
     effectiveParameters: fallowParameters.effective,
   });
 }
-
-export type ProjectCommandResolver = (
-  definition: ProjectCommandDefinition,
-  projectPath: string,
-  signal: AbortSignal | undefined,
-  parameters?: unknown,
-) => ResolvedProjectCommand | Promise<ResolvedProjectCommand>;
 
 export async function resolveProjectCommand(
   definition: ProjectCommandDefinition,
