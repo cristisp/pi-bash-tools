@@ -8,6 +8,10 @@ The extension must not expose an arbitrary shell command interface.
 
 Every tool must define explicit input and output contracts, enforce workspace boundaries, cap output, support cancellation where execution is possible, and report errors without hiding them from the agent.
 
+The extension reduces the agent's direct command surface, but it is not an operating-system sandbox.
+Authorized project-code commands execute mutable repository code with the current user's filesystem, process, and network privileges.
+Filesystem policy rules govern intercepted pi tools and the move and delete tools; they do not constrain subprocesses or the read-only Git tools.
+
 ## Current status
 
 The extension currently registers eight custom tools: environment, git_status, git_diff, git_log, git_show, project_command, move, and delete, while protecting six built-in filesystem tools with the access-policy interceptor.
@@ -41,7 +45,8 @@ The cleanup-failure execution status was removed from the tool contract because 
 
 The catalog architecture, the Node command slice, the read-only dependency-list command, the lint-fix and formatting command slices, the Fallow command slice, and the read, write, move, and delete filesystem implementation are complete.
 
-The next milestone is the separately reviewed dependency-install command for node_deps_install, which remains deferred because it contacts registries, mutates project state, and executes dependency lifecycle code.
+The next milestone is security hardening for project-code approvals, project-local binary identity, approval-prompt rendering, and policy-file ownership validation.
+Additional commands, including dependency installation and Git mutation, remain demand-driven and require separate threat-model review before implementation.
 
 ## Existing pi capabilities
 
@@ -67,7 +72,7 @@ Each extension tool has a dedicated source folder under `src/tools/`.
 | --------------- | ------------------------------------------- | --------------------------------------------------------------------------------- |
 | Environment     | `src/tools/environment/environment-tool.ts` | Return only explicitly requested and authorized environment variables.            |
 | Git status      | `src/tools/git/status/tool.ts`              | Inspect repository status without changing the working tree.                      |
-| Git diff        | `src/tools/git/diff/tool.ts`                | Read bounded diffs for approved paths without changing the repository.            |
+| Git diff        | `src/tools/git/diff/tool.ts`                | Read bounded diffs for validated workspace paths without changing the repository. |
 | Git log         | `src/tools/git/log/tool.ts`                 | Read bounded commit history with validated revision and path inputs.              |
 | Git show        | `src/tools/git/show/tool.ts`                | Read a bounded object or file revision without executing repository content.      |
 | Project command | `src/tools/project-command/tool.ts`         | Run only catalog-defined semantic commands after user-owned policy authorization. |
@@ -136,19 +141,25 @@ Parameter schemas are part of the definition fingerprint; parameter values are r
 
 Adding a validator kind is a security-reviewed change; adding a command over existing kinds is catalog data.
 
-### Policy identity and repository-content binding
+### Policy identity and project-code trust
 
 A policy identity combines the semantic command id with a SHA-256 fingerprint over the definition, including its parameter schema, environment profile, and limits.
 
 Script-mediated definitions marked bindsRepoContent additionally hash the canonicalized scripts section of the package manifest.
-
 Canonicalization parses the scripts section, sorts keys, and serializes deterministically, so whitespace-only edits do not invalidate approvals.
+A write deny on package.json prevents the agent from changing the package-script definition through intercepted filesystem tools.
+
+The scripts hash does not bind test files, application source, imported configuration, plugins, generated files, dependencies, or other mutable repository content executed by the script.
+A persisted project-code approval must therefore be understood as approval to execute mutable project code, not approval of an immutable command body.
+Subprocesses are not constrained by filesystem policy and may access resources available to the current operating-system user.
 
 Resolution happens before authorization, so prompts and identities reflect the resolved command.
-
 Prompts display the resolved command line and, for script-mediated commands, the script text being authorized.
+Repository-controlled prompt text must be escaped, length-bounded, and rendered so terminal controls and bidirectional text cannot obscure the approval request.
+Project-code prompts must state that mutable repository code runs with the current user's privileges and is not sandboxed by the filesystem policy.
 
-The node_deps_install prompt warns that install scripts execute dependency code and that the command contacts the registry.
+Project-local executable approvals must bind a cryptographic digest of the resolved executable contents and verify that digest immediately before spawn.
+Until that binding exists, project-local executable approvals must not be treated as stable across invocations.
 
 Policy documents validate command id shape, not catalog membership, so removed commands leave inert stale entries.
 
@@ -157,6 +168,7 @@ Policy documents validate command id shape, not catalog membership, so removed c
 `minimal-static-v1` provides PATH=/usr/bin:/bin with LANG and LC_ALL and serves global commands.
 
 `node-v1` adds HOME, prepends the node binary directory to PATH, and sets CI=true for non-interactive tool behavior.
+Because HOME is present and project-code commands are not sandboxed, authorized repository code can access user-owned files independently of the filesystem tool policy.
 
 Per-ecosystem profiles such as dotnet-v1 and php-v1 join when those catalogs land.
 
@@ -252,7 +264,8 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 - Preserve cancellation and timeout information in command results.
 - Avoid shell interpolation when invoking an allowlisted command.
 - Never silently fall back to unrestricted shell execution.
-- Require explicit policy decisions for operations that can expose sensitive history, content, or values.
+- Require explicit policy decisions for environment values, external filesystem access through intercepted tools, filesystem mutation, and project-code execution.
+- Treat read-only Git inspection as an intentional workspace capability outside the filesystem policy namespace.
 - Add telemetry-free diagnostics sufficient to explain why a request was rejected or failed at a given stage.
 
 ## Implementation tasks
@@ -312,6 +325,19 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 - [x] Add timeout, cancellation, process cleanup, and output truncation behavior.
 - [x] Keep timeout, cancellation, cleanup, and truncation behavior green through the executor rewrite.
 
+### Security hardening milestone
+
+- [ ] Sanitize and length-bound repository-controlled project-command prompt text, including ANSI controls and bidirectional Unicode controls.
+- [ ] Add an explicit warning to every project-code approval that mutable repository code runs unsandboxed with the current user's privileges.
+- [ ] Bind Fallow command identities to a SHA-256 digest of the resolved project-local executable and verify the digest again immediately before spawn.
+- [ ] Add regression coverage proving that replacing a project-local executable invalidates or blocks a persisted approval.
+- [ ] Verify ownership and safe permissions for the policy file and its existing parent directories on macOS.
+- [ ] Reject extension activation on unsupported runtime platforms before registering partially functional tools.
+- [ ] Document package.json denyWrite as protection against package-script mutation, not as containment of the source code executed by an approved script.
+- [ ] Decide whether project-code allows remain persistent, become session-scoped, or require approval per invocation; default to the narrower lifetime unless a sandbox is added.
+- [ ] Add tests showing that Git reads intentionally remain available when the same path has a filesystem denyRead rule.
+- [ ] Add macOS integration coverage for process-group cleanup on timeout and cancellation.
+
 ### Pi integration
 
 - [x] Add TypeBox schemas that match the TypeScript contracts.
@@ -344,7 +370,7 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 
 ### Deferred
 
-- Linux runtime validation.
+- Linux runtime support and validation.
 - Windows and FreeBSD support.
 - .NET ecosystem module and catalog.
 - PHP ecosystem module and catalog for Symfony and Magento projects.
@@ -352,7 +378,7 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 - User-owned customCommands namespace as a measured escape hatch.
 - Git mutation commands such as commit and stage behind confirmation.
 - Test-name pattern filtering for node_test, pending runner detection.
-- node_deps_install, pending manager-specific frozen-lockfile and dependency-install risk review.
+- node_deps_install, pending demonstrated need plus manager-specific frozen-lockfile and dependency-install risk review.
 - Interactive, print, JSON, and RPC mode verification, deferred in favor of manual monitoring.
 - Scheduled latest-toolchain fixture-suite runs, skipped for now.
 - Long-running development servers and smoke checks, deferred because they should remain manually controlled for now.
