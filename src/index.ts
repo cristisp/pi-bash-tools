@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createEnvironmentTool } from "./tools/environment/environment-tool.ts";
 import { createFilesystemAccessPolicyInterceptor } from "./tools/filesystem/access-policy.ts";
+import { createDeleteTool, createMoveTool } from "./tools/filesystem/mutation-tool.ts";
 import { createProjectCommandTool } from "./tools/project-command/tool.ts";
 import { createGitDiffTool } from "./tools/git/diff/tool.ts";
 import { createGitLogTool } from "./tools/git/log/tool.ts";
@@ -17,4 +18,6 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool(createGitShowTool(exec));
   pi.registerTool(createEnvironmentTool());
   pi.registerTool(createProjectCommandTool());
+  pi.registerTool(createMoveTool());
+  pi.registerTool(createDeleteTool());
 }

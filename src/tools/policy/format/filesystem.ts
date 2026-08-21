@@ -11,8 +11,26 @@ import {
 import { validatePolicyPathInternal, validateProjectPathInternal } from "./validation.ts";
 
 const FILESYSTEM_ROOT_KEYS = new Set(["version", "global", "projects"]);
-const SCOPE_KEYS = new Set(["allow", "deny"]);
-const DEFAULT_FILESYSTEM_SCOPE: FilesystemPolicyScope = { allow: [], deny: [] };
+const FILESYSTEM_SCOPE_KEYS = new Set([
+  "allowRead",
+  "allowWrite",
+  "denyRead",
+  "denyWrite",
+  "allowMove",
+  "denyMove",
+  "allowDelete",
+  "denyDelete",
+]);
+const DEFAULT_FILESYSTEM_SCOPE: FilesystemPolicyScope = {
+  allowRead: [],
+  allowWrite: [],
+  denyRead: [],
+  denyWrite: [],
+  allowMove: [],
+  denyMove: [],
+  allowDelete: [],
+  denyDelete: [],
+};
 
 function parseFilesystemPaths(value: unknown): string[] {
   if (!Array.isArray(value)) {
@@ -30,17 +48,47 @@ function parseFilesystemPaths(value: unknown): string[] {
   return paths;
 }
 
+function parseOptionalFilesystemPaths(value: unknown): string[] {
+  return value === undefined ? [] : parseFilesystemPaths(value);
+}
+
+function assertNoFilesystemScopeConflicts(
+  pairs: readonly (readonly [readonly string[], readonly string[]])[],
+): void {
+  if (pairs.some(([allow, deny]) => allow.some((path) => deny.includes(path)))) {
+    throw policyErrorInternal();
+  }
+}
+
 function parseFilesystemScope(value: unknown): FilesystemPolicyScope {
   if (!isPolicyRecordInternal(value)) {
     throw policyErrorInternal();
   }
-  assertPolicyAllowedKeysInternal(value, SCOPE_KEYS);
-  const allow = value.allow === undefined ? [] : parseFilesystemPaths(value.allow);
-  const deny = value.deny === undefined ? [] : parseFilesystemPaths(value.deny);
-  if (allow.some((path) => deny.includes(path))) {
-    throw policyErrorInternal();
-  }
-  return { allow, deny };
+  assertPolicyAllowedKeysInternal(value, FILESYSTEM_SCOPE_KEYS);
+  const allowRead = parseOptionalFilesystemPaths(value.allowRead);
+  const allowWrite = parseOptionalFilesystemPaths(value.allowWrite);
+  const denyRead = parseOptionalFilesystemPaths(value.denyRead);
+  const denyWrite = parseOptionalFilesystemPaths(value.denyWrite);
+  const allowMove = parseOptionalFilesystemPaths(value.allowMove);
+  const denyMove = parseOptionalFilesystemPaths(value.denyMove);
+  const allowDelete = parseOptionalFilesystemPaths(value.allowDelete);
+  const denyDelete = parseOptionalFilesystemPaths(value.denyDelete);
+  assertNoFilesystemScopeConflicts([
+    [allowRead, denyRead],
+    [allowWrite, denyWrite],
+    [allowMove, denyMove],
+    [allowDelete, denyDelete],
+  ]);
+  return {
+    allowRead,
+    allowWrite,
+    denyRead,
+    denyWrite,
+    allowMove,
+    denyMove,
+    allowDelete,
+    denyDelete,
+  };
 }
 
 function parseFilesystemProjects(value: unknown): Readonly<Record<string, FilesystemPolicyScope>> {
@@ -57,7 +105,16 @@ function parseFilesystemProjects(value: unknown): Readonly<Record<string, Filesy
 export function createEmptyFilesystemPolicyInternal(): FilesystemPolicyData {
   return {
     version: FILESYSTEM_POLICY_VERSION,
-    global: { ...DEFAULT_FILESYSTEM_SCOPE },
+    global: {
+      allowRead: [...DEFAULT_FILESYSTEM_SCOPE.allowRead],
+      allowWrite: [...DEFAULT_FILESYSTEM_SCOPE.allowWrite],
+      denyRead: [...DEFAULT_FILESYSTEM_SCOPE.denyRead],
+      denyWrite: [...DEFAULT_FILESYSTEM_SCOPE.denyWrite],
+      allowMove: [...DEFAULT_FILESYSTEM_SCOPE.allowMove],
+      denyMove: [...DEFAULT_FILESYSTEM_SCOPE.denyMove],
+      allowDelete: [...DEFAULT_FILESYSTEM_SCOPE.allowDelete],
+      denyDelete: [...DEFAULT_FILESYSTEM_SCOPE.denyDelete],
+    },
     projects: {},
   };
 }
@@ -72,7 +129,7 @@ export function parseFilesystemPolicyInternal(value: unknown): FilesystemPolicyD
   }
   const global =
     value.global === undefined
-      ? { ...DEFAULT_FILESYSTEM_SCOPE }
+      ? createEmptyFilesystemPolicyInternal().global
       : parseFilesystemScope(value.global);
   const projects = value.projects === undefined ? {} : parseFilesystemProjects(value.projects);
   return {

@@ -154,14 +154,59 @@ it("uses filesystem path precedence and migrates the policy namespace", () => {
     "deny-project",
   );
   const view = loaded(document);
-  expect(document.version).toBe(3);
+  expect(document.version).toBe(4);
   expect(findFilesystemPolicyDecision(view, "/tmp/filesystem-root/public/file")).toBe(
     "allow-global",
   );
   expect(findFilesystemPolicyDecision(view, "/tmp/filesystem-root/private/file")).toBe(
     "deny-project",
   );
+  expect(findFilesystemPolicyDecision(view, "/tmp/filesystem-root/private/file", "write")).toBe(
+    "unknown",
+  );
+  expect(findFilesystemPolicyDecision(view, `${projectPath}/nested/file`, "read")).toBe(
+    "allow-project",
+  );
+  expect(findFilesystemPolicyDecision(view, `${projectPath}/nested/file`, "write")).toBe(
+    "allow-project",
+  );
+  expect(findFilesystemPolicyDecision(view, `${projectPath}/nested/file`, "move")).toBe("unknown");
+  expect(findFilesystemPolicyDecision(view, `${projectPath}/nested/file`, "delete")).toBe(
+    "unknown",
+  );
   expect(findFilesystemPolicyDecision(view, "/tmp/unlisted")).toBe("unknown");
+});
+
+it("uses separate move and delete scopes", () => {
+  let document = emptyDocument();
+  document = applyFilesystemPolicyDecision(
+    document,
+    projectPath,
+    "/tmp/mutable",
+    "allow-global",
+    "move",
+  );
+  document = applyFilesystemPolicyDecision(
+    document,
+    projectPath,
+    "/tmp/mutable/private",
+    "deny-project",
+    "move",
+  );
+  document = applyFilesystemPolicyDecision(
+    document,
+    projectPath,
+    "/tmp/removable",
+    "allow-global",
+    "delete",
+  );
+  const view = loaded(document);
+  expect(findFilesystemPolicyDecision(view, "/tmp/mutable/file", "move")).toBe("allow-global");
+  expect(findFilesystemPolicyDecision(view, "/tmp/mutable/private/file", "move")).toBe(
+    "deny-project",
+  );
+  expect(findFilesystemPolicyDecision(view, "/tmp/removable/file", "delete")).toBe("allow-global");
+  expect(findFilesystemPolicyDecision(view, "/tmp/removable/file", "write")).toBe("unknown");
 });
 
 it("provides an empty command namespace for new documents", () => {

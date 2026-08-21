@@ -19,12 +19,12 @@ import {
   type PolicyDocument,
 } from "./types.ts";
 
-const POLICY_DOCUMENT_VERSION = 3 as const;
+const POLICY_DOCUMENT_VERSION = 4 as const;
 
 const PROJECT_COMMAND_ID_PATTERN = /^[a-z][a-z0-9_]*$/u;
 const FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/u;
 const V2_DOCUMENT_KEYS = new Set(["version", "environment", "projectCommands"]);
-const V3_DOCUMENT_KEYS = new Set(["version", "environment", "projectCommands", "filesystem"]);
+const V4_DOCUMENT_KEYS = new Set(["version", "environment", "projectCommands", "filesystem"]);
 const COMMAND_POLICY_KEYS = new Set(["version", "global", "projects"]);
 const COMMAND_SCOPE_KEYS = new Set(["allow", "deny"]);
 const DEFAULT_COMMAND_SCOPE: CommandPolicyScope = { allow: [], deny: [] };
@@ -145,7 +145,7 @@ export function parsePolicyDocument(text: string): PolicyDocument {
   if (value.version !== 2 && value.version !== POLICY_DOCUMENT_VERSION) {
     throw policyError();
   }
-  assertPolicyAllowedKeys(value, value.version === 2 ? V2_DOCUMENT_KEYS : V3_DOCUMENT_KEYS);
+  assertPolicyAllowedKeys(value, value.version === 2 ? V2_DOCUMENT_KEYS : V4_DOCUMENT_KEYS);
   if (!isPolicyRecord(value.environment)) {
     throw policyError();
   }
@@ -154,8 +154,12 @@ export function parsePolicyDocument(text: string): PolicyDocument {
   if (value.version === 2) {
     return { version: 2, environment, projectCommands };
   }
-  const filesystem = parseFilesystemPolicy(value.filesystem);
-  return { version: POLICY_DOCUMENT_VERSION, environment, projectCommands, filesystem };
+  return {
+    version: POLICY_DOCUMENT_VERSION,
+    environment,
+    projectCommands,
+    filesystem: parseFilesystemPolicy(value.filesystem),
+  };
 }
 
 function serializeCommandIdentity(identity: CommandIdentity): CommandIdentity {
@@ -186,8 +190,14 @@ function serializeCommandProjects(
 
 function serializeFilesystemScope(scope: FilesystemPolicyScope): FilesystemPolicyScope {
   return {
-    allow: [...scope.allow].sort(),
-    deny: [...scope.deny].sort(),
+    allowRead: [...scope.allowRead].sort(),
+    allowWrite: [...scope.allowWrite].sort(),
+    denyRead: [...scope.denyRead].sort(),
+    denyWrite: [...scope.denyWrite].sort(),
+    allowMove: [...scope.allowMove].sort(),
+    denyMove: [...scope.denyMove].sort(),
+    allowDelete: [...scope.allowDelete].sort(),
+    denyDelete: [...scope.denyDelete].sort(),
   };
 }
 
@@ -290,7 +300,7 @@ export function copyProjectCommandsIntoPolicyDocument(
 export function copyFilesystemIntoPolicyDocument(
   document: PolicyDocument,
   filesystem: FilesystemPolicyData,
-): Extract<PolicyDocument, { version: 3 }> {
+): Extract<PolicyDocument, { version: 4 }> {
   return {
     version: POLICY_DOCUMENT_VERSION,
     environment: document.environment,

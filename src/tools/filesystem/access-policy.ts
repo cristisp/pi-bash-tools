@@ -1,22 +1,23 @@
-import { realpath } from "node:fs/promises";
-import { resolve } from "node:path";
 import {
   isToolCallEventType,
-  type ExtensionContext,
   type ToolCallEvent,
   type ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { authorizeOrPrompt, type AuthorizationErrorKind } from "../authorization.ts";
+import { type AuthorizationErrorKind } from "../authorization.ts";
 import { displayPath } from "../path-display.ts";
-import { findFilesystemPolicyDecision } from "../policy/decisions.ts";
 import { createPolicyStore } from "../policy/store.ts";
 import type {
-  FilesystemDecisionRequest,
+  FilesystemAccess,
   LoadedPolicy,
   PolicyAuthorization,
   PolicyStore,
 } from "../policy/types.ts";
-import { validatePolicyPath } from "../policy/format.ts";
+import {
+  authorizeAndPersistFilesystemAccesses,
+  loadFilesystemPolicyForRequest,
+  type FilesystemAuthorizationContext,
+} from "./authorization.ts";
+import { canonicalRequestPath } from "./paths.ts";
 
 const DENIED_POLICY_SCOPES: Record<PolicyAuthorization, string> = {
   "deny-global": "the global",
@@ -37,40 +38,45 @@ const BLOCKED_REASON_SUFFIXES: Record<Exclude<AuthorizationErrorKind, "denied">,
   dismissed: " confirmation was dismissed.",
 };
 
-export type FilesystemAccessPolicyContext = Omit<
-  Pick<ExtensionContext, "cwd" | "signal" | "hasUI" | "mode" | "ui">,
-  "ui"
-> & {
-  readonly ui: Pick<ExtensionContext["ui"], "select">;
-};
+export type FilesystemAccessPolicyContext = FilesystemAuthorizationContext;
 
 interface FilesystemToolCall {
-  readonly name: "ls" | "find" | "grep";
+  readonly name: "read" | "write" | "edit" | "ls" | "find" | "grep";
+  readonly accesses: readonly FilesystemAccess[];
   readonly path: string | undefined;
+  readonly allowMissingPath: boolean;
 }
 
 function filesystemToolCall(event: ToolCallEvent): FilesystemToolCall | undefined {
+  if (isToolCallEventType("read", event)) {
+    return { name: "read", accesses: ["read"], path: event.input.path, allowMissingPath: false };
+  }
+  if (isToolCallEventType("write", event)) {
+    return {
+      name: "write",
+      accesses: ["write"],
+      path: event.input.path,
+      allowMissingPath: true,
+    };
+  }
+  if (isToolCallEventType("edit", event)) {
+    return {
+      name: "edit",
+      accesses: ["read", "write"],
+      path: event.input.path,
+      allowMissingPath: false,
+    };
+  }
   if (isToolCallEventType("ls", event)) {
-    return { name: "ls", path: event.input.path };
+    return { name: "ls", accesses: ["read"], path: event.input.path, allowMissingPath: false };
   }
   if (isToolCallEventType("find", event)) {
-    return { name: "find", path: event.input.path };
+    return { name: "find", accesses: ["read"], path: event.input.path, allowMissingPath: false };
   }
   if (isToolCallEventType("grep", event)) {
-    return { name: "grep", path: event.input.path };
+    return { name: "grep", accesses: ["read"], path: event.input.path, allowMissingPath: false };
   }
   return undefined;
-}
-
-function requestPath(path: string | undefined, cwd: string): string {
-  const supplied = path === undefined || path.length === 0 ? "." : path;
-  const normalized = supplied.startsWith("@") ? supplied.slice(1) || "." : supplied;
-  return resolve(cwd, normalized);
-}
-
-async function canonicalRequestPath(path: string | undefined, cwd: string): Promise<string> {
-  const canonical = await realpath(requestPath(path, cwd));
-  return validatePolicyPath(canonical);
 }
 
 function blockedReasonSuffix(kind: AuthorizationErrorKind, decision: PolicyAuthorization): string {
@@ -81,12 +87,13 @@ function blockedReasonSuffix(kind: AuthorizationErrorKind, decision: PolicyAutho
 }
 
 function blockedReason(
-  name: FilesystemToolCall["name"],
+  tool: FilesystemToolCall,
+  access: FilesystemAccess,
   path: string,
   kind: AuthorizationErrorKind,
   decision: PolicyAuthorization,
 ): Error {
-  const prefix = `Tool call blocked by access policy: ${name} access to "${displayPath(path)}"`;
+  const prefix = `Tool call blocked by access policy: ${tool.name} ${access} access to "${displayPath(path)}"`;
   return new Error(`${prefix}${blockedReasonSuffix(kind, decision)}`);
 }
 
@@ -94,26 +101,26 @@ function blockedResult(reason: string): ToolCallEventResult {
   return { block: true, reason };
 }
 
-async function loadPolicy(
+async function authorizeFilesystemAccesses(
+  tool: FilesystemToolCall,
+  path: string,
+  loaded: LoadedPolicy,
+  ctx: FilesystemAccessPolicyContext,
   policy: PolicyStore,
-  cwd: string,
-  signal: AbortSignal | undefined,
-): Promise<LoadedPolicy> {
-  if (signal?.aborted) {
-    throw new Error("Filesystem access policy request cancelled");
-  }
-  try {
-    const loaded = await policy.load(cwd);
-    if (signal?.aborted) {
-      throw new Error("Filesystem access policy request cancelled");
-    }
-    return loaded;
-  } catch (error) {
-    if (error instanceof Error && error.message === "Filesystem access policy request cancelled") {
-      throw error;
-    }
-    throw new Error("Unable to load filesystem access policy", { cause: error });
-  }
+): Promise<void> {
+  await authorizeAndPersistFilesystemAccesses(
+    tool.accesses.map((access) => ({ access, path })),
+    loaded,
+    ctx,
+    policy,
+    ctx.signal,
+    {
+      promptText: ({ access, path: identity }) =>
+        `Authorize ${access} access for ${tool.name} to ${displayPath(identity)}?`,
+      error: (kind, request, decision) =>
+        blockedReason(tool, request.access, request.path, kind, decision),
+    },
+  );
 }
 
 async function interceptFilesystemToolCall(
@@ -128,7 +135,7 @@ async function interceptFilesystemToolCall(
 
   let path: string;
   try {
-    path = await canonicalRequestPath(tool.path, ctx.cwd);
+    path = await canonicalRequestPath(tool.path, ctx.cwd, tool.allowMissingPath);
   } catch {
     return blockedResult(
       `Tool call blocked by access policy: ${tool.name} path could not be safely resolved.`,
@@ -138,7 +145,7 @@ async function interceptFilesystemToolCall(
   const requestSignal = ctx.signal;
   let loaded: LoadedPolicy;
   try {
-    loaded = await loadPolicy(policy, ctx.cwd, requestSignal);
+    loaded = await loadFilesystemPolicyForRequest(policy, ctx.cwd, requestSignal);
   } catch (error) {
     return blockedResult(
       error instanceof Error
@@ -147,25 +154,8 @@ async function interceptFilesystemToolCall(
     );
   }
 
-  let matchedDecision: PolicyAuthorization = "unknown";
   try {
-    await authorizeOrPrompt<string, FilesystemDecisionRequest>({
-      identity: path,
-      loaded,
-      context: ctx,
-      signal: requestSignal,
-      globalSafe: true,
-      deferAllowPersistence: false,
-      findDecision: (current, identity) => {
-        matchedDecision = findFilesystemPolicyDecision(current, identity);
-        return matchedDecision;
-      },
-      recordDecisions: (projectPath, requests, signal) =>
-        policy.recordDecisions(projectPath, requests, signal),
-      makeRequest: (identity, decision) => ({ kind: "filesystem", path: identity, decision }),
-      promptText: (identity) => `Authorize ${tool.name} access to ${displayPath(identity)}?`,
-      error: (kind) => blockedReason(tool.name, path, kind, matchedDecision),
-    });
+    await authorizeFilesystemAccesses(tool, path, loaded, ctx, policy);
   } catch (error) {
     return blockedResult(
       error instanceof Error

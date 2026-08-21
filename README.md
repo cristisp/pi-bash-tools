@@ -1,9 +1,10 @@
 # Bash Tools
 
-A pi package that provides narrowly scoped, read-only Git tools instead of exposing another shell interface.
+A pi package that provides narrowly scoped Git, project, environment, and filesystem access-policy tools instead of exposing another shell interface.
 
 Pi's built-in `read`, `write`, `edit`, `grep`, `find`, `ls`, and `bash` tool implementations remain unchanged.
-The `grep`, `find`, and `ls` calls are intercepted by the filesystem access policy before execution.
+The `read`, `write`, `edit`, `grep`, `find`, and `ls` calls are intercepted by the filesystem access policy before execution.
+The interceptor does not intercept `bash` or `user_bash`.
 
 ## Tool catalog
 
@@ -15,6 +16,8 @@ The extension registers exactly these custom tools:
 - `git_show` reads bounded output from a revision, optionally filtered by a path.
 - `environment` reads only explicitly requested environment variables after policy authorization.
 - `project_command` runs the fixed `workspace_path` and `node_version` observations, discovers Node project state with `node_project_info`, lists top-level dependencies with `node_deps_list`, runs only exact `test`, `build`, `lint`, `typecheck`, `format:check`, or `format` package scripts, and runs six fixed Fallow analyses after policy authorization.
+- `move` moves or renames one authorized regular file.
+- `delete` deletes one authorized regular file.
 
 ## Environment policy
 
@@ -63,16 +66,20 @@ Print, JSON, and other no-UI modes reject unknown keys without modifying policy.
 
 ## Filesystem access policy
 
-The interceptor guards the built-in `ls`, `find`, and `grep` tool calls before they execute.
+The interceptor guards the built-in `read`, `write`, `edit`, `ls`, `find`, and `grep` tool calls before they execute.
 It does not intercept `bash` or `user_bash`.
 
+The extension also registers `move` and `delete` tools for authorized regular-file mutations.
+`move` authorizes both the source and destination with the move capability and rejects existing destinations.
+`delete` uses a separate delete capability and rejects directories, symlinks, and recursive deletion.
+
 Filesystem rules are stored in the same user-owned `~/.pi/agent/bash-tools.json` policy file.
-A filesystem decision migrates the document to version 3 while preserving the environment and project command namespaces.
-The filesystem namespace has version `1`, with `global` and `projects` scopes containing `allow` and `deny` arrays of canonical absolute paths.
+Filesystem decisions are stored in document version 4 while preserving the environment and project command namespaces.
+The filesystem namespace has version `2`, with separate read, write, move, and delete allow and deny arrays of canonical absolute paths.
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "environment": {
     "version": 1,
     "confirmationTimeoutMs": 120000,
@@ -85,29 +92,36 @@ The filesystem namespace has version `1`, with `global` and `projects` scopes co
     "projects": {}
   },
   "filesystem": {
-    "version": 1,
+    "version": 2,
     "global": {
-      "allow": ["/Users/example/shared"],
-      "deny": ["/Users/example/shared/private"]
+      "allowRead": ["/Users/example/shared"],
+      "allowWrite": ["/Users/example/shared/generated"],
+      "denyRead": ["/Users/example/shared/private"],
+      "denyWrite": ["/Users/example/shared/private"],
+      "allowMove": ["/Users/example/shared/generated"],
+      "denyMove": ["/Users/example/shared/private"],
+      "allowDelete": ["/Users/example/shared/generated"],
+      "denyDelete": ["/Users/example/shared/private"]
     },
     "projects": {}
   }
 }
 ```
 
-A rule applies to the path itself and its descendants.
-Deny rules take precedence over allow rules, and overlapping denied locations block a listing or recursive search of the containing location.
-Unknown locations are prompted for only in TUI or RPC mode.
+`allowRead` controls `read`, `ls`, `find`, and `grep`.
+`allowWrite` controls `write` and `edit`.
+`allowMove` controls the `move` tool for both its source and destination paths.
+`allowDelete` controls the `delete` tool.
+A project and all of its descendants have implicit read and write access for the active workspace.
+Explicit deny rules take precedence over both implicit access and explicit allow rules.
+A path rule applies to the path itself and its descendants.
+Deny rules also consider overlapping paths, so a denied descendant can block a containing recursive listing or search.
+Unknown paths are prompted for only in TUI or RPC mode.
 The existing `confirmationTimeoutMs` setting applies to filesystem prompts and defaults to 120000 milliseconds.
-A timeout automatically records a project-level deny and blocks only the current tool call.
-Blocked calls report `Tool call blocked by access policy` with the tool, path, and reason.
+A timeout automatically records a project-level deny for the requested access type and blocks only the current tool call.
+Blocked calls report `Tool call blocked by access policy` with the tool, access type, path, and reason.
 
-Every key in a multi-key request is authorized before any environment value is read.
-An authorization denial, cancellation, timeout, or policy persistence failure rejects the entire request without partial output.
-Missing environment variables are returned as explicit `null`, while present empty strings remain empty strings.
-The tool performs direct lookups of only the requested keys and does not enumerate the process environment.
-It does not invoke `.env`, `env`, `printenv`, a shell, or `pi.exec`.
-Invalid or unreadable policy files fail closed without exposing raw policy contents or environment values.
+Invalid or unreadable policy files fail closed without exposing raw policy contents.
 The policy file and every parent directory must be regular, non-symlink filesystem objects.
 Unsupported special files, unsafe parent paths, and ambiguous filesystem races are rejected without reading or writing policy data.
 Policy filesystem access is supported on macOS and Linux; unsupported runtime platforms fail closed.

@@ -20,6 +20,7 @@ import type {
   CommandPolicyScope,
   EnvironmentPolicyData,
   EnvironmentPolicyScope,
+  FilesystemAccess,
   FilesystemPolicyData,
   FilesystemPolicyScope,
   LoadedPolicy,
@@ -41,12 +42,18 @@ type MutableEnvironmentPolicy = {
 };
 
 interface MutableFilesystemScope {
-  allow: string[];
-  deny: string[];
+  allowRead: string[];
+  allowWrite: string[];
+  denyRead: string[];
+  denyWrite: string[];
+  allowMove: string[];
+  denyMove: string[];
+  allowDelete: string[];
+  denyDelete: string[];
 }
 
 type MutableFilesystemPolicy = {
-  version: 1;
+  version: 2;
   global: MutableFilesystemScope;
   projects: Record<string, MutableFilesystemScope>;
 };
@@ -83,8 +90,26 @@ function copyEnvironmentPolicy(policy: EnvironmentPolicyData): MutableEnvironmen
 
 function copyFilesystemScope(scope: FilesystemPolicyScope | undefined): MutableFilesystemScope {
   return scope === undefined
-    ? { allow: [], deny: [] }
-    : { allow: [...scope.allow], deny: [...scope.deny] };
+    ? {
+        allowRead: [],
+        allowWrite: [],
+        denyRead: [],
+        denyWrite: [],
+        allowMove: [],
+        denyMove: [],
+        allowDelete: [],
+        denyDelete: [],
+      }
+    : {
+        allowRead: [...scope.allowRead],
+        allowWrite: [...scope.allowWrite],
+        denyRead: [...scope.denyRead],
+        denyWrite: [...scope.denyWrite],
+        allowMove: [...scope.allowMove],
+        denyMove: [...scope.denyMove],
+        allowDelete: [...scope.allowDelete],
+        denyDelete: [...scope.denyDelete],
+      };
 }
 
 function copyFilesystemPolicy(policy: FilesystemPolicyData): MutableFilesystemPolicy {
@@ -93,7 +118,7 @@ function copyFilesystemPolicy(policy: FilesystemPolicyData): MutableFilesystemPo
     projects[path] = copyFilesystemScope(scope);
   }
   return {
-    version: 1,
+    version: 2,
     global: copyFilesystemScope(policy.global),
     projects,
   };
@@ -206,7 +231,17 @@ function filesystemDecisionScope(
 ): MutableFilesystemScope {
   return decision.endsWith("global")
     ? policy.global
-    : (policy.projects[projectPath] ?? (policy.projects[projectPath] = { allow: [], deny: [] }));
+    : (policy.projects[projectPath] ??
+        (policy.projects[projectPath] = {
+          allowRead: [],
+          allowWrite: [],
+          denyRead: [],
+          denyWrite: [],
+          allowMove: [],
+          denyMove: [],
+          allowDelete: [],
+          denyDelete: [],
+        }));
 }
 
 function existingFilesystemScope(
@@ -217,12 +252,45 @@ function existingFilesystemScope(
   return decision.endsWith("global") ? policy.global : policy.projects[projectPath];
 }
 
+type FilesystemScopeKey =
+  | "allowRead"
+  | "allowWrite"
+  | "denyRead"
+  | "denyWrite"
+  | "allowMove"
+  | "denyMove"
+  | "allowDelete"
+  | "denyDelete";
+
+const FILESYSTEM_ACCESS_KEYS: Record<
+  FilesystemAccess,
+  { readonly allow: FilesystemScopeKey; readonly deny: FilesystemScopeKey }
+> = {
+  read: { allow: "allowRead", deny: "denyRead" },
+  write: { allow: "allowWrite", deny: "denyWrite" },
+  move: { allow: "allowMove", deny: "denyMove" },
+  delete: { allow: "allowDelete", deny: "denyDelete" },
+};
+
+function filesystemEntries(
+  scope: (FilesystemPolicyScope | MutableFilesystemScope) | undefined,
+  access: FilesystemAccess,
+  decision: PolicyDecision,
+): readonly string[] | undefined {
+  if (scope === undefined) {
+    return undefined;
+  }
+  const keys = FILESYSTEM_ACCESS_KEYS[access];
+  return scope[decision.startsWith("allow") ? keys.allow : keys.deny];
+}
+
 function filesystemScopeContains(
   scope: FilesystemPolicyScope | undefined,
+  access: FilesystemAccess,
   decision: PolicyDecision,
   path: string,
 ): boolean {
-  const entries = decision.startsWith("allow") ? scope?.allow : scope?.deny;
+  const entries = filesystemEntries(scope, access, decision);
   return (
     entries?.some((entry) =>
       decision.startsWith("allow") ? isPathWithin(entry, path) : pathsOverlap(entry, path),
@@ -232,15 +300,29 @@ function filesystemScopeContains(
 
 function filesystemScopeHasExactPath(
   scope: FilesystemPolicyScope | undefined,
+  access: FilesystemAccess,
   decision: PolicyDecision,
   path: string,
 ): boolean {
-  const entries = decision.startsWith("allow") ? scope?.allow : scope?.deny;
-  return entries?.includes(path) ?? false;
+  return filesystemEntries(scope, access, decision)?.includes(path) ?? false;
+}
+
+function appendFilesystemEntry(
+  scope: MutableFilesystemScope,
+  access: FilesystemAccess,
+  decision: PolicyDecision,
+  path: string,
+): void {
+  const keys = FILESYSTEM_ACCESS_KEYS[access];
+  scope[decision.startsWith("allow") ? keys.allow : keys.deny].push(path);
 }
 
 function filesystemPolicyForDocument(document: PolicyDocument): FilesystemPolicyData {
-  return document.version === 3 ? document.filesystem : createEmptyFilesystemPolicy();
+  return document.version === 4 ? document.filesystem : createEmptyFilesystemPolicy();
+}
+
+function isFilesystemAccess(value: string): value is FilesystemAccess {
+  return value === "read" || value === "write" || value === "move" || value === "delete";
 }
 
 export function applyFilesystemPolicyDecision(
@@ -248,24 +330,24 @@ export function applyFilesystemPolicyDecision(
   projectPath: string,
   path: string,
   decision: PolicyDecision,
+  access: FilesystemAccess = "read",
 ): PolicyDocument {
-  if (!isDecision(decision)) {
+  if (!isDecision(decision) || !isFilesystemAccess(access)) {
     throw policyError();
   }
   validateProjectPath(projectPath);
   const validatedPath = validatePolicyPath(path);
   const filesystem = filesystemPolicyForDocument(document);
   const scope = existingFilesystemScope(filesystem, projectPath, decision);
-  if (filesystemScopeHasExactPath(scope, OPPOSITE_DECISION[decision], validatedPath)) {
+  if (filesystemScopeHasExactPath(scope, access, OPPOSITE_DECISION[decision], validatedPath)) {
     throw policyError();
   }
-  if (filesystemScopeHasExactPath(scope, decision, validatedPath)) {
+  if (filesystemScopeHasExactPath(scope, access, decision, validatedPath)) {
     return document;
   }
   const next = copyFilesystemPolicy(filesystem);
   const target = filesystemDecisionScope(next, projectPath, decision);
-  const list = decision.startsWith("allow") ? target.allow : target.deny;
-  list.push(validatedPath);
+  appendFilesystemEntry(target, access, decision, validatedPath);
   return copyFilesystemIntoPolicyDocument(document, next);
 }
 
@@ -384,28 +466,47 @@ export function findProjectCommandPolicyDecision(
   return "unknown";
 }
 
-export function findFilesystemPolicyDecision(
+function findFilesystemPolicyDecisionInNamespace(
   loaded: LoadedPolicy,
   path: string,
+  access: FilesystemAccess,
 ): PolicyAuthorization {
-  validateProjectPath(loaded.projectPath);
-  const validatedPath = validatePolicyPath(path);
-  if (loaded.document.version !== 3) {
+  if (loaded.document.version !== 4) {
     return "unknown";
   }
   const policy = loaded.document.filesystem;
-  if (filesystemScopeContains(policy.global, "deny-global", validatedPath)) {
+  if (filesystemScopeContains(policy.global, access, "deny-global", path)) {
     return "deny-global";
   }
   const project = policy.projects[loaded.projectPath];
-  if (filesystemScopeContains(project, "deny-project", validatedPath)) {
+  if (filesystemScopeContains(project, access, "deny-project", path)) {
     return "deny-project";
   }
-  if (filesystemScopeContains(policy.global, "allow-global", validatedPath)) {
+  if (filesystemScopeContains(policy.global, access, "allow-global", path)) {
     return "allow-global";
   }
-  if (filesystemScopeContains(project, "allow-project", validatedPath)) {
+  if (filesystemScopeContains(project, access, "allow-project", path)) {
     return "allow-project";
   }
   return "unknown";
+}
+
+export function findFilesystemPolicyDecision(
+  loaded: LoadedPolicy,
+  path: string,
+  access: FilesystemAccess = "read",
+): PolicyAuthorization {
+  validateProjectPath(loaded.projectPath);
+  if (!isFilesystemAccess(access)) {
+    throw policyError();
+  }
+  const validatedPath = validatePolicyPath(path);
+  const configuredDecision = findFilesystemPolicyDecisionInNamespace(loaded, validatedPath, access);
+  if (configuredDecision !== "unknown") {
+    return configuredDecision;
+  }
+  return (access === "read" || access === "write") &&
+    isPathWithin(loaded.projectPath, validatedPath)
+    ? "allow-project"
+    : "unknown";
 }

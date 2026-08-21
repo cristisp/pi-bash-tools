@@ -10,7 +10,7 @@ Every tool must define explicit input and output contracts, enforce workspace bo
 
 ## Current status
 
-The extension currently registers six tools: environment, git_status, git_diff, git_log, git_show, and project_command.
+The extension currently registers eight custom tools: environment, git_status, git_diff, git_log, git_show, project_command, move, and delete, while protecting six built-in filesystem tools with the access-policy interceptor.
 
 The project_command catalog currently supports seventeen extension-owned semantic commands: workspace_path, node_version, node_project_info, node_deps_list, node_test, node_build, node_lint, node_lint_fix, node_typecheck, node_format_check, node_format_write, fallow_dead_code, fallow_dupes, fallow_health, fallow_audit, fallow_list_entry_points, and fallow_list_boundaries.
 
@@ -20,7 +20,8 @@ The Git tools provide validated, bounded, cancellable, read-only repository insp
 
 The project_command tool supports fixed workspace and Node runtime observation commands, in-process Node project discovery, authorized Node project script commands, and authorized Fallow analysis commands.
 
-A filesystem access-policy interceptor protects built-in ls, find, and grep calls with canonical path validation, user-owned allow and deny rules, interactive approval where available, persisted project decisions, and non-terminating blocked results.
+A filesystem access-policy interceptor protects built-in read, write, edit, ls, find, and grep calls with canonical path validation, implicit active-workspace access, separate read, write, move, and delete rules, deny precedence, interactive approval where available, persisted project decisions, and non-terminating blocked results.
+The move and delete tools authorize regular-file mutations through the same policy store.
 
 project_command accepts a strict discriminated command schema and executes only catalog-defined operations.
 
@@ -28,9 +29,9 @@ It uses direct spawn with shell disabled for executable commands, canonical proj
 
 Command authorization uses the user-owned policy at `getAgentDir()/bash-tools.json`, canonical project paths, command fingerprints, policy precedence, and interactive confirmation.
 
-Policy decisions migrate a version 1 environment document to a version 3 document containing the unchanged nested environment version 1 policy, a version 1 project command policy namespace, and a version 1 filesystem policy namespace.
+Policy decisions migrate a version 1 environment document to a version 4 document containing the unchanged nested environment version 1 policy, a version 1 project command policy namespace, and a version 2 filesystem policy namespace with separate read, write, move, and delete rules.
 
-Native macOS validation currently passes the 166-test suite with 89.01% statements, 80.88% branches, 96.19% functions, and 89.17% lines, alongside TypeScript checks, warning-free lint, formatting, Fallow analysis, Fallow audit, and git diff checks.
+Native macOS validation currently passes the 188-test suite, alongside warning-free lint, formatting, Fallow analysis, Fallow audit, and git diff checks.
 
 Linux runtime validation remains deferred, and Windows and FreeBSD remain unsupported by design.
 
@@ -38,7 +39,7 @@ The simplification pass is complete: one policy store in `src/tools/policy/` ser
 
 The cleanup-failure execution status was removed from the tool contract because it was unreachable with real processes.
 
-The catalog architecture, the Node command slice, the read-only dependency-list command, the lint-fix and formatting command slices, the Fallow command slice, and the filesystem access-policy implementation are complete.
+The catalog architecture, the Node command slice, the read-only dependency-list command, the lint-fix and formatting command slices, the Fallow command slice, and the read, write, move, and delete filesystem implementation are complete.
 
 The next milestone is the separately reviewed dependency-install command for node_deps_install, which remains deferred because it contacts registries, mutates project state, and executes dependency lifecycle code.
 
@@ -267,9 +268,12 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 
 ### Filesystem access policy
 
-- [x] Intercept built-in ls, find, and grep calls with canonical path validation and user-owned authorization.
-- [x] Persist filesystem allow and deny decisions in the version 3 policy document without terminating blocked tool calls.
-- [x] Cover filesystem policy approval, denial, timeout persistence, cancellation, path handling, and non-filesystem passthrough behavior.
+- [x] Intercept built-in read, write, edit, ls, find, and grep calls with canonical path validation and user-owned authorization.
+- [x] Grant implicit read and write access under the active workspace while allowing explicit deny rules to override it.
+- [x] Persist separate filesystem read, write, move, and delete decisions in the version 4 policy document without terminating blocked tool calls.
+- [x] Add regular-file move and delete tools with source, destination, symlink, and authorization validation.
+- [x] Cover filesystem policy approval, denial, timeout persistence, cancellation, missing write paths, descendant rules, and non-filesystem passthrough behavior.
+- [x] Cover authorized move and delete execution, transactional move approvals, and mutation target validation.
 
 ### Catalog machinery
 
@@ -331,7 +335,8 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 - [x] Add fixture-project integration coverage for Fallow binary resolution, fixed argv, and audit exit-code behavior.
 - [x] Add fixture-project integration tests for all practical implemented catalog commands using real package manager, Node runner, and Fallow binaries.
 - [x] Add fixture-project integration coverage for authorized lint-fix mutation and non-authorized behavior.
-- [x] Add filesystem access-policy tests for path validation, authorization, timeout persistence, cancellation, and non-filesystem tool calls.
+- [x] Add filesystem access-policy tests for path validation, read and write authorization, implicit workspace access, deny precedence, timeout persistence, missing write paths, and non-filesystem tool calls.
+- [x] Add filesystem mutation tests for authorized move and delete execution, transactional approvals, and symlink rejection.
 - [x] Add Vitest coverage reporting with `@vitest/coverage-v8`.
 - [x] Add a coverage script and enforce at least 75% lines, functions, statements, and branches.
 - [x] Keep the available test, type, lint, format, and Fallow checks passing before committing.

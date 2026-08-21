@@ -31,7 +31,10 @@ function context(
   };
 }
 
-function event(toolName: "ls" | "find" | "grep", path: string): ToolCallEvent {
+function event(
+  toolName: "read" | "write" | "edit" | "ls" | "find" | "grep",
+  path: string,
+): ToolCallEvent {
   if (toolName === "grep") {
     return {
       type: "tool_call",
@@ -48,6 +51,22 @@ function event(toolName: "ls" | "find" | "grep", path: string): ToolCallEvent {
       input: { pattern: "*", path },
     };
   }
+  if (toolName === "write") {
+    return {
+      type: "tool_call",
+      toolCallId: "1",
+      toolName,
+      input: { path, content: "content" },
+    };
+  }
+  if (toolName === "edit") {
+    return {
+      type: "tool_call",
+      toolCallId: "1",
+      toolName,
+      input: { path, edits: [{ oldText: "old", newText: "new" }] },
+    };
+  }
   return {
     type: "tool_call",
     toolCallId: "1",
@@ -58,12 +77,13 @@ function event(toolName: "ls" | "find" | "grep", path: string): ToolCallEvent {
 
 it("blocks unknown paths without eligible UI and reports the policy reason", async () => {
   const directory = await fixtures.createDirectory();
+  const outside = await fixtures.createDirectory();
   const configPath = join(await realpath(directory), "bash-tools.json");
   await writeFile(configPath, JSON.stringify({ version: 1 }));
   const policy = createPolicyStoreForTesting({ configPath });
   const intercept = createFilesystemAccessPolicyInterceptor(policy);
 
-  const result = await intercept(event("grep", directory), context(directory));
+  const result = await intercept(event("grep", outside), context(directory));
 
   expect(result).toEqual({
     block: true,
@@ -74,7 +94,8 @@ it("blocks unknown paths without eligible UI and reports the policy reason", asy
 
 it("persists an approved project path and allows descendants", async () => {
   const directory = await fixtures.createDirectory();
-  const child = join(directory, "child");
+  const outside = await fixtures.createDirectory();
+  const child = join(outside, "child");
   await mkdir(child);
   const configPath = join(await realpath(directory), "bash-tools.json");
   await writeFile(configPath, JSON.stringify({ version: 1 }));
@@ -83,16 +104,18 @@ it("persists an approved project path and allows descendants", async () => {
   const intercept = createFilesystemAccessPolicyInterceptor(policy);
   const approvalContext = context(directory, { mode: "tui", hasUI: true, select });
 
-  expect(await intercept(event("find", directory), approvalContext)).toBeUndefined();
+  expect(await intercept(event("find", outside), approvalContext)).toBeUndefined();
   expect(await intercept(event("grep", child), approvalContext)).toBeUndefined();
   expect(select).toHaveBeenCalledTimes(1);
   expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({
-    version: 3,
+    version: 4,
     filesystem: {
       projects: {
         [await realpath(directory)]: {
-          allow: [await realpath(directory)],
-          deny: [],
+          allowRead: [await realpath(outside)],
+          allowWrite: [],
+          denyRead: [],
+          denyWrite: [],
         },
       },
     },
@@ -106,12 +129,12 @@ it("blocks a policy denial without terminating the agent", async () => {
   await writeFile(
     configPath,
     JSON.stringify({
-      version: 3,
+      version: 4,
       environment: { version: 1 },
       projectCommands: { version: 1 },
       filesystem: {
-        version: 1,
-        global: { allow: [], deny: [canonicalDirectory] },
+        version: 2,
+        global: { allowRead: [], allowWrite: [], denyRead: [canonicalDirectory], denyWrite: [] },
         projects: {},
       },
     }),
@@ -129,6 +152,7 @@ it("blocks a policy denial without terminating the agent", async () => {
 it("auto-denies and persists a project rule when approval times out", async () => {
   vi.useFakeTimers();
   const directory = await fixtures.createDirectory();
+  const outside = await fixtures.createDirectory();
   const configPath = join(await realpath(directory), "bash-tools.json");
   await writeFile(configPath, JSON.stringify({ version: 1, confirmationTimeoutMs: 1 }));
   const policy = createPolicyStoreForTesting({ configPath });
@@ -143,7 +167,7 @@ it("auto-denies and persists a project rule when approval times out", async () =
   });
 
   const pending = intercept(
-    event("grep", directory),
+    event("grep", outside),
     context(directory, {
       mode: "rpc",
       hasUI: true,
@@ -158,12 +182,178 @@ it("auto-denies and persists a project rule when approval times out", async () =
   expect(result?.reason).toContain("confirmation timed out");
   expect(result?.terminate).toBeUndefined();
   expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({
-    version: 3,
+    version: 4,
     filesystem: {
       projects: {
         [await realpath(directory)]: {
-          allow: [],
-          deny: [await realpath(directory)],
+          allowRead: [],
+          allowWrite: [],
+          denyRead: [await realpath(outside)],
+          denyWrite: [],
+        },
+      },
+    },
+  });
+});
+
+it("implicitly allows read, write, and edit paths under the active workspace", async () => {
+  const directory = await fixtures.createDirectory();
+  const child = join(directory, "child");
+  await mkdir(child);
+  const file = join(child, "file.txt");
+  await writeFile(file, "old");
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const intercept = createFilesystemAccessPolicyInterceptor(policy);
+
+  expect(await intercept(event("read", file), context(directory))).toBeUndefined();
+  expect(
+    await intercept(event("write", join(child, "new.txt")), context(directory)),
+  ).toBeUndefined();
+  expect(await intercept(event("edit", file), context(directory))).toBeUndefined();
+  expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({ version: 1 });
+});
+
+it("lets explicit deny rules override implicit workspace access and cover descendants", async () => {
+  const directory = await fixtures.createDirectory();
+  const deniedRead = join(directory, "private");
+  const deniedWrite = join(directory, "generated");
+  await mkdir(deniedRead);
+  await mkdir(deniedWrite);
+  const file = join(deniedRead, "secret.txt");
+  await writeFile(file, "secret");
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  const canonicalDirectory = await realpath(directory);
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      version: 4,
+      environment: { version: 1 },
+      projectCommands: { version: 1 },
+      filesystem: {
+        version: 2,
+        global: { allowRead: [], allowWrite: [], denyRead: [], denyWrite: [] },
+        projects: {
+          [canonicalDirectory]: {
+            allowRead: [],
+            allowWrite: [],
+            denyRead: [await realpath(deniedRead)],
+            denyWrite: [await realpath(deniedWrite)],
+          },
+        },
+      },
+    }),
+  );
+  const policy = createPolicyStoreForTesting({ configPath });
+  const intercept = createFilesystemAccessPolicyInterceptor(policy);
+
+  const readResult = await intercept(event("read", file), context(directory));
+  const writeResult = await intercept(
+    event("write", join(deniedWrite, "new.txt")),
+    context(directory),
+  );
+
+  expect(readResult?.block).toBe(true);
+  expect(writeResult?.block).toBe(true);
+  expect(readResult?.reason).toContain("denied by the project policy rule");
+  expect(writeResult?.reason).toContain("denied by the project policy rule");
+});
+
+it("authorizes a missing write path using its existing canonical ancestors", async () => {
+  const directory = await fixtures.createDirectory();
+  const outside = await fixtures.createDirectory();
+  const parent = join(outside, "parent");
+  await mkdir(parent);
+  const target = join(parent, "new.txt");
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const select = vi.fn(async () => "Allow for this project");
+  const intercept = createFilesystemAccessPolicyInterceptor(policy);
+
+  expect(
+    await intercept(
+      event("write", target),
+      context(directory, { mode: "tui", hasUI: true, select }),
+    ),
+  ).toBeUndefined();
+  expect(select).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({
+    version: 4,
+    filesystem: {
+      projects: {
+        [await realpath(directory)]: {
+          allowRead: [],
+          allowWrite: [join(await realpath(parent), "new.txt")],
+          denyRead: [],
+          denyWrite: [],
+        },
+      },
+    },
+  });
+});
+
+it("requires both read and write authorization for edit", async () => {
+  const directory = await fixtures.createDirectory();
+  const outside = await fixtures.createDirectory();
+  const file = join(outside, "file.txt");
+  await writeFile(file, "old");
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const select = vi.fn(async () => "Allow for this project");
+  const intercept = createFilesystemAccessPolicyInterceptor(policy);
+
+  expect(
+    await intercept(event("edit", file), context(directory, { mode: "tui", hasUI: true, select })),
+  ).toBeUndefined();
+  expect(select).toHaveBeenCalledTimes(2);
+  expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({
+    version: 4,
+    filesystem: {
+      projects: {
+        [await realpath(directory)]: {
+          allowRead: [await realpath(file)],
+          allowWrite: [await realpath(file)],
+          denyRead: [],
+          denyWrite: [],
+        },
+      },
+    },
+  });
+});
+
+it("does not persist a deferred edit read approval when write approval is denied", async () => {
+  const directory = await fixtures.createDirectory();
+  const outside = await fixtures.createDirectory();
+  const file = join(outside, "file.txt");
+  await writeFile(file, "old");
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const select = vi
+    .fn<FilesystemAccessPolicyContext["ui"]["select"]>()
+    .mockResolvedValueOnce("Allow for this project")
+    .mockResolvedValueOnce("Deny for this project");
+  const intercept = createFilesystemAccessPolicyInterceptor(policy);
+
+  const result = await intercept(
+    event("edit", file),
+    context(directory, { mode: "tui", hasUI: true, select }),
+  );
+
+  expect(result?.block).toBe(true);
+  expect(result?.reason).toContain("denied by a configured policy rule");
+  expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({
+    version: 4,
+    filesystem: {
+      projects: {
+        [await realpath(directory)]: {
+          allowRead: [],
+          allowWrite: [],
+          denyRead: [],
+          denyWrite: [await realpath(file)],
         },
       },
     },

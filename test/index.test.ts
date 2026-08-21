@@ -7,7 +7,7 @@ describe("bash tools extension", () => {
     expect(extension).toBeTypeOf("function");
   });
 
-  it("registers six distinct tools without overriding pi built-ins", () => {
+  it("registers eight distinct tools without overriding pi built-ins", () => {
     const names: string[] = [];
     const events: string[] = [];
     const unsupported = (..._args: unknown[]): never => {
@@ -63,6 +63,8 @@ describe("bash tools extension", () => {
       "git_show",
       "environment",
       "project_command",
+      "move",
+      "delete",
     ]);
     expect(names).not.toContain("read");
     expect(names).not.toContain("write");

@@ -44,6 +44,14 @@ function validateRequest(request: PolicyDecisionRequest): void {
     return;
   }
   if (request.kind === "filesystem") {
+    if (
+      request.access !== "read" &&
+      request.access !== "write" &&
+      request.access !== "move" &&
+      request.access !== "delete"
+    ) {
+      throw policyError();
+    }
     validatePolicyPath(request.path);
     return;
   }
@@ -94,7 +102,13 @@ function createPolicyStoreWithFileSystem(
                   request.decision,
                   request.globalSafe,
                 )
-              : applyFilesystemPolicyDecision(next, canonicalPath, request.path, request.decision);
+              : applyFilesystemPolicyDecision(
+                  next,
+                  canonicalPath,
+                  request.path,
+                  request.decision,
+                  request.access,
+                );
       }
       if (next !== document) {
         await writePolicyDocumentAtomically(configPath, next, fileSystem, parent, signal);

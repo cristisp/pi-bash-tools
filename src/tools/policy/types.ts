@@ -4,7 +4,7 @@ export type { PolicyFileSystem } from "./filesystem.ts";
 
 export const ENVIRONMENT_POLICY_VERSION = 1 as const;
 export const COMMAND_POLICY_VERSION = 1 as const;
-export const FILESYSTEM_POLICY_VERSION = 1 as const;
+export const FILESYSTEM_POLICY_VERSION = 2 as const;
 
 export interface EnvironmentPolicyScope {
   readonly allow: readonly string[];
@@ -35,8 +35,14 @@ export interface CommandPolicyData {
 }
 
 export interface FilesystemPolicyScope {
-  readonly allow: readonly string[];
-  readonly deny: readonly string[];
+  readonly allowRead: readonly string[];
+  readonly allowWrite: readonly string[];
+  readonly denyRead: readonly string[];
+  readonly denyWrite: readonly string[];
+  readonly allowMove: readonly string[];
+  readonly denyMove: readonly string[];
+  readonly allowDelete: readonly string[];
+  readonly denyDelete: readonly string[];
 }
 
 export interface FilesystemPolicyData {
@@ -53,7 +59,7 @@ export type PolicyDocument =
       readonly projectCommands: CommandPolicyData;
     }
   | {
-      readonly version: 3;
+      readonly version: 4;
       readonly environment: EnvironmentPolicyData;
       readonly projectCommands: CommandPolicyData;
       readonly filesystem: FilesystemPolicyData;
@@ -68,6 +74,8 @@ export interface LoadedPolicy {
 export type PolicyDecision = "deny-global" | "deny-project" | "allow-global" | "allow-project";
 
 export type PolicyAuthorization = PolicyDecision | "unknown";
+
+export type FilesystemAccess = "read" | "write" | "move" | "delete";
 
 export interface EnvironmentDecisionRequest {
   readonly kind: "environment";
@@ -84,6 +92,7 @@ export interface ProjectCommandDecisionRequest {
 
 export interface FilesystemDecisionRequest {
   readonly kind: "filesystem";
+  readonly access: FilesystemAccess;
   readonly path: string;
   readonly decision: PolicyDecision;
 }

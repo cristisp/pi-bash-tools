@@ -55,6 +55,77 @@ it("rejects malformed, conflicting, wildcard, and project-timeout rules", () => 
   }
 });
 
+it("rejects legacy filesystem policy documents", () => {
+  expect(() =>
+    parsePolicyDocument(
+      JSON.stringify({
+        version: 3,
+        environment: { version: 1 },
+        projectCommands: { version: 1 },
+        filesystem: {
+          version: 1,
+          global: { allow: ["/tmp/read"], deny: ["/tmp/private"] },
+          projects: {},
+        },
+      }),
+    ),
+  ).toThrow(/invalid or unreadable/iu);
+});
+
+it("parses version four filesystem read and write scopes", () => {
+  const document = parsePolicyDocument(
+    JSON.stringify({
+      version: 4,
+      environment: { version: 1 },
+      projectCommands: { version: 1 },
+      filesystem: {
+        version: 2,
+        global: {
+          allowRead: ["/tmp/read"],
+          allowWrite: ["/tmp/write"],
+          denyRead: ["/tmp/private-read"],
+          denyWrite: ["/tmp/private-write"],
+          allowMove: ["/tmp/move"],
+          denyMove: ["/tmp/private-move"],
+          allowDelete: ["/tmp/delete"],
+          denyDelete: ["/tmp/private-delete"],
+        },
+        projects: {},
+      },
+    }),
+  );
+  expect(document.version).toBe(4);
+  if (document.version !== 4) {
+    throw policyError();
+  }
+  expect(document.filesystem.global).toEqual({
+    allowRead: ["/tmp/read"],
+    allowWrite: ["/tmp/write"],
+    denyRead: ["/tmp/private-read"],
+    denyWrite: ["/tmp/private-write"],
+    allowMove: ["/tmp/move"],
+    denyMove: ["/tmp/private-move"],
+    allowDelete: ["/tmp/delete"],
+    denyDelete: ["/tmp/private-delete"],
+  });
+});
+
+it("rejects conflicting version four filesystem rules", () => {
+  expect(() =>
+    parsePolicyDocument(
+      JSON.stringify({
+        version: 4,
+        environment: { version: 1 },
+        projectCommands: { version: 1 },
+        filesystem: {
+          version: 2,
+          global: { allowRead: ["/tmp/path"], denyRead: ["/tmp/path"] },
+        },
+      }),
+    ),
+  ).toThrow(/invalid or unreadable/iu);
+});
+
 it("keeps exact version one serialization for environment writes", () => {
   const document = parsePolicyDocument(
     JSON.stringify({ version: 1, global: { allow: ["TOKEN"], deny: [] } }),
