@@ -1,12 +1,14 @@
 import { expect, it } from "vitest";
 import { validateProjectCommandInput } from "../../src/tools/project-command/schema.ts";
 
-it("accepts only the catalog command IDs and the optional test paths", () => {
+it("accepts only the catalog command IDs and the supported test options", () => {
   for (const commandId of [
     "workspace_path",
     "node_version",
     "node_project_info",
     "node_deps_list",
+    "node_test_coverage",
+    "node_e2e",
     "node_build",
     "node_lint",
     "node_lint_fix",
@@ -32,6 +34,27 @@ it("accepts only the catalog command IDs and the optional test paths", () => {
   expect(validateProjectCommandInput({ commandId: "node_test", paths: [] })).toEqual({
     commandId: "node_test",
   });
+  expect(
+    validateProjectCommandInput({
+      commandId: "node_e2e",
+      paths: ["e2e/login.spec.ts"],
+      grep: "login",
+      projects: ["chromium", "firefox"],
+      workers: 2,
+      retries: 1,
+      headed: false,
+      list: true,
+    }),
+  ).toEqual({
+    commandId: "node_e2e",
+    paths: ["e2e/login.spec.ts"],
+    grep: "login",
+    projects: ["chromium", "firefox"],
+    workers: 2,
+    retries: 1,
+    headed: false,
+    list: true,
+  });
 });
 
 it("rejects arbitrary command fields and inline execution forms", () => {
@@ -52,6 +75,13 @@ it("rejects arbitrary command fields and inline execution forms", () => {
     { commandId: "fallow_audit", base: "HEAD main" },
     { commandId: "fallow_audit", base: "HEAD", extra: true },
     { commandId: "node_test", executable: "/bin/sh" },
+    { commandId: "node_e2e", grep: "-unsafe" },
+    { commandId: "node_e2e", projects: ["chromium", "chromium"] },
+    { commandId: "node_e2e", workers: 0 },
+    { commandId: "node_e2e", retries: 11 },
+    { commandId: "node_e2e", headed: "yes" },
+    { commandId: "node_e2e", list: 1 },
+    { commandId: "node_e2e", unknown: true },
     { commandId: "node_test", paths: ["../outside"] },
     { commandId: "node_test", paths: ["-leading"] },
     { commandId: "node_test", paths: ["src\\index.ts"] },

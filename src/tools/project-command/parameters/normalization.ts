@@ -1,8 +1,8 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { ProjectCommandResolutionError } from "../errors.ts";
-import { validateNodeTestPaths } from "./validation.ts";
-import type { NodeTestParameters } from "./types.ts";
+import { validateNodeE2EParameters, validateNodeTestPaths } from "./validation.ts";
+import type { NodeE2EParameters, NodeTestParameters } from "./types.ts";
 
 function pathResolutionError(): ProjectCommandResolutionError {
   return new ProjectCommandResolutionError("probe", "test-path-outside-workspace");
@@ -34,16 +34,34 @@ async function normalizeNodeTestPath(path: string, canonicalProjectPath: string)
   return normalizedPath.split("\\").join("/");
 }
 
-export async function normalizeNodeTestParametersInternal(
-  value: unknown,
+async function normalizePaths(
+  paths: readonly string[],
   canonicalProjectPath: string,
-): Promise<NodeTestParameters> {
-  const paths = validateNodeTestPaths(value);
+): Promise<readonly string[]> {
   const normalized = await Promise.all(
     paths.map((path) => normalizeNodeTestPath(path, canonicalProjectPath)),
   );
   if (new Set(normalized).size !== normalized.length) {
     throw new ProjectCommandResolutionError("probe", "duplicate-test-path");
   }
-  return Object.freeze({ paths: Object.freeze(normalized) });
+  return Object.freeze(normalized);
+}
+
+export async function normalizeNodeTestParametersInternal(
+  value: unknown,
+  canonicalProjectPath: string,
+): Promise<NodeTestParameters> {
+  const paths = validateNodeTestPaths(value);
+  return Object.freeze({ paths: await normalizePaths(paths, canonicalProjectPath) });
+}
+
+export async function normalizeNodeE2EParametersInternal(
+  value: unknown,
+  canonicalProjectPath: string,
+): Promise<NodeE2EParameters> {
+  const parameters = validateNodeE2EParameters(value);
+  return Object.freeze({
+    ...parameters,
+    paths: await normalizePaths(parameters.paths, canonicalProjectPath),
+  });
 }

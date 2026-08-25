@@ -1,8 +1,22 @@
+type SchemaString = {
+  readonly type: string;
+  readonly maxLength?: number;
+  readonly pattern?: string;
+};
+
+type SchemaArray = {
+  readonly type: string;
+  readonly items: SchemaString;
+  readonly maxItems?: number;
+};
+
 export type SchemaVariant = {
   readonly additionalProperties: boolean;
   readonly properties: {
     readonly commandId: { readonly const: string };
-    readonly paths?: { readonly type: string; readonly items: { readonly type: string } };
+    readonly paths?: SchemaArray;
+    readonly grep?: SchemaString;
+    readonly projects?: SchemaArray;
   };
   readonly type: string;
 };
@@ -19,9 +33,7 @@ function isSchemaCommandId(value: unknown): value is { readonly const: string } 
   return isRecord(value) && typeof value.const === "string";
 }
 
-function isSchemaPaths(
-  value: unknown,
-): value is { readonly type: string; readonly items: { readonly type: string } } | undefined {
+function isSchemaPaths(value: unknown): value is SchemaArray | undefined {
   return (
     value === undefined ||
     (isRecord(value) &&

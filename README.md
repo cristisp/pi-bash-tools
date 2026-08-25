@@ -132,9 +132,11 @@ If a process crashes while holding the lock, remove `bash-tools.json.lock` manua
 ## Project command policy and execution
 
 The project command tool accepts a strict discriminated input union.
-The catalog contains exactly `workspace_path`, `node_version`, `node_project_info`, `node_deps_list`, `node_test`, `node_build`, `node_lint`, `node_lint_fix`, `node_typecheck`, `node_format_check`, `node_format_write`, `fallow_dead_code`, `fallow_dupes`, `fallow_health`, `fallow_audit`, `fallow_list_entry_points`, and `fallow_list_boundaries`.
+The catalog contains exactly `workspace_path`, `node_version`, `node_project_info`, `node_deps_list`, `node_test`, `node_test_coverage`, `node_e2e`, `node_build`, `node_lint`, `node_lint_fix`, `node_typecheck`, `node_format_check`, `node_format_write`, `fallow_dead_code`, `fallow_dupes`, `fallow_health`, `fallow_audit`, `fallow_list_entry_points`, and `fallow_list_boundaries`.
 `node_test` accepts optional `paths` validated as workspace-relative paths, and `fallow_audit` requires the validated `base` revision parameter.
-`node_lint_fix`, `node_format_check`, and `node_format_write` accept no parameters and require the exact `lint:fix`, `format:check`, and `format` package scripts, respectively.
+`node_test_coverage`, `node_lint_fix`, `node_format_check`, and `node_format_write` accept no parameters and require the exact `test:coverage`, `lint:fix`, `format:check`, and `format` package scripts, respectively.
+`node_e2e` accepts optional workspace-relative `paths`, `grep`, `projects`, `workers`, `retries`, `headed`, and `list` parameters and requires the exact `test:e2e` package script.
+These values are forwarded as fixed argument forms after the package-manager separator; the extension does not detect or invoke a particular E2E runner.
 
 The extension owns the complete command catalog and never reads repository configuration to define commands.
 `node_project_info` reads package.json and supported lockfiles in process and reports the active Node version, package manager state, sorted script names, and applicable Node command IDs.
@@ -144,7 +146,7 @@ A missing package.json is reported as a non-Node project.
 
 `workspace_path` directly spawns `/bin/pwd` without arguments.
 `node_version` directly spawns the current Node executable with `--version`.
-The seven script commands invoke only the exact corresponding package.json scripts through a detected npm, pnpm, bun, or explicitly selected Yarn executable.
+The nine script commands invoke only the exact corresponding package.json scripts through a detected npm, pnpm, bun, or explicitly selected Yarn executable.
 `node_lint_fix` and `node_format_write` can change project files and are never globally safe.
 
 Yarn lockfile-only projects and explicit Yarn versions other than Classic 1.x are rejected for dependency listing.

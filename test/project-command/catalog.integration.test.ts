@@ -92,6 +92,8 @@ function expectNodeResponses(responses: Map<string, unknown>, projectPath: strin
         "node_project_info",
         "node_deps_list",
         "node_test",
+        "node_test_coverage",
+        "node_e2e",
         "node_build",
         "node_lint",
         "node_lint_fix",
@@ -126,6 +128,18 @@ function expectNodeResponses(responses: Map<string, unknown>, projectPath: strin
   expect(responses.get("node_test")).toMatchObject({
     status: "success",
     stdout: { text: expect.stringContaining("test:fixture-runner.js\n") },
+  });
+  expect(responses.get("node_test_coverage")).toMatchObject({
+    status: "success",
+    stdout: { text: expect.stringContaining("test:coverage:none\n") },
+    resolvedCommand: expect.stringContaining(" run test:coverage"),
+  });
+  expect(responses.get("node_e2e")).toMatchObject({
+    status: "success",
+    stdout: { text: expect.stringContaining("e2e:--grep\n") },
+    resolvedCommand: expect.stringContaining(
+      " run test:e2e -- --grep smoke --project chromium --project firefox --workers 1 --retries 0 --list fixture-runner.js",
+    ),
   });
   expect(projectPath).toBeTruthy();
 }

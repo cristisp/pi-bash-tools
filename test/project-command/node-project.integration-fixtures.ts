@@ -14,6 +14,8 @@ const fixtureManifest = {
   packageManager: "npm@10.0.0",
   scripts: {
     test: "node fixture-runner.js test",
+    "test:coverage": "node fixture-runner.js test:coverage",
+    "test:e2e": "node fixture-runner.js e2e",
     build: "node fixture-runner.js build",
     lint: "node fixture-runner.js lint",
     "lint:fix": "node lint-fix-fixture.js",

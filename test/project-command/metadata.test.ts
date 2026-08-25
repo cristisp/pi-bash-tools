@@ -9,6 +9,10 @@ describe("project command metadata", () => {
     expect(schema).toContain("Report the canonical project directory");
     expect(schema).toContain("Report the Node.js runtime version");
     expect(schema).toContain("Run the exact package.json test script");
+    expect(schema).toContain("Run the exact package.json test:coverage script.");
+    expect(schema).toContain(
+      "Run the exact package.json test:e2e script with optional test runner options.",
+    );
     expect(schema).toContain("Run the exact package.json lint:fix script to write lint fixes.");
     expect(schema).toContain("Run the exact package.json format:check script");
     expect(schema).toContain(
@@ -25,7 +29,7 @@ describe("project command metadata", () => {
 
     expect(tool.description).toContain("node_project_info reports project state in process");
     expect(tool.description).toContain(
-      "node_test, node_build, node_lint, node_lint_fix, node_typecheck, node_format_check, and node_format_write",
+      "node_test, node_test_coverage, node_e2e, node_build, node_lint, node_lint_fix, node_typecheck, node_format_check, and node_format_write",
     );
     expect(tool.description).toContain(
       "node_lint_fix and node_format_write changing project files",
@@ -37,6 +41,12 @@ describe("project command metadata", () => {
     );
     expect(tool.promptGuidelines).toContain(
       "Use project_command with commandId node_project_info before selecting an applicable Node command.",
+    );
+    expect(tool.promptGuidelines).toContain(
+      "Use node_test_coverage only when package.json has the exact test:coverage script.",
+    );
+    expect(tool.promptGuidelines).toContain(
+      "Use node_e2e when package.json has the exact test:e2e script; pass only its structured test runner options.",
     );
   });
 });

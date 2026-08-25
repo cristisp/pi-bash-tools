@@ -1,5 +1,10 @@
 import { getProjectCommandDefinitions, type ProjectCommandDefinition } from "../definitions.ts";
-import { validateNodeTestPaths, validateProjectCommandRevision } from "../parameters.ts";
+import { effectiveNodeE2EParameters } from "../parameters/e2e.ts";
+import {
+  validateNodeE2EParameters,
+  validateNodeTestPaths,
+  validateProjectCommandRevision,
+} from "../parameters.ts";
 import type { ProjectCommandInput, ProjectCommandInputFor } from "../schema.ts";
 
 export class ProjectCommandToolError extends Error {
@@ -39,26 +44,46 @@ function validateRequestKeys(keys: readonly string[], commandId: string): void {
   const expectedKeys =
     commandId === "node_test"
       ? ["commandId", "paths"]
-      : commandId === "fallow_audit"
-        ? ["commandId", "base"]
-        : ["commandId"];
+      : commandId === "node_e2e"
+        ? ["commandId", "paths", "grep", "projects", "workers", "retries", "headed", "list"]
+        : commandId === "fallow_audit"
+          ? ["commandId", "base"]
+          : ["commandId"];
   if (!keys.includes("commandId") || keys.some((key) => !expectedKeys.includes(key))) {
     throw invalidRequest();
   }
 }
 
+type NormalizedProjectCommandInput = {
+  readonly commandId: string;
+  readonly paths?: readonly string[];
+  readonly base?: string;
+  readonly grep?: string;
+  readonly projects?: readonly string[];
+  readonly workers?: number;
+  readonly retries?: number;
+  readonly headed?: boolean;
+  readonly list?: boolean;
+};
+
 function normalizedRequest(
   params: Record<string, unknown>,
   commandId: string,
-): { readonly commandId: string; readonly paths?: readonly string[]; readonly base?: string } {
+): NormalizedProjectCommandInput {
   if (commandId === "fallow_audit") {
     return { commandId, base: validateProjectCommandRevision(params.base) };
   }
-  if (commandId !== "node_test") {
-    return { commandId };
+  if (commandId === "node_test") {
+    const paths = validateNodeTestPaths(params.paths);
+    return paths.length === 0 ? { commandId } : { commandId, paths };
   }
-  const paths = validateNodeTestPaths(params.paths);
-  return paths.length === 0 ? { commandId } : { commandId, paths };
+  if (commandId === "node_e2e") {
+    return {
+      commandId,
+      ...effectiveNodeE2EParameters(validateNodeE2EParameters(params)),
+    };
+  }
+  return { commandId };
 }
 
 export function validateProjectCommandInput(params: unknown): ProjectCommandInput;
@@ -68,7 +93,7 @@ export function validateProjectCommandInput<
 export function validateProjectCommandInput(
   params: unknown,
   definitions: readonly ProjectCommandDefinition[] = getProjectCommandDefinitions(),
-): { readonly commandId: string; readonly paths?: readonly string[] } {
+): NormalizedProjectCommandInput {
   try {
     if (!isRecord(params)) {
       throw invalidRequest();

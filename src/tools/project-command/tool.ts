@@ -79,7 +79,7 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
     name: "project_command",
     label: "Project command",
     description:
-      "Run one fixed Node dependency listing or package script, six fixed Fallow analyses, or the existing workspace_path, node_version, and node_project_info observations. node_project_info reports project state in process; node_deps_list uses a detected package manager's fixed read-only list form; node_test, node_build, node_lint, node_lint_fix, node_typecheck, node_format_check, and node_format_write run only exact package.json scripts, with node_lint_fix and node_format_write changing project files. Fallow commands run only the project-local Fallow binary with fixed machine-readable arguments. Do not use this tool for dependency installation, Git inspection, file access, arbitrary commands, environment inspection, or project mutation outside node_lint_fix and node_format_write.",
+      "Run one fixed Node dependency listing or package script, six fixed Fallow analyses, or the existing workspace_path, node_version, and node_project_info observations. node_project_info reports project state in process; node_deps_list uses a detected package manager's fixed read-only list form; node_test, node_test_coverage, node_e2e, node_build, node_lint, node_lint_fix, node_typecheck, node_format_check, and node_format_write run only exact package.json scripts, with node_lint_fix and node_format_write changing project files. Fallow commands run only the project-local Fallow binary with fixed machine-readable arguments. Do not use this tool for dependency installation, Git inspection, file access, arbitrary commands, environment inspection, or project mutation outside node_lint_fix and node_format_write.",
     promptSnippet:
       "Inspect Node project state, list top-level dependencies, run one exact Node package script including lint fixes and formatting, or run one fixed Fallow analysis",
     promptGuidelines: [
@@ -88,6 +88,8 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
       "Use project_command with commandId node_project_info before selecting an applicable Node command.",
       "Use node_deps_list to inspect top-level dependencies when node_project_info reports it as applicable.",
       "Use node_test with optional workspace-relative paths only when package.json has an exact test script.",
+      "Use node_test_coverage only when package.json has the exact test:coverage script.",
+      "Use node_e2e when package.json has the exact test:e2e script; pass only its structured test runner options.",
       "Use node_build, node_lint, or node_typecheck only when package.json has the exact corresponding script.",
       "Use node_lint_fix only when package.json has the exact lint:fix script and you intend to modify project files.",
       "Use node_format_check only when package.json has the exact format:check script.",

@@ -1,7 +1,11 @@
 import { type ProjectCommandDefinition, type ResolvedCommandLine } from "../definitions.ts";
 import { ProjectCommandResolutionError, type ResolutionErrorDetails } from "../errors.ts";
 import { nodeDependencyListArgsForManager } from "../package-manager/detection.ts";
-import { normalizeNodeTestParametersInternal } from "../parameters/normalization.ts";
+import { effectiveNodeE2EParameters, e2eForwardedArgs } from "../parameters/e2e.ts";
+import {
+  normalizeNodeE2EParametersInternal,
+  normalizeNodeTestParametersInternal,
+} from "../parameters/normalization.ts";
 import { validateNodeTestPaths } from "../parameters/validation.ts";
 import type { ResolvedProjectCommand } from "../resolution/types.ts";
 import { readNodeProjectState } from "./project-state.ts";
@@ -32,17 +36,15 @@ function displayCommand(executable: string, args: readonly string[]): string {
   return [executable, ...args].join(" ");
 }
 
-async function resolveNodeTestParameters(
-  definition: ProjectCommandDefinition,
+type ResolvedNodeScriptParameters = {
+  readonly args: readonly string[];
+  readonly effective: Readonly<Record<string, unknown>>;
+};
+
+async function resolveNodeTestScriptParameters(
   parameters: unknown,
   projectPath: string,
-): Promise<{
-  readonly paths: readonly string[];
-  readonly effective: Readonly<Record<string, unknown>>;
-}> {
-  if (definition.commandId !== "node_test") {
-    return { paths: [], effective: Object.freeze({}) };
-  }
+): Promise<ResolvedNodeScriptParameters> {
   if (
     parameters !== undefined &&
     (!isRecord(parameters) ||
@@ -55,9 +57,35 @@ async function resolveNodeTestParameters(
   );
   const normalized = await normalizeNodeTestParametersInternal(paths, projectPath);
   return {
-    paths: normalized.paths,
+    args: normalized.paths.length === 0 ? [] : ["--", ...normalized.paths],
     effective: Object.freeze({ paths: normalized.paths }),
   };
+}
+
+async function resolveNodeE2EScriptParameters(
+  parameters: unknown,
+  projectPath: string,
+): Promise<ResolvedNodeScriptParameters> {
+  const e2e = await normalizeNodeE2EParametersInternal(parameters, projectPath);
+  const forwardedArgs = e2eForwardedArgs(e2e);
+  return {
+    args: forwardedArgs.length === 0 ? [] : ["--", ...forwardedArgs],
+    effective: effectiveNodeE2EParameters(e2e),
+  };
+}
+
+async function resolveNodeScriptParameters(
+  definition: ProjectCommandDefinition,
+  parameters: unknown,
+  projectPath: string,
+): Promise<ResolvedNodeScriptParameters> {
+  if (definition.commandId === "node_test") {
+    return resolveNodeTestScriptParameters(parameters, projectPath);
+  }
+  if (definition.commandId === "node_e2e") {
+    return resolveNodeE2EScriptParameters(parameters, projectPath);
+  }
+  return { args: [], effective: Object.freeze({}) };
 }
 
 type DetectedNodeProjectState = NodeProjectState & {
@@ -144,11 +172,8 @@ async function resolveNodeScriptCommand(
       manager: detectedState.detected.manager,
     });
   }
-  const nodeParameters = await resolveNodeTestParameters(definition, parameters, projectPath);
-  const args = [...definition.args];
-  if (nodeParameters.paths.length > 0) {
-    args.push("--", ...nodeParameters.paths);
-  }
+  const nodeParameters = await resolveNodeScriptParameters(definition, parameters, projectPath);
+  const args = [...definition.args, ...nodeParameters.args];
   const resolved: ResolvedCommandLine = {
     executable: detectedState.managerExecutable,
     args,

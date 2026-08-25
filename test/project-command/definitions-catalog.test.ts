@@ -12,6 +12,8 @@ it("contains the extension-owned command catalog in stable order", () => {
     "node_project_info",
     "node_deps_list",
     "node_test",
+    "node_test_coverage",
+    "node_e2e",
     "node_build",
     "node_lint",
     "node_lint_fix",
@@ -52,7 +54,7 @@ it("describes the built-in command execution policies", () => {
 
 it("describes the built-in Node command policies", () => {
   const definitions = getProjectCommandDefinitions();
-  expect(definitions.slice(2, 11)).toMatchObject([
+  expect(definitions.slice(2, 13)).toMatchObject([
     { commandId: "node_project_info", risk: "observe", globalSafe: true },
     {
       commandId: "node_deps_list",
@@ -73,6 +75,31 @@ it("describes the built-in Node command policies", () => {
       fixedScriptKey: "test",
       truncationDirection: "tail",
       environmentProfile: "node-v1",
+    },
+    {
+      commandId: "node_test_coverage",
+      description: "Run the exact package.json test:coverage script.",
+      args: ["run", "test:coverage"],
+      risk: "project-code",
+      globalSafe: false,
+      fixedScriptKey: "test:coverage",
+    },
+    {
+      commandId: "node_e2e",
+      description: "Run the exact package.json test:e2e script with optional test runner options.",
+      args: ["run", "test:e2e"],
+      risk: "project-code",
+      globalSafe: false,
+      parameters: [
+        { name: "paths", kind: "workspace-paths", required: false },
+        { name: "grep", kind: "text", required: false },
+        { name: "projects", kind: "text-list", required: false },
+        { name: "workers", kind: "positive-integer", required: false },
+        { name: "retries", kind: "non-negative-integer", required: false },
+        { name: "headed", kind: "boolean", required: false },
+        { name: "list", kind: "boolean", required: false },
+      ],
+      fixedScriptKey: "test:e2e",
     },
     { commandId: "node_build", fixedScriptKey: "build" },
     { commandId: "node_lint", fixedScriptKey: "lint" },
@@ -116,7 +143,7 @@ it("describes the built-in Node command policies", () => {
 
 it("describes the built-in Fallow command policies", () => {
   const definitions = getProjectCommandDefinitions();
-  expect(definitions.slice(11)).toMatchObject([
+  expect(definitions.slice(13)).toMatchObject([
     {
       commandId: "fallow_dead_code",
       executable: process.execPath,

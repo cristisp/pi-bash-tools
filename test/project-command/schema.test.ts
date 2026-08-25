@@ -1,5 +1,13 @@
 import { expect, it } from "vitest";
 import type { ProjectCommandDefinition } from "../../src/tools/project-command/definitions.ts";
+import {
+  NODE_E2E_GREP_MAX_LENGTH,
+  NODE_E2E_PROJECT_MAX_LENGTH,
+  NODE_E2E_GREP_PATTERN,
+  NODE_E2E_PROJECT_PATTERN,
+  PROJECT_COMMAND_MAX_PARAMETER_ITEMS,
+  PROJECT_COMMAND_MAX_PATH_LENGTH,
+} from "../../src/tools/project-command/parameters.ts";
 import { schemaVariants } from "./schema-test-fixtures.ts";
 import {
   createProjectCommandInputSchema,
@@ -15,6 +23,8 @@ it("generates one literal schema variant per command", () => {
     "node_project_info",
     "node_deps_list",
     "node_test",
+    "node_test_coverage",
+    "node_e2e",
     "node_build",
     "node_lint",
     "node_lint_fix",
@@ -48,25 +58,56 @@ it("keeps schema variants strict and preserves command-specific fields", () => {
     additionalProperties: false,
     properties: {
       commandId: { const: "node_test" },
-      paths: { type: "array", items: { type: "string" } },
+      paths: {
+        type: "array",
+        maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS,
+        items: { type: "string", maxLength: PROJECT_COMMAND_MAX_PATH_LENGTH },
+      },
     },
   });
-  expect(variants[7]).toMatchObject({
+  expect(variants[5]).toMatchObject({
     type: "object",
     additionalProperties: false,
-    properties: { commandId: { const: "node_lint_fix" } },
+    properties: { commandId: { const: "node_test_coverage" } },
+  });
+  expect(variants[6]).toMatchObject({
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      commandId: { const: "node_e2e" },
+      paths: {
+        type: "array",
+        maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS,
+        items: { type: "string", maxLength: PROJECT_COMMAND_MAX_PATH_LENGTH },
+      },
+      grep: { type: "string", maxLength: NODE_E2E_GREP_MAX_LENGTH },
+      projects: {
+        type: "array",
+        maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS,
+        items: { type: "string", maxLength: NODE_E2E_PROJECT_MAX_LENGTH },
+      },
+      workers: { type: "integer" },
+      retries: { type: "integer" },
+      headed: { type: "boolean" },
+      list: { type: "boolean" },
+    },
   });
   expect(variants[9]).toMatchObject({
     type: "object",
     additionalProperties: false,
+    properties: { commandId: { const: "node_lint_fix" } },
+  });
+  expect(variants[11]).toMatchObject({
+    type: "object",
+    additionalProperties: false,
     properties: { commandId: { const: "node_format_check" } },
   });
-  expect(variants[10]).toMatchObject({
+  expect(variants[12]).toMatchObject({
     type: "object",
     additionalProperties: false,
     properties: { commandId: { const: "node_format_write" } },
   });
-  expect(variants[14]).toMatchObject({
+  expect(variants[16]).toMatchObject({
     type: "object",
     additionalProperties: false,
     properties: {
@@ -75,8 +116,26 @@ it("keeps schema variants strict and preserves command-specific fields", () => {
     },
     required: ["commandId", "base"],
   });
-  expect(variants).toHaveLength(17);
+  expect(variants).toHaveLength(19);
   expect(variants.every((variant) => !variant.additionalProperties)).toBe(true);
+});
+
+it("keeps E2E schema patterns aligned with runtime text restrictions", () => {
+  const variants = schemaVariants(projectCommandInputSchema);
+  const e2e = variants.find((variant) => variant.properties.commandId.const === "node_e2e");
+  if (
+    e2e === undefined ||
+    e2e.properties.grep === undefined ||
+    e2e.properties.projects === undefined
+  ) {
+    throw new Error("missing node_e2e schema variant");
+  }
+  expect(e2e.properties.grep.pattern).toBe(NODE_E2E_GREP_PATTERN);
+  expect(e2e.properties.projects.items.pattern).toBe(NODE_E2E_PROJECT_PATTERN);
+  for (const character of ["\u2028", "\u2029"]) {
+    expect(new RegExp(NODE_E2E_GREP_PATTERN, "u").test(`safe${character}text`)).toBe(false);
+    expect(new RegExp(NODE_E2E_PROJECT_PATTERN, "u").test(`safe${character}text`)).toBe(false);
+  }
 });
 
 it("uses the supplied definitions for schema and validation", () => {

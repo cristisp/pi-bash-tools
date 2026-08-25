@@ -26,6 +26,8 @@ describe("Node missing script diagnostics", () => {
       { commandId: "node_format_write", script: "format" },
       { commandId: "node_lint_fix", script: "lint:fix" },
       { commandId: "node_test", script: "test" },
+      { commandId: "node_test_coverage", script: "test:coverage" },
+      { commandId: "node_e2e", script: "test:e2e" },
     ] as const;
 
     await Promise.all(

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { CommandIdentity } from "../policy/types.ts";
 import {
   FALLOW_AUDIT_PARAMETERS,
+  NODE_E2E_PARAMETERS,
   NODE_TEST_PARAMETERS,
   type ProjectCommandParameterDeclaration,
 } from "./parameters.ts";
@@ -48,6 +49,8 @@ export interface ProjectCommandDefinition<CommandId extends string = string> {
   readonly argvTemplate?: readonly string[];
   readonly fixedScriptKey?:
     | "test"
+    | "test:coverage"
+    | "test:e2e"
     | "build"
     | "lint"
     | "lint:fix"
@@ -187,6 +190,50 @@ const definitions = Object.freeze([
     parameters: NODE_TEST_PARAMETERS,
     argvTemplate: ["<package-manager>", "run", "test", "[--]", "<paths>"],
     fixedScriptKey: "test",
+  }),
+  freezeDefinition({
+    namespace: PROJECT_COMMAND_NAMESPACE,
+    commandId: "node_test_coverage",
+    description: "Run the exact package.json test:coverage script.",
+    executable: "",
+    args: ["run", "test:coverage"],
+    cwdStrategy: "canonical-project",
+    sanitizedEnvironmentProfile: "node-v1",
+    environmentProfile: "node-v1",
+    processTimeoutMs: PROJECT_COMMAND_PROCESS_TIMEOUT_MS,
+    outputLimitBytes: PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
+    risk: "project-code",
+    globalSafe: false,
+    executionKind: "process",
+    applicability: "node-script",
+    bindsRepoContent: true,
+    scriptBinding: "package-script",
+    truncationDirection: "tail",
+    parameters: [],
+    argvTemplate: ["<package-manager>", "run", "test:coverage"],
+    fixedScriptKey: "test:coverage",
+  }),
+  freezeDefinition({
+    namespace: PROJECT_COMMAND_NAMESPACE,
+    commandId: "node_e2e",
+    description: "Run the exact package.json test:e2e script with optional test runner options.",
+    executable: "",
+    args: ["run", "test:e2e"],
+    cwdStrategy: "canonical-project",
+    sanitizedEnvironmentProfile: "node-v1",
+    environmentProfile: "node-v1",
+    processTimeoutMs: PROJECT_COMMAND_PROCESS_TIMEOUT_MS,
+    outputLimitBytes: PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
+    risk: "project-code",
+    globalSafe: false,
+    executionKind: "process",
+    applicability: "node-script",
+    bindsRepoContent: true,
+    scriptBinding: "package-script",
+    truncationDirection: "tail",
+    parameters: NODE_E2E_PARAMETERS,
+    argvTemplate: ["<package-manager>", "run", "test:e2e", "[--]", "<options>", "<paths>"],
+    fixedScriptKey: "test:e2e",
   }),
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,

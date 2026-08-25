@@ -12,248 +12,65 @@ The extension reduces the agent's direct command surface, but it is not an opera
 Authorized project-code commands execute mutable repository code with the current user's filesystem, process, and network privileges.
 Filesystem policy rules govern intercepted pi tools and the move and delete tools; they do not constrain subprocesses or the read-only Git tools.
 
-## Current status
+## Current state
 
-The extension currently registers eight custom tools: environment, git_status, git_diff, git_log, git_show, project_command, move, and delete, while protecting six built-in filesystem tools with the access-policy interceptor.
+The extension registers eight custom tools: `environment`, `git_status`, `git_diff`, `git_log`, `git_show`, `project_command`, `move`, and `delete`.
+It protects pi's built-in `read`, `write`, `edit`, `ls`, `find`, and `grep` tools with the filesystem access-policy interceptor.
 
-The project_command catalog currently supports seventeen extension-owned semantic commands: workspace_path, node_version, node_project_info, node_deps_list, node_test, node_build, node_lint, node_lint_fix, node_typecheck, node_format_check, node_format_write, fallow_dead_code, fallow_dupes, fallow_health, fallow_audit, fallow_list_entry_points, and fallow_list_boundaries.
+The `project_command` catalog currently supports nineteen extension-owned semantic commands: `workspace_path`, `node_version`, `node_project_info`, `node_deps_list`, `node_test`, `node_test_coverage`, `node_e2e`, `node_build`, `node_lint`, `node_lint_fix`, `node_typecheck`, `node_format_check`, `node_format_write`, `fallow_dead_code`, `fallow_dupes`, `fallow_health`, `fallow_audit`, `fallow_list_entry_points`, and `fallow_list_boundaries`.
+It runs only catalog-defined operations after policy authorization, with fixed argument arrays, canonical project directories, restricted environments, bounded output, cancellation, and timeouts.
 
-The environment tool provides explicit-key access with fail-closed authorization, canonical project identity, restrictive policy storage, locking, atomic writes, cancellation, and timeout handling.
+The environment, project-command, and filesystem policies share the user-owned policy file at `getAgentDir()/bash-tools.json`.
+Filesystem access uses separate read, write, move, and delete decisions, while read-only Git inspection remains outside the filesystem policy namespace.
 
-The Git tools provide validated, bounded, cancellable, read-only repository inspection with temporary-repository integration coverage.
+The Node script slice includes exact `test:coverage` and `test:e2e` package-script commands.
+`node_e2e` forwards only validated structured options for workspace-relative paths, test filtering, projects, workers, retries, headed execution, and test listing after the package-manager separator.
+E2E collections, text and path lengths, and the total UTF-8 forwarded-argument size are bounded, and runtime validation matches the generated schema for control characters including U+2028 and U+2029.
+The E2E command remains runner-independent and does not detect or directly invoke a specific test runner.
 
-The project_command tool supports fixed workspace and Node runtime observation commands, in-process Node project discovery, authorized Node project script commands, and authorized Fallow analysis commands.
-
-A filesystem access-policy interceptor protects built-in read, write, edit, ls, find, and grep calls with canonical path validation, implicit active-workspace access, separate read, write, move, and delete rules, deny precedence, interactive approval where available, persisted project decisions, and non-terminating blocked results.
-The move and delete tools authorize regular-file mutations through the same policy store.
-
-project_command accepts a strict discriminated command schema and executes only catalog-defined operations.
-
-It uses direct spawn with shell disabled for executable commands, canonical project working directories, restricted environment profiles, bounded output, cancellation, timeouts, process cleanup, and an in-process path for node_project_info.
-
-Command authorization uses the user-owned policy at `getAgentDir()/bash-tools.json`, canonical project paths, command fingerprints, policy precedence, and interactive confirmation.
-
-Policy decisions migrate a version 1 environment document to a version 4 document containing the unchanged nested environment version 1 policy, a version 1 project command policy namespace, and a version 2 filesystem policy namespace with separate read, write, move, and delete rules.
-
-Native macOS validation currently passes the 188-test suite, alongside warning-free lint, formatting, Fallow analysis, Fallow audit, and git diff checks.
-
+Native macOS validation currently passes the 195-test suite, alongside warning-free lint, formatting, Fallow analysis, Fallow audit, and git diff checks.
 Linux runtime validation remains deferred, and Windows and FreeBSD remain unsupported by design.
 
-The simplification pass is complete: one policy store in `src/tools/policy/` serves both policy consumers, a shared authorize-or-prompt helper in `src/tools/authorization.ts` serves both interactive tools, and the executor uses direct process event handling without mock-driven fallback machinery.
+## Roadmap
+
+### Security hardening
+
+- [ ] Sanitize and length-bound repository-controlled project-command prompt text, including ANSI controls and bidirectional Unicode controls.
+- [ ] Add an explicit warning to every project-code approval that mutable repository code runs unsandboxed with the current user's privileges.
+- [ ] Bind Fallow command identities to a SHA-256 digest of the resolved project-local executable and verify the digest again immediately before spawn.
+- [ ] Add regression coverage proving that replacing a project-local executable invalidates or blocks a persisted approval.
+- [ ] Verify ownership and safe permissions for the policy file and its existing parent directories on macOS.
+- [ ] Reject extension activation on unsupported runtime platforms before registering partially functional tools.
+- [ ] Document `package.json` `denyWrite` as protection against package-script mutation, not as containment of the source code executed by an approved script.
+- [ ] Decide whether project-code allows remain persistent, become session-scoped, or require approval per invocation, defaulting to the narrower lifetime unless a sandbox is added.
+- [ ] Add tests showing that Git reads intentionally remain available when the same path has a filesystem `denyRead` rule.
+- [ ] Add macOS integration coverage for process-group cleanup on timeout and cancellation.
+
+### Additional commands
+
+These additions remain demand-driven and require a separate threat-model review before implementation.
+
+- [ ] Define `project-code-network` risk handling for commands that contact registries or other network services.
+- [ ] Implement `node_deps_install` with per-package-manager frozen-lockfile forms and explicit dependency-install risk treatment.
+- [ ] Add the remaining audited parameter validator kinds as additional catalog commands require them.
+- [ ] Consider Git mutation commands such as commit and stage behind confirmation.
+- [ ] Consider a user-owned `customCommands` namespace only as a measured escape hatch.
+- [ ] Consider test-name pattern filtering for `node_test` after runner detection is available.
+- [ ] Consider .NET ecosystem support.
+- [ ] Consider PHP ecosystem support for Symfony and Magento projects after the external-state risk class exists.
+- [ ] Define an external-state risk class for application-level commands that mutate databases or shared caches.
+
+### Validation and operations
+
+- [ ] Validate Linux runtime behavior.
+- [ ] Verify interactive, print, JSON, and RPC modes through manual monitoring.
+- [ ] Add scheduled latest-toolchain fixture-suite runs when maintenance value justifies them.
+- [ ] Keep long-running development servers and smoke checks manually controlled.
+
+## Design constraints
 
-The cleanup-failure execution status was removed from the tool contract because it was unreachable with real processes.
-
-The catalog architecture, the Node command slice, the read-only dependency-list command, the lint-fix and formatting command slices, the Fallow command slice, and the read, write, move, and delete filesystem implementation are complete.
-
-The next milestone is security hardening for project-code approvals, project-local binary identity, approval-prompt rendering, and policy-file ownership validation.
-Additional commands, including dependency installation and Git mutation, remain demand-driven and require separate threat-model review before implementation.
-
-## Existing pi capabilities
-
-Pi already provides the built-in `read`, `write`, `edit`, `grep`, `find`, `ls`, and `bash` tools.
-
-Pi's default coding tool set contains `read`, `bash`, `edit`, and `write`.
-
-Pi's read-only tool set contains `read`, `grep`, `find`, and `ls`.
-
-All seven tools are real pi-provided capabilities, even when they are not active in the default tool set.
-
-This extension must not duplicate those tools or register replacements for them by default.
-
-The built-in `bash` tool remains intentionally outside this extension's safe-tool surface and serves as the user-governed fallback for anything the catalog does not cover.
-
-The extension should use `ctx.cwd` and existing pi path handling instead of adding a redundant working-directory tool.
-
-## Current extension tool catalog
-
-Each extension tool has a dedicated source folder under `src/tools/`.
-
-| Tool            | Implementation                              | Current safety boundary                                                           |
-| --------------- | ------------------------------------------- | --------------------------------------------------------------------------------- |
-| Environment     | `src/tools/environment/environment-tool.ts` | Return only explicitly requested and authorized environment variables.            |
-| Git status      | `src/tools/git/status/tool.ts`              | Inspect repository status without changing the working tree.                      |
-| Git diff        | `src/tools/git/diff/tool.ts`                | Read bounded diffs for validated workspace paths without changing the repository. |
-| Git log         | `src/tools/git/log/tool.ts`                 | Read bounded commit history with validated revision and path inputs.              |
-| Git show        | `src/tools/git/show/tool.ts`                | Read a bounded object or file revision without executing repository content.      |
-| Project command | `src/tools/project-command/tool.ts`         | Run only catalog-defined semantic commands after user-owned policy authorization. |
-
-## Target command architecture
-
-### Catalog
-
-The command catalog is extension-owned code and never reads repository configuration to define commands.
-
-Definitions are data: id, description, applicability probe, risk class, globalSafe flag, bindsRepoContent flag, environment profile, timeout, output limit, truncation direction, parameter declarations, and a resolve function.
-
-The v1 catalog covers global observation, Node project commands, and Fallow analysis commands on the macOS runtime.
-
-.NET and PHP ecosystem modules are kept in mind through the module shape but are not part of v1.
-
-The single `project_command` tool derives its input schema from the catalog as a discriminated union on commandId at load time.
-
-Applicability is enforced at execution time, and unknown or inapplicable commands fail with an error listing the commands applicable to the current project.
-
-The initial Node slice implements this behavior for node_project_info, node_test, node_build, node_lint, and node_typecheck.
-
-The Fallow slice implements fixed project-local analysis commands with the same applicability, authorization, bounded-output, and resolution guarantees.
-
-### Resolution
-
-Resolution is a first-class stage between catalog lookup and authorization.
-
-Resolution stages are applicability probe, toolchain detection, fail-closed binary resolution, and repository-content hashing.
-
-Node package manager detection reads the packageManager field first, then lockfiles, then defaults to npm.
-
-Lockfile-only detection works for npm, pnpm, and bun; yarn requires the packageManager field because Yarn Classic and Yarn Berry diverge on the exact flags this catalog uses.
-
-A detected package manager that is not installed fails with a clear error and never downgrades to npm.
-
-When resolution would need to guess, it fails closed with an actionable error instead.
-
-node_modules/.bin binaries resolve through realpath and spawn through process.execPath without PATH lookup or npx.
-
-### Risk classes
-
-`observe` commands never execute repository-defined content and only read local state; they are eligible for global allow.
-
-`project-code` commands execute repository scripts or dependency binaries; they allow per project only and are never globalSafe.
-
-`project-code-network` commands are project-code commands that also contact registries or other network services, such as dependency installation.
-
-`external-state` commands mutate state outside the project directory, such as databases or shared caches; they are deferred until stronger policy treatment exists.
-
-### Parameters
-
-Commands are an open set of definitions composed from a closed set of audited validator kinds.
-
-Validator kinds are workspace-paths, revision, enum, bounded-pattern, and integer-range.
-
-Argv mappings are positional after `--`, `--flag=value`, `--flag value` with leading-dash rejection, and repeated per item.
-
-Parameters select what to run and never change how the command behaves.
-
-The risk class of a definition must be the worst case over all accepted parameter values.
-
-Behavior-changing flags become separate command ids, not parameters.
-
-Parameter schemas are part of the definition fingerprint; parameter values are runtime input and are not individually authorized.
-
-Adding a validator kind is a security-reviewed change; adding a command over existing kinds is catalog data.
-
-### Policy identity and project-code trust
-
-A policy identity combines the semantic command id with a SHA-256 fingerprint over the definition, including its parameter schema, environment profile, and limits.
-
-Script-mediated definitions marked bindsRepoContent additionally hash the canonicalized scripts section of the package manifest.
-Canonicalization parses the scripts section, sorts keys, and serializes deterministically, so whitespace-only edits do not invalidate approvals.
-A write deny on package.json prevents the agent from changing the package-script definition through intercepted filesystem tools.
-
-The scripts hash does not bind test files, application source, imported configuration, plugins, generated files, dependencies, or other mutable repository content executed by the script.
-A persisted project-code approval must therefore be understood as approval to execute mutable project code, not approval of an immutable command body.
-Subprocesses are not constrained by filesystem policy and may access resources available to the current operating-system user.
-
-Resolution happens before authorization, so prompts and identities reflect the resolved command.
-Prompts display the resolved command line and, for script-mediated commands, the script text being authorized.
-Repository-controlled prompt text must be escaped, length-bounded, and rendered so terminal controls and bidirectional text cannot obscure the approval request.
-Project-code prompts must state that mutable repository code runs with the current user's privileges and is not sandboxed by the filesystem policy.
-
-Project-local executable approvals must bind a cryptographic digest of the resolved executable contents and verify that digest immediately before spawn.
-Until that binding exists, project-local executable approvals must not be treated as stable across invocations.
-
-Policy documents validate command id shape, not catalog membership, so removed commands leave inert stale entries.
-
-### Environment profiles
-
-`minimal-static-v1` provides PATH=/usr/bin:/bin with LANG and LC_ALL and serves global commands.
-
-`node-v1` adds HOME, prepends the node binary directory to PATH, and sets CI=true for non-interactive tool behavior.
-Because HOME is present and project-code commands are not sandboxed, authorized repository code can access user-owned files independently of the filesystem tool policy.
-
-Per-ecosystem profiles such as dotnet-v1 and php-v1 join when those catalogs land.
-
-### Output and truncation
-
-stdout and stderr stay bounded per definition.
-
-project-code commands default to tail-biased truncation because failure summaries live at the end of test and build output.
-
-observe commands keep head-biased truncation.
-
-Structured details include the resolved display command and the effective parameter values.
-
-### Error taxonomy
-
-Stage failures are first-class and reported by stage: probe, detection, binary resolution, spawn, timeout, and policy.
-
-Extension failures are distinct from command failures; a nonzero exit is data for the agent, not an extension error.
-
-Errors state what was expected and where resolution looked without exposing secrets.
-
-Diagnostics remain telemetry-free.
-
-## Distribution and operations
-
-The package distributes through pi's npm or git package sources; git distribution keeps internal releases at push-tag plus `pi update --extensions`.
-
-Definition fixes ship a new release, and changed fingerprints invalidate stale approvals automatically.
-
-Users can deny-global a broken command immediately as a circuit breaker without waiting for a release.
-
-Removing a command id from the catalog is safe because stale policy entries stay inert.
-
-Integration tests run real toolchains against fixture projects, and scheduled runs against latest toolchains catch ecosystem drift.
-
-## Explicit exclusions
-
-No arbitrary `npm run <name>`, `npx`, `node -e`, or agent-supplied argv arrays.
-
-No dependency add, remove, or update commands, because dependency changes are a semantic user decision.
-
-No publish, audit-fix, config-set, or cache-mutation commands.
-
-No repository-defined commands through repository-local configuration.
-
-No watch-mode or interactive commands; definitions must be non-interactive by default.
-
-No Magento or Symfony application-level commands until the external-state risk class exists.
-
-## Target v1 command catalog
-
-| id                       | Resolution                                                                | Risk                 | Parameters                |
-| ------------------------ | ------------------------------------------------------------------------- | -------------------- | ------------------------- |
-| workspace_path           | `/bin/pwd` (existing)                                                     | observe              | none                      |
-| node_version             | `node --version` (existing)                                               | observe              | none                      |
-| node_project_info        | in-process: PM detection, script names, applicable commands, node version | observe              | none                      |
-| node_deps_list           | manager-specific top-level dependency listing                             | observe              | none                      |
-| node_test                | `<pm> run test -- ...`                                                    | project-code         | paths (workspace-paths)   |
-| node_build               | `<pm> run build`                                                          | project-code         | none                      |
-| node_lint                | `<pm> run lint`                                                           | project-code         | none                      |
-| node_lint_fix            | `<pm> run lint:fix` (exact script name)                                   | project-code         | none                      |
-| node_typecheck           | `<pm> run typecheck` (exact script name)                                  | project-code         | none                      |
-| node_format_check        | `<pm> run format:check` (exact script name)                               | project-code         | none                      |
-| node_format_write        | `<pm> run format` (exact script name)                                     | project-code         | none                      |
-| node_deps_install        | `npm ci` / per-PM frozen-lockfile equivalent                              | project-code-network | none                      |
-| fallow_dead_code         | `node_modules/.bin/fallow dead-code --format json --quiet`                | project-code         | none                      |
-| fallow_dupes             | `fallow dupes --format json --quiet`                                      | project-code         | none                      |
-| fallow_health            | `fallow health --format json --quiet`                                     | project-code         | none                      |
-| fallow_audit             | `fallow audit --format json --quiet --base <ref>`                         | project-code         | base (revision, required) |
-| fallow_list_entry_points | `fallow list --entry-points --format json --quiet`                        | project-code         | none                      |
-| fallow_list_boundaries   | `fallow list --boundaries --format json --quiet`                          | project-code         | none                      |
-
-node_project_info is the discovery command: agents run it first to learn the detected package manager, available script names, and which catalog commands apply to the current project.
-
-The tool description and inapplicable-command errors steer agents toward node_project_info.
-
-The v1 pattern parameter for node_test remains deferred because the script hides the test runner and name-filter flags differ per runner; path selection covers the dominant case.
-
-The dependency-install command remains deferred until manager-specific frozen-lockfile behavior and network/install-script risk receive a separate security review.
-
-## Requirements
-
-- Load the extension through the root pi package entrypoint.
 - Keep production source under `src/`.
-- Keep source-specific tests next to their source file.
+- Keep source-specific tests next to their source file using the `*.test.ts` suffix.
 - Keep broad cross-tool and integration tests under `test/`.
 - Keep each extension tool implementation isolated in its dedicated tool folder.
 - Keep tool contracts stable and versioned as part of the extension API.
@@ -268,117 +85,14 @@ The dependency-install command remains deferred until manager-specific frozen-lo
 - Treat read-only Git inspection as an intentional workspace capability outside the filesystem policy namespace.
 - Add telemetry-free diagnostics sufficient to explain why a request was rejected or failed at a given stage.
 
-## Implementation tasks
+## Deferred scope
 
-### Simplification pass
+The following items are intentionally outside the current scope until the relevant design or security review is complete:
 
-- [x] Extract the shared policy document model from `src/tools/environment/policy/` into `src/tools/policy/` consumed by both tools.
-- [x] Remove the `policy-format.ts` pass-through and let the store answer decisions directly from the loaded policy.
-- [x] Rewrite the project command executor without mock-driven machinery, using direct EventEmitter attachment and realistic test fakes.
-- [x] Merge the duplicated authorize-or-prompt flows of the environment and project command tools into one helper.
-- [x] Shorten redundant `ProjectCommand` symbol prefixes inside the module.
-- [x] Reduce input validation to the catalog lookup and plain shape checks.
-
-### Filesystem access policy
-
-- [x] Intercept built-in read, write, edit, ls, find, and grep calls with canonical path validation and user-owned authorization.
-- [x] Grant implicit read and write access under the active workspace while allowing explicit deny rules to override it.
-- [x] Persist separate filesystem read, write, move, and delete decisions in the version 4 policy document without terminating blocked tool calls.
-- [x] Add regular-file move and delete tools with source, destination, symlink, and authorization validation.
-- [x] Cover filesystem policy approval, denial, timeout persistence, cancellation, missing write paths, descendant rules, and non-filesystem passthrough behavior.
-- [x] Cover authorized move and delete execution, transactional move approvals, and mutation target validation.
-
-### Catalog machinery
-
-- [x] Define the data-driven command definition shape and migrate workspace_path and node_version onto it.
-- [x] Derive the tool input schema from the catalog as a discriminated union on commandId.
-- [x] Implement the resolution pipeline with stage-tagged errors.
-- [x] Implement applicability probes and applicable-command error listings for the initial Node command slice.
-- [x] Report required package.json scripts and fixed package-manager commands when Node script commands are inapplicable.
-- [x] Report bounded command, parameter, exit, and captured-output diagnostics for project-command failures and resolution details for commands that cannot execute.
-- [x] Implement node package manager detection and fail-closed binary resolution.
-- [x] Implement manager-specific read-only dependency listing and Yarn Classic version gating.
-- [x] Implement the observe and project-code risk classes and their policy consequences for the initial Node slice.
-- [x] Implement the initial closed parameter model with workspace-path validation and argv mapping for node_test.
-- [x] Include parameter schemas in definition fingerprints.
-- [x] Implement repository-content binding through canonicalized scripts hashing.
-- [x] Implement the node-v1 environment profile.
-- [x] Implement tail-biased truncation for project-code commands.
-- [x] Show resolved command lines and script text in confirmation prompts.
-- [ ] Implement project-code-network risk handling for dependency commands.
-- [ ] Add the remaining audited parameter validator kinds as additional catalog commands require them.
-
-### Node commands
-
-- [x] Implement node_project_info as an in-process command.
-- [x] Implement node_test with the paths parameter.
-- [x] Implement node_build, node_lint, and node_typecheck.
-- [x] Implement node_lint_fix with exact package-script resolution and project-code authorization.
-- [x] Implement node_format_check and node_format_write with exact package-script resolution.
-- [x] Implement node_deps_list with manager-specific read-only forms.
-- [ ] Implement node_deps_install with per-package-manager frozen-lockfile forms.
-- [x] Implement the Fallow command family including the audit base revision parameter.
-
-### Controlled execution
-
-- [x] Implement allowlisted project-command execution with fixed argument arrays instead of shell strings.
-- [x] Add timeout, cancellation, process cleanup, and output truncation behavior.
-- [x] Keep timeout, cancellation, cleanup, and truncation behavior green through the executor rewrite.
-
-### Security hardening milestone
-
-- [ ] Sanitize and length-bound repository-controlled project-command prompt text, including ANSI controls and bidirectional Unicode controls.
-- [ ] Add an explicit warning to every project-code approval that mutable repository code runs unsandboxed with the current user's privileges.
-- [ ] Bind Fallow command identities to a SHA-256 digest of the resolved project-local executable and verify the digest again immediately before spawn.
-- [ ] Add regression coverage proving that replacing a project-local executable invalidates or blocks a persisted approval.
-- [ ] Verify ownership and safe permissions for the policy file and its existing parent directories on macOS.
-- [ ] Reject extension activation on unsupported runtime platforms before registering partially functional tools.
-- [ ] Document package.json denyWrite as protection against package-script mutation, not as containment of the source code executed by an approved script.
-- [ ] Decide whether project-code allows remain persistent, become session-scoped, or require approval per invocation; default to the narrower lifetime unless a sandbox is added.
-- [ ] Add tests showing that Git reads intentionally remain available when the same path has a filesystem denyRead rule.
-- [ ] Add macOS integration coverage for process-group cleanup on timeout and cancellation.
-
-### Pi integration
-
-- [x] Add TypeBox schemas that match the TypeScript contracts.
-- [x] Register tool descriptions and prompt metadata that clearly communicate limits and command selection.
-- [x] Use Pi's default tool rendering where custom rendering is not necessary.
-- [x] Add session-safe details for structured tool results.
-- [x] Add a migration path for policy and contract changes.
-
-### Testing and quality
-
-- [x] Add unit tests for workspace policy, allowlists, validation, truncation, and error mapping.
-- [x] Add contract tests for every extension tool input and output shape.
-- [x] Add mocked execution tests for project commands and Git operations.
-- [x] Add integration tests covering tool registration and tool-call dispatch.
-- [x] Add rejection tests for path traversal, shell metacharacters, unallowlisted commands, oversized output, invalid revisions, and sensitive operations.
-- [x] Add cancellation and timeout tests for every executable tool.
-- [x] Add byte-exact serializer fixtures pinning the version 1 and version 2 policy document formats.
-- [x] Add dismissal and cancellation-race regression tests for the shared authorization flow.
-- [x] Add broad cross-tool tests under `test/` for policy composition and command execution behavior.
-- [x] Add initial fixture-project integration coverage for Node project discovery and authorized script execution.
-- [x] Add fixture-project integration coverage for Fallow binary resolution, fixed argv, and audit exit-code behavior.
-- [x] Add fixture-project integration tests for all practical implemented catalog commands using real package manager, Node runner, and Fallow binaries.
-- [x] Add fixture-project integration coverage for authorized lint-fix mutation and non-authorized behavior.
-- [x] Add filesystem access-policy tests for path validation, read and write authorization, implicit workspace access, deny precedence, timeout persistence, missing write paths, and non-filesystem tool calls.
-- [x] Add filesystem mutation tests for authorized move and delete execution, transactional approvals, and symlink rejection.
-- [x] Add Vitest coverage reporting with `@vitest/coverage-v8`.
-- [x] Add a coverage script and enforce at least 75% lines, functions, statements, and branches.
-- [x] Keep the available test, type, lint, format, and Fallow checks passing before committing.
-- [x] Run the Fallow audit and targeted checks before committing AI-generated changes.
-
-### Deferred
-
-- Linux runtime support and validation.
+- Linux support beyond runtime validation.
 - Windows and FreeBSD support.
-- .NET ecosystem module and catalog.
-- PHP ecosystem module and catalog for Symfony and Magento projects.
-- external-state risk class and application-level commands.
-- User-owned customCommands namespace as a measured escape hatch.
-- Git mutation commands such as commit and stage behind confirmation.
-- Test-name pattern filtering for node_test, pending runner detection.
-- node_deps_install, pending demonstrated need plus manager-specific frozen-lockfile and dependency-install risk review.
-- Interactive, print, JSON, and RPC mode verification, deferred in favor of manual monitoring.
-- Scheduled latest-toolchain fixture-suite runs, skipped for now.
-- Long-running development servers and smoke checks, deferred because they should remain manually controlled for now.
+- Publish, audit-fix, config-set, and cache-mutation commands.
+- Arbitrary `npm run <name>`, `npx`, `node -e`, or agent-supplied argv arrays.
+- Repository-defined commands through repository-local configuration.
+- Watch-mode or interactive commands.
+- Git fetch, push, or other operations that contact remote repositories.
