@@ -16,6 +16,7 @@ const ENVIRONMENT_AUTHORIZATION_MESSAGES: Record<
   string
 > = {
   denied: "Environment access denied by policy",
+  "denied-once": "Environment access denied for this request",
   "not-authorized": "Environment key is not authorized in this mode",
   timeout: "Environment confirmation timed out",
   confirmation: "Environment confirmation failed",

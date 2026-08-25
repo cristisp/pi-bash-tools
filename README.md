@@ -58,7 +58,8 @@ Wildcard names, duplicate names, same-scope allow and deny conflicts, unknown pr
 Authorization precedence is global deny, project deny, global allow, project allow, and then unknown.
 A global deny is hard and cannot be overridden by any project rule.
 An unknown key is prompted for only in TUI or RPC mode when pi reports `hasUI`.
-The prompt options are exactly `Deny globally`, `Deny for this project`, `Allow globally`, and `Allow for this project`.
+The prompt options are exactly `Deny once`, `Deny globally`, `Deny for this project`, `Allow once`, `Allow globally`, and `Allow for this project`.
+`Allow once` and `Deny once` apply only to the current request and never modify policy.
 A manual cancellation before the policy commit rejects the current request without changing policy.
 A cancellation after the commit rejects without returning environment values, but the completed policy commit is retained.
 A confirmation timeout records a project-level deny and returns no environment values.
@@ -112,11 +113,16 @@ The filesystem namespace has version `2`, with separate read, write, move, and d
 `allowWrite` controls `write` and `edit`.
 `allowMove` controls the `move` tool for both its source and destination paths.
 `allowDelete` controls the `delete` tool.
+Delete prompts authorize the containing folder, so an approved `allowDelete` folder applies to files in that folder and all of its descendants.
 A project and all of its descendants have implicit read and write access for the active workspace.
 Explicit deny rules take precedence over both implicit access and explicit allow rules.
 A path rule applies to the path itself and its descendants.
+This recursive behavior applies to folder paths in every filesystem capability, including `allowDelete`.
 Deny rules also consider overlapping paths, so a denied descendant can block a containing recursive listing or search.
 Unknown paths are prompted for only in TUI or RPC mode.
+Filesystem prompts offer `Deny once`, `Deny globally`, `Deny for this project`, `Allow once`, `Allow globally`, and `Allow for this project`.
+Delete prompts are project-scoped and instead offer `Deny once`, `Deny for this project`, `Allow once`, and `Allow for this project`.
+`Allow once` and `Deny once` apply only to the current filesystem request and never modify policy.
 The existing `confirmationTimeoutMs` setting applies to filesystem prompts and defaults to 120000 milliseconds.
 A timeout automatically records a project-level deny for the requested access type and blocks only the current tool call.
 Blocked calls report `Tool call blocked by access policy` with the tool, access type, path, and reason.
@@ -167,7 +173,9 @@ Global deny, project deny, globally safe global allow, project allow, and unknow
 
 Unknown commands are denied without a UI or outside TUI and RPC modes.
 
-Interactive prompts use exactly `Deny globally`, `Deny for this project`, `Allow globally`, and `Allow for this project`.
+Interactive project-command prompts use exactly `Deny once`, `Deny for this project`, `Allow once`, and `Allow for this project`.
+Project-command permissions are project-scoped, so global choices are not offered.
+`Allow once` and `Deny once` apply only to the current command and never modify policy.
 
 Command decisions migrate a version 1 environment document to a version 2 document containing the unchanged nested environment version 1 policy and a version 1 project command policy namespace.
 

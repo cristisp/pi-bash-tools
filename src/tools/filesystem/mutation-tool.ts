@@ -3,6 +3,7 @@ import type {
   AgentToolUpdateCallback,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { dirname } from "node:path";
 import { Type, type Static } from "typebox";
 import { type AuthorizationErrorKind } from "../authorization.ts";
 import { displayPath } from "../path-display.ts";
@@ -141,6 +142,7 @@ function authorizationError(
     );
   }
   const suffixes: Record<string, string> = {
+    "denied-once": " was denied for this request.",
     "not-authorized": " requires approval that is unavailable in this mode.",
     timeout: " confirmation timed out; a project deny rule was recorded.",
     confirmation: " confirmation failed.",
@@ -220,8 +222,11 @@ async function authorizeMutation(
     throw new FilesystemMutationToolError("Unable to load filesystem access policy");
   }
   await authorizeAndPersistFilesystemAccesses(requests, loaded, ctx, policy, signal, {
-    promptText: ({ access, path }) =>
-      `Authorize ${access} access for ${operation} to ${displayPath(path)}?`,
+    allowGlobal: operation !== "delete",
+    promptText: ({ access, path, policyPath }) =>
+      policyPath === undefined
+        ? `Authorize ${access} access for ${operation} to ${displayPath(path)}?`
+        : `Authorize deletion of files in ${displayPath(policyPath)} and its subfolders for this project only? Requested file: ${displayPath(path)}`,
     error: (kind, request, decision) => authorizationError(operation, kind, request, decision),
   });
 }
@@ -318,7 +323,13 @@ function createDeleteToolWithDependencies(
       const requestSignal = signal ?? ctx.signal;
       throwIfAborted(requestSignal);
       const path = await canonicalRegularFile(fileSystem, pathInput, ctx.cwd, "Delete target");
-      await authorizeMutation("delete", [{ access: "delete", path }], ctx, policy, requestSignal);
+      await authorizeMutation(
+        "delete",
+        [{ access: "delete", path, policyPath: dirname(path) }],
+        ctx,
+        policy,
+        requestSignal,
+      );
       throwIfAborted(requestSignal);
       await requireRegularFile(fileSystem, path, "Delete target");
       try {

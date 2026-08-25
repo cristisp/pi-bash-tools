@@ -121,8 +121,10 @@ it("prompts in order and persists each choice before returning all values", asyn
   const choices = ["Allow for this project", "Allow globally"];
   const select = vi.fn(async (_title: string, options: string[]) => {
     expect(options).toEqual([
+      "Deny once",
       "Deny globally",
       "Deny for this project",
+      "Allow once",
       "Allow globally",
       "Allow for this project",
     ]);

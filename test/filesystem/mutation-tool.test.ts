@@ -1,4 +1,4 @@
-import { readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import {
@@ -89,6 +89,51 @@ it("deletes a regular file within the active workspace", async () => {
     path: join(await realpath(directory), "delete.txt"),
   });
   await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("persists delete approval for a folder and reuses it for descendants", async () => {
+  const directory = await fixtures.createDirectory();
+  const outside = await fixtures.createDirectory();
+  const folder = join(outside, "removable");
+  await mkdir(folder);
+  const first = join(folder, "first.txt");
+  const second = join(folder, "nested", "second.txt");
+  await mkdir(join(folder, "nested"));
+  await writeFile(first, "first");
+  await writeFile(second, "second");
+  const config = await configPath(directory);
+  const tool = createDeleteToolForTesting({ configPath: config });
+  const select = vi.fn(async (title: string, choices: readonly string[]) => {
+    expect(title).toContain("Authorize deletion of files in");
+    expect(title).toContain("for this project only");
+    expect(title).toContain("Requested file:");
+    expect(choices).toEqual([
+      "Deny once",
+      "Deny for this project",
+      "Allow once",
+      "Allow for this project",
+    ]);
+    return "Allow for this project";
+  });
+  const approvalContext = context(directory, {
+    hasUI: true,
+    mode: "tui",
+    select,
+  });
+
+  await tool.execute("1", { path: first }, undefined, undefined, approvalContext);
+  await tool.execute("2", { path: second }, undefined, undefined, approvalContext);
+
+  expect(select).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(await readFile(config, "utf8"))).toMatchObject({
+    filesystem: {
+      projects: {
+        [await realpath(directory)]: {
+          allowDelete: [await realpath(folder)],
+        },
+      },
+    },
+  });
 });
 
 it("blocks mutation outside the active workspace without authorization", async () => {

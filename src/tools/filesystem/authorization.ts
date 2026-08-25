@@ -20,6 +20,7 @@ export type FilesystemAuthorizationContext = Omit<
 export interface FilesystemAuthorizationRequest {
   readonly access: FilesystemAccess;
   readonly path: string;
+  readonly policyPath?: string;
 }
 
 export type FilesystemAuthorizationError = (
@@ -29,6 +30,7 @@ export type FilesystemAuthorizationError = (
 ) => Error;
 
 export interface FilesystemAuthorizationOptions {
+  readonly allowGlobal?: boolean;
   readonly promptText?: (request: FilesystemAuthorizationRequest) => string;
   readonly error: FilesystemAuthorizationError;
 }
@@ -74,16 +76,21 @@ async function authorizeFilesystemAccess(
   signal: AbortSignal | undefined,
   options: FilesystemAuthorizationOptions,
 ): Promise<FilesystemDecisionRequest | undefined> {
+  const policyPath = request.policyPath ?? request.path;
   let matchedDecision: PolicyAuthorization = "unknown";
   return authorizeOrPrompt<string, FilesystemDecisionRequest>({
-    identity: request.path,
+    identity: policyPath,
     loaded,
     context: ctx,
     signal,
     globalSafe: true,
+    allowGlobal: options.allowGlobal,
     deferAllowPersistence: true,
     findDecision: (current, identity) => {
-      matchedDecision = findFilesystemPolicyDecision(current, identity, request.access);
+      matchedDecision = findFilesystemPolicyDecision(current, request.path, request.access);
+      if (matchedDecision === "unknown" && identity !== request.path) {
+        matchedDecision = findFilesystemPolicyDecision(current, identity, request.access);
+      }
       return matchedDecision;
     },
     recordDecisions: (projectPath, requests, requestSignal) =>

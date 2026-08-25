@@ -83,7 +83,7 @@ it("maps non-cancellation policy load failures", async () => {
   });
 });
 
-it("uses exactly the existing choices and persists an allow decision before execution", async () => {
+it("uses exactly the authorization choices and persists an allow decision before execution", async () => {
   const fixtureData = await fixture();
   const choices: string[] = [];
   const select = vi.fn(async (_title: string, options: string[]) => {
@@ -104,9 +104,9 @@ it("uses exactly the existing choices and persists an allow decision before exec
   );
   expect(response.details.status).toBe("success");
   expect(choices).toEqual([
-    "Deny globally",
+    "Deny once",
     "Deny for this project",
-    "Allow globally",
+    "Allow once",
     "Allow for this project",
   ]);
   expect(executor).toHaveBeenCalledWith(

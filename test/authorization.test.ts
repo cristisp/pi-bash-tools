@@ -70,8 +70,10 @@ it("uses the exact choices and title and defers an allow", async () => {
   const select = vi.fn(async (title: string, choices: readonly string[]) => {
     expect(title).toBe("Authorize TOKEN");
     expect(choices).toEqual([
+      "Deny once",
       "Deny globally",
       "Deny for this project",
+      "Allow once",
       "Allow globally",
       "Allow for this project",
     ]);
@@ -86,6 +88,40 @@ it("uses the exact choices and title and defers an allow", async () => {
     }),
   );
   expect(request).toEqual({ kind: "environment", key: "TOKEN", decision: "allow-project" });
+  expect(record).not.toHaveBeenCalled();
+});
+
+it("allows once without persisting a decision", async () => {
+  const record = vi.fn(async () => undefined);
+  const result = await authorizeOrPrompt(
+    options({
+      context: {
+        hasUI: true,
+        mode: "tui",
+        ui: { select: async () => "Allow once" },
+      },
+      recordDecisions: record,
+    }),
+  );
+
+  expect(result).toBeUndefined();
+  expect(record).not.toHaveBeenCalled();
+});
+
+it("denies once without persisting a decision", async () => {
+  const record = vi.fn(async () => undefined);
+  await expect(
+    authorizeOrPrompt(
+      options({
+        context: {
+          hasUI: true,
+          mode: "tui",
+          ui: { select: async () => "Deny once" },
+        },
+        recordDecisions: record,
+      }),
+    ),
+  ).rejects.toThrow("denied-once");
   expect(record).not.toHaveBeenCalled();
 });
 

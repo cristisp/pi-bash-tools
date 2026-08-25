@@ -7,14 +7,25 @@ import type {
 } from "./policy/types.ts";
 
 const AUTHORIZATION_CHOICES = [
+  "Deny once",
   "Deny globally",
   "Deny for this project",
+  "Allow once",
   "Allow globally",
   "Allow for this project",
 ] as const;
+const PROJECT_AUTHORIZATION_CHOICES = [
+  "Deny once",
+  "Deny for this project",
+  "Allow once",
+  "Allow for this project",
+] as const;
+
+type AuthorizationDecision = PolicyDecision | "deny-once" | "allow-once";
 
 export type AuthorizationErrorKind =
   | "denied"
+  | "denied-once"
   | "not-authorized"
   | "timeout"
   | "confirmation"
@@ -43,6 +54,7 @@ export interface AuthorizeOrPromptOptions<Identity, Request extends PolicyDecisi
   readonly context: AuthorizeOrPromptContext;
   readonly signal: AbortSignal | undefined;
   readonly globalSafe: boolean;
+  readonly allowGlobal?: boolean;
   readonly deferAllowPersistence: boolean;
   readonly findDecision: (loaded: LoadedPolicy, identity: Identity) => PolicyAuthorization;
   readonly recordDecisions: (
@@ -55,12 +67,16 @@ export interface AuthorizeOrPromptOptions<Identity, Request extends PolicyDecisi
   readonly error: (kind: AuthorizationErrorKind) => Error;
 }
 
-function choiceDecision(choice: string): PolicyDecision {
+function choiceDecision(choice: string): AuthorizationDecision {
   switch (choice) {
+    case "Deny once":
+      return "deny-once";
     case "Deny globally":
       return "deny-global";
     case "Deny for this project":
       return "deny-project";
+    case "Allow once":
+      return "allow-once";
     case "Allow globally":
       return "allow-global";
     case "Allow for this project":
@@ -99,9 +115,11 @@ async function promptChoice<Identity, Request extends PolicyDecisionRequest>(
 ): Promise<string> {
   const prompt = await promptWithTimeout(
     (dialogSignal) =>
-      options.context.ui.select(options.promptText(options.identity), AUTHORIZATION_CHOICES, {
-        signal: dialogSignal,
-      }),
+      options.context.ui.select(
+        options.promptText(options.identity),
+        options.allowGlobal === false ? PROJECT_AUTHORIZATION_CHOICES : AUTHORIZATION_CHOICES,
+        { signal: dialogSignal },
+      ),
     options.loaded.confirmationTimeoutMs,
     options.signal,
   );
@@ -126,11 +144,23 @@ async function resolvePrompt<Identity, Request extends PolicyDecisionRequest>(
 ): Promise<Request | undefined> {
   const choice = await promptChoice(options);
   throwIfAborted(options);
-  let decision: PolicyDecision;
+  let decision: AuthorizationDecision;
   try {
     decision = choiceDecision(choice);
   } catch {
     throw options.error("invalid-choice");
+  }
+  if (decision === "deny-once") {
+    throw options.error("denied-once");
+  }
+  if (decision === "allow-once") {
+    return undefined;
+  }
+  if (
+    (decision === "allow-global" || decision === "deny-global") &&
+    options.allowGlobal === false
+  ) {
+    throw options.error("unsafe-global");
   }
   if (decision === "allow-global" && !options.globalSafe) {
     throw options.error("unsafe-global");

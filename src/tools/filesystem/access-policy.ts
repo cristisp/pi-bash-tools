@@ -27,6 +27,7 @@ const DENIED_POLICY_SCOPES: Record<PolicyAuthorization, string> = {
   unknown: "a configured",
 };
 const BLOCKED_REASON_SUFFIXES: Record<Exclude<AuthorizationErrorKind, "denied">, string> = {
+  "denied-once": " was denied for this request.",
   "not-authorized": " requires approval that is unavailable in this mode.",
   timeout: " confirmation timed out; a project deny rule was recorded.",
   confirmation: " confirmation failed.",

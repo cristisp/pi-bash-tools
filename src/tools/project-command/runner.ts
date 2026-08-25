@@ -81,6 +81,7 @@ const PROJECT_COMMAND_AUTHORIZATION_MESSAGES: Record<
   string
 > = {
   denied: "Project command denied by policy",
+  "denied-once": "Project command denied for this request",
   "not-authorized": "Project command is not authorized in this mode",
   timeout: "Project command confirmation timed out",
   confirmation: "Project command confirmation failed",
@@ -138,6 +139,7 @@ async function authorizeCommand(
     context: ctx,
     signal,
     globalSafe: definition.globalSafe,
+    allowGlobal: false,
     deferAllowPersistence: false,
     findDecision: (current, currentIdentity) =>
       findProjectCommandPolicyDecision(current, currentIdentity, definition.globalSafe),
