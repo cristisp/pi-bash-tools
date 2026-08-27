@@ -75,6 +75,23 @@ function event(
   };
 }
 
+it.each(["read", "write", "edit", "ls", "find", "grep"] as const)(
+  "%s is governed by the filesystem access-policy interceptor",
+  async (toolName) => {
+    const directory = await fixtures.createDirectory();
+    const outside = await fixtures.createDirectory();
+    const configPath = join(await realpath(directory), "bash-tools.json");
+    await writeFile(configPath, JSON.stringify({ version: 1 }));
+    const policy = createPolicyStoreForTesting({ configPath });
+    const intercept = createFilesystemAccessPolicyInterceptor(policy);
+
+    const result = await intercept(event(toolName, outside), context(directory));
+
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain("Tool call blocked by access policy");
+  },
+);
+
 it("blocks unknown paths without eligible UI and reports the policy reason", async () => {
   const directory = await fixtures.createDirectory();
   const outside = await fixtures.createDirectory();
@@ -358,6 +375,27 @@ it("does not persist a deferred edit read approval when write approval is denied
       },
     },
   });
+});
+
+it("does not authorize unknown tool calls as filesystem access", async () => {
+  const directory = await fixtures.createDirectory();
+  const outside = await fixtures.createDirectory();
+  const policy = createPolicyStoreForTesting({
+    configPath: join(await realpath(directory), "missing-bash-tools.json"),
+  });
+  const intercept = createFilesystemAccessPolicyInterceptor(policy);
+
+  const result = await intercept(
+    {
+      type: "tool_call",
+      toolCallId: "1",
+      toolName: "unknown_tool",
+      input: { path: outside },
+    },
+    context(directory),
+  );
+
+  expect(result).toBeUndefined();
 });
 
 it("ignores non-filesystem tool calls", async () => {

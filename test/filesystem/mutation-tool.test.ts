@@ -36,6 +36,38 @@ async function configPath(directory: string): Promise<string> {
   return path;
 }
 
+it.each(["move", "delete"] as const)(
+  "%s enforces filesystem policy within its implementation",
+  async (operation) => {
+    const directory = await fixtures.createDirectory();
+    const outside = await fixtures.createDirectory();
+    const config = await configPath(directory);
+
+    if (operation === "move") {
+      const source = join(outside, "source.txt");
+      const destination = join(outside, "destination.txt");
+      await writeFile(source, "content");
+      const tool = createMoveToolForTesting({ configPath: config });
+
+      await expect(
+        tool.execute("1", { source, destination }, undefined, undefined, context(directory)),
+      ).rejects.toThrow(/requires approval that is unavailable/iu);
+      await expect(readFile(source, "utf8")).resolves.toBe("content");
+      await expect(stat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+      return;
+    }
+
+    const path = join(outside, "delete.txt");
+    await writeFile(path, "content");
+    const tool = createDeleteToolForTesting({ configPath: config });
+
+    await expect(
+      tool.execute("1", { path }, undefined, undefined, context(directory)),
+    ).rejects.toThrow(/requires approval that is unavailable/iu);
+    await expect(readFile(path, "utf8")).resolves.toBe("content");
+  },
+);
+
 it("moves a regular file within the active workspace", async () => {
   const directory = await fixtures.createDirectory();
   const source = join(directory, "source.txt");

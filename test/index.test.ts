@@ -1,8 +1,26 @@
+import { readFile } from "node:fs/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import extension from "../src/index.ts";
+import { EXTENSION_VERSION } from "../src/version.ts";
 
 describe("bash tools extension", () => {
+  it("keeps the source extension version aligned with package.json", async () => {
+    const packageJson: unknown = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    );
+    if (
+      typeof packageJson !== "object" ||
+      packageJson === null ||
+      !("version" in packageJson) ||
+      typeof packageJson.version !== "string"
+    ) {
+      throw new Error("package.json has no valid version");
+    }
+
+    expect(EXTENSION_VERSION).toBe(packageJson.version);
+  });
+
   it("exports a pi extension factory", () => {
     expect(extension).toBeTypeOf("function");
   });
@@ -55,7 +73,7 @@ describe("bash tools extension", () => {
       },
     } satisfies Parameters<typeof extension>[0];
     extension(pi);
-    expect(events).toEqual(["tool_call"]);
+    expect(events).toEqual(["session_start", "tool_call"]);
     expect(names).toEqual([
       "git_status",
       "git_diff",
