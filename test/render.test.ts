@@ -200,6 +200,16 @@ describe('renderSubagentResult - single collapsed', () => {
 				cost: 0.001,
 				contextTokens: 30,
 			},
+			metrics: {
+				durationMs: 1500,
+				toolCalls: 2,
+				failedToolCalls: 0,
+				repeatedReads: 0,
+				messageCount: 3,
+				taskChars: 10,
+				outputChars: 20,
+				maxContextTokens: 1000,
+			},
 		});
 		const text = textOf(renderResult(singleDetails([r]), false));
 		expect(text).toContain('<success>✓</success>');
@@ -207,6 +217,7 @@ describe('renderSubagentResult - single collapsed', () => {
 		expect(text).toContain('pane ws1:p1');
 		expect(text).toContain('(no output)');
 		expect(text).toContain('1 turn ↑10 ↓20 $0.0010 ctx:30');
+		expect(text).toContain('time:1.5s tools:2 msgs:3 io:10/20 max-ctx:1.0k');
 	});
 	it('renders a failed single result with stop reason', () => {
 		const r = makeSingleResult({

@@ -79,14 +79,12 @@ describe('sessionStatsText', () => {
 		registerEntry(makeRegistryEntry({ sessionFile, status: 'done' }));
 
 		const out = await sessionStatsText('worker-1');
-		expect(out).toContain('Session ws1:worker-1 (agent: worker, status: done)');
+		expect(out).toContain('Session ws1:worker-1 (worker, done)');
 		expect(out).toContain('context: 8.0k tokens (last turn)');
-		expect(out).toContain('turns: 2');
-		expect(out).toContain('↑2.5k');
-		expect(out).toContain('↓500');
-		expect(out).toContain('R1.1k');
-		expect(out).toContain('W300');
-		expect(out).toContain('$0.0094');
+		expect(out).toContain('turns: 2  reused: 0');
+		expect(out).toContain('usage: ↑2.5k ↓500 $0.0094');
+		expect(out).not.toContain('R1.1k');
+		expect(out).not.toContain('W300');
 	});
 
 	it('falls back to registry context when the session file has no usage', async () => {
@@ -109,6 +107,7 @@ describe('sessionStatsText', () => {
 			}),
 		);
 		const out = await sessionStatsText('worker-1');
+		expect(out).toContain('recent tasks:');
 		expect(out).toContain('1. review auth');
 		expect(out).toContain('3. review db');
 	});
@@ -155,10 +154,10 @@ describe('sessionStatsText', () => {
 		const sessionFile = writeSessionFile(dir, 'sessions/subagent-ws1-worker-1.jsonl', messages);
 		registerEntry(makeRegistryEntry({ sessionFile, status: 'done', reuseCount: 3 }));
 		const out = await sessionStatsText('worker-1');
-		expect(out).toContain('Context is large (150k tokens)');
-		expect(out).toContain('has already done 11 turns');
-		expect(out).toContain('reused: 3 time(s)');
-		expect(out).toContain('anchors it on its earlier findings');
+		expect(out).toContain('Context is large (150k)');
+		expect(out).toContain('11 turns across 5 task(s)');
+		expect(out).toContain('turns: 11  reused: 3');
+		expect(out).toContain('Reused 3 time(s)');
 	});
 
 	it('shows the last result preview', async () => {
@@ -168,5 +167,21 @@ describe('sessionStatsText', () => {
 		);
 		const out = await sessionStatsText('worker-1');
 		expect(out).toContain('last result: All findings fixed.');
+	});
+
+	it('keeps task and result previews compact', async () => {
+		const sessionFile = writeSessionFile(dir, 'sessions/subagent-ws1-worker-1.jsonl', []);
+		registerEntry(
+			makeRegistryEntry({
+				sessionFile,
+				tasks: ['one', 'two', 'three', 'four', 'x'.repeat(200)],
+				lastResult: 'y'.repeat(200),
+			}),
+		);
+		const out = await sessionStatsText('worker-1');
+		expect(out).not.toContain('1. one');
+		expect(out).toContain('1. three');
+		expect(out).toContain('3. ' + 'x'.repeat(80) + '...');
+		expect(out).toContain('last result: ' + 'y'.repeat(120) + '...');
 	});
 });

@@ -29,29 +29,32 @@ The extension registers two tools, `subagent` and `subagent_stats`. `subagent` m
   with the previous step's output
 - `subagent(reuseLabel, task)` - continue an existing session in place (same tab,
   same context, only the new turn counts as the result)
-- `subagent(listSubagents: true)` - list all sessions in the registry
+- `subagent(listSubagents: true)` - list sessions in a compact form; use `listVerbose: true` for pane, session-file, and last-result diagnostics
 - `subagent(agents: true)` - list available agents (name, description, source)
   for the current agentScope; the agent should check this before picking an
   agent name. Unknown agent names fail with the available list, a
   "did you mean" suggestion, and a pointer to this mode.
-- `subagent_stats(label)` - reuse-relevant stats for one session: context size
-  (from the session file, so current even while running), lifetime turns and
-  token/cost usage, session file size, age, reuse count, task history, and the
-  last result. It flags high-context and heavily-reused sessions with notes.
+- `subagent_stats(label)` - compact reuse-relevant stats for one session: context size,
+  turns, input/output usage, cost, reuse count, recent task history, last result,
+  and relevant warnings.
 
 Reuse judgment: before `reuseLabel`, agents should check `subagent_stats` and
-judge cost/impact (context size, turn count, prior tasks, reuse history). A
-review/audit/verification session that is reused anchors on its earlier
-findings - it tends to re-check the issues it already found and miss newly
-introduced ones. For a fresh review of code that changed, prefer a new session
-or explicitly instruct the reused session to re-examine from scratch. The TUI
-shows the reused session's state on the `reuse` call line (context, reuse
-count), in warning color when context is large, so the choice is visible.
+judge cost/impact (context size, turn count, prior tasks, reuse history). Reuse
+is intended for same-role worker continuation and narrowly scoped remediation.
+Prefer fresh sessions for planning, scouting, review, validation, security,
+audit, changed scope, or independent reasoning. Start fresh when context
+exceeds 100k tokens, the session exceeds 8 turns, reuse is repeated, task
+history does not fit, repository or evidence changed materially, or
+independence is required. A reused review/audit/verification session anchors on
+its earlier findings and may miss newly introduced ones. Record the session
+strategy and reason in the orchestration ledger. The TUI shows the reused
+session's state on the `reuse` call line (context, reuse count), in warning
+color when context is large, so the choice is visible.
 
 Setting up the standard agents:
 
-- `/setup-subagents` - creates or updates the `planner`, `reviewer`, `scout`, and
-  `worker` agent files in `~/.pi/agent/agents` (they are not bundled with the
+- `/setup-subagents` - creates or updates the `planner`, `reviewer`, `scout`, `worker`, and
+  `validator` agent files in `~/.pi/agent/agents` (they are not bundled with the
   package), and creates `~/.pi/agent/subagent-herdr.config.json` with all
   defaults if it does not exist yet (an existing config is left untouched). It asks for the model first, as `provider/model(:thinking_level)` -
   e.g. `github-copilot/gpt-5.6-luna:high` or `cortecs/deepseek-v4-flash-0731`

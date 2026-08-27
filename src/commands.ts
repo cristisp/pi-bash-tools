@@ -18,7 +18,7 @@ async function promptForModel(ctx: { ui: ExtensionContext['ui'] }): Promise<stri
 	let model: string | undefined;
 	for (let attempt = 0; attempt < 3; attempt++) {
 		model = await ctx.ui.input(
-			'Model for the four subagents (provider/model(:thinking_level), e.g. github-copilot/gpt-5.6-luna:high or cortecs/deepseek-v4-flash-0731)',
+			'Model for the five subagents (provider/model(:thinking_level), e.g. github-copilot/gpt-5.6-luna:high or cortecs/deepseek-v4-flash-0731)',
 			'e.g. github-copilot/gpt-5.6-luna:high or cortecs/deepseek-v4-flash-0731',
 		);
 		if (model === undefined) {
@@ -42,7 +42,7 @@ async function promptForModel(ctx: { ui: ExtensionContext['ui'] }): Promise<stri
 export function registerSetupCommand(pi: ExtensionAPI) {
 	pi.registerCommand('setup-subagents', {
 		description:
-			'Create or update the planner, reviewer, scout, and worker agent files in ~/.pi/agent/agents with a chosen model (provider/model(:thinking_level), e.g. github-copilot/gpt-5.6-luna:high), and create the subagent-herdr config file if missing',
+			'Create or update the planner, reviewer, scout, worker, and validator agent files in ~/.pi/agent/agents with a chosen model (provider/model(:thinking_level), e.g. github-copilot/gpt-5.6-luna:high), and create the subagent-herdr config file if missing',
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) {
 				ctx.ui.notify('/setup-subagents needs an interactive session', 'warning');

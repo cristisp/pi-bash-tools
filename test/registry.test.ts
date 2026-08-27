@@ -147,7 +147,8 @@ describe('listSubagents', () => {
 		expect(out).toContain('reuseLabel: worker-1');
 		expect(out).toContain('running');
 		expect(out).toContain('ctx:1.5k');
-		expect(out).toContain('pane ws1:p10');
+		expect(out).not.toContain('pane ws1:p10');
+		expect(out).not.toContain('sessions/subagent-');
 	});
 	it('displays a workspace name while retaining the stable workspace id', () => {
 		registerEntry(makeRegistryEntry({ workspaceName: 'Project Alpha' }));
@@ -172,7 +173,7 @@ describe('listSubagents', () => {
 		registerEntry(makeRegistryEntry({ label: 'worker-2', workspace: 'ws2', paneId: 'ws2:p20' }));
 
 		const out = listSubagents({});
-		expect(out).toContain('registry:');
+		expect(out).not.toContain('registry:');
 		expect(out).toContain('ws1:worker-1');
 		expect(out).toContain('reuseLabel: worker-1');
 		expect(out).toContain('ws2:worker-2');
@@ -182,7 +183,8 @@ describe('listSubagents', () => {
 		registerEntry(makeRegistryEntry({ label: 'worker-2', parentSession: '/sess/other.jsonl' }));
 
 		const out = listSubagents({ parentSession: '/sess/current.jsonl' });
-		expect(out).toContain('active Pi session: /sess/current.jsonl');
+		expect(out).toContain('active workspace: ws1');
+		expect(out).not.toContain('/sess/current.jsonl');
 		expect(out).toContain('ws1:worker-1');
 		expect(out).not.toContain('ws1:worker-2');
 		expect(listSubagents({ parentSession: '/sess/other.jsonl' })).toContain('ws1:worker-2');
@@ -218,11 +220,14 @@ describe('listSubagents', () => {
 		expect(listSubagents({ status: 'running' })).toContain('worker-1');
 		expect(listSubagents({ status: 'running' })).not.toContain('reviewer-1');
 	});
-	it('truncates lastResult preview by verbosity', () => {
+	it('keeps diagnostics out of the compact listing', () => {
 		const long = 'x'.repeat(200);
 		registerEntry(makeRegistryEntry({ lastResult: long }));
-		expect(listSubagents({})).toContain('x'.repeat(80));
+		expect(listSubagents({})).not.toContain('last:');
+		expect(listSubagents({})).not.toContain('pane ws1:p10');
 		expect(listSubagents({ verbose: true })).toContain('x'.repeat(200));
+		expect(listSubagents({ verbose: true })).toContain('pane ws1:p10');
+		expect(listSubagents({ verbose: true })).toContain('sessions/subagent-');
 	});
 });
 

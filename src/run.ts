@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { withFileMutationQueue } from '@earendil-works/pi-coding-agent';
 import type { AgentConfig } from './agents.ts';
-import { completionPatch } from './format.ts';
+import { completionPatch, getFinalOutput } from './format.ts';
 import {
 	closeTab,
 	createTaskTab,
@@ -114,6 +114,45 @@ async function applyOutcome(
 	}
 	updateRegistryEntry(label, completionPatch(currentResult));
 	return 'done';
+}
+
+function recordExecutionMetrics(result: SingleResult, startedAt: number): void {
+	let toolCalls = 0;
+	let failedToolCalls = 0;
+	let repeatedReads = 0;
+	let maxContextTokens = 0;
+	const readCounts = new Map<string, number>();
+	for (const message of result.messages) {
+		if (message.role === 'assistant') {
+			for (const part of message.content) {
+				if (part.type !== 'toolCall') continue;
+				toolCalls++;
+				if (part.name === 'read') {
+					const args = part.arguments;
+					const filePath = typeof args.file_path === 'string' ? args.file_path : args.path;
+					if (typeof filePath === 'string') {
+						const key = `${filePath}:${String(args.offset ?? '')}:${String(args.limit ?? '')}`;
+						const count = readCounts.get(key) ?? 0;
+						if (count > 0) repeatedReads++;
+						readCounts.set(key, count + 1);
+					}
+				}
+			}
+			maxContextTokens = Math.max(maxContextTokens, message.usage.totalTokens || 0);
+		} else if (message.role === 'toolResult' && message.isError) {
+			failedToolCalls++;
+		}
+	}
+	result.metrics = {
+		durationMs: Math.max(0, Date.now() - startedAt),
+		toolCalls,
+		failedToolCalls,
+		repeatedReads,
+		messageCount: result.messages.length,
+		taskChars: result.task.length,
+		outputChars: getFinalOutput(result.messages).length,
+		maxContextTokens,
+	};
 }
 
 function failedResult(
@@ -476,8 +515,12 @@ export async function runSingleAgent(
 	parentSession: string | undefined,
 	onBlocked?: (info: BlockEventInfo) => void,
 ): Promise<SingleResult> {
+	const startedAt = Date.now();
 	const found = findAgentOrFail(agents, agentName, task, step);
-	if (!('systemPrompt' in found)) return found;
+	if (!('systemPrompt' in found)) {
+		recordExecutionMetrics(found, startedAt);
+		return found;
+	}
 	const agent = found;
 
 	const currentResult: SingleResult = {
@@ -528,6 +571,7 @@ export async function runSingleAgent(
 		if (label) removeRegistryEntry(label);
 		return currentResult;
 	} finally {
+		recordExecutionMetrics(currentResult, startedAt);
 		if (tmpFiles) {
 			removeTempFiles(tmpFiles.promptDir, tmpFiles.promptPath);
 			removeTempFiles(tmpFiles.taskDir, tmpFiles.taskPath);
@@ -555,8 +599,12 @@ export async function runReusedAgent(
 	onBlocked?: (info: BlockEventInfo) => void,
 	parentSession?: string,
 ): Promise<SingleResult> {
+	const startedAt = Date.now();
 	const init = initReusedSession(agents, label, task, parentSession);
-	if (!('entry' in init)) return init;
+	if (!('entry' in init)) {
+		recordExecutionMetrics(init, startedAt);
+		return init;
+	}
 	const { entry, agent, currentResult } = init;
 
 	let relaunchTmp: AgentTempFiles | null = null;
@@ -606,6 +654,7 @@ export async function runReusedAgent(
 		currentResult.stderr = (err as Error).message || String(err);
 		return currentResult;
 	} finally {
+		recordExecutionMetrics(currentResult, startedAt);
 		if (relaunchTmp) {
 			removeTempFiles(relaunchTmp.promptDir, relaunchTmp.promptPath);
 			removeTempFiles(relaunchTmp.taskDir, relaunchTmp.taskPath);

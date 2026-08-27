@@ -37,7 +37,7 @@ const AgentScopeSchema = StringEnum(['user', 'project', 'both'] as const, {
 });
 
 const REUSE_WORKFLOW_DESCRIPTION =
-	'For safe reuse, first call subagent with listSubagents: true, select an exact active-session entry, copy its bare reuseLabel, call subagent_stats with that label, and reuse only when the stats and task history show it is appropriate. Never infer or increment labels, use labels from another workspace, or pass workspace:label to reuseLabel or subagent_stats.';
+	'For safe reuse, first call subagent with listSubagents: true, select an exact active-session entry, copy its bare reuseLabel, call subagent_stats with that label, and reuse only when the stats and task history show it is appropriate. Reuse is for same-role worker continuation or narrowly scoped remediation; prefer fresh sessions for planning, scouting, review, validation, security, audit, changed scope, or independent reasoning. Start fresh for high context, many turns, repeated reuse, mismatched task history, changed evidence, or when independence is required. Never infer or increment labels, use labels from another workspace, or pass workspace:label to reuseLabel or subagent_stats.';
 
 export const SubagentParams = Type.Object({
 	agent: Type.Optional(
@@ -84,7 +84,8 @@ export const SubagentParams = Type.Object({
 	),
 	listVerbose: Type.Optional(
 		Type.Boolean({
-			description: 'With listSubagents: show the full last result instead of an 80-char preview',
+			description:
+				'With listSubagents: include pane, session-file, and expanded last-result diagnostics instead of the compact listing',
 		}),
 	),
 	agents: Type.Optional(

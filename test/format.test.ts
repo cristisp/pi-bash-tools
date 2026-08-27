@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	blockedSummaryLine,
 	completionPatch,
+	formatExecutionMetrics,
 	formatBlockedPreview,
 	formatTokens,
 	formatToolCall,
@@ -36,6 +37,23 @@ describe('formatTokens', () => {
 	});
 	it('formats millions with one decimal', () => {
 		expect(formatTokens(1500000)).toBe('1.5M');
+	});
+});
+
+describe('formatExecutionMetrics', () => {
+	it('renders compact execution metrics', () => {
+		expect(
+			formatExecutionMetrics({
+				durationMs: 1500,
+				toolCalls: 3,
+				failedToolCalls: 1,
+				repeatedReads: 2,
+				messageCount: 7,
+				taskChars: 100,
+				outputChars: 2500,
+				maxContextTokens: 12000,
+			}),
+		).toBe('time:1.5s tools:3 msgs:7 io:100/2500 tool-errors:1 rereads:2 max-ctx:12k');
 	});
 });
 

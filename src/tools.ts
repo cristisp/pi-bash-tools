@@ -16,7 +16,7 @@ import { sessionStatsText } from './session-stats.ts';
 import type { SubagentDetails } from './types.ts';
 
 const REUSE_WORKFLOW_DESCRIPTION =
-	'For safe reuse, first call subagent with listSubagents: true, select an exact active-session entry, copy its bare reuseLabel, call subagent_stats with that label, and reuse only when the stats and task history show it is appropriate. Never infer or increment labels, use labels from another workspace, or pass workspace:label to reuseLabel or subagent_stats.';
+	'For safe reuse, first call subagent with listSubagents: true, select an exact active-session entry, copy its bare reuseLabel, call subagent_stats with that label, and reuse only when the stats and task history show it is appropriate. Reuse is for same-role worker continuation or narrowly scoped remediation; prefer fresh sessions for planning, scouting, review, validation, security, audit, changed scope, or independent reasoning. Start fresh for high context, many turns, repeated reuse, mismatched task history, changed evidence, or when independence is required. Never infer or increment labels, use labels from another workspace, or pass workspace:label to reuseLabel or subagent_stats.';
 
 export function registerSubagentTool(pi: ExtensionAPI) {
 	pi.registerTool({
@@ -37,7 +37,7 @@ export function registerSubagentTool(pi: ExtensionAPI) {
 			'Before choosing an agent name, call subagent with agents: true to see the available agents (name, description, source); pick the exact name that fits the task - never invent or modify agent names, unknown names fail.',
 			'A session becomes read-only once its result is delivered to the main agent; reuseLabel + task makes it interactive again for a new task.',
 			"Steers typed into a running subagent's tab are folded into its final outcome and marked [steered] in the result.",
-			'listSubagents: true lists sessions linked to the active Pi session in the active herdr workspace and shows the workspace identity plus the exact bare label to reuse; listLabel/listStatus/listVerbose filter that listing (single entry, status, full last result).',
+			'listSubagents: true lists sessions linked to the active Pi session in a compact form and shows the workspace identity plus the exact bare label to reuse; listLabel/listStatus filter that listing, and listVerbose adds pane, session-file, and last-result diagnostics.',
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), 'agents')}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
 		].join(' '),
@@ -74,7 +74,7 @@ export function registerSubagentStatsTool(pi: ExtensionAPI) {
 		label: 'Subagent Session Stats',
 		description: [
 			`${REUSE_WORKFLOW_DESCRIPTION} This tool is the stats step and must run before reuse.`,
-			'Reports: context size (tokens, last turn), lifetime turns, cumulative token/cache/cost usage, session file size, age, reuse count, task history (what the session has already worked on), and the last result.',
+			'Reports compact reuse-relevant stats: context size, turns, input/output usage, cost, reuse count, recent task history, last result, and only relevant warnings.',
 			'Context size and turns come from the session file itself, so the report is current even while the session runs.',
 			'Use this to judge cost and impact: a session with a large context, many turns, or many reuses is usually better replaced by a fresh session; a session whose task history does not match the new task topic is a poor reuse target.',
 			'Review/audit/verification tasks carry a hidden cost when reused: the session anchors on its earlier findings and may only retest those, missing newly introduced issues. For independent reviews of code that changed, prefer a fresh session or explicitly instruct the reused session to re-examine from scratch.',

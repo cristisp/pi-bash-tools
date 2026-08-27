@@ -193,18 +193,27 @@ export function listSubagents(filter: {
 		(e) => e.workspace === workspace && e.workspaceName?.trim(),
 	)?.workspaceName;
 	const lines = entries.map((e) => {
-		const previewLen = filter.verbose ? 4000 : 80;
-		const last = e.lastResult ? e.lastResult.replace(/\s+/g, ' ').trim().slice(0, previewLen) : '-';
 		const ctx =
 			e.contextTokens && e.contextTokens > 0 ? `ctx:${formatTokens(e.contextTokens)}` : null;
 		const reuse = e.reuseCount && e.reuseCount > 0 ? `reused:${e.reuseCount}` : null;
 		const tasks = e.tasks && e.tasks.length > 0 ? `tasks:${e.tasks.length}` : null;
 		const blocked = registryBlockedInfo(e);
 		const meta = [blocked, ctx, reuse, tasks].filter(Boolean).join('  ');
-		return `${displayWorkspace(e.workspace, e.workspaceName)}:${e.label}  reuseLabel: ${e.label}  ${e.status.padEnd(8)}${meta ? `  ${meta}` : ''}  pane ${e.paneId || '-'}  ${e.sessionFile}\n    last: ${last}`;
+		let line = `${displayWorkspace(e.workspace, e.workspaceName)}:${e.label}  reuseLabel: ${e.label}  ${e.status.padEnd(8)}${meta ? `  ${meta}` : ''}`;
+		if (filter.verbose) {
+			const last = e.lastResult ? e.lastResult.replace(/\s+/g, ' ').trim().slice(0, 4000) : '-';
+			line += `  pane ${e.paneId || '-'}  ${e.sessionFile}\n    last: ${last}`;
+		}
+		return line;
 	});
-	if (filter.parentSession === undefined) {
+	if (filter.verbose && filter.parentSession === undefined) {
 		return `Subagent sessions (registry: ${REGISTRY_PATH}):\n\n${lines.join('\n')}`;
 	}
-	return `Subagent sessions (active Pi session: ${filter.parentSession}, active workspace: ${displayWorkspace(workspace, activeWorkspaceName)}, registry: ${REGISTRY_PATH}):\n\n${lines.join('\n')}`;
+	if (filter.verbose) {
+		return `Subagent sessions (active Pi session: ${filter.parentSession}, active workspace: ${displayWorkspace(workspace, activeWorkspaceName)}, registry: ${REGISTRY_PATH}):\n\n${lines.join('\n')}`;
+	}
+	if (filter.parentSession === undefined) {
+		return `Subagent sessions:\n\n${lines.join('\n')}`;
+	}
+	return `Subagent sessions (active workspace: ${displayWorkspace(workspace, activeWorkspaceName)}):\n\n${lines.join('\n')}`;
 }

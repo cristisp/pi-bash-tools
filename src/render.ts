@@ -5,6 +5,7 @@ import type { AgentScope } from './agents.ts';
 import type { SubagentParams } from './execute.ts';
 import {
 	blockedSummaryLine,
+	formatExecutionMetrics,
 	formatToolCall,
 	formatTokens,
 	formatUsageStats,
@@ -152,6 +153,8 @@ function addExpandedResultBlock(
 	addItemsAndOutput(container, displayItems, finalOutput, theme, mdTheme);
 	const usageStr = formatUsageStats(r.usage, r.model);
 	if (usageStr) container.addChild(new Text(theme.fg('dim', usageStr), 0, 0));
+	if (r.metrics)
+		container.addChild(new Text(theme.fg('dim', formatExecutionMetrics(r.metrics)), 0, 0));
 }
 
 function addUsageTotal(container: Container, results: SingleResult[], theme: Theme): void {
@@ -351,6 +354,7 @@ function renderSingleResult(
 	if (r.paneId) text += `\n${theme.fg('muted', `pane ${r.paneId}`)}`;
 	const usageStr = formatUsageStats(r.usage, r.model);
 	if (usageStr) text += `\n${theme.fg('dim', usageStr)}`;
+	if (r.metrics) text += `\n${theme.fg('dim', formatExecutionMetrics(r.metrics))}`;
 	return new Text(text, 0, 0);
 }
 

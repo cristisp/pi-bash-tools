@@ -37,7 +37,7 @@ import { registerEntry } from '../src/registry.ts';
 import { readRegistry } from '../src/registry-store.ts';
 import type { AgentConfig } from '../src/agents.ts';
 import type { SingleResult, SubagentDetails } from '../src/types.ts';
-import { makeRegistryEntry } from './helpers.ts';
+import { assistantMsg, makeRegistryEntry, toolResultMsg } from './helpers.ts';
 
 const agent: AgentConfig = {
 	name: 'worker',
@@ -129,12 +129,36 @@ afterEach(() => {
 
 describe('runSingleAgent - launch', () => {
 	it('launches, polls, and registers a completed session', async () => {
+		vi.mocked(pollSubagent).mockImplementation(async (...args) => {
+			args[4].messages.push(
+				assistantMsg('done', {
+					toolCalls: [
+						{ id: 't1', name: 'read', args: { path: 'src/a.ts' } },
+						{ id: 't2', name: 'read', args: { path: 'src/a.ts' } },
+					],
+					usage: { totalTokens: 1200 },
+				}),
+			);
+			args[4].messages.push(toolResultMsg('t1'));
+			args[4].messages.push(toolResultMsg('t2'));
+			return 'settled';
+		});
 		const before = countTempDirs();
 		const result = await singleCall({ step: 1, parentSession: '/sess/parent.jsonl' });
 		expect(result.exitCode).toBe(0);
 		expect(result.label).toBe('worker-1');
 		expect(result.step).toBe(1);
 		expect(result.paneId).toBe('ws1:p9');
+		expect(result.metrics).toMatchObject({
+			toolCalls: 2,
+			failedToolCalls: 0,
+			repeatedReads: 1,
+			messageCount: 3,
+			taskChars: 5,
+			outputChars: 4,
+			maxContextTokens: 1200,
+		});
+		expect(result.metrics?.durationMs).toBeGreaterThanOrEqual(0);
 		expect(createTaskTab).toHaveBeenCalledWith('ws1', '/tmp', 'worker-1');
 		expect(launchInPane).toHaveBeenCalledOnce();
 		const launchArgs = vi.mocked(launchInPane).mock.calls[0];

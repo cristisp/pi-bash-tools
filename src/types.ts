@@ -52,6 +52,17 @@ export interface UsageStats {
 	turns: number;
 }
 
+export interface ExecutionMetrics {
+	durationMs: number;
+	toolCalls: number;
+	failedToolCalls: number;
+	repeatedReads: number;
+	messageCount: number;
+	taskChars: number;
+	outputChars: number;
+	maxContextTokens: number;
+}
+
 export interface SingleResult {
 	agent: string;
 	agentSource: 'user' | 'project' | 'unknown' | 'reuse';
@@ -60,6 +71,7 @@ export interface SingleResult {
 	messages: Message[];
 	stderr: string;
 	usage: UsageStats;
+	metrics?: ExecutionMetrics;
 	model?: string;
 	stopReason?: string;
 	errorMessage?: string;

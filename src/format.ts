@@ -1,13 +1,30 @@
 import * as os from 'node:os';
 import type { Message } from '@earendil-works/pi-ai';
 import { getConfig } from './config.ts';
-import type { DisplayItem, RegistryEntry, SingleResult } from './types.ts';
+import type { DisplayItem, ExecutionMetrics, RegistryEntry, SingleResult } from './types.ts';
 
 export function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
 	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
 	if (count < 1000000) return `${Math.round(count / 1000)}k`;
 	return `${(count / 1000000).toFixed(1)}M`;
+}
+
+export function formatExecutionMetrics(metrics: ExecutionMetrics): string {
+	const duration =
+		metrics.durationMs < 1000
+			? `${metrics.durationMs}ms`
+			: `${(metrics.durationMs / 1000).toFixed(1)}s`;
+	const parts = [
+		`time:${duration}`,
+		`tools:${metrics.toolCalls}`,
+		`msgs:${metrics.messageCount}`,
+		`io:${metrics.taskChars}/${metrics.outputChars}`,
+	];
+	if (metrics.failedToolCalls) parts.push(`tool-errors:${metrics.failedToolCalls}`);
+	if (metrics.repeatedReads) parts.push(`rereads:${metrics.repeatedReads}`);
+	if (metrics.maxContextTokens) parts.push(`max-ctx:${formatTokens(metrics.maxContextTokens)}`);
+	return parts.join(' ');
 }
 
 export function formatUsageStats(

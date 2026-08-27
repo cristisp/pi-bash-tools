@@ -340,12 +340,13 @@ describe('commands - setup file creation', () => {
 		expect(fs.existsSync(path.join(agentsDir, 'planner.md'))).toBe(true);
 		expect(fs.existsSync(path.join(agentsDir, 'reviewer.md'))).toBe(true);
 		expect(fs.existsSync(path.join(agentsDir, 'scout.md'))).toBe(true);
+		expect(fs.existsSync(path.join(agentsDir, 'validator.md'))).toBe(true);
 		const worker = fs.readFileSync(path.join(agentsDir, 'worker.md'), 'utf-8');
 		expect(worker).toContain('model: github-copilot/gpt-5.6-luna:high');
 		const configFile = path.join(dir, 'subagent-herdr.config.json');
 		expect(fs.existsSync(configFile)).toBe(true);
 		expect(JSON.parse(fs.readFileSync(configFile, 'utf-8'))).toEqual(DEFAULT_CONFIG);
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining('4 created'), 'info');
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining('5 created'), 'info');
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining('Config file created'), 'info');
 	});
 
@@ -387,6 +388,6 @@ describe('commands - setup overwrite', () => {
 			'Overwrite existing agent files?',
 			expect.stringContaining('worker.md'),
 		);
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining('3 created, 1 updated'), 'info');
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining('4 created, 1 updated'), 'info');
 	});
 });
