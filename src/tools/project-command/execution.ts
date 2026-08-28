@@ -26,6 +26,8 @@ export interface ProjectCommandExecutionOutcome {
   readonly exit: ProjectCommandExit;
   readonly timedOut: boolean;
   readonly cancelled: boolean;
+  /** Whether the process/in-process command was actually attempted. */
+  readonly executed?: boolean;
   readonly stdout: ProjectCommandOutput;
   readonly stderr: ProjectCommandOutput;
   readonly structuredDetails?: unknown;

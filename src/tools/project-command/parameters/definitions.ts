@@ -1,5 +1,5 @@
 export const NODE_TEST_PATH_PATTERN =
-  "^(?!-)(?!/)(?![A-Za-z]:[\\\\/])(?!.*[\\\\*?\\[\\]{}\\u0000-\\u001f\\u007f\\u2028\\u2029])(?!.*(?:^|/)\\.{1,2}(?:/|$)).+$";
+  "^(?!-)(?!/)(?![A-Za-z]:[\\\\/])(?!.*[\\\\*?\\[\\]{}\\u0000-\\u001f\\u007f\\u0080-\\u009f\\u2028\\u2029])(?!.*(?:^|/)\\.{1,2}(?:/|$)).+$";
 
 export const NODE_TEST_PARAMETERS = Object.freeze([
   Object.freeze({
@@ -67,9 +67,10 @@ export const FALLOW_AUDIT_PARAMETERS = Object.freeze([
 export const FALLOW_REVISION_PATTERN =
   "^(?!-)(?!.*--)(?!.*:)(?!.*\\s)(?!.*[\\\\*?\\[\\]])[A-Za-z0-9_./@^~{}+=,-]+$";
 
-export const NODE_E2E_GREP_PATTERN = "^(?!-)(?!.*[\\u0000-\\u001f\\u007f\\u2028\\u2029]).{1,500}$";
+export const NODE_E2E_GREP_PATTERN =
+  "^(?!-)(?!.*[\\u0000-\\u001f\\u007f\\u0080-\\u009f\\u2028\\u2029]).{1,500}$";
 export const NODE_E2E_PROJECT_PATTERN =
-  "^(?!-)(?!.*[\\u0000-\\u001f\\u007f\\u2028\\u2029]).{1,200}$";
+  "^(?!-)(?!.*[\\u0000-\\u001f\\u007f\\u0080-\\u009f\\u2028\\u2029]).{1,200}$";
 
 export {
   NODE_E2E_GREP_MAX_LENGTH,

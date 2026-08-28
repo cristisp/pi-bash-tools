@@ -76,6 +76,9 @@ it("rejects arbitrary command fields and inline execution forms", () => {
     { commandId: "fallow_audit", base: "HEAD", extra: true },
     { commandId: "node_test", executable: "/bin/sh" },
     { commandId: "node_e2e", grep: "-unsafe" },
+    { commandId: "node_e2e", grep: "safe\u009btext" },
+    { commandId: "node_e2e", projects: ["safe\u009fproject"] },
+    { commandId: "node_test", paths: ["safe\u0080.ts"] },
     { commandId: "node_e2e", projects: ["chromium", "chromium"] },
     { commandId: "node_e2e", workers: 0 },
     { commandId: "node_e2e", retries: 11 },
@@ -101,6 +104,37 @@ it("rejects arbitrary command fields and inline execution forms", () => {
   ];
   for (const request of invalidRequests) {
     expect(() => validateProjectCommandInput(request)).toThrow(/invalid/iu);
+  }
+});
+
+it("reports a structured invalid request without execution", () => {
+  try {
+    validateProjectCommandInput({ commandId: "node_e2e", workers: 0 });
+    throw new Error("expected validation failure");
+  } catch (error) {
+    expect(error).toMatchObject({
+      name: "ProjectCommandToolError",
+      contract: {
+        code: "invalid-request",
+        category: "INVALID_REQUEST",
+        explanation: expect.any(String),
+        invalidField: "workers",
+        retryable: false,
+        executed: false,
+      },
+      details: {
+        category: "INVALID_REQUEST",
+        executed: false,
+        suggestedAction: "Correct the invalid request field and retry the command.",
+        error: {
+          suggestedAction: "Correct the invalid request field and retry the command.",
+          code: "invalid-request",
+          category: "INVALID_REQUEST",
+          invalidField: "workers",
+          executed: false,
+        },
+      },
+    });
   }
 });
 

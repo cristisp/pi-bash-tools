@@ -89,10 +89,12 @@ describe("project command parameters", () => {
     expect(PROJECT_COMMAND_MAX_FORWARDED_ARGUMENT_BYTES).toBeGreaterThan(0);
   });
 
-  it("rejects line-separator characters in E2E text at runtime", () => {
-    for (const character of ["\u2028", "\u2029"]) {
+  it("rejects C1 controls and line separators in project command text at runtime", () => {
+    for (const character of ["\u0080", "\u009b", "\u009f", "\u2028", "\u2029"]) {
+      expect(() => validateWorkspacePathParameter(`safe${character}.ts`)).toThrow();
       expect(() => validateNodeE2EParameters({ grep: `safe${character}text` })).toThrow();
       expect(() => validateNodeE2EParameters({ projects: [`safe${character}text`] })).toThrow();
+      expect(() => validateProjectCommandRevision(`HEAD${character}`)).toThrow();
     }
   });
 

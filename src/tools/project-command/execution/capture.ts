@@ -87,6 +87,7 @@ export function emptyOutcome(
     exit: { code: null, signal: null },
     timedOut: status === "timeout",
     cancelled: status === "cancelled",
+    executed: status !== "cancelled",
     stdout: emptyOutput(),
     stderr: emptyOutput(),
   };

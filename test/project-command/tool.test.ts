@@ -44,8 +44,21 @@ it("keeps resolution failures outside authorization and execution failure mappin
     ),
     details: {
       status: "resolution-failure",
+      category: "RESOLUTION_FAILURE",
       executed: false,
       commandId: "workspace_path",
+      toolCallId: "1",
+      reused: false,
+      durationMs: expect.any(Number),
+      executionDurationMs: 0,
+      suggestedAction: "Review the project metadata and dependencies, then retry the command.",
+      error: {
+        code: "resolution-failure",
+        category: "RESOLUTION_FAILURE",
+        suggestedAction: "Review the project metadata and dependencies, then retry the command.",
+        retryable: true,
+        executed: false,
+      },
       requestedParameters: { commandId: "workspace_path" },
       stage: "binary-resolution",
       code: "missing-binary",
@@ -108,6 +121,29 @@ it("leaves policy unchanged when an unauthorized command is rejected", async () 
       undefined,
       context(fixtureData.directory),
     ),
-  ).rejects.toThrow(/not authorized/iu);
+  ).rejects.toMatchObject({
+    message: expect.stringMatching(/not authorized/iu),
+    contract: {
+      code: "policy-not-authorized",
+      category: "BLOCKED",
+      retryable: false,
+      executed: false,
+    },
+    details: {
+      category: "BLOCKED",
+      executed: false,
+      toolCallId: "1",
+      reused: false,
+      durationMs: expect.any(Number),
+      executionDurationMs: 0,
+      suggestedAction:
+        "Request authorization or adjust the project command policy before retrying.",
+      error: {
+        category: "BLOCKED",
+        suggestedAction:
+          "Request authorization or adjust the project command policy before retrying.",
+      },
+    },
+  });
   expect(JSON.parse(await readFile(fixtureData.configPath, "utf8"))).toEqual({ version: 1 });
 });

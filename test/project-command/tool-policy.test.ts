@@ -1,5 +1,10 @@
-import { readFile, realpath } from "node:fs/promises";
+import { readFile, realpath, writeFile } from "node:fs/promises";
 import { afterEach, expect, it, vi } from "vitest";
+import {
+  getProjectCommandDefinition,
+  projectCommandIdentity,
+} from "../../src/tools/project-command/definitions.ts";
+import { resolveFixedProjectCommand } from "../../src/tools/project-command/resolution.ts";
 import { createPolicyStoreForTesting } from "../../src/tools/policy/store.ts";
 import type { PolicyStore } from "../../src/tools/policy/types.ts";
 import {
@@ -29,6 +34,21 @@ it("reports a dismissed confirmation as an abort cancellation", async () => {
   await expect(execution).rejects.toMatchObject({
     message: "Project command request cancelled",
     name: "AbortError",
+    contract: {
+      code: "cancelled",
+      category: "CANCELLED",
+      retryable: true,
+      executed: false,
+    },
+    details: {
+      category: "CANCELLED",
+      executed: false,
+      toolCallId: "1",
+      reused: false,
+      durationMs: expect.any(Number),
+      executionDurationMs: 0,
+      suggestedAction: "Retry the request if the command is still needed.",
+    },
   });
   expect(JSON.parse(await readFile(fixtureData.configPath, "utf8"))).toEqual({ version: 1 });
 });
@@ -56,7 +76,77 @@ it("preserves cancellation when policy loading fails after abort", async () => {
   ).rejects.toMatchObject({
     message: "Project command request cancelled",
     name: "AbortError",
+    details: {
+      category: "CANCELLED",
+      executed: false,
+      toolCallId: "1",
+      reused: false,
+      durationMs: expect.any(Number),
+      executionDurationMs: 0,
+      suggestedAction: "Retry the request if the command is still needed.",
+      error: {
+        category: "CANCELLED",
+        suggestedAction: "Retry the request if the command is still needed.",
+      },
+    },
   });
+});
+
+it("classifies a persisted policy denial as blocked without execution", async () => {
+  const fixtureData = await fixture();
+  const definition = getProjectCommandDefinition("workspace_path");
+  if (definition === undefined) throw new Error("missing workspace_path definition");
+  const resolved = resolveFixedProjectCommand(definition);
+  const projectPath = await realpath(fixtureData.directory);
+  await writeFile(
+    fixtureData.configPath,
+    JSON.stringify({
+      version: 2,
+      environment: { version: 1 },
+      projectCommands: {
+        version: 1,
+        global: { allow: [], deny: [] },
+        projects: {
+          [projectPath]: {
+            allow: [],
+            deny: [projectCommandIdentity(definition, resolved)],
+          },
+        },
+      },
+    }),
+  );
+  const executor = successExecutor();
+  const tool = createProjectCommandToolForTesting({
+    configPath: fixtureData.configPath,
+    executor,
+  });
+  await expect(
+    tool.execute(
+      "1",
+      { commandId: "workspace_path" },
+      undefined,
+      undefined,
+      context(fixtureData.directory),
+    ),
+  ).rejects.toMatchObject({
+    contract: {
+      code: "policy-denied",
+      category: "BLOCKED",
+      retryable: false,
+      executed: false,
+    },
+    details: {
+      category: "BLOCKED",
+      executed: false,
+      toolCallId: "1",
+      reused: false,
+      durationMs: expect.any(Number),
+      executionDurationMs: 0,
+      suggestedAction:
+        "Request authorization or adjust the project command policy before retrying.",
+    },
+  });
+  expect(executor).not.toHaveBeenCalled();
 });
 
 it("maps non-cancellation policy load failures", async () => {
@@ -80,6 +170,25 @@ it("maps non-cancellation policy load failures", async () => {
   ).rejects.toMatchObject({
     message: "Unable to load project command policy",
     name: "ProjectCommandToolError",
+    contract: {
+      code: "policy-load-failure",
+      category: "POLICY_FAILURE",
+      retryable: true,
+      executed: false,
+    },
+    details: {
+      category: "POLICY_FAILURE",
+      executed: false,
+      toolCallId: "1",
+      reused: false,
+      durationMs: expect.any(Number),
+      executionDurationMs: 0,
+      suggestedAction: "Review the project command policy configuration, then retry the request.",
+      error: {
+        category: "POLICY_FAILURE",
+        suggestedAction: "Review the project command policy configuration, then retry the request.",
+      },
+    },
   });
 });
 
@@ -102,7 +211,11 @@ it("uses exactly the authorization choices and persists an allow decision before
     undefined,
     context(fixtureData.directory, { mode: "tui", hasUI: true, ui: { select } }),
   );
-  expect(response.details.status).toBe("success");
+  expect(response.details).toMatchObject({
+    status: "success",
+    category: "PASS",
+    executed: true,
+  });
   expect(choices).toEqual([
     "Deny once",
     "Deny for this project",
@@ -142,7 +255,29 @@ it("records a project deny on confirmation timeout", async () => {
         ui: { select: () => new Promise<string | undefined>(() => undefined) },
       }),
     ),
-  ).rejects.toThrow(/timed out/iu);
+  ).rejects.toMatchObject({
+    message: expect.stringMatching(/timed out/iu),
+    contract: {
+      code: "confirmation-timeout",
+      category: "TIMEOUT",
+      retryable: true,
+      executed: false,
+    },
+    details: {
+      category: "TIMEOUT",
+      executed: false,
+      toolCallId: "1",
+      reused: false,
+      durationMs: expect.any(Number),
+      executionDurationMs: 0,
+      suggestedAction: "Review the command duration and project state before retrying the request.",
+      error: {
+        category: "TIMEOUT",
+        suggestedAction:
+          "Review the command duration and project state before retrying the request.",
+      },
+    },
+  });
   expect(JSON.parse(await readFile(fixtureData.configPath, "utf8"))).toMatchObject({
     version: 2,
     projectCommands: {

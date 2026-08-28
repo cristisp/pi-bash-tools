@@ -32,6 +32,7 @@ function outcomeFromState(
     exit: state.exit,
     timedOut: state.timedOut,
     cancelled: state.cancelled,
+    executed: true,
     stdout: stdout.output(),
     stderr: stderr.output(),
   };

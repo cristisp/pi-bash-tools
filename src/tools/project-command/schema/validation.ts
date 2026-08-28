@@ -1,3 +1,9 @@
+import {
+  createToolErrorContract,
+  suggestedActionForCategory,
+  withToolErrorContract,
+  type ToolErrorContract,
+} from "../../errors.ts";
 import { getProjectCommandDefinitions, type ProjectCommandDefinition } from "../definitions.ts";
 import { effectiveNodeE2EParameters } from "../parameters/e2e.ts";
 import {
@@ -5,20 +11,52 @@ import {
   validateNodeTestPaths,
   validateProjectCommandRevision,
 } from "../parameters.ts";
+import { isProjectCommandResolutionError } from "../errors.ts";
 import type { ProjectCommandInput, ProjectCommandInputFor } from "../schema.ts";
+
+function defaultErrorContract(message: string): ToolErrorContract {
+  return createToolErrorContract({
+    code: "project-command-error",
+    category: "IMPLEMENTATION_FAILURE",
+    explanation: message,
+    suggestedAction: suggestedActionForCategory("IMPLEMENTATION_FAILURE"),
+    retryable: false,
+    executed: false,
+  });
+}
 
 export class ProjectCommandToolError extends Error {
   readonly details: unknown;
+  readonly contract: ToolErrorContract;
 
-  constructor(message: string, details?: unknown) {
+  constructor(message: string, details?: unknown, contract?: ToolErrorContract) {
     super(message);
     this.name = "ProjectCommandToolError";
-    this.details = details;
+    this.contract = contract ?? defaultErrorContract(message);
+    this.details =
+      details === undefined
+        ? withToolErrorContract({}, this.contract)
+        : isRecord(details)
+          ? withToolErrorContract(details, this.contract)
+          : details;
   }
 }
 
-function invalidRequest(): ProjectCommandToolError {
-  return new ProjectCommandToolError("Project command request is invalid");
+export function invalidRequest(invalidField?: string): ProjectCommandToolError {
+  const contract = createToolErrorContract({
+    code: "invalid-request",
+    category: "INVALID_REQUEST",
+    explanation: "The project command request does not match the supported command schema.",
+    ...(invalidField === undefined ? {} : { invalidField }),
+    suggestedAction: suggestedActionForCategory("INVALID_REQUEST"),
+    retryable: false,
+    executed: false,
+  });
+  return new ProjectCommandToolError(
+    "Project command request is invalid",
+    withToolErrorContract({}, contract),
+    contract,
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -31,11 +69,11 @@ function findDefinition(
 ): ProjectCommandDefinition {
   const matches = definitions.filter((definition) => definition.commandId === commandId);
   if (matches.length !== 1) {
-    throw invalidRequest();
+    throw invalidRequest("commandId");
   }
   const definition = matches[0];
   if (definition === undefined) {
-    throw invalidRequest();
+    throw invalidRequest("commandId");
   }
   return definition;
 }
@@ -49,8 +87,9 @@ function validateRequestKeys(keys: readonly string[], commandId: string): void {
         : commandId === "fallow_audit"
           ? ["commandId", "base"]
           : ["commandId"];
-  if (!keys.includes("commandId") || keys.some((key) => !expectedKeys.includes(key))) {
-    throw invalidRequest();
+  const invalidKey = keys.find((key) => !expectedKeys.includes(key));
+  if (!keys.includes("commandId") || invalidKey !== undefined) {
+    throw invalidRequest(invalidKey ?? "commandId");
   }
 }
 
@@ -71,17 +110,48 @@ function normalizedRequest(
   commandId: string,
 ): NormalizedProjectCommandInput {
   if (commandId === "fallow_audit") {
-    return { commandId, base: validateProjectCommandRevision(params.base) };
+    try {
+      return { commandId, base: validateProjectCommandRevision(params.base) };
+    } catch {
+      throw invalidRequest("base");
+    }
   }
   if (commandId === "node_test") {
-    const paths = validateNodeTestPaths(params.paths);
-    return paths.length === 0 ? { commandId } : { commandId, paths };
+    try {
+      const paths = validateNodeTestPaths(params.paths);
+      return paths.length === 0 ? { commandId } : { commandId, paths };
+    } catch {
+      throw invalidRequest("paths");
+    }
   }
   if (commandId === "node_e2e") {
-    return {
-      commandId,
-      ...effectiveNodeE2EParameters(validateNodeE2EParameters(params)),
-    };
+    try {
+      return {
+        commandId,
+        ...effectiveNodeE2EParameters(validateNodeE2EParameters(params)),
+      };
+    } catch (error) {
+      if (isProjectCommandResolutionError(error)) {
+        const field =
+          error.code.includes("path") || error.code.includes("arguments")
+            ? "paths"
+            : error.code.includes("grep")
+              ? "grep"
+              : error.code.includes("project")
+                ? "projects"
+                : error.code.includes("worker")
+                  ? "workers"
+                  : error.code.includes("retr")
+                    ? "retries"
+                    : error.code.includes("headed")
+                      ? "headed"
+                      : error.code.includes("list")
+                        ? "list"
+                        : undefined;
+        throw invalidRequest(field);
+      }
+      throw invalidRequest();
+    }
   }
   return { commandId };
 }
@@ -101,7 +171,7 @@ export function validateProjectCommandInput(
     const request = params;
     const commandId = request.commandId;
     if (typeof commandId !== "string") {
-      throw invalidRequest();
+      throw invalidRequest("commandId");
     }
     findDefinition(commandId, definitions);
     validateRequestKeys(Object.keys(request), commandId);
@@ -115,7 +185,25 @@ export function validateProjectCommandInput(
 }
 
 export function cancellationError(details?: unknown): ProjectCommandToolError {
-  const error = new ProjectCommandToolError("Project command request cancelled", details);
+  const executed =
+    typeof details === "object" && details !== null && "executed" in details
+      ? details.executed === true
+      : false;
+  const contract = createToolErrorContract({
+    code: "cancelled",
+    category: "CANCELLED",
+    explanation: "The project command request was cancelled.",
+    suggestedAction: suggestedActionForCategory("CANCELLED"),
+    retryable: true,
+    executed,
+  });
+  const error = new ProjectCommandToolError(
+    "Project command request cancelled",
+    isRecord(details)
+      ? withToolErrorContract(details, contract)
+      : withToolErrorContract({}, contract),
+    contract,
+  );
   error.name = "AbortError";
   return error;
 }

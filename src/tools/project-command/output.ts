@@ -1,20 +1,55 @@
+import {
+  createToolErrorContract,
+  suggestedActionForCategory,
+  withToolErrorContract,
+  type ResultCategory,
+  type ToolErrorContract,
+} from "../errors.ts";
 import { displayPath } from "../path-display.ts";
 import type { CommandIdentity } from "../policy/types.ts";
-import type { ProjectCommandExecutionOutcome } from "./execution.ts";
+import { projectCommandResultCategory } from "./categories.ts";
+import type { ProjectCommandExecutionOutcome, ProjectCommandOutput } from "./execution.ts";
+import { boundProjectCommandText, projectCommandDiagnostic } from "./diagnostics.ts";
 import type { ProjectCommandResolutionError } from "./errors.ts";
 import type { ResolvedProjectCommand } from "./resolution/types.ts";
 import { ProjectCommandToolError } from "./schema.ts";
+
+export interface ProjectCommandScope {
+  readonly cwdStrategy: ResolvedProjectCommand["definition"]["cwdStrategy"];
+  readonly projectPath: string;
+}
+
+export interface ProjectCommandInvocationMetadata {
+  readonly toolCallId: string;
+  readonly durationMs: number;
+  readonly executionDurationMs: number;
+  readonly reused: boolean;
+}
 
 export interface ProjectCommandOutputDetails {
   readonly commandId: string;
   readonly projectPath: string;
   readonly fingerprint: string;
+  readonly toolCallId: string;
+  readonly reused: boolean;
+  readonly durationMs: number;
+  readonly executionDurationMs: number;
+  readonly scope: ProjectCommandScope;
   readonly status: ProjectCommandExecutionOutcome["status"];
+  readonly category: ResultCategory;
+  readonly executed: boolean;
+  readonly error?: ToolErrorContract;
   readonly exit: ProjectCommandExecutionOutcome["exit"];
   readonly timedOut: boolean;
   readonly cancelled: boolean;
   readonly stdout: ProjectCommandExecutionOutcome["stdout"];
   readonly stderr: ProjectCommandExecutionOutcome["stderr"];
+  readonly output: {
+    readonly stdout: Pick<ProjectCommandOutput, "truncated" | "totalBytes" | "totalLines">;
+    readonly stderr: Pick<ProjectCommandOutput, "truncated" | "totalBytes" | "totalLines">;
+  };
+  readonly diagnostic?: string;
+  readonly suggestedAction?: string;
   readonly resolvedCommand: string;
   readonly parameters: Readonly<Record<string, unknown>>;
   readonly projectInfo?: unknown;
@@ -38,6 +73,7 @@ export function outputDetails(
   projectPath: string,
   resolved: ResolvedProjectCommand,
   outcome: ProjectCommandExecutionOutcome,
+  metadata: ProjectCommandInvocationMetadata,
 ): ProjectCommandOutputDetails {
   const projectInfo =
     typeof outcome.structuredDetails === "object" && outcome.structuredDetails !== null
@@ -49,16 +85,46 @@ export function outputDetails(
           readonly applicableCommands?: readonly string[];
         })
       : undefined;
+  const category = projectCommandResultCategory(resolved.definition, outcome);
+  const diagnostic =
+    category === "PASS"
+      ? undefined
+      : projectCommandDiagnostic(identity.commandId, outcome.stderr, outcome.stdout);
+  const scope = {
+    cwdStrategy: resolved.definition.cwdStrategy,
+    projectPath,
+  } satisfies ProjectCommandScope;
   return {
     commandId: identity.commandId,
     projectPath: displayPath(projectPath),
     fingerprint: identity.fingerprint,
+    toolCallId: metadata.toolCallId,
+    reused: metadata.reused,
+    durationMs: metadata.durationMs,
+    executionDurationMs: metadata.executionDurationMs,
+    scope,
     status: outcome.status,
+    category,
+    executed: outcome.executed ?? true,
     exit: outcome.exit,
     timedOut: outcome.timedOut,
     cancelled: outcome.cancelled,
     stdout: outcome.stdout,
     stderr: outcome.stderr,
+    output: {
+      stdout: {
+        truncated: outcome.stdout.truncated,
+        totalBytes: outcome.stdout.totalBytes,
+        totalLines: outcome.stdout.totalLines,
+      },
+      stderr: {
+        truncated: outcome.stderr.truncated,
+        totalBytes: outcome.stderr.totalBytes,
+        totalLines: outcome.stderr.totalLines,
+      },
+    },
+    ...(diagnostic === undefined ? {} : { diagnostic }),
+    ...(category === "PASS" ? {} : { suggestedAction: suggestedActionForCategory(category) }),
     resolvedCommand: displayCommand(resolved),
     parameters: resolved.effectiveParameters ?? Object.freeze({}),
     ...(outcome.structuredDetails === undefined
@@ -86,17 +152,36 @@ function serializeDiagnostic(value: unknown): string {
   }
 }
 
-function outputDiagnostic(
-  label: "stdout" | "stderr",
-  output: ProjectCommandExecutionOutcome["stdout"],
-): string | undefined {
-  if (output.text.length === 0) {
-    return undefined;
-  }
-  const truncation = output.truncated
-    ? ` (truncated; ${output.totalBytes.toString(10)} bytes total)`
-    : "";
-  return `${label}: ${serializeDiagnostic(output.text)}${truncation}`;
+export { suggestedActionForCategory } from "../errors.ts";
+
+function executionFailureContract(details: ProjectCommandOutputDetails): ToolErrorContract {
+  const category = details.category;
+  const contractCategory = category === "PASS" ? "IMPLEMENTATION_FAILURE" : category;
+  const suggestedAction = suggestedActionForCategory(contractCategory);
+  const code =
+    category === "TIMEOUT"
+      ? "process-timeout"
+      : category === "SPAWN_FAILURE"
+        ? "spawn-failure"
+        : category === "CANCELLED"
+          ? "cancelled"
+          : "command-nonzero";
+  const explanation =
+    category === "TIMEOUT"
+      ? "The project command exceeded its process time limit."
+      : category === "SPAWN_FAILURE"
+        ? "The project command could not be started."
+        : category === "CANCELLED"
+          ? "The project command was cancelled."
+          : "The project command exited with a nonzero status.";
+  return createToolErrorContract({
+    code,
+    category: contractCategory,
+    explanation,
+    ...(suggestedAction === undefined ? {} : { suggestedAction }),
+    retryable: true,
+    executed: details.executed,
+  });
 }
 
 function executionFailureReason(status: ProjectCommandExecutionOutcome["status"]): string {
@@ -118,22 +203,28 @@ function executionFailureReason(status: ProjectCommandExecutionOutcome["status"]
 function executionFailureMessage(details: ProjectCommandOutputDetails): string {
   const exit = [
     details.exit.code === null ? undefined : `code ${details.exit.code.toString(10)}`,
-    details.exit.signal === null ? undefined : `signal ${details.exit.signal}`,
+    details.exit.signal === null
+      ? undefined
+      : `signal ${boundProjectCommandText(details.exit.signal)}`,
   ].filter((part): part is string => part !== undefined);
   const diagnostic =
-    outputDiagnostic("stderr", details.stderr) ?? outputDiagnostic("stdout", details.stdout);
-  return [
-    "Project command failed",
-    `status: ${details.status}`,
-    `reason: ${executionFailureReason(details.status)}`,
-    `commandId: ${details.commandId}`,
-    `resolvedCommand: ${details.resolvedCommand}`,
-    `parameters: ${serializeDiagnostic(details.parameters)}`,
-    `exit: ${exit.length === 0 ? "unavailable" : exit.join(", ")}`,
-    diagnostic,
-  ]
-    .filter((part): part is string => part !== undefined)
-    .join("; ");
+    details.diagnostic === undefined
+      ? undefined
+      : `diagnostic: ${boundProjectCommandText(serializeDiagnostic(details.diagnostic))}`;
+  return boundProjectCommandText(
+    [
+      "Project command failed",
+      `status: ${boundProjectCommandText(details.status)}`,
+      `reason: ${boundProjectCommandText(executionFailureReason(details.status))}`,
+      `commandId: ${boundProjectCommandText(details.commandId)}`,
+      `resolvedCommand: ${boundProjectCommandText(details.resolvedCommand)}`,
+      `parameters: ${boundProjectCommandText(serializeDiagnostic(details.parameters))}`,
+      `exit: ${exit.length === 0 ? "unavailable" : exit.join(", ")}`,
+      diagnostic,
+    ]
+      .filter((part): part is string => part !== undefined)
+      .join("; "),
+  );
 }
 
 export function createExecutionFailure(
@@ -141,27 +232,44 @@ export function createExecutionFailure(
   projectPath: string,
   resolved: ResolvedProjectCommand,
   outcome: ProjectCommandExecutionOutcome,
+  metadata: ProjectCommandInvocationMetadata,
 ): ProjectCommandToolError {
-  const details = outputDetails(identity, projectPath, resolved, outcome);
-  return new ProjectCommandToolError(executionFailureMessage(details), details);
+  const details = outputDetails(identity, projectPath, resolved, outcome, metadata);
+  const contract = executionFailureContract(details);
+  return new ProjectCommandToolError(
+    executionFailureMessage(details),
+    withToolErrorContract(details, contract),
+    contract,
+  );
 }
 
 export function createResolutionFailure(
   params: ProjectCommandRequestParameters,
   error: ProjectCommandResolutionError,
 ): ProjectCommandToolError {
-  const details = Object.freeze({
-    ...error.details,
-    status: "resolution-failure" as const,
-    executed: false as const,
-    commandId: params.commandId,
-    requestedParameters: params,
-    parameters: params,
-    stage: error.stage,
-    code: error.code,
-    resolution: error.details,
-    resolutionDetails: error.details,
+  const contract = createToolErrorContract({
+    code: "resolution-failure",
+    category: "RESOLUTION_FAILURE",
+    explanation: "The project command could not be resolved for execution.",
+    suggestedAction: suggestedActionForCategory("RESOLUTION_FAILURE"),
+    retryable: true,
+    executed: false,
   });
+  const details = withToolErrorContract(
+    {
+      ...error.details,
+      status: "resolution-failure" as const,
+      executed: false as const,
+      commandId: params.commandId,
+      requestedParameters: params,
+      parameters: params,
+      stage: error.stage,
+      code: error.code,
+      resolution: error.details,
+      resolutionDetails: error.details,
+    },
+    contract,
+  );
   const message = [
     "Project command resolution failed",
     "status: resolution-failure",
@@ -172,5 +280,5 @@ export function createResolutionFailure(
     "execution: not attempted",
     `details: ${serializeDiagnostic(error.details)}`,
   ].join("; ");
-  return new ProjectCommandToolError(message, details);
+  return new ProjectCommandToolError(message, details, contract);
 }

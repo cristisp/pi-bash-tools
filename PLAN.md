@@ -94,22 +94,21 @@ Unknown or sensitive argument values must be redacted or represented by a stable
 Pi's existing session ID and tool call ID will identify invocations.
 The extension must not introduce a second unrelated invocation ID system.
 
-## Phase 1: Active tool contract inventory
+## Phase 1: Active tool contract inventory (complete)
 
 ### Implementation
 
-- [ ] Add a single source constant for the extension version.
-- [ ] Add a test that requires the source constant to match `package.json`.
-- [ ] Add canonical JSON serialization for JSON-compatible metadata.
-- [ ] Preserve array order while sorting object keys recursively.
-- [ ] Add SHA-256 hashing for serialized tool parameter schemas.
-- [ ] Record all configured tools from `pi.getAllTools()` during `session_start`.
-- [ ] Record the active tool names from `pi.getActiveTools()`.
-- [ ] Record each tool's name, active state, source provenance, and schema hash.
-- [ ] Record the extension version, session ID, session-start reason, hash algorithm, and inventory format version.
-- [ ] Persist the inventory through `pi.appendEntry()` so it remains outside model context.
-- [ ] Deduplicate only an identical inventory recorded more than once in the same active runtime.
-- [ ] Record a new inventory after reload when schemas, provenance, or active tools change.
+- [x] Load the extension version from `package.json` at runtime through a single source.
+- [x] Add canonical JSON serialization for JSON-compatible metadata.
+- [x] Preserve array order while sorting object keys recursively.
+- [x] Add SHA-256 hashing for serialized tool parameter schemas.
+- [x] Record all configured tools from `pi.getAllTools()` during `session_start`.
+- [x] Record the active tool names from `pi.getActiveTools()`.
+- [x] Record each tool's name, active state, source provenance, and schema hash.
+- [x] Record the extension version, session ID, session-start reason, hash algorithm, and inventory format version.
+- [x] Persist the inventory through `pi.appendEntry()` so it remains outside model context.
+- [x] Deduplicate only an identical inventory recorded more than once in the same active runtime.
+- [x] Record a new inventory after reload when schemas, provenance, or active tools change.
 
 ### Proposed files
 
@@ -123,13 +122,13 @@ The extension must not introduce a second unrelated invocation ID system.
 
 ### Policy coverage inventory
 
-- [ ] Add a table-driven test proving that `read`, `write`, `edit`, `ls`, `find`, and `grep` are handled by the filesystem `tool_call` interceptor.
-- [ ] Add tests proving that `move` and `delete` use policy within their implementations rather than inheriting interceptor authorization.
-- [ ] Add a test proving that an unknown tool receives no filesystem authorization accidentally.
-- [ ] Add a test documenting that Bash is outside the filesystem interceptor.
-- [ ] Keep canonicalization and symlink resolution tests associated with the existing policy implementation.
+- [x] Add a table-driven test proving that `read`, `write`, `edit`, `ls`, `find`, and `grep` are handled by the filesystem `tool_call` interceptor.
+- [x] Add tests proving that `move` and `delete` use policy within their implementations rather than inheriting interceptor authorization.
+- [x] Add a test proving that an unknown tool receives no filesystem authorization accidentally.
+- [x] Add a test documenting that Bash is outside the filesystem interceptor.
+- [x] Keep canonicalization and symlink resolution tests associated with the existing policy implementation.
 
-### Acceptance criteria
+### Acceptance criteria (met)
 
 - Every active tool can be associated with its exact parameter-schema hash and source provenance.
 - Inventory records contain no source content, environment values, prompts, or tool outputs.
@@ -138,35 +137,36 @@ The extension must not introduce a second unrelated invocation ID system.
 - Reloading with a changed schema or active tool set produces a new inventory record.
 - Tests explicitly distinguish interceptor-governed tools from tools that enforce policy internally.
 
-## Phase 2: Structured project-command outcomes
+## Phase 2: Structured project-command outcomes (complete)
 
 ### Stable error contract
 
-- [ ] Define a structured error contract that can later be reused by all existing tool families.
-- [ ] Apply the contract to `project_command` first.
-- [ ] Give every error a stable code and result category.
-- [ ] Include the invalid field when a specific field caused validation failure.
-- [ ] Include a concise explanation.
-- [ ] Include a corrected example only when the correction is unambiguous.
-- [ ] State whether retrying the identical request can succeed.
-- [ ] State whether command execution was attempted.
-- [ ] Preserve fail-closed behavior for policy and authorization errors.
+- [x] Define a structured error contract that can later be reused by all existing tool families.
+- [x] Apply the contract to `project_command` first.
+- [x] Give every error a stable code and result category.
+- [x] Include the invalid field when a specific field caused validation failure.
+- [x] Include a concise explanation.
+- [x] Support a corrected example field only when the correction is unambiguous.
+- [x] State whether retrying the identical request can succeed.
+- [x] State whether command execution was attempted.
+- [x] Preserve fail-closed behavior for policy and authorization errors.
 
 ### Result categories
 
-- [ ] Add `PASS`.
-- [ ] Add `IMPLEMENTATION_FAILURE`.
-- [ ] Add `TEST_FAILURE`.
-- [ ] Add `FORMAT_FAILURE`.
-- [ ] Add `LINT_FAILURE`.
-- [ ] Add `TYPE_CHECK_FAILURE`.
-- [ ] Add `RESOLUTION_FAILURE`.
-- [ ] Add `POLICY_FAILURE`.
-- [ ] Add `ENVIRONMENT_FAILURE`.
-- [ ] Add `TIMEOUT`.
-- [ ] Add `SPAWN_FAILURE`.
-- [ ] Add `CANCELLED`.
-- [ ] Add `BLOCKED`.
+- [x] Add `PASS`.
+- [x] Add `INVALID_REQUEST`.
+- [x] Add `IMPLEMENTATION_FAILURE`.
+- [x] Add `TEST_FAILURE`.
+- [x] Add `FORMAT_FAILURE`.
+- [x] Add `LINT_FAILURE`.
+- [x] Add `TYPE_CHECK_FAILURE`.
+- [x] Add `RESOLUTION_FAILURE`.
+- [x] Add `POLICY_FAILURE`.
+- [x] Add `ENVIRONMENT_FAILURE`.
+- [x] Add `TIMEOUT`.
+- [x] Add `SPAWN_FAILURE`.
+- [x] Add `CANCELLED`.
+- [x] Add `BLOCKED`.
 
 `PASS` means that the tool accepted the command outcome as normal data.
 For example, an accepted Fallow findings exit code can be `PASS` even when the returned analysis contains findings.
@@ -177,26 +177,26 @@ Categories must be assigned from known execution state and must not be guessed b
 
 ### Result metadata
 
-- [ ] Add the current `toolCallId` as the invocation identifier.
-- [ ] Add `executed`.
-- [ ] Add `reused`.
-- [ ] Add total duration and command-execution duration separately.
-- [ ] Add normalized command scope.
-- [ ] Add output truncation metadata.
-- [ ] Add a deterministic primary diagnostic.
-- [ ] Add a suggested next action.
-- [ ] Add retryability metadata.
-- [ ] Keep exit information separate from the result category.
-- [ ] Distinguish confirmation timeout from command timeout.
+- [x] Add the current `toolCallId` as the invocation identifier.
+- [x] Add `executed`.
+- [x] Add `reused` as `false` until Phase 3 reuse is implemented.
+- [x] Add total duration and command-execution duration separately.
+- [x] Add normalized command scope.
+- [x] Add output truncation metadata.
+- [x] Add a deterministic primary diagnostic.
+- [x] Add a suggested next action.
+- [x] Add retryability metadata.
+- [x] Keep exit information separate from the result category.
+- [x] Distinguish confirmation timeout from command timeout.
 
 ### Diagnostic extraction
 
-- [ ] Prefer bounded stderr when it contains a meaningful diagnostic.
-- [ ] Fall back to bounded stdout when stderr is empty.
-- [ ] Remove terminal control sequences from the compact diagnostic.
-- [ ] Keep the bounded raw stdout and stderr fields unchanged.
-- [ ] Keep diagnostic extraction deterministic and command-family aware where reliable parsing exists.
-- [ ] Avoid claiming that an arbitrary first output line is actionable when it is only a command banner.
+- [x] Prefer bounded stderr when it contains a meaningful diagnostic.
+- [x] Fall back to bounded stdout when stderr is empty.
+- [x] Remove terminal control sequences from the compact diagnostic.
+- [x] Keep the bounded raw stdout and stderr fields unchanged.
+- [x] Keep diagnostic extraction deterministic and command-family aware where reliable parsing exists.
+- [x] Avoid claiming that an arbitrary first output line is actionable when it is only a command banner.
 
 ### Proposed files
 
@@ -207,7 +207,7 @@ Categories must be assigned from known execution state and must not be guessed b
 - `src/tools/project-command/runner.ts`.
 - `src/tools/project-command/schema/validation.ts`.
 
-### Acceptance criteria
+### Acceptance criteria (met)
 
 - Successful, accepted-nonzero, failed, timed-out, blocked, and cancelled requests have stable categories.
 - Policy denial, policy infrastructure failure, confirmation timeout, process timeout, and nonzero exit are distinguishable.
@@ -526,40 +526,40 @@ Their implementation order will be decided from evidence gathered by the earlier
 
 ### Unit tests
 
-- [ ] Test canonical metadata serialization and hashing.
-- [ ] Test result-category mapping as pure functions.
-- [ ] Test diagnostic extraction as pure functions.
+- [x] Test canonical metadata serialization and hashing.
+- [x] Test result-category mapping as pure functions.
+- [x] Test diagnostic extraction as pure functions.
 - [ ] Test result-fingerprint stability and sensitivity.
 - [ ] Test cache eligibility and cache-decision functions.
 - [ ] Test force normalization and exclusion from result fingerprints.
 
 ### Integration tests
 
-- [ ] Exercise session inventory through a realistic mocked Pi extension lifecycle.
+- [x] Exercise session inventory through a realistic mocked Pi extension lifecycle.
 - [ ] Execute the same project command twice and assert that the executor runs once when reuse is eligible.
 - [ ] Modify a relevant source file and assert that the command executes again.
 - [ ] Modify package metadata or a relevant lockfile and assert invalidation where applicable.
 - [ ] Change policy after an initial execution and assert that the cached result cannot bypass the new decision.
 - [ ] Run a mutating command twice and assert that both requests execute.
-- [ ] Simulate timeout, spawn failure, cancellation, policy denial, and confirmation timeout.
+- [x] Simulate timeout, spawn failure, cancellation, policy denial, and confirmation timeout.
 - [ ] Verify that none of those outcomes becomes reusable.
 - [ ] Verify that separate session IDs do not share results.
 - [ ] Verify that `force: true` executes and records a forced bypass.
 
 ### Regression validation
 
-- [ ] Run focused tests for every changed project-command module.
-- [ ] Run the complete test suite.
-- [ ] Run lint, which includes TypeScript checking in this project.
-- [ ] Run the formatter check without rewriting unrelated analysis files.
-- [ ] Inspect the final Git diff for accidental contract or policy changes.
+- [x] Run focused tests for every changed project-command module.
+- [x] Run the complete test suite.
+- [x] Run lint, which includes TypeScript checking in this project.
+- [x] Run the formatter check without rewriting unrelated analysis files.
+- [x] Inspect the final Git diff for accidental contract or policy changes.
 
 ## Implementation sequence
 
-1. Implement active tool inventory and policy coverage tests.
-2. Introduce structured project-command errors and result categories.
-3. Add project-command diagnostics, duration, scope, and retry metadata.
-4. Define command reuse policies and the relevant-input interface.
+1. Implement active tool inventory and policy coverage tests. **Completed.**
+2. Introduce structured project-command errors and result categories. **Completed.**
+3. Add project-command diagnostics, duration, scope, and retry metadata. **Completed.**
+4. Define command reuse policies and the relevant-input interface. **Next.**
 5. Add versioned result fingerprints.
 6. Add session-local result storage and `force` behavior.
 7. Enable reuse command by command only after each command's input and mutation tests pass.
@@ -571,11 +571,11 @@ Do not interpret their order in this document as a commitment to implement them 
 
 ## First implementation target
 
-The first pull request should contain only Phase 1.
+The first implementation target was Phase 1.
 
-It should add:
+It added:
 
-- The extension version source and consistency test.
+- The runtime extension version loaded from package metadata.
 - Canonical schema serialization and SHA-256 hashing.
 - Session-start inventory records for configured and active tools.
 - Source provenance and inventory version metadata.
