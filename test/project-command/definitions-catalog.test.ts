@@ -32,6 +32,16 @@ it("contains the extension-owned command catalog in stable order", () => {
   ).toBe(true);
 });
 
+it("defines a result-reuse policy for every built-in command", () => {
+  const definitions = getProjectCommandDefinitions();
+  expect(definitions.every((definition) => definition.reusePolicy !== undefined)).toBe(true);
+  expect(definitions.map((definition) => definition.reusePolicy)).toEqual([
+    "static",
+    "static",
+    ...Array.from({ length: 17 }, () => "never"),
+  ]);
+});
+
 it("describes the built-in command execution policies", () => {
   const definitions = getProjectCommandDefinitions();
   expect(definitions[0]).toMatchObject({

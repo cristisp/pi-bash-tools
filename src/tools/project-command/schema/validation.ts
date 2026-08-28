@@ -81,12 +81,22 @@ function findDefinition(
 function validateRequestKeys(keys: readonly string[], commandId: string): void {
   const expectedKeys =
     commandId === "node_test"
-      ? ["commandId", "paths"]
+      ? ["commandId", "force", "paths"]
       : commandId === "node_e2e"
-        ? ["commandId", "paths", "grep", "projects", "workers", "retries", "headed", "list"]
+        ? [
+            "commandId",
+            "force",
+            "paths",
+            "grep",
+            "projects",
+            "workers",
+            "retries",
+            "headed",
+            "list",
+          ]
         : commandId === "fallow_audit"
-          ? ["commandId", "base"]
-          : ["commandId"];
+          ? ["commandId", "force", "base"]
+          : ["commandId", "force"];
   const invalidKey = keys.find((key) => !expectedKeys.includes(key));
   if (!keys.includes("commandId") || invalidKey !== undefined) {
     throw invalidRequest(invalidKey ?? "commandId");
@@ -95,6 +105,7 @@ function validateRequestKeys(keys: readonly string[], commandId: string): void {
 
 type NormalizedProjectCommandInput = {
   readonly commandId: string;
+  readonly force?: boolean;
   readonly paths?: readonly string[];
   readonly base?: string;
   readonly grep?: string;
@@ -175,7 +186,11 @@ export function validateProjectCommandInput(
     }
     findDefinition(commandId, definitions);
     validateRequestKeys(Object.keys(request), commandId);
-    return normalizedRequest(request, commandId);
+    if (request.force !== undefined && typeof request.force !== "boolean") {
+      throw invalidRequest("force");
+    }
+    const normalized = normalizedRequest(request, commandId);
+    return request.force === true ? { ...normalized, force: true } : normalized;
   } catch (error) {
     if (error instanceof ProjectCommandToolError) {
       throw error;

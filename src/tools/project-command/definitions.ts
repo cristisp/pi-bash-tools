@@ -24,6 +24,33 @@ export type ProjectCommandRisk =
   | "project-code";
 export type ProjectCommandEnvironmentProfile = "minimal-static-v1" | "node-v1";
 export type ProjectCommandTruncationDirection = "head" | "tail";
+export type ProjectCommandReusePolicy =
+  | "never"
+  | "static"
+  | "project-metadata"
+  | "workspace-snapshot";
+export type ProjectCommandReusePolicyInput = ProjectCommandReusePolicy | (string & {});
+
+const MUTATING_PROJECT_COMMAND_IDS = new Set(["node_lint_fix", "node_format_write"]);
+const UNCONTROLLED_EXTERNAL_STATE_PROJECT_COMMAND_IDS = new Set([
+  "node_project_info",
+  "node_deps_list",
+  "node_test",
+  "node_test_coverage",
+  "node_e2e",
+  "node_build",
+  "node_lint",
+  "node_lint_fix",
+  "node_typecheck",
+  "node_format_check",
+  "node_format_write",
+  "fallow_dead_code",
+  "fallow_dupes",
+  "fallow_health",
+  "fallow_audit",
+  "fallow_list_entry_points",
+  "fallow_list_boundaries",
+]);
 
 export interface ProjectCommandDefinition<CommandId extends string = string> {
   readonly namespace: typeof PROJECT_COMMAND_NAMESPACE;
@@ -38,6 +65,11 @@ export interface ProjectCommandDefinition<CommandId extends string = string> {
   readonly outputLimitBytes: number;
   readonly risk: ProjectCommandRisk;
   readonly globalSafe: boolean;
+  readonly reusePolicy?: ProjectCommandReusePolicyInput;
+  readonly mutatesWorkspace?: boolean;
+  readonly uncontrolledExternalState?: boolean;
+  readonly workspaceSnapshotApproved?: boolean;
+  readonly relevantInputConfigPaths?: readonly string[];
   readonly executionKind?: ProjectCommandExecutionKind;
   readonly applicability?: ProjectCommandApplicability;
   readonly bindsRepoContent?: boolean;
@@ -76,6 +108,10 @@ function freezeDefinition<const Definition extends ProjectCommandDefinition>(
       definition.argvTemplate === undefined
         ? undefined
         : Object.freeze([...definition.argvTemplate]),
+    relevantInputConfigPaths:
+      definition.relevantInputConfigPaths === undefined
+        ? undefined
+        : Object.freeze([...definition.relevantInputConfigPaths]),
   });
 }
 
@@ -83,6 +119,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "workspace_path",
+    reusePolicy: "static",
+    uncontrolledExternalState: false,
+    workspaceSnapshotApproved: false,
     description:
       "Report the canonical project directory. Use when the user asks where the project workspace is located.",
     executable: "/bin/pwd",
@@ -105,6 +144,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "node_version",
+    reusePolicy: "static",
+    uncontrolledExternalState: false,
+    workspaceSnapshotApproved: false,
     description:
       "Report the Node.js runtime version. Use when the user asks which Node.js version is active.",
     executable: process.execPath,
@@ -127,6 +169,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "node_project_info",
+    reusePolicy: "never",
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description:
       "Report the active Node.js project manifest, package manager, scripts, and applicable project commands.",
     executable: "in-process",
@@ -149,6 +194,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "node_deps_list",
+    reusePolicy: "never",
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description:
       "List the top-level Node project dependencies through the detected package manager without changing the project.",
     executable: "",
@@ -172,6 +220,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "node_test",
+    reusePolicy: "never",
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description: "Run the exact package.json test script with optional workspace-relative paths.",
     executable: "",
     args: ["run", "test"],
@@ -194,6 +245,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "node_test_coverage",
+    reusePolicy: "never",
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description: "Run the exact package.json test:coverage script.",
     executable: "",
     args: ["run", "test:coverage"],
@@ -216,6 +270,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "node_e2e",
+    reusePolicy: "never",
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description: "Run the exact package.json test:e2e script with optional test runner options.",
     executable: "",
     args: ["run", "test:e2e"],
@@ -238,6 +295,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "node_build",
+    reusePolicy: "never",
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description: "Run the exact package.json build script.",
     executable: "",
     args: ["run", "build"],
@@ -260,6 +320,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "node_lint",
+    reusePolicy: "never",
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description: "Run the exact package.json lint script.",
     executable: "",
     args: ["run", "lint"],
@@ -282,6 +345,10 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "node_lint_fix",
+    reusePolicy: "never",
+    mutatesWorkspace: true,
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description: "Run the exact package.json lint:fix script to write lint fixes.",
     executable: "",
     args: ["run", "lint:fix"],
@@ -304,6 +371,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "node_typecheck",
+    reusePolicy: "never",
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description: "Run the exact package.json typecheck script.",
     executable: "",
     args: ["run", "typecheck"],
@@ -326,6 +396,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "node_format_check",
+    reusePolicy: "never",
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description: "Run the exact package.json format:check script.",
     executable: "",
     args: ["run", "format:check"],
@@ -348,6 +421,10 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "node_format_write",
+    reusePolicy: "never",
+    mutatesWorkspace: true,
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description: "Run the exact package.json format script to write formatting changes.",
     executable: "",
     args: ["run", "format"],
@@ -370,6 +447,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "fallow_dead_code",
+    reusePolicy: "never",
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description: "Run Fallow dead-code analysis with machine-readable output.",
     executable: process.execPath,
     args: ["dead-code", "--format", "json", "--quiet"],
@@ -393,6 +473,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "fallow_dupes",
+    reusePolicy: "never",
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description: "Run Fallow duplicate-code analysis with machine-readable output.",
     executable: process.execPath,
     args: ["dupes", "--format", "json", "--quiet"],
@@ -416,6 +499,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "fallow_health",
+    reusePolicy: "never",
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description: "Run Fallow project health analysis with machine-readable output.",
     executable: process.execPath,
     args: ["health", "--format", "json", "--quiet"],
@@ -439,6 +525,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "fallow_audit",
+    reusePolicy: "never",
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description: "Run Fallow audit analysis against a specified base revision.",
     executable: process.execPath,
     args: ["audit", "--format", "json", "--quiet"],
@@ -462,6 +551,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "fallow_list_entry_points",
+    reusePolicy: "never",
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description: "List Fallow entry points with machine-readable output.",
     executable: process.execPath,
     args: ["list", "--entry-points", "--format", "json", "--quiet"],
@@ -485,6 +577,9 @@ const definitions = Object.freeze([
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
     commandId: "fallow_list_boundaries",
+    reusePolicy: "never",
+    uncontrolledExternalState: true,
+    workspaceSnapshotApproved: false,
     description: "List Fallow project boundaries with machine-readable output.",
     executable: process.execPath,
     args: ["list", "--boundaries", "--format", "json", "--quiet"],
@@ -513,6 +608,70 @@ export type BuiltInProjectCommandDefinitions = typeof definitions;
 const definitionsById = new Map<ProjectCommandId, (typeof definitions)[number]>(
   definitions.map((definition) => [definition.commandId, definition]),
 );
+
+export function normalizeProjectCommandReusePolicy(value: unknown): ProjectCommandReusePolicy {
+  switch (value) {
+    case "static":
+    case "project-metadata":
+    case "workspace-snapshot":
+    case "never":
+      return value;
+    default:
+      return "never";
+  }
+}
+
+function projectCommandMutatesWorkspace(definition: ProjectCommandDefinition): boolean {
+  return (
+    definition.mutatesWorkspace === true ||
+    MUTATING_PROJECT_COMMAND_IDS.has(definition.commandId) ||
+    definition.fixedScriptKey === "lint:fix" ||
+    definition.fixedScriptKey === "format"
+  );
+}
+
+function projectCommandUsesUncontrolledExternalState(
+  definition: ProjectCommandDefinition,
+): boolean {
+  return (
+    definition.uncontrolledExternalState === true ||
+    UNCONTROLLED_EXTERNAL_STATE_PROJECT_COMMAND_IDS.has(definition.commandId)
+  );
+}
+
+export function projectCommandReusePolicy(
+  definition: ProjectCommandDefinition,
+): ProjectCommandReusePolicy {
+  const policy = normalizeProjectCommandReusePolicy(definition.reusePolicy);
+  if (
+    policy === "never" ||
+    projectCommandMutatesWorkspace(definition) ||
+    projectCommandUsesUncontrolledExternalState(definition)
+  ) {
+    return "never";
+  }
+  if (policy === "workspace-snapshot" && definition.workspaceSnapshotApproved !== true) {
+    return "never";
+  }
+  return policy;
+}
+
+export function getProjectCommandReusePolicy(
+  definition: ProjectCommandDefinition,
+): ProjectCommandReusePolicy {
+  return projectCommandReusePolicy(definition);
+}
+
+export function isProjectCommandWorkspaceSnapshotApproved(
+  definition: ProjectCommandDefinition,
+): boolean {
+  return (
+    normalizeProjectCommandReusePolicy(definition.reusePolicy) === "workspace-snapshot" &&
+    definition.workspaceSnapshotApproved === true &&
+    !projectCommandMutatesWorkspace(definition) &&
+    !projectCommandUsesUncontrolledExternalState(definition)
+  );
+}
 
 function isProjectCommandId(commandId: string): commandId is ProjectCommandId {
   return definitions.some((definition) => definition.commandId === commandId);

@@ -7,8 +7,11 @@ import {
 } from "../errors.ts";
 import { displayPath } from "../path-display.ts";
 import type { CommandIdentity } from "../policy/types.ts";
+import type { ProjectCommandRelevantInputs } from "./relevant-inputs.ts";
+import { definedObjectProperties } from "./defined-properties.ts";
 import { projectCommandResultCategory } from "./categories.ts";
 import type { ProjectCommandExecutionOutcome, ProjectCommandOutput } from "./execution.ts";
+import type { ProjectCommandCacheDecision } from "./cache.ts";
 import { boundProjectCommandText, projectCommandDiagnostic } from "./diagnostics.ts";
 import type { ProjectCommandResolutionError } from "./errors.ts";
 import type { ResolvedProjectCommand } from "./resolution/types.ts";
@@ -24,14 +27,32 @@ export interface ProjectCommandInvocationMetadata {
   readonly durationMs: number;
   readonly executionDurationMs: number;
   readonly reused: boolean;
+  readonly cacheDecision: ProjectCommandCacheDecision;
+  readonly forced: boolean;
+  readonly authFingerprint?: string;
+  readonly policyId?: string;
+  readonly reusePolicyId?: string;
+  readonly resultFingerprintVersion?: number;
+  readonly resultFingerprint?: string;
+  readonly relevantInputs?: ProjectCommandRelevantInputs;
+  readonly producerInvocationId?: string;
 }
 
 export interface ProjectCommandOutputDetails {
   readonly commandId: string;
   readonly projectPath: string;
   readonly fingerprint: string;
+  readonly authFingerprint: string;
+  readonly resultFingerprint?: string;
+  readonly resultFingerprintVersion?: number;
+  readonly policyId?: string;
+  readonly reusePolicyId?: string;
   readonly toolCallId: string;
+  readonly relevantInputs?: ProjectCommandRelevantInputs;
+  readonly producerInvocationId?: string;
   readonly reused: boolean;
+  readonly forced: boolean;
+  readonly cacheDecision: ProjectCommandCacheDecision;
   readonly durationMs: number;
   readonly executionDurationMs: number;
   readonly scope: ProjectCommandScope;
@@ -68,6 +89,63 @@ export function displayCommand(resolved: ResolvedProjectCommand): string {
   return resolved.displayCommand ?? [resolved.executable, ...resolved.args].join(" ");
 }
 
+type NodeProjectInfoDetails = {
+  readonly nodeVersion?: string;
+  readonly manifestPresent?: boolean;
+  readonly packageManager?: unknown;
+  readonly scripts?: readonly string[];
+  readonly applicableCommands?: readonly string[];
+};
+
+function outputMetadata(
+  metadata: ProjectCommandInvocationMetadata,
+): Readonly<Record<string, unknown>> {
+  return definedObjectProperties([
+    ["resultFingerprintVersion", metadata.resultFingerprintVersion],
+    ["resultFingerprint", metadata.resultFingerprint],
+    ["policyId", metadata.policyId],
+    ["reusePolicyId", metadata.reusePolicyId],
+    ["relevantInputs", metadata.relevantInputs],
+    ["producerInvocationId", metadata.producerInvocationId],
+  ]);
+}
+
+function outputDiagnostic(
+  identity: CommandIdentity,
+  category: ResultCategory,
+  outcome: ProjectCommandExecutionOutcome,
+): string | undefined {
+  return category === "PASS"
+    ? undefined
+    : projectCommandDiagnostic(identity.commandId, outcome.stderr, outcome.stdout);
+}
+
+function outputCategoryDetails(category: ResultCategory): Readonly<Record<string, unknown>> {
+  return definedObjectProperties([
+    ["suggestedAction", category === "PASS" ? undefined : suggestedActionForCategory(category)],
+  ]);
+}
+
+function outputProjectInfo(
+  outcome: ProjectCommandExecutionOutcome,
+): Readonly<Record<string, unknown>> {
+  const structuredDetails = outcome.structuredDetails;
+  if (structuredDetails === undefined) return {};
+  if (typeof structuredDetails !== "object" || structuredDetails === null) {
+    return { projectInfo: structuredDetails };
+  }
+  const projectInfo = structuredDetails as NodeProjectInfoDetails;
+  if (projectInfo.nodeVersion === undefined) return { projectInfo: structuredDetails };
+  return {
+    projectInfo: structuredDetails,
+    nodeVersion: projectInfo.nodeVersion,
+    manifestPresent: projectInfo.manifestPresent,
+    packageManager: projectInfo.packageManager,
+    scripts: projectInfo.scripts,
+    applicableCommands: projectInfo.applicableCommands,
+  };
+}
+
 export function outputDetails(
   identity: CommandIdentity,
   projectPath: string,
@@ -75,21 +153,8 @@ export function outputDetails(
   outcome: ProjectCommandExecutionOutcome,
   metadata: ProjectCommandInvocationMetadata,
 ): ProjectCommandOutputDetails {
-  const projectInfo =
-    typeof outcome.structuredDetails === "object" && outcome.structuredDetails !== null
-      ? (outcome.structuredDetails as {
-          readonly nodeVersion?: string;
-          readonly manifestPresent?: boolean;
-          readonly packageManager?: unknown;
-          readonly scripts?: readonly string[];
-          readonly applicableCommands?: readonly string[];
-        })
-      : undefined;
   const category = projectCommandResultCategory(resolved.definition, outcome);
-  const diagnostic =
-    category === "PASS"
-      ? undefined
-      : projectCommandDiagnostic(identity.commandId, outcome.stderr, outcome.stdout);
+  const diagnostic = outputDiagnostic(identity, category, outcome);
   const scope = {
     cwdStrategy: resolved.definition.cwdStrategy,
     projectPath,
@@ -98,8 +163,12 @@ export function outputDetails(
     commandId: identity.commandId,
     projectPath: displayPath(projectPath),
     fingerprint: identity.fingerprint,
+    authFingerprint: metadata.authFingerprint ?? identity.fingerprint,
+    ...outputMetadata(metadata),
     toolCallId: metadata.toolCallId,
     reused: metadata.reused,
+    forced: metadata.forced,
+    cacheDecision: metadata.cacheDecision,
     durationMs: metadata.durationMs,
     executionDurationMs: metadata.executionDurationMs,
     scope,
@@ -123,24 +192,11 @@ export function outputDetails(
         totalLines: outcome.stderr.totalLines,
       },
     },
-    ...(diagnostic === undefined ? {} : { diagnostic }),
-    ...(category === "PASS" ? {} : { suggestedAction: suggestedActionForCategory(category) }),
+    ...definedObjectProperties([["diagnostic", diagnostic]]),
+    ...outputCategoryDetails(category),
     resolvedCommand: displayCommand(resolved),
     parameters: resolved.effectiveParameters ?? Object.freeze({}),
-    ...(outcome.structuredDetails === undefined
-      ? {}
-      : {
-          projectInfo: outcome.structuredDetails,
-          ...(projectInfo?.nodeVersion === undefined
-            ? {}
-            : {
-                nodeVersion: projectInfo.nodeVersion,
-                manifestPresent: projectInfo.manifestPresent,
-                packageManager: projectInfo.packageManager,
-                scripts: projectInfo.scripts,
-                applicableCommands: projectInfo.applicableCommands,
-              }),
-        }),
+    ...outputProjectInfo(outcome),
   };
 }
 

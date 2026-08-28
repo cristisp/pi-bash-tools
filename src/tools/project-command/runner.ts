@@ -12,8 +12,39 @@ import {
 import { authorizeOrPrompt, type AuthorizationErrorKind } from "../authorization.ts";
 import { findProjectCommandPolicyDecision } from "../policy/decisions.ts";
 import type { CommandIdentity, PolicyStore } from "../policy/types.ts";
-import { projectCommandIdentity, type ProjectCommandDefinition } from "./definitions.ts";
+import {
+  getProjectCommandReusePolicy,
+  projectCommandIdentity,
+  type ProjectCommandDefinition,
+} from "./definitions.ts";
 import type { ProjectCommandExecutionOutcome } from "./execution.ts";
+import { definedObjectProperties } from "./defined-properties.ts";
+import {
+  createProjectCommandResultCache,
+  type ProjectCommandCacheDecision,
+  type ProjectCommandResultCache,
+  type ProjectCommandResultCacheEntry,
+} from "./cache.ts";
+import {
+  createProjectCommandLogicalRequestKey,
+  createProjectCommandResultFingerprint,
+  projectCommandPolicyId,
+  PROJECT_COMMAND_RESULT_FINGERPRINT_VERSION,
+} from "./fingerprint.ts";
+import { createNodeProjectRelevantInputDiscovery } from "./node/relevant-inputs.ts";
+import {
+  canonicalProjectCommandRelevantInputs,
+  type ProjectCommandRelevantInputDiscovery,
+  type ProjectCommandRelevantInputDiscoveryRequest,
+  type ProjectCommandRelevantInputs,
+} from "./relevant-inputs.ts";
+import {
+  equalProjectCommandStateSnapshots,
+  projectCommandStateSnapshotDigest,
+  snapshotProjectCommandRelevantInputs,
+  type ProjectCommandStateSnapshot,
+  type ProjectCommandStateSnapshotter,
+} from "./state-snapshot.ts";
 import {
   createExecutionFailure,
   createResolutionFailure,
@@ -29,8 +60,8 @@ import type { ProjectCommandResolver, ResolvedProjectCommand } from "./resolutio
 import {
   cancellationError,
   invalidRequest,
-  type ProjectCommandInputFor,
   ProjectCommandToolError,
+  type ProjectCommandInputFor,
   validateProjectCommandInput,
 } from "./schema.ts";
 
@@ -39,6 +70,7 @@ export type ProjectCommandToolContext = Omit<
   "ui"
 > & {
   readonly ui: Pick<ExtensionContext["ui"], "select">;
+  readonly sessionManager?: Pick<ExtensionContext["sessionManager"], "getSessionId">;
 };
 
 export type ProjectCommandExecutor = (
@@ -69,16 +101,50 @@ function elapsedMilliseconds(start: number, end: number): number {
   return Number.isFinite(elapsed) && elapsed >= 0 ? elapsed : 0;
 }
 
+interface InvocationMetadataOptions {
+  readonly cacheDecision?: ProjectCommandCacheDecision;
+  readonly forced?: boolean;
+  readonly reused?: boolean;
+  readonly authFingerprint?: string;
+  readonly policyId?: string;
+  readonly reusePolicyId?: string;
+  readonly resultFingerprint?: string;
+  readonly relevantInputs?: ProjectCommandRelevantInputs;
+  readonly producerInvocationId?: string;
+}
+
 function invocationMetadata(
   toolCallId: string,
   startedAt: number,
   executionStartedAt: number | undefined,
   finishedAt: number,
+  options: InvocationMetadataOptions = {},
 ): ProjectCommandInvocationMetadata {
   const executionDurationMs =
     executionStartedAt === undefined ? 0 : elapsedMilliseconds(executionStartedAt, finishedAt);
   const durationMs = Math.max(elapsedMilliseconds(startedAt, finishedAt), executionDurationMs);
-  return { toolCallId, durationMs, executionDurationMs, reused: false };
+  return {
+    toolCallId,
+    durationMs,
+    executionDurationMs,
+    reused: options.reused ?? false,
+    cacheDecision: options.cacheDecision ?? "ineligible",
+    forced: options.forced ?? false,
+    ...definedObjectProperties([
+      ["authFingerprint", options.authFingerprint],
+      ["policyId", options.policyId],
+      ["reusePolicyId", options.reusePolicyId],
+      ["relevantInputs", options.relevantInputs],
+      [
+        "resultFingerprintVersion",
+        options.resultFingerprint === undefined
+          ? undefined
+          : PROJECT_COMMAND_RESULT_FINGERPRINT_VERSION,
+      ],
+      ["resultFingerprint", options.resultFingerprint],
+      ["producerInvocationId", options.producerInvocationId],
+    ]),
+  };
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -315,6 +381,552 @@ function hasAcceptedExitCode(
   );
 }
 
+function isCacheableOutcome(
+  resolved: ResolvedProjectCommand,
+  outcome: ProjectCommandExecutionOutcome,
+): boolean {
+  if (outcome.executed === false || outcome.cancelled || outcome.timedOut) return false;
+  if (outcome.status === "success") return true;
+  return hasAcceptedExitCode(resolved, outcome);
+}
+
+function isAbortedOutcome(
+  outcome: ProjectCommandExecutionOutcome,
+  signal: AbortSignal | undefined,
+): boolean {
+  return outcome.status === "cancelled" || signal?.aborted === true;
+}
+
+function isFailedOutcome(
+  resolved: ResolvedProjectCommand,
+  outcome: ProjectCommandExecutionOutcome,
+): boolean {
+  return outcome.status !== "success" && !hasAcceptedExitCode(resolved, outcome);
+}
+
+function stripForce(
+  params: Readonly<Record<string, unknown>> & { readonly commandId: string },
+): ProjectCommandRequestParameters {
+  const { force: _force, ...withoutForce } = params;
+  return withoutForce;
+}
+
+function getContextSessionId(ctx: ProjectCommandToolContext): string | undefined {
+  const value = ctx.sessionManager?.getSessionId();
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function createDefaultRelevantInputDiscovery(): ProjectCommandRelevantInputDiscovery {
+  const nodeDiscovery = createNodeProjectRelevantInputDiscovery();
+  return Object.freeze({
+    discover: async (
+      request: ProjectCommandRelevantInputDiscoveryRequest,
+      signal: AbortSignal | undefined,
+    ) => {
+      const discovered = await nodeDiscovery.discover(request, signal);
+      if (
+        discovered.status === "incomplete" &&
+        discovered.reason === "unsupported-project-command" &&
+        getProjectCommandReusePolicy(request.definition) === "static"
+      ) {
+        return Object.freeze({
+          status: "complete" as const,
+          inputs: canonicalProjectCommandRelevantInputs(),
+        });
+      }
+      return discovered;
+    },
+  });
+}
+
+async function discoverRelevantInputs(
+  discovery: ProjectCommandRelevantInputDiscovery,
+  definition: ProjectCommandDefinition,
+  projectPath: string,
+  parameters: ProjectCommandRequestParameters,
+  signal: AbortSignal | undefined,
+): Promise<ProjectCommandRelevantInputs | undefined> {
+  try {
+    const request =
+      getProjectCommandReusePolicy(definition) === "workspace-snapshot"
+        ? { kind: "workspace-snapshot" as const, definition, projectPath, parameters }
+        : { definition, projectPath, parameters };
+    const discovered = await discovery.discover(request, signal);
+    return discovered.status === "complete" ? discovered.inputs : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function takeStateSnapshot(
+  snapshotter: ProjectCommandStateSnapshotter,
+  projectPath: string,
+  inputs: ProjectCommandRelevantInputs,
+): Promise<ProjectCommandStateSnapshot | undefined> {
+  try {
+    const snapshot = await snapshotter(projectPath, inputs);
+    return snapshot.status === "complete" ? snapshot.snapshot : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+interface CacheInspection {
+  readonly sessionId: string | undefined;
+  readonly logicalRequestKey: string | undefined;
+  readonly eligible: boolean;
+  readonly decision: ProjectCommandCacheDecision;
+  readonly entry?: ProjectCommandResultCacheEntry;
+  readonly beforeSnapshot?: ProjectCommandStateSnapshot;
+}
+
+function cacheIsEligible(
+  definition: ProjectCommandDefinition,
+  relevantInputs: ProjectCommandRelevantInputs | undefined,
+  resultFingerprint: string | undefined,
+  logicalRequestKey: string | undefined,
+  beforeSnapshot: ProjectCommandStateSnapshot | undefined,
+  requestSessionId: string | undefined,
+): boolean {
+  return (
+    resultFingerprint !== undefined &&
+    logicalRequestKey !== undefined &&
+    relevantInputs !== undefined &&
+    beforeSnapshot !== undefined &&
+    requestSessionId !== undefined &&
+    getProjectCommandReusePolicy(definition) !== "never"
+  );
+}
+
+function lookupCacheEntry(
+  cache: ProjectCommandResultCache,
+  sessionId: string,
+  logicalRequestKey: string,
+  forced: boolean,
+): {
+  readonly decision: ProjectCommandCacheDecision;
+  readonly entry?: ProjectCommandResultCacheEntry;
+} {
+  const entry = cache.get(sessionId, logicalRequestKey);
+  if (forced) return entry === undefined ? { decision: "forced" } : { decision: "forced", entry };
+  return entry === undefined ? { decision: "miss" } : { decision: "hit", entry };
+}
+
+function invalidateStaleEntry(
+  cache: ProjectCommandResultCache,
+  sessionId: string,
+  logicalRequestKey: string,
+  resultFingerprint: string,
+  beforeSnapshot: ProjectCommandStateSnapshot,
+  lookup: {
+    readonly decision: ProjectCommandCacheDecision;
+    readonly entry?: ProjectCommandResultCacheEntry;
+  },
+): {
+  readonly decision: ProjectCommandCacheDecision;
+  readonly entry?: ProjectCommandResultCacheEntry;
+} {
+  const entry = lookup.entry;
+  if (
+    entry === undefined ||
+    (entry.resultFingerprint === resultFingerprint &&
+      equalProjectCommandStateSnapshots(beforeSnapshot, entry.snapshot))
+  ) {
+    return lookup;
+  }
+  cache.delete(sessionId, logicalRequestKey);
+  return { decision: "invalidated" };
+}
+
+function inspectCacheEntry(
+  cache: ProjectCommandResultCache,
+  sessionId: string,
+  logicalRequestKey: string,
+  resultFingerprint: string,
+  beforeSnapshot: ProjectCommandStateSnapshot,
+  forced: boolean,
+): {
+  readonly decision: ProjectCommandCacheDecision;
+  readonly entry?: ProjectCommandResultCacheEntry;
+} {
+  const inspected = invalidateStaleEntry(
+    cache,
+    sessionId,
+    logicalRequestKey,
+    resultFingerprint,
+    beforeSnapshot,
+    lookupCacheEntry(cache, sessionId, logicalRequestKey, forced),
+  );
+  if (!forced || inspected.decision === "invalidated") return inspected;
+  return { decision: "forced" };
+}
+
+function inspectResultCache(
+  definition: ProjectCommandDefinition,
+  relevantInputs: ProjectCommandRelevantInputs | undefined,
+  resultFingerprint: string | undefined,
+  logicalRequestKey: string | undefined,
+  forced: boolean,
+  cache: ProjectCommandResultCache,
+  signal: AbortSignal | undefined,
+  requestSessionId: string | undefined,
+  beforeSnapshot: ProjectCommandStateSnapshot | undefined,
+): CacheInspection {
+  const eligible = cacheIsEligible(
+    definition,
+    relevantInputs,
+    resultFingerprint,
+    logicalRequestKey,
+    beforeSnapshot,
+    requestSessionId,
+  );
+  if (!eligible || resultFingerprint === undefined || logicalRequestKey === undefined) {
+    return {
+      sessionId: requestSessionId,
+      logicalRequestKey,
+      eligible: false,
+      decision: forced ? "forced" : "ineligible",
+    };
+  }
+  if (beforeSnapshot === undefined || requestSessionId === undefined) {
+    return {
+      sessionId: requestSessionId,
+      logicalRequestKey,
+      eligible: false,
+      decision: "ineligible",
+    };
+  }
+  const inspected = inspectCacheEntry(
+    cache,
+    requestSessionId,
+    logicalRequestKey,
+    resultFingerprint,
+    beforeSnapshot,
+    forced,
+  );
+  throwIfRequestAborted(signal);
+  return {
+    sessionId: requestSessionId,
+    logicalRequestKey,
+    eligible,
+    decision: inspected.decision,
+    ...(inspected.entry === undefined ? {} : { entry: inspected.entry }),
+    beforeSnapshot,
+  };
+}
+
+interface AfterExecutionSnapshot {
+  readonly decision: ProjectCommandCacheDecision;
+  readonly snapshot?: ProjectCommandStateSnapshot;
+}
+
+async function snapshotAfterExecution(
+  projectPath: string,
+  aborted: boolean,
+  cache: ProjectCommandResultCache,
+  inspection: CacheInspection,
+  relevantInputs: ProjectCommandRelevantInputs | undefined,
+  stateSnapshotter: ProjectCommandStateSnapshotter,
+): Promise<AfterExecutionSnapshot> {
+  if (aborted || inspection.beforeSnapshot === undefined || relevantInputs === undefined) {
+    return { decision: aborted ? "ineligible" : inspection.decision };
+  }
+  const snapshot = await takeStateSnapshot(stateSnapshotter, projectPath, relevantInputs);
+  if (snapshot === undefined) return { decision: "ineligible" };
+  if (equalProjectCommandStateSnapshots(inspection.beforeSnapshot, snapshot)) {
+    return { decision: inspection.decision, snapshot };
+  }
+  if (inspection.sessionId !== undefined && inspection.logicalRequestKey !== undefined) {
+    cache.delete(inspection.sessionId, inspection.logicalRequestKey);
+  }
+  return { decision: "invalidated", snapshot };
+}
+
+function executionCanBeStored(
+  resolved: ResolvedProjectCommand,
+  outcome: ProjectCommandExecutionOutcome,
+): boolean {
+  return outcome.executed !== false && !outcome.timedOut && isCacheableOutcome(resolved, outcome);
+}
+
+function snapshotsAreStable(
+  inspection: CacheInspection,
+  afterExecution: AfterExecutionSnapshot,
+): boolean {
+  return (
+    inspection.beforeSnapshot !== undefined &&
+    afterExecution.snapshot !== undefined &&
+    equalProjectCommandStateSnapshots(inspection.beforeSnapshot, afterExecution.snapshot)
+  );
+}
+
+function decisionAllowsStore(decision: ProjectCommandCacheDecision): boolean {
+  return decision === "miss" || decision === "forced" || decision === "invalidated";
+}
+
+function canStoreResult(
+  resolved: ResolvedProjectCommand,
+  outcome: ProjectCommandExecutionOutcome,
+  inspection: CacheInspection,
+  afterExecution: AfterExecutionSnapshot,
+  resultFingerprint: string | undefined,
+): boolean {
+  return (
+    executionCanBeStored(resolved, outcome) &&
+    inspection.eligible &&
+    snapshotsAreStable(inspection, afterExecution) &&
+    decisionAllowsStore(afterExecution.decision) &&
+    inspection.sessionId !== undefined &&
+    inspection.logicalRequestKey !== undefined &&
+    resultFingerprint !== undefined
+  );
+}
+
+interface ExecutedWithCache {
+  readonly outcome: ProjectCommandExecutionOutcome;
+  readonly afterSnapshot?: ProjectCommandStateSnapshot;
+  readonly decision: ProjectCommandCacheDecision;
+  readonly canStore: boolean;
+}
+
+function storeResult(
+  cache: ProjectCommandResultCache,
+  inspection: CacheInspection,
+  resultFingerprint: string | undefined,
+  executed: ExecutedWithCache,
+  details: ProjectCommandOutputDetails,
+  producerInvocationId: string,
+): void {
+  if (
+    !executed.canStore ||
+    inspection.sessionId === undefined ||
+    inspection.logicalRequestKey === undefined ||
+    resultFingerprint === undefined ||
+    executed.afterSnapshot === undefined
+  ) {
+    return;
+  }
+  cache.set(inspection.sessionId, {
+    logicalRequestKey: inspection.logicalRequestKey,
+    resultFingerprint,
+    details,
+    snapshot: executed.afterSnapshot,
+    producerInvocationId,
+  });
+}
+
+async function executeWithCache(
+  executor: ProjectCommandExecutor,
+  resolved: ResolvedProjectCommand,
+  projectPath: string,
+  signal: AbortSignal | undefined,
+  cache: ProjectCommandResultCache,
+  inspection: CacheInspection,
+  relevantInputs: ProjectCommandRelevantInputs | undefined,
+  resultFingerprint: string | undefined,
+  stateSnapshotter: ProjectCommandStateSnapshotter,
+): Promise<ExecutedWithCache> {
+  const outcome = await executeAuthorizedCommand(executor, resolved, projectPath, signal);
+  const aborted = isAbortedOutcome(outcome, signal);
+  const afterExecution = await snapshotAfterExecution(
+    projectPath,
+    aborted,
+    cache,
+    inspection,
+    relevantInputs,
+    stateSnapshotter,
+  );
+  const decision =
+    !aborted && !isCacheableOutcome(resolved, outcome) && afterExecution.decision !== "invalidated"
+      ? "ineligible"
+      : afterExecution.decision;
+  return {
+    outcome,
+    afterSnapshot: afterExecution.snapshot,
+    decision,
+    canStore: canStoreResult(
+      resolved,
+      outcome,
+      inspection,
+      { ...afterExecution, decision },
+      resultFingerprint,
+    ),
+  };
+}
+
+interface ProjectCommandInvocationState {
+  readonly startedAt: number;
+  executionStartedAt: number | undefined;
+  forced: boolean;
+  cacheDecision: ProjectCommandCacheDecision;
+  authFingerprint: string | undefined;
+  policyId: string | undefined;
+  reusePolicyId: string | undefined;
+  logicalRequestKey: string | undefined;
+  resultFingerprint: string | undefined;
+  relevantInputManifest: ProjectCommandRelevantInputs | undefined;
+  beforeSnapshot: ProjectCommandStateSnapshot | undefined;
+  producerInvocationId: string | undefined;
+}
+
+function createInvocationState(startedAt: number): ProjectCommandInvocationState {
+  return {
+    startedAt,
+    executionStartedAt: undefined,
+    forced: false,
+    cacheDecision: "ineligible",
+    authFingerprint: undefined,
+    policyId: undefined,
+    reusePolicyId: undefined,
+    logicalRequestKey: undefined,
+    resultFingerprint: undefined,
+    relevantInputManifest: undefined,
+    beforeSnapshot: undefined,
+    producerInvocationId: undefined,
+  };
+}
+
+function invocationMetadataForState(
+  toolCallId: string,
+  state: ProjectCommandInvocationState,
+  options: InvocationMetadataOptions = {},
+): ProjectCommandInvocationMetadata {
+  return invocationMetadata(
+    toolCallId,
+    state.startedAt,
+    state.executionStartedAt,
+    performance.now(),
+    {
+      cacheDecision: state.cacheDecision,
+      forced: state.forced,
+      authFingerprint: state.authFingerprint,
+      policyId: state.policyId,
+      reusePolicyId: state.reusePolicyId,
+      resultFingerprint: state.resultFingerprint,
+      relevantInputs: state.relevantInputManifest,
+      producerInvocationId: state.producerInvocationId,
+      ...options,
+    },
+  );
+}
+
+interface PreparedProjectCommand {
+  readonly definition: ProjectCommandDefinition;
+  readonly resolved: ResolvedProjectCommand;
+  readonly identity: CommandIdentity;
+  readonly projectPath: string;
+  readonly relevantInputs: ProjectCommandRelevantInputs | undefined;
+  readonly requestSignal: AbortSignal | undefined;
+}
+
+function setResultFingerprints(
+  state: ProjectCommandInvocationState,
+  definition: ProjectCommandDefinition,
+  projectPath: string,
+  resolved: ResolvedProjectCommand,
+  relevantInputs: ProjectCommandRelevantInputs | undefined,
+): void {
+  if (
+    relevantInputs === undefined ||
+    state.authFingerprint === undefined ||
+    state.policyId === undefined ||
+    state.reusePolicyId === undefined
+  ) {
+    return;
+  }
+  const fingerprintInput = {
+    authFingerprint: state.authFingerprint,
+    projectPath,
+    effectiveParameters: resolved.effectiveParameters ?? Object.freeze({}),
+    processTimeoutMs: definition.processTimeoutMs,
+    outputLimitBytes: definition.outputLimitBytes,
+    policyId: state.policyId,
+    reusePolicyId: state.reusePolicyId,
+  };
+  try {
+    state.logicalRequestKey = createProjectCommandLogicalRequestKey(fingerprintInput);
+    if (state.beforeSnapshot === undefined) return;
+    const fingerprint = createProjectCommandResultFingerprint({
+      ...fingerprintInput,
+      stateDigest: projectCommandStateSnapshotDigest(state.beforeSnapshot),
+      relevantInputs,
+    });
+    state.resultFingerprint = fingerprint.fingerprint;
+    state.relevantInputManifest = fingerprint.relevantInputs;
+  } catch {
+    state.logicalRequestKey = undefined;
+    state.resultFingerprint = undefined;
+  }
+}
+
+async function prepareProjectCommand(
+  policy: PolicyStore,
+  resolver: ProjectCommandResolver,
+  executorContext: ProjectCommandToolContext,
+  rawParams: unknown,
+  signal: AbortSignal | undefined,
+  capturedDefinitions: readonly ProjectCommandDefinition[],
+  byId: ReadonlyMap<string, ProjectCommandDefinition>,
+  relevantInputDiscovery: ProjectCommandRelevantInputDiscovery,
+  stateSnapshotter: ProjectCommandStateSnapshotter,
+  state: ProjectCommandInvocationState,
+): Promise<PreparedProjectCommand> {
+  const validatedParams = validateProjectCommandInput(
+    rawParams,
+    capturedDefinitions,
+  ) as ProjectCommandRequestParameters & { readonly force?: boolean };
+  state.forced = validatedParams.force === true;
+  const params = stripForce(validatedParams);
+  const definition = byId.get(params.commandId);
+  if (definition === undefined) throw invalidRequest("commandId");
+  const requestSignal = signal ?? executorContext.signal;
+  const loaded = await loadPolicy(policy, executorContext.cwd, requestSignal);
+  state.reusePolicyId = getProjectCommandReusePolicy(definition);
+  const resolved = await resolveCommandForTool(
+    resolver,
+    definition,
+    loaded.projectPath,
+    requestSignal,
+    params,
+  );
+  throwIfRequestAborted(requestSignal);
+  const relevantInputs = await discoverRelevantInputs(
+    relevantInputDiscovery,
+    definition,
+    loaded.projectPath,
+    params,
+    requestSignal,
+  );
+  throwIfRequestAborted(requestSignal);
+  const identity = projectCommandIdentity(definition, resolved);
+  state.authFingerprint = identity.fingerprint;
+  await authorizeCommand(
+    policy,
+    loaded,
+    definition,
+    identity,
+    resolved,
+    executorContext,
+    requestSignal,
+  );
+  throwIfRequestAborted(requestSignal);
+  const authorizedPolicy = await loadPolicy(policy, executorContext.cwd, requestSignal);
+  state.policyId = projectCommandPolicyId(authorizedPolicy);
+  state.beforeSnapshot =
+    relevantInputs === undefined
+      ? undefined
+      : await takeStateSnapshot(stateSnapshotter, loaded.projectPath, relevantInputs);
+  setResultFingerprints(state, definition, loaded.projectPath, resolved, relevantInputs);
+  return {
+    definition,
+    resolved,
+    identity,
+    projectPath: loaded.projectPath,
+    relevantInputs,
+    requestSignal,
+  };
+}
+
 export function createProjectCommandExecute<
   const Definitions extends readonly ProjectCommandDefinition[],
 >(
@@ -323,59 +935,90 @@ export function createProjectCommandExecute<
   resolver: ProjectCommandResolver,
   capturedDefinitions: Definitions,
   byId: ReadonlyMap<string, ProjectCommandDefinition>,
+  relevantInputDiscovery: ProjectCommandRelevantInputDiscovery = createDefaultRelevantInputDiscovery(),
+  stateSnapshotter: ProjectCommandStateSnapshotter = snapshotProjectCommandRelevantInputs,
+  cache: ProjectCommandResultCache = createProjectCommandResultCache(),
 ): ProjectCommandExecute<Definitions> {
   return async (toolCallId, rawParams, signal, _onUpdate, ctx) => {
-    const startedAt = performance.now();
-    let executionStartedAt: number | undefined;
+    const state = createInvocationState(performance.now());
     try {
-      const params = validateProjectCommandInput(
-        rawParams,
-        capturedDefinitions,
-      ) as ProjectCommandInputFor<Definitions>;
-      const definition = byId.get(params.commandId);
-      if (definition === undefined) {
-        throw invalidRequest("commandId");
-      }
-      const requestSignal = signal ?? ctx.signal;
-      const loaded = await loadPolicy(policy, ctx.cwd, requestSignal);
-      const resolved = await resolveCommandForTool(
+      const prepared = await prepareProjectCommand(
+        policy,
         resolver,
-        definition,
-        loaded.projectPath,
-        requestSignal,
-        params,
+        ctx,
+        rawParams,
+        signal,
+        capturedDefinitions,
+        byId,
+        relevantInputDiscovery,
+        stateSnapshotter,
+        state,
       );
-      throwIfRequestAborted(requestSignal);
-      const identity = projectCommandIdentity(definition, resolved);
-      await authorizeCommand(policy, loaded, definition, identity, resolved, ctx, requestSignal);
-      throwIfRequestAborted(requestSignal);
-      executionStartedAt = performance.now();
-      const outcome = await executeAuthorizedCommand(
+      const inspection = inspectResultCache(
+        prepared.definition,
+        prepared.relevantInputs,
+        state.resultFingerprint,
+        state.logicalRequestKey,
+        state.forced,
+        cache,
+        prepared.requestSignal,
+        getContextSessionId(ctx),
+        state.beforeSnapshot,
+      );
+      state.cacheDecision = inspection.decision;
+
+      if (inspection.entry !== undefined && inspection.beforeSnapshot !== undefined) {
+        return result({
+          ...inspection.entry.details,
+          ...invocationMetadataForState(toolCallId, state, {
+            cacheDecision: "hit",
+            reused: true,
+            forced: false,
+            producerInvocationId: inspection.entry.producerInvocationId,
+          }),
+        });
+      }
+
+      state.executionStartedAt = performance.now();
+      const executed = await executeWithCache(
         executor,
-        resolved,
-        loaded.projectPath,
-        requestSignal,
+        prepared.resolved,
+        prepared.projectPath,
+        prepared.requestSignal,
+        cache,
+        inspection,
+        prepared.relevantInputs,
+        state.resultFingerprint,
+        stateSnapshotter,
       );
-      const metadata = invocationMetadata(
-        toolCallId,
-        startedAt,
-        executionStartedAt,
-        performance.now(),
+      state.cacheDecision = executed.decision;
+      if (executed.canStore) state.producerInvocationId = toolCallId;
+      const metadata = invocationMetadataForState(toolCallId, state);
+      const details = outputDetails(
+        prepared.identity,
+        prepared.projectPath,
+        prepared.resolved,
+        executed.outcome,
+        metadata,
       );
-      const details = outputDetails(identity, loaded.projectPath, resolved, outcome, metadata);
-      if (outcome.status === "cancelled" || requestSignal?.aborted) {
+      storeResult(cache, inspection, state.resultFingerprint, executed, details, toolCallId);
+      if (isAbortedOutcome(executed.outcome, prepared.requestSignal)) {
         throw cancellationError(cancellationOutputDetails(details));
       }
-      if (outcome.status !== "success" && !hasAcceptedExitCode(resolved, outcome)) {
-        throw createExecutionFailure(identity, loaded.projectPath, resolved, outcome, metadata);
+      if (isFailedOutcome(prepared.resolved, executed.outcome)) {
+        throw createExecutionFailure(
+          prepared.identity,
+          prepared.projectPath,
+          prepared.resolved,
+          executed.outcome,
+          metadata,
+        );
       }
       return result(details);
     } catch (error) {
       if (error instanceof ProjectCommandToolError) {
-        throw enrichToolError(
-          error,
-          invocationMetadata(toolCallId, startedAt, executionStartedAt, performance.now()),
-        );
+        if (error.contract.code === "executor-failure") state.cacheDecision = "ineligible";
+        throw enrichToolError(error, invocationMetadataForState(toolCallId, state));
       }
       throw error;
     }

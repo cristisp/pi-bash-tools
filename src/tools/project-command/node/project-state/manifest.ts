@@ -80,3 +80,7 @@ export function hashNodeScriptsInternal(scripts: Readonly<Record<string, string>
     .update(canonicalizeNodeScriptsInternal(scripts), "utf8")
     .digest("hex");
 }
+
+export function hashNodeScriptInternal(script: string): string {
+  return createHash("sha256").update(script, "utf8").digest("hex");
+}

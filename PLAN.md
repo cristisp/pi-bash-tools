@@ -219,109 +219,115 @@ Categories must be assigned from known execution state and must not be guessed b
 
 ### Session state
 
-- [ ] Key all reusable results by Pi session ID.
-- [ ] Keep cache contents in memory only.
-- [ ] Do not restore cache entries when a session is resumed in a new extension runtime.
-- [ ] Use Pi's `toolCallId` to identify the invocation that produced a reusable result.
-- [ ] Return the producing invocation ID when a result is reused.
-- [ ] Rely on `project_command` sequential execution mode to prevent duplicate concurrent execution.
+- [x] Key all reusable results by Pi session ID.
+- [x] Keep cache contents in memory only.
+- [x] Do not restore cache entries when a session is resumed in a new extension runtime.
+- [x] Use Pi's `toolCallId` to identify the invocation that produced a reusable result.
+- [x] Return the producing invocation ID when a result is reused.
+- [x] Rely on `project_command` sequential execution mode to prevent duplicate concurrent execution.
 
 ### Force behavior
 
-- [ ] Add an optional `force` boolean to every project-command schema variant.
-- [ ] Validate `force` consistently at runtime.
-- [ ] Exclude `force` from the semantic result fingerprint.
-- [ ] Exclude `force` from arguments forwarded to command resolution or execution.
-- [ ] Report a forced execution as a cache bypass.
+- [x] Add an optional `force` boolean to every project-command schema variant.
+- [x] Validate `force` consistently at runtime.
+- [x] Exclude `force` from the semantic result fingerprint.
+- [x] Exclude `force` from arguments forwarded to command resolution or execution.
+- [x] Report a forced execution as a cache bypass.
 
 ### Reuse policy
 
-- [ ] Add an explicit reuse policy to every command definition.
-- [ ] Support `never`, `static`, `project-metadata`, and `workspace-snapshot` policies.
-- [ ] Default missing or unknown policies to `never`.
-- [ ] Keep `node_lint_fix` and `node_format_write` permanently non-reusable.
-- [ ] Treat commands that depend on uncontrolled external state as non-reusable.
-- [ ] Review build, test, coverage, and E2E commands individually instead of assuming that all package scripts are non-mutating.
-- [ ] Require an explicit test and rationale before making any project-code command reusable.
+- [x] Add an explicit reuse policy to every command definition.
+- [x] Support `never`, `static`, `project-metadata`, and `workspace-snapshot` policies.
+- [x] Default missing or unknown policies to `never`.
+- [x] Keep `node_lint_fix` and `node_format_write` permanently non-reusable.
+- [x] Treat commands that depend on uncontrolled external state as non-reusable.
+- [x] Review build, test, coverage, and E2E commands individually instead of assuming that all package scripts are non-mutating.
+- [x] Require an explicit test and rationale before making any project-code command reusable.
 
 ### Result fingerprint
 
-- [ ] Add a versioned result-fingerprint format.
-- [ ] Include the extension version.
-- [ ] Include the authorization command fingerprint.
-- [ ] Include the canonical project path rather than its display form.
-- [ ] Include normalized effective parameters.
-- [ ] Include the selected process timeout and output limit.
-- [ ] Include the reuse-policy identifier.
-- [ ] Include a canonical manifest of relevant input paths and hashes.
-- [ ] Record which files and configuration values contributed to the fingerprint.
-- [ ] Keep content out of the fingerprint metadata returned to the session.
+- [x] Add a versioned result-fingerprint format.
+- [x] Include the extension version.
+- [x] Include the authorization command fingerprint.
+- [x] Include the canonical project path rather than its display form.
+- [x] Include normalized effective parameters.
+- [x] Include the selected process timeout and output limit.
+- [x] Include the reuse-policy identifier.
+- [x] Include a canonical manifest of relevant input paths and hashes.
+- [x] Record which files and configuration values contributed to the fingerprint.
+- [x] Keep content out of the fingerprint metadata returned to the session.
 
 ### Relevant inputs
 
-- [ ] Implement relevant-input discovery separately from command resolution.
-- [ ] Allow resolution to expose discovered paths without making resolution responsible for hashing them.
-- [ ] Include `package.json` when package scripts or package-manager selection affect the command.
-- [ ] Include relevant lockfiles when package-manager selection or dependency state affects the command.
-- [ ] Include the selected package-script hash.
-- [ ] Include explicit test paths and command-specific configuration when applicable.
-- [ ] Use a conservative workspace snapshot only for definitions explicitly approved for that strategy.
-- [ ] Mark the command non-reusable when complete relevant-input discovery fails.
-- [ ] Never silently fall back to an incomplete fingerprint.
+- [x] Implement relevant-input discovery separately from command resolution.
+- [x] Allow resolution to expose discovered paths without making resolution responsible for hashing them.
+- [x] Include `package.json` when package scripts or package-manager selection affect the command.
+- [x] Include relevant lockfiles when package-manager selection or dependency state affects the command.
+- [x] Include the selected package-script hash.
+- [x] Include explicit test paths and command-specific configuration when applicable.
+- [x] Use a conservative workspace snapshot only for definitions explicitly approved for that strategy.
+- [x] Mark the command non-reusable when complete relevant-input discovery fails.
+- [x] Never silently fall back to an incomplete fingerprint.
 
 ### Mutation detection
 
-- [ ] Capture relevant project state before executing a reusable project-code command.
-- [ ] Capture relevant project state after execution.
-- [ ] Do not cache the result when execution changes relevant project state.
-- [ ] Treat created, removed, replaced, or metadata-changed relevant files as mutation.
-- [ ] Do not use a successful exit code as evidence that a command was non-mutating.
+- [x] Capture relevant project state before executing a reusable project-code command.
+- [x] Capture relevant project state after execution.
+- [x] Do not cache the result when execution changes relevant project state.
+- [x] Treat created, removed, replaced, or metadata-changed relevant files as mutation.
+- [x] Do not use a successful exit code as evidence that a command was non-mutating.
 
 ### Cacheable outcomes
 
-- [ ] Cache successful outcomes for eligible commands.
-- [ ] Cache deterministic nonzero validation outcomes for eligible commands.
-- [ ] Treat accepted nonzero Fallow outcomes according to the command's explicit reuse policy.
-- [ ] Do not cache authorization denials or confirmation failures.
-- [ ] Do not cache policy load or persistence failures.
-- [ ] Do not cache incomplete resolution failures.
-- [ ] Do not cache timeouts.
-- [ ] Do not cache spawn failures.
-- [ ] Do not cache cancellations.
-- [ ] Do not cache results from mutating commands.
+- [x] Cache successful outcomes for eligible commands.
+- [x] Cache deterministic nonzero validation outcomes for eligible commands.
+- [x] Treat accepted nonzero Fallow outcomes according to the command's explicit reuse policy.
+- [x] Do not cache authorization denials or confirmation failures.
+- [x] Do not cache policy load or persistence failures.
+- [x] Do not cache incomplete resolution failures.
+- [x] Do not cache timeouts.
+- [x] Do not cache spawn failures.
+- [x] Do not cache cancellations.
+- [x] Do not cache results from mutating commands.
 
 ### Cache metadata
 
-- [ ] Report `miss` when an eligible result is not present.
-- [ ] Report `hit` when execution is skipped and an earlier result is returned.
-- [ ] Report `forced` when `force` bypasses an available result.
-- [ ] Report `ineligible` when the command or outcome cannot be reused.
-- [ ] Report `invalidated` when a prior command request exists but relevant inputs changed.
-- [ ] Return the result fingerprint for eligible requests.
-- [ ] Return the producing invocation ID for cache hits.
-- [ ] Preserve the original outcome while marking the current response as reused.
+- [x] Report `miss` when an eligible result is not present.
+- [x] Report `hit` when execution is skipped and an earlier result is returned.
+- [x] Report `forced` when `force` bypasses an available result.
+- [x] Report `ineligible` when the command or outcome cannot be reused.
+- [x] Report `invalidated` when a prior command request exists but relevant inputs changed.
+- [x] Return the result fingerprint for eligible requests.
+- [x] Return the producing invocation ID for cache hits.
+- [x] Preserve the original outcome while marking the current response as reused.
 
 ### Proposed files
 
-- `src/tools/project-command/result-fingerprint.ts`.
-- `src/tools/project-command/result-cache.ts`.
-- `src/tools/project-command/session-state.ts`.
+- `src/tools/project-command/cache.ts`.
+- `src/tools/project-command/fingerprint.ts`.
+- `src/tools/project-command/state-snapshot.ts`.
 - `src/tools/project-command/relevant-inputs.ts`.
 - `src/tools/project-command/definitions.ts`.
 - `src/tools/project-command/schema.ts`.
 - `src/tools/project-command/schema/validation.ts`.
 - `src/tools/project-command/runner.ts`.
 - `src/tools/project-command/output.ts`.
+- `src/tools/project-command/tool.ts`.
+- `src/tools/project-command/node/relevant-inputs.ts`.
+- `src/tools/project-command/node/types.ts`.
+- `src/tools/project-command/parameters/validation.ts`.
+- `src/tools/project-command/parameters/text-validation.ts`.
+- `src/tools/project-command/defined-properties.ts`.
 
-### Acceptance criteria
+### Acceptance criteria (met)
 
-- An identical eligible request with unchanged relevant inputs executes at most once in one active session unless forced.
-- A relevant source or configuration change invalidates the prior result.
-- A policy change can block a request even when a matching cached result exists.
-- Mutating and externally dependent commands are never served from cache.
-- Timeouts, spawn failures, cancellations, and policy failures are never served from cache.
-- Cache entries do not cross session IDs or extension runtime restarts.
-- Cache metadata explains every reuse, bypass, ineligibility decision, and invalidation.
+- [x] An identical eligible request with unchanged relevant inputs executes at most once in one active session unless forced.
+- [x] A relevant source or configuration change invalidates the prior result.
+- [x] A policy change can block a request even when a matching cached result exists.
+- [x] Mutating and externally dependent commands are never served from cache.
+- [x] Timeouts, spawn failures, cancellations, and policy failures are never served from cache.
+- [x] Cache entries do not cross session IDs or extension runtime restarts.
+- [x] Cache metadata explains every reuse, bypass, ineligibility decision, and invalidation.
 
 ## Phase 4: Extend the stable error contract to existing tools
 
@@ -529,22 +535,22 @@ Their implementation order will be decided from evidence gathered by the earlier
 - [x] Test canonical metadata serialization and hashing.
 - [x] Test result-category mapping as pure functions.
 - [x] Test diagnostic extraction as pure functions.
-- [ ] Test result-fingerprint stability and sensitivity.
-- [ ] Test cache eligibility and cache-decision functions.
-- [ ] Test force normalization and exclusion from result fingerprints.
+- [x] Test result-fingerprint stability and sensitivity.
+- [x] Test cache eligibility and cache-decision functions.
+- [x] Test force normalization and exclusion from result fingerprints.
 
 ### Integration tests
 
 - [x] Exercise session inventory through a realistic mocked Pi extension lifecycle.
-- [ ] Execute the same project command twice and assert that the executor runs once when reuse is eligible.
-- [ ] Modify a relevant source file and assert that the command executes again.
-- [ ] Modify package metadata or a relevant lockfile and assert invalidation where applicable.
-- [ ] Change policy after an initial execution and assert that the cached result cannot bypass the new decision.
-- [ ] Run a mutating command twice and assert that both requests execute.
+- [x] Execute the same project command twice and assert that the executor runs once when reuse is eligible.
+- [x] Modify a relevant source file and assert that the command executes again.
+- [x] Modify package metadata or a relevant lockfile and assert invalidation where applicable.
+- [x] Change policy after an initial execution and assert that the cached result cannot bypass the new decision.
+- [x] Run a mutating command twice and assert that both requests execute.
 - [x] Simulate timeout, spawn failure, cancellation, policy denial, and confirmation timeout.
-- [ ] Verify that none of those outcomes becomes reusable.
-- [ ] Verify that separate session IDs do not share results.
-- [ ] Verify that `force: true` executes and records a forced bypass.
+- [x] Verify that none of those outcomes becomes reusable.
+- [x] Verify that separate session IDs do not share results.
+- [x] Verify that `force: true` executes and records a forced bypass.
 
 ### Regression validation
 
@@ -559,10 +565,10 @@ Their implementation order will be decided from evidence gathered by the earlier
 1. Implement active tool inventory and policy coverage tests. **Completed.**
 2. Introduce structured project-command errors and result categories. **Completed.**
 3. Add project-command diagnostics, duration, scope, and retry metadata. **Completed.**
-4. Define command reuse policies and the relevant-input interface. **Next.**
-5. Add versioned result fingerprints.
-6. Add session-local result storage and `force` behavior.
-7. Enable reuse command by command only after each command's input and mutation tests pass.
+4. Define command reuse policies and the relevant-input interface. **Completed.**
+5. Add versioned result fingerprints. **Completed.**
+6. Add session-local result storage and `force` behavior. **Completed.**
+7. Enable reuse command by command only after each command's input and mutation tests pass. **Completed for the currently approved reusable definitions.**
 8. Extend the stable error contract to the other existing tool families.
 9. Add compact measurement records and refine behavior from evidence.
 

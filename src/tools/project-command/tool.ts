@@ -14,6 +14,8 @@ import {
   type ProjectCommandInputSchema,
 } from "./schema.ts";
 import type { ProjectCommandOutputDetails } from "./output.ts";
+import type { ProjectCommandRelevantInputDiscovery } from "./relevant-inputs.ts";
+import type { ProjectCommandStateSnapshotter } from "./state-snapshot.ts";
 import {
   createProjectCommandExecute,
   type ProjectCommandExecute,
@@ -31,6 +33,8 @@ export interface ProjectCommandToolTestOptions<
   readonly policy?: PolicyStore;
   readonly executor?: ProjectCommandExecutor;
   readonly resolver?: ProjectCommandResolver;
+  readonly relevantInputDiscovery?: ProjectCommandRelevantInputDiscovery;
+  readonly stateSnapshotter?: ProjectCommandStateSnapshotter;
   readonly definitions?: Definitions;
 }
 
@@ -69,6 +73,8 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
   executor: ProjectCommandExecutor,
   resolver: ProjectCommandResolver,
   definitions: Definitions,
+  relevantInputDiscovery?: ProjectCommandRelevantInputDiscovery,
+  stateSnapshotter?: ProjectCommandStateSnapshotter,
 ): ProjectCommandToolDefinition<Definitions> {
   const capturedDefinitions = captureDefinitions(definitions);
   const byId = new Map<string, ProjectCommandDefinition>();
@@ -99,7 +105,15 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
     ],
     parameters: createProjectCommandInputSchema(capturedDefinitions),
     executionMode: "sequential",
-    execute: createProjectCommandExecute(policy, executor, resolver, capturedDefinitions, byId),
+    execute: createProjectCommandExecute(
+      policy,
+      executor,
+      resolver,
+      capturedDefinitions,
+      byId,
+      relevantInputDiscovery,
+      stateSnapshotter,
+    ),
   };
 }
 
@@ -143,5 +157,7 @@ export function createProjectCommandToolForTesting<
     options.executor ?? createProjectCommandExecutor(),
     options.resolver ?? resolveProjectCommand,
     definitions,
+    options.relevantInputDiscovery,
+    options.stateSnapshotter,
   );
 }

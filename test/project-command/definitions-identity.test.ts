@@ -3,6 +3,8 @@ import {
   fingerprintProjectCommandDefinition,
   getProjectCommandDefinitions,
   projectCommandIdentity,
+  projectCommandReusePolicy,
+  normalizeProjectCommandReusePolicy,
 } from "../../src/tools/project-command/definitions.ts";
 
 it("keeps the catalog and its command arguments immutable", () => {
@@ -60,6 +62,49 @@ it("includes static catalog metadata and resolved script hashes in identities", 
       scriptHash: "a".repeat(64),
     }),
   ).toBe(withHash);
+});
+
+it("defaults unknown policies to never and gates unsafe definitions", () => {
+  const workspaceDefinition = getProjectCommandDefinitions()[0];
+  if (workspaceDefinition === undefined) throw new Error("missing workspace_path definition");
+  expect(normalizeProjectCommandReusePolicy(undefined)).toBe("never");
+  expect(normalizeProjectCommandReusePolicy("future-policy")).toBe("never");
+  expect(projectCommandReusePolicy(workspaceDefinition)).toBe("static");
+  expect(
+    projectCommandReusePolicy({ ...workspaceDefinition, reusePolicy: "project-metadata" }),
+  ).toBe("project-metadata");
+  expect(
+    projectCommandReusePolicy({
+      ...workspaceDefinition,
+      mutatesWorkspace: true,
+      reusePolicy: "static",
+    }),
+  ).toBe("never");
+  expect(
+    projectCommandReusePolicy({
+      ...workspaceDefinition,
+      uncontrolledExternalState: true,
+      reusePolicy: "static",
+    }),
+  ).toBe("never");
+  expect(
+    projectCommandReusePolicy({ ...workspaceDefinition, reusePolicy: "workspace-snapshot" }),
+  ).toBe("never");
+  expect(
+    projectCommandReusePolicy({
+      ...workspaceDefinition,
+      reusePolicy: "workspace-snapshot",
+      workspaceSnapshotApproved: true,
+    }),
+  ).toBe("workspace-snapshot");
+});
+
+it("keeps reuse metadata separate from authorization identity", () => {
+  const definition = getProjectCommandDefinitions()[0];
+  if (definition === undefined) throw new Error("missing workspace_path definition");
+  expect(projectCommandIdentity({ ...definition, reusePolicy: "project-metadata" })).toEqual(
+    projectCommandIdentity(definition),
+  );
 });
 
 it("uses stable sha-256 identities that distinguish definitions", () => {

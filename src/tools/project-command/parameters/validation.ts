@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { hasControlCharacter } from "./text-validation.ts";
 import { ProjectCommandResolutionError } from "../errors.ts";
 import {
   NODE_E2E_GREP_MAX_LENGTH,
@@ -12,22 +13,6 @@ import type { NodeE2EParameters } from "./types.ts";
 
 function parameterError(code: string): ProjectCommandResolutionError {
   return new ProjectCommandResolutionError("probe", code);
-}
-
-function hasControlCharacter(value: string): boolean {
-  for (const character of value) {
-    const code = character.codePointAt(0) ?? 0;
-    if (
-      code <= 0x1f ||
-      (code >= 0x80 && code <= 0x9f) ||
-      code === 0x7f ||
-      code === 0x2028 ||
-      code === 0x2029
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 function hasWildcardCharacter(value: string): boolean {

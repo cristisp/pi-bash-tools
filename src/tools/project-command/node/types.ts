@@ -3,7 +3,10 @@ import type { ProjectResolutionFileSystem } from "../resolution.ts";
 import type { NodeProjectInfo } from "../node.ts";
 
 export type NodeFileSystem = Pick<ProjectResolutionFileSystem, "readFile" | "stat"> &
-  Partial<Pick<ProjectResolutionFileSystem, "realpath" | "lstat">>;
+  Partial<Pick<ProjectResolutionFileSystem, "realpath" | "lstat">> & {
+    readonly readFileBytes?: (path: string) => Promise<Uint8Array>;
+    readonly readlinkBytes?: (path: string) => Promise<Uint8Array>;
+  };
 
 export interface NodeManifest {
   readonly scripts: Readonly<Record<string, string>>;

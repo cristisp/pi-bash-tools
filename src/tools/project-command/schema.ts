@@ -31,10 +31,15 @@ export type ProjectCommandInputSchema<
 type InputForDefinition<Definition extends ProjectCommandDefinition> =
   Definition extends ProjectCommandDefinition
     ? Definition["commandId"] extends "node_test"
-      ? { readonly commandId: Definition["commandId"]; readonly paths?: readonly string[] }
+      ? {
+          readonly commandId: Definition["commandId"];
+          readonly force?: boolean;
+          readonly paths?: readonly string[];
+        }
       : Definition["commandId"] extends "node_e2e"
         ? {
             readonly commandId: Definition["commandId"];
+            readonly force?: boolean;
             readonly paths?: readonly string[];
             readonly grep?: string;
             readonly projects?: readonly string[];
@@ -44,8 +49,12 @@ type InputForDefinition<Definition extends ProjectCommandDefinition> =
             readonly list?: boolean;
           }
         : Definition["commandId"] extends "fallow_audit"
-          ? { readonly commandId: Definition["commandId"]; readonly base: string }
-          : { readonly commandId: Definition["commandId"] }
+          ? {
+              readonly commandId: Definition["commandId"];
+              readonly force?: boolean;
+              readonly base: string;
+            }
+          : { readonly commandId: Definition["commandId"]; readonly force?: boolean }
     : never;
 
 export type ProjectCommandInputFor<Definitions extends readonly ProjectCommandDefinition[]> =
@@ -55,10 +64,14 @@ type ProjectCommandRuntimeInputSchema = TUnion;
 
 function variantForDefinition(definition: ProjectCommandDefinition): TObject {
   const commandId = Type.Literal(definition.commandId, { description: definition.description });
+  const force = Type.Optional(
+    Type.Boolean({ description: "Bypass a reusable result cache for this invocation." }),
+  );
   if (definition.commandId === "node_test") {
     return Type.Object(
       {
         commandId,
+        force,
         paths: Type.Optional(
           Type.Array(
             Type.String({
@@ -79,6 +92,7 @@ function variantForDefinition(definition: ProjectCommandDefinition): TObject {
     return Type.Object(
       {
         commandId,
+        force,
         paths: Type.Optional(
           Type.Array(
             Type.String({
@@ -129,6 +143,7 @@ function variantForDefinition(definition: ProjectCommandDefinition): TObject {
     return Type.Object(
       {
         commandId,
+        force,
         base: Type.String({
           pattern: FALLOW_REVISION_PATTERN,
           description: "Required safe revision used as the Fallow audit base.",
@@ -137,7 +152,7 @@ function variantForDefinition(definition: ProjectCommandDefinition): TObject {
       { additionalProperties: false },
     );
   }
-  return Type.Object({ commandId }, { additionalProperties: false });
+  return Type.Object({ commandId, force }, { additionalProperties: false });
 }
 
 export function createProjectCommandInputSchema<
