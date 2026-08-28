@@ -9,6 +9,11 @@ import type {
   PolicyAuthorization,
   PolicyStore,
 } from "../policy/types.ts";
+import {
+  filesystemCancellationError,
+  FilesystemToolError,
+  filesystemPolicyLoadError,
+} from "./errors.ts";
 
 export type FilesystemAuthorizationContext = Omit<
   Pick<ExtensionContext, "cwd" | "signal" | "hasUI" | "mode" | "ui">,
@@ -35,10 +40,8 @@ export interface FilesystemAuthorizationOptions {
   readonly error: FilesystemAuthorizationError;
 }
 
-function cancellationError(): Error {
-  const error = new Error("Filesystem access policy request cancelled");
-  error.name = "AbortError";
-  return error;
+function cancellationError(): FilesystemToolError {
+  return filesystemCancellationError("Filesystem access policy request cancelled");
 }
 
 function throwIfRequestAborted(signal: AbortSignal | undefined): void {
@@ -58,13 +61,16 @@ export async function loadFilesystemPolicyForRequest(
     throwIfRequestAborted(signal);
     return loaded;
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
+    if (error instanceof FilesystemToolError) {
       throw error;
+    }
+    if (error instanceof Error && error.name === "AbortError") {
+      throw cancellationError();
     }
     if (signal?.aborted) {
       throw cancellationError();
     }
-    throw new Error("Unable to load filesystem access policy", { cause: error });
+    throw filesystemPolicyLoadError();
   }
 }
 

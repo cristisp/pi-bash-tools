@@ -2,6 +2,8 @@ import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   containsPathspecCharacter,
+  gitImplementationError,
+  invalidGitRequest,
   GitToolError,
   runGit,
   validateGitText,
@@ -35,10 +37,10 @@ function isUnsafePath(path: string): boolean {
   return checks.some(Boolean);
 }
 
-function validatePathSyntax(path: string, label: string): void {
+function validatePathSyntax(path: unknown, label: string): asserts path is string {
   validateGitText(path, label);
   if (isUnsafePath(path)) {
-    throw new GitToolError(`${label} is not a safe workspace-relative path`);
+    throw invalidGitRequest(`${label} is not a safe workspace-relative path`, label);
   }
 }
 
@@ -65,36 +67,36 @@ export async function resolveRepository(
   );
   const rootText = result.stdout.trim();
   if (!rootText) {
-    throw new GitToolError("Git did not return a repository root");
+    throw gitImplementationError("Git did not return a repository root", true);
   }
   try {
     const root = await realpath(rootText);
     const canonicalCwd = await realpath(cwd);
     if (!isInside(root, canonicalCwd)) {
-      throw new GitToolError("current workspace is outside the Git repository");
+      throw gitImplementationError("current workspace is outside the Git repository", true);
     }
     return { root, cwd: canonicalCwd };
   } catch (error) {
     if (error instanceof GitToolError) {
       throw error;
     }
-    throw new GitToolError(`cannot resolve Git repository root: ${String(error)}`);
+    throw gitImplementationError(`cannot resolve Git repository root: ${String(error)}`, true);
   }
 }
 
 export async function resolvePath(
   repository: Repository,
-  input: string,
+  input: unknown,
   label = "path",
 ): Promise<string> {
   validatePathSyntax(input, label);
   const candidate = resolve(repository.cwd, input);
   if (!isInside(repository.cwd, candidate) || !isInside(repository.root, candidate)) {
-    throw new GitToolError(`${label} escapes the workspace or repository`);
+    throw invalidGitRequest(`${label} escapes the workspace or repository`, label);
   }
   const canonicalAncestor = await existingAncestor(candidate);
   if (canonicalAncestor && !isInside(repository.root, canonicalAncestor)) {
-    throw new GitToolError(`${label} escapes the repository through a symlink`);
+    throw invalidGitRequest(`${label} escapes the repository through a symlink`, label);
   }
   const repositoryPath = relative(repository.root, candidate).split(sep).join("/") || ".";
   return repositoryPath;
@@ -105,14 +107,14 @@ export async function resolvePaths(
   inputs: readonly string[],
   label = "paths",
 ): Promise<string[]> {
-  if (inputs.length === 0) {
-    throw new GitToolError(`${label} must not be empty`);
+  if (!Array.isArray(inputs) || inputs.length === 0) {
+    throw invalidGitRequest(`${label} must not be empty`, label);
   }
   const paths = await Promise.all(
     inputs.map((input, index) => resolvePath(repository, input, `${label}[${index}]`)),
   );
   if (new Set(paths).size !== paths.length) {
-    throw new GitToolError(`${label} must not contain duplicate paths`);
+    throw invalidGitRequest(`${label} must not contain duplicate paths`, label);
   }
   return paths;
 }

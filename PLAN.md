@@ -329,20 +329,20 @@ Categories must be assigned from known execution state and must not be guessed b
 - [x] Cache entries do not cross session IDs or extension runtime restarts.
 - [x] Cache metadata explains every reuse, bypass, ineligibility decision, and invalidation.
 
-## Phase 4: Extend the stable error contract to existing tools
+## Phase 4: Extend the stable error contract to existing tools (complete)
 
 This phase begins only after the project-command contract has been exercised and stabilized.
 It changes error structure without adding new tool capabilities.
 
-- [ ] Apply stable error codes to the existing Git tools.
-- [ ] Apply stable error codes to the environment tool.
-- [ ] Apply stable error codes to filesystem policy interception.
-- [ ] Apply stable error codes to `move` and `delete`.
-- [ ] Use the same field, explanation, example, retryability, and execution-attempt conventions.
-- [ ] Preserve existing policy decisions and fail-closed behavior.
-- [ ] Avoid changing public success-result shapes unless needed for consistency.
+- [x] Apply stable error codes to the existing Git tools.
+- [x] Apply stable error codes to the environment tool.
+- [x] Apply stable error codes to filesystem policy interception.
+- [x] Apply stable error codes to `move` and `delete`.
+- [x] Use the same field, explanation, example, retryability, and execution-attempt conventions.
+- [x] Preserve existing policy decisions and fail-closed behavior.
+- [x] Avoid changing public success-result shapes unless needed for consistency.
 
-### Acceptance criteria
+### Acceptance criteria (met)
 
 - Equivalent validation failures have equivalent structured details across existing tool families.
 - Every failure indicates whether an unchanged retry can succeed.
@@ -569,7 +569,7 @@ Their implementation order will be decided from evidence gathered by the earlier
 5. Add versioned result fingerprints. **Completed.**
 6. Add session-local result storage and `force` behavior. **Completed.**
 7. Enable reuse command by command only after each command's input and mutation tests pass. **Completed for the currently approved reusable definitions.**
-8. Extend the stable error contract to the other existing tool families.
+8. Extend the stable error contract to the other existing tool families. **Completed.**
 9. Add compact measurement records and refine behavior from evidence.
 
 After step 9, select deferred workstreams from measured impact, security risk, and implementation dependencies.

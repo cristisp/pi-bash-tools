@@ -7,7 +7,7 @@ import {
   validateIntegerLimit,
 } from "../output.ts";
 import { resolvePath, resolvePaths, resolveRepository } from "../repository.ts";
-import { runGit, type GitExec } from "../execution.ts";
+import { invalidGitRequest, runGit, type GitExec } from "../execution.ts";
 import { defineGitTool, type GitToolDefinition } from "../tool.ts";
 
 const staged = Type.Optional(Type.Boolean({ description: "Read the staged index diff" }));
@@ -64,7 +64,7 @@ export function createGitDiffTool(
       const hasLegacyPath = "path" in params;
       const hasPaths = "paths" in params;
       if (hasLegacyPath && hasPaths) {
-        throw new Error("provide either path or paths, not both");
+        throw invalidGitRequest("provide either path or paths, not both", "path");
       }
       validateIntegerLimit(params.maxBytes, 1, MAX_CONTENT_BYTES, "maxBytes");
       const repository = await resolveRepository(exec, ctx.cwd, signal ?? ctx.signal);

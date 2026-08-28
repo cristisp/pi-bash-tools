@@ -31,23 +31,41 @@ describe("environment tool request validation", () => {
       fixtures.context(fixture.directory),
     );
     expect(response.details).toEqual({ values: { EXPLICIT: "", ABSENT: null } });
-    await expect(
-      tool.execute(
-        "2",
-        { keys: ["EXPLICIT", "EXPLICIT"] },
-        undefined,
-        undefined,
-        fixtures.context(fixture.directory),
-      ),
-    ).rejects.toThrow(/unique valid/iu);
-    await expect(
-      tool.execute(
-        "3",
-        { keys: ["NOT-VALID"] },
-        undefined,
-        undefined,
-        fixtures.context(fixture.directory),
-      ),
-    ).rejects.toThrow(/unique valid/iu);
+    const duplicateKeysExecution = tool.execute(
+      "2",
+      { keys: ["EXPLICIT", "EXPLICIT"] },
+      undefined,
+      undefined,
+      fixtures.context(fixture.directory),
+    );
+    await expect(duplicateKeysExecution).rejects.toMatchObject({
+      contract: {
+        code: "invalid-request",
+        category: "INVALID_REQUEST",
+        invalidField: "keys",
+        retryable: false,
+        executed: false,
+      },
+      details: { category: "INVALID_REQUEST", executed: false },
+    });
+    await expect(duplicateKeysExecution).rejects.toThrow(/unique valid/iu);
+
+    const invalidKeyExecution = tool.execute(
+      "3",
+      { keys: ["NOT-VALID"] },
+      undefined,
+      undefined,
+      fixtures.context(fixture.directory),
+    );
+    await expect(invalidKeyExecution).rejects.toMatchObject({
+      contract: {
+        code: "invalid-request",
+        category: "INVALID_REQUEST",
+        invalidField: "keys",
+        retryable: false,
+        executed: false,
+      },
+    });
+    await expect(invalidKeyExecution).rejects.toThrow(/unique valid/iu);
   });
 });

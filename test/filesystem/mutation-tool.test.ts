@@ -1,4 +1,4 @@
-import { mkdir, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import {
@@ -49,9 +49,22 @@ it.each(["move", "delete"] as const)(
       await writeFile(source, "content");
       const tool = createMoveToolForTesting({ configPath: config });
 
-      await expect(
-        tool.execute("1", { source, destination }, undefined, undefined, context(directory)),
-      ).rejects.toThrow(/requires approval that is unavailable/iu);
+      const execution = tool.execute(
+        "1",
+        { source, destination },
+        undefined,
+        undefined,
+        context(directory),
+      );
+      await expect(execution).rejects.toThrow(/requires approval that is unavailable/iu);
+      await expect(execution).rejects.toMatchObject({
+        contract: {
+          code: "policy-not-authorized",
+          category: "BLOCKED",
+          retryable: false,
+          executed: false,
+        },
+      });
       await expect(readFile(source, "utf8")).resolves.toBe("content");
       await expect(stat(destination)).rejects.toMatchObject({ code: "ENOENT" });
       return;
@@ -61,9 +74,16 @@ it.each(["move", "delete"] as const)(
     await writeFile(path, "content");
     const tool = createDeleteToolForTesting({ configPath: config });
 
-    await expect(
-      tool.execute("1", { path }, undefined, undefined, context(directory)),
-    ).rejects.toThrow(/requires approval that is unavailable/iu);
+    const execution = tool.execute("1", { path }, undefined, undefined, context(directory));
+    await expect(execution).rejects.toThrow(/requires approval that is unavailable/iu);
+    await expect(execution).rejects.toMatchObject({
+      contract: {
+        code: "policy-not-authorized",
+        category: "BLOCKED",
+        retryable: false,
+        executed: false,
+      },
+    });
     await expect(readFile(path, "utf8")).resolves.toBe("content");
   },
 );
@@ -215,6 +235,122 @@ it("does not persist an earlier move approval when destination approval is denie
           denyMove: [join(await realpath(outside), "destination.txt")],
         },
       },
+    },
+  });
+});
+
+it.each(["move", "delete"] as const)(
+  "classifies pre-execution cancellation for %s",
+  async (operation) => {
+    const directory = await fixtures.createDirectory();
+    const path = join(directory, `${operation}.txt`);
+    await writeFile(path, "content");
+    const controller = new AbortController();
+    controller.abort();
+    const config = await configPath(directory);
+    const execution =
+      operation === "move"
+        ? createMoveToolForTesting({ configPath: config }).execute(
+            "1",
+            { source: path, destination: join(directory, "destination.txt") },
+            controller.signal,
+            undefined,
+            context(directory),
+          )
+        : createDeleteToolForTesting({ configPath: config }).execute(
+            "1",
+            { path },
+            controller.signal,
+            undefined,
+            context(directory),
+          );
+
+    await expect(execution).rejects.toMatchObject({
+      contract: {
+        code: "cancelled",
+        category: "CANCELLED",
+        retryable: true,
+        executed: false,
+      },
+    });
+    await expect(readFile(path, "utf8")).resolves.toBe("content");
+  },
+);
+
+it.each(["move", "delete"] as const)(
+  "classifies %s syscall failures after authorization",
+  async (operation) => {
+    const directory = await fixtures.createDirectory();
+    const source = join(directory, "source.txt");
+    const destination = join(directory, "destination.txt");
+    await writeFile(source, "content");
+    const path = join(directory, "delete.txt");
+    await writeFile(path, "content");
+    const config = await configPath(directory);
+    const canonicalSource = await realpath(source);
+    const canonicalDestination = join(await realpath(directory), "destination.txt");
+    const canonicalDeletePath = await realpath(path);
+    const choices =
+      operation === "move"
+        ? ["Allow for this project", "Allow for this project"]
+        : ["Allow for this project"];
+    const approvalContext = context(directory, {
+      hasUI: true,
+      mode: "tui",
+      select: async () => choices.shift(),
+    });
+    const execution =
+      operation === "move"
+        ? createMoveToolForTesting({
+            configPath: config,
+            fs: {
+              rename: async (from, to) => {
+                if (from === canonicalSource && to === canonicalDestination) {
+                  throw new Error("rename failed");
+                }
+                await rename(from, to);
+              },
+            },
+          }).execute("1", { source, destination }, undefined, undefined, approvalContext)
+        : createDeleteToolForTesting({
+            configPath: config,
+            fs: {
+              unlink: async (target) => {
+                if (target === canonicalDeletePath) {
+                  throw new Error("unlink failed");
+                }
+              },
+            },
+          }).execute("1", { path }, undefined, undefined, approvalContext);
+
+    await expect(execution).rejects.toMatchObject({
+      contract: {
+        code: "filesystem-mutation-failure",
+        category: "IMPLEMENTATION_FAILURE",
+        retryable: true,
+        executed: true,
+      },
+    });
+  },
+);
+
+it("classifies filesystem inspection failures before mutation", async () => {
+  const directory = await fixtures.createDirectory();
+  const path = join(directory, "target.txt");
+  await writeFile(path, "content");
+  const tool = createDeleteToolForTesting({
+    configPath: await configPath(directory),
+    fs: { lstat: async () => Promise.reject(new Error("inspection failed")) },
+  });
+
+  await expect(
+    tool.execute("1", { path }, undefined, undefined, context(directory)),
+  ).rejects.toMatchObject({
+    contract: {
+      code: "filesystem-inspection-failure",
+      category: "IMPLEMENTATION_FAILURE",
+      retryable: true,
+      executed: false,
     },
   });
 });

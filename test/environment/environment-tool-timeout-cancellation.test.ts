@@ -69,6 +69,14 @@ it("cancels before the atomic policy commit when persistence is delayed", async 
   controller.abort();
   delayedWrite.continueWrite();
   await expect(execution).rejects.toThrow(/cancelled/iu);
+  await expect(execution).rejects.toMatchObject({
+    contract: {
+      code: "cancelled",
+      category: "CANCELLED",
+      retryable: true,
+      executed: false,
+    },
+  });
   expect(reads).toEqual([]);
   expect(JSON.parse(await readFile(fixture.configPath, "utf8"))).toEqual({
     version: 1,
@@ -256,6 +264,12 @@ it("times out to a project deny and distinguishes manual cancellation", async ()
   await expect(execution).rejects.toMatchObject({
     message: "Environment request cancelled",
     name: "AbortError",
+    contract: {
+      code: "cancelled",
+      category: "CANCELLED",
+      retryable: true,
+      executed: false,
+    },
   });
   expect(JSON.parse(await readFile(cancelledFixture.configPath, "utf8"))).toEqual({
     version: 1,

@@ -163,6 +163,8 @@ it("blocks a policy denial without terminating the agent", async () => {
 
   expect(result?.block).toBe(true);
   expect(result?.reason).toContain("denied by the global policy rule");
+  expect(result?.reason).toContain('"code":"policy-denied"');
+  expect(result?.reason).toContain('"category":"BLOCKED"');
   expect(result?.terminate).toBeUndefined();
 });
 
@@ -396,6 +398,42 @@ it("does not authorize unknown tool calls as filesystem access", async () => {
   );
 
   expect(result).toBeUndefined();
+});
+
+it("classifies policy loading, path resolution, and cancellation failures", async () => {
+  const directory = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const failingPolicy = {
+    configPath,
+    load: async () => {
+      throw new Error("policy unavailable");
+    },
+    recordDecisions: async () => undefined,
+  };
+  const loadResult = await createFilesystemAccessPolicyInterceptor(failingPolicy)(
+    event("ls", directory),
+    context(directory),
+  );
+  expect(loadResult?.reason).toContain('"code":"policy-load-failure"');
+  expect(loadResult?.reason).toContain('"category":"POLICY_FAILURE"');
+
+  const policy = createPolicyStoreForTesting({ configPath });
+  const missingResult = await createFilesystemAccessPolicyInterceptor(policy)(
+    event("read", join(directory, "missing.txt")),
+    context(directory),
+  );
+  expect(missingResult?.reason).toContain('"code":"policy-path-resolution-failure"');
+  expect(missingResult?.reason).toContain('"executed":false');
+
+  const controller = new AbortController();
+  controller.abort();
+  const cancelledResult = await createFilesystemAccessPolicyInterceptor(policy)(
+    event("ls", directory),
+    context(directory, { signal: controller.signal }),
+  );
+  expect(cancelledResult?.reason).toContain('"code":"cancelled"');
+  expect(cancelledResult?.reason).toContain('"category":"CANCELLED"');
 });
 
 it("ignores non-filesystem tool calls", async () => {

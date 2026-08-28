@@ -5,7 +5,9 @@ import type {
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
-  EnvironmentToolError,
+  environmentCancellationError,
+  environmentContract,
+  environmentError,
   environmentInputSchema,
   type EnvironmentInput,
   validateEnvironmentKeys,
@@ -55,11 +57,34 @@ function makeEnvironmentToolResult(details: EnvironmentOutput): AgentToolResult<
 function readEnvironmentValues(
   keys: readonly string[],
   environment: Readonly<Record<string, string | undefined>>,
+  signal: AbortSignal | undefined,
 ): Readonly<Record<string, string | null>> {
+  if (signal?.aborted) {
+    throw environmentCancellationError();
+  }
   try {
-    return Object.fromEntries(keys.map((key) => [key, environment[key] ?? null]));
-  } catch {
-    throw new EnvironmentToolError("Unable to read requested environment values");
+    const values = Object.fromEntries(keys.map((key) => [key, environment[key] ?? null]));
+    if (signal?.aborted) {
+      throw environmentCancellationError(true);
+    }
+    return values;
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw error;
+    }
+    if (signal?.aborted) {
+      throw environmentCancellationError(true);
+    }
+    throw environmentError(
+      "Unable to read requested environment values",
+      environmentContract(
+        "environment-read-failure",
+        "ENVIRONMENT_FAILURE",
+        "The requested environment values could not be read.",
+        true,
+        true,
+      ),
+    );
   }
 }
 
@@ -86,7 +111,9 @@ function createEnvironmentToolWithDependencies(
       const requestSignal = signal ?? ctx.signal;
       const loadedPolicy = await loadEnvironmentPolicyForRequest(policy, ctx.cwd, requestSignal);
       await authorizeAndPersistEnvironmentKeys(keys, ctx, loadedPolicy, policy, requestSignal);
-      return makeEnvironmentToolResult({ values: readEnvironmentValues(keys, environment) });
+      return makeEnvironmentToolResult({
+        values: readEnvironmentValues(keys, environment, requestSignal),
+      });
     },
   };
 }

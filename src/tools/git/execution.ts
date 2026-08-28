@@ -1,3 +1,11 @@
+import {
+  createToolErrorContract,
+  suggestedActionForCategory,
+  withToolErrorContract,
+  type ResultCategory,
+  type ToolErrorContract,
+} from "../errors.ts";
+
 const GIT_READ_ONLY_PREFIX = ["--no-optional-locks", "-c", "core.fsmonitor=false"] as const;
 
 export interface GitExecOptions {
@@ -18,27 +26,126 @@ export type GitExec = (
   options?: GitExecOptions,
 ) => Promise<GitExecResult>;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export class GitToolError extends Error {
-  constructor(message: string) {
+  readonly details: unknown;
+  readonly contract: ToolErrorContract;
+
+  constructor(message: string, details?: unknown, contract?: ToolErrorContract) {
     super(message);
     this.name = "GitToolError";
+    this.contract =
+      contract ??
+      createToolErrorContract({
+        code: "git-error",
+        category: "IMPLEMENTATION_FAILURE",
+        explanation: message,
+        suggestedAction: suggestedActionForCategory("IMPLEMENTATION_FAILURE"),
+        retryable: true,
+        executed: false,
+      });
+    this.details = isRecord(details)
+      ? withToolErrorContract(details, this.contract)
+      : withToolErrorContract({}, this.contract);
   }
 }
 
-function cancellationError(): GitToolError {
-  const error = new GitToolError("Git command cancelled");
+function gitContract(
+  code: string,
+  category: Exclude<ResultCategory, "PASS">,
+  explanation: string,
+  retryable: boolean,
+  executed: boolean,
+  invalidField?: string,
+): ToolErrorContract {
+  return createToolErrorContract({
+    code,
+    category,
+    explanation,
+    ...(invalidField === undefined ? {} : { invalidField }),
+    suggestedAction: suggestedActionForCategory(category),
+    retryable,
+    executed,
+  });
+}
+
+export function invalidGitRequest(message: string, invalidField?: string): GitToolError {
+  const contract = gitContract(
+    "invalid-request",
+    "INVALID_REQUEST",
+    "The Git request contains an invalid value.",
+    false,
+    false,
+    invalidField,
+  );
+  return new GitToolError(message, withToolErrorContract({}, contract), contract);
+}
+
+function cancellationError(executed: boolean): GitToolError {
+  const contract = gitContract(
+    "cancelled",
+    "CANCELLED",
+    "The Git operation was cancelled.",
+    true,
+    executed,
+  );
+  const error = new GitToolError(
+    "Git command cancelled",
+    withToolErrorContract({}, contract),
+    contract,
+  );
   error.name = "AbortError";
   return error;
 }
 
-export function validateGitText(value: string, label: string): void {
-  if (value.length === 0) {
-    throw new GitToolError(`${label} must not be empty`);
+function spawnError(): GitToolError {
+  const contract = gitContract(
+    "spawn-failure",
+    "SPAWN_FAILURE",
+    "The Git command could not be started.",
+    true,
+    true,
+  );
+  return new GitToolError(
+    "Git command could not be started",
+    withToolErrorContract({}, contract),
+    contract,
+  );
+}
+
+function commandFailure(message: string): GitToolError {
+  const contract = gitContract(
+    "git-command-failure",
+    "IMPLEMENTATION_FAILURE",
+    "The Git command exited with a nonzero status.",
+    true,
+    true,
+  );
+  return new GitToolError(message, withToolErrorContract({}, contract), contract);
+}
+
+export function gitImplementationError(message: string, executed = true): GitToolError {
+  const contract = gitContract(
+    "git-repository-resolution-failure",
+    "IMPLEMENTATION_FAILURE",
+    "The Git repository could not be resolved.",
+    true,
+    executed,
+  );
+  return new GitToolError(message, withToolErrorContract({}, contract), contract);
+}
+
+export function validateGitText(value: unknown, label: string): asserts value is string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw invalidGitRequest(`${label} must not be empty`, label);
   }
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
     if (code <= 0x1f || code === 0x7f) {
-      throw new GitToolError(`${label} contains a control character`);
+      throw invalidGitRequest(`${label} contains a control character`, label);
     }
   }
 }
@@ -53,7 +160,7 @@ export function containsPathspecCharacter(value: string): boolean {
   );
 }
 
-export function validateRevision(revision: string): string {
+export function validateRevision(revision: unknown): string {
   validateGitText(revision, "revision");
   if (
     revision.startsWith("-") ||
@@ -63,7 +170,7 @@ export function validateRevision(revision: string): string {
     containsPathspecCharacter(revision) ||
     !/^[A-Za-z0-9_./@^~{}+=,-]+$/u.test(revision)
   ) {
-    throw new GitToolError("revision is not a safe Git revision expression");
+    throw invalidGitRequest("revision is not a safe Git revision expression", "revision");
   }
   return revision;
 }
@@ -76,15 +183,23 @@ export async function runGit(
   operation: string,
 ): Promise<GitExecResult> {
   if (signal?.aborted) {
-    throw cancellationError();
+    throw cancellationError(false);
   }
-  const result = await exec("git", [...GIT_READ_ONLY_PREFIX, ...args], { cwd, signal });
-  if (result.killed && signal?.aborted) {
-    throw cancellationError();
+  let result: GitExecResult;
+  try {
+    result = await exec("git", [...GIT_READ_ONLY_PREFIX, ...args], { cwd, signal });
+  } catch {
+    if (signal?.aborted) {
+      throw cancellationError(true);
+    }
+    throw spawnError();
+  }
+  if (signal?.aborted) {
+    throw cancellationError(true);
   }
   if (result.code !== 0) {
     const detail = result.stderr.trim().replace(/\s+/gu, " ");
-    throw new GitToolError(
+    throw commandFailure(
       `${operation} failed${detail ? `: ${detail}` : ` (exit code ${result.code})`}`,
     );
   }

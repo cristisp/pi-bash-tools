@@ -2,13 +2,16 @@ import type { AuthorizeOrPromptContext } from "../authorization.ts";
 import { authorizeOrPrompt, type AuthorizationErrorKind } from "../authorization.ts";
 import { findEnvironmentPolicyDecision } from "../policy/decisions.ts";
 import type { EnvironmentDecisionRequest, LoadedPolicy, PolicyStore } from "../policy/types.ts";
-import { EnvironmentToolError } from "./environment-schema.ts";
+import {
+  environmentCancellationError,
+  environmentContract,
+  environmentError,
+  EnvironmentToolError,
+} from "./environment-schema.ts";
 import type { EnvironmentToolContext } from "./environment-tool.ts";
 
 function cancellationError(): EnvironmentToolError {
-  const error = new EnvironmentToolError("Environment request cancelled");
-  error.name = "AbortError";
-  return error;
+  return environmentCancellationError();
 }
 
 const ENVIRONMENT_AUTHORIZATION_MESSAGES: Record<
@@ -26,14 +29,50 @@ const ENVIRONMENT_AUTHORIZATION_MESSAGES: Record<
   "unsafe-global": "Environment confirmation returned an invalid choice",
 };
 
+function authorizationContract(kind: Exclude<AuthorizationErrorKind, "cancelled" | "dismissed">) {
+  const blocked =
+    kind === "denied" ||
+    kind === "denied-once" ||
+    kind === "not-authorized" ||
+    kind === "unsafe-global";
+  const timeout = kind === "timeout";
+  const code = timeout
+    ? "confirmation-timeout"
+    : kind === "confirmation"
+      ? "policy-confirmation-failure"
+      : kind === "save"
+        ? "policy-save-failure"
+        : kind === "load"
+          ? "policy-evaluation-failure"
+          : kind === "invalid-choice"
+            ? "policy-invalid-choice"
+            : `policy-${kind}`;
+  return environmentContract(
+    code,
+    blocked ? "BLOCKED" : timeout ? "TIMEOUT" : "POLICY_FAILURE",
+    ENVIRONMENT_AUTHORIZATION_MESSAGES[kind],
+    timeout || !blocked,
+    false,
+  );
+}
+
 function errorForKind(kind: AuthorizationErrorKind): EnvironmentToolError {
   if (kind === "cancelled") {
     return cancellationError();
   }
   if (kind === "dismissed") {
-    return new EnvironmentToolError("Environment confirmation cancelled");
+    return environmentError(
+      "Environment confirmation cancelled",
+      environmentContract(
+        "policy-confirmation-failure",
+        "POLICY_FAILURE",
+        "Environment confirmation was dismissed.",
+        true,
+        false,
+      ),
+    );
   }
-  return new EnvironmentToolError(ENVIRONMENT_AUTHORIZATION_MESSAGES[kind]);
+  return environmentError(ENVIRONMENT_AUTHORIZATION_MESSAGES[kind], authorizationContract(kind));
 }
 
 function throwIfRequestAborted(signal: AbortSignal | undefined): void {
@@ -46,7 +85,16 @@ function persistenceError(signal: AbortSignal | undefined): EnvironmentToolError
   if (signal?.aborted) {
     return cancellationError();
   }
-  return new EnvironmentToolError("Unable to save environment policy");
+  return environmentError(
+    "Unable to save environment policy",
+    environmentContract(
+      "policy-save-failure",
+      "POLICY_FAILURE",
+      "The environment policy could not be saved.",
+      true,
+      false,
+    ),
+  );
 }
 
 function contextForAuthorization(ctx: EnvironmentToolContext): AuthorizeOrPromptContext {
@@ -70,7 +118,16 @@ export async function loadEnvironmentPolicyForRequest(
     if (requestSignal?.aborted) {
       throw cancellationError();
     }
-    throw new EnvironmentToolError("Unable to load environment policy");
+    throw environmentError(
+      "Unable to load environment policy",
+      environmentContract(
+        "policy-load-failure",
+        "POLICY_FAILURE",
+        "The environment policy could not be loaded.",
+        true,
+        false,
+      ),
+    );
   }
 }
 

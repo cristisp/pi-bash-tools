@@ -1,5 +1,5 @@
 import { decodeUtf8Prefix, type Truncation } from "../truncation.ts";
-import { GitToolError } from "./execution.ts";
+import { invalidGitRequest } from "./execution.ts";
 
 export const STRUCTURED_OUTPUT_LIMIT = 50 * 1024;
 export const MAX_RECORDS = 2000;
@@ -12,7 +12,10 @@ export function validateIntegerLimit(
   label: string,
 ): void {
   if (!Number.isInteger(value) || value < minimum || value > maximum) {
-    throw new GitToolError(`${label} must be an integer from ${minimum} through ${maximum}`);
+    throw invalidGitRequest(
+      `${label} must be an integer from ${minimum} through ${maximum}`,
+      label,
+    );
   }
 }
 

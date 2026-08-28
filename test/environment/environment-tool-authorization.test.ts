@@ -92,6 +92,12 @@ it("maps non-cancellation policy load failures", async () => {
   ).rejects.toMatchObject({
     message: "Unable to load environment policy",
     name: "EnvironmentToolError",
+    contract: {
+      code: "policy-load-failure",
+      category: "POLICY_FAILURE",
+      retryable: true,
+      executed: false,
+    },
   });
 });
 
@@ -101,15 +107,23 @@ it("rejects unknown keys without UI and does not modify policy", async () => {
     configPath: fixture.configPath,
     environment: { UNKNOWN: "value" },
   });
-  await expect(
-    tool.execute(
-      "1",
-      { keys: ["UNKNOWN"] },
-      undefined,
-      undefined,
-      fixtures.context(fixture.directory),
-    ),
-  ).rejects.toThrow(/not authorized/iu);
+  const execution = tool.execute(
+    "1",
+    { keys: ["UNKNOWN"] },
+    undefined,
+    undefined,
+    fixtures.context(fixture.directory),
+  );
+  await expect(execution).rejects.toThrow(/not authorized/iu);
+  await expect(execution).rejects.toMatchObject({
+    contract: {
+      code: "policy-not-authorized",
+      category: "BLOCKED",
+      retryable: false,
+      executed: false,
+    },
+    details: { category: "BLOCKED", executed: false },
+  });
   expect(JSON.parse(await readFile(fixture.configPath, "utf8"))).toEqual({
     version: 1,
     global: {},
@@ -222,21 +236,61 @@ it("aborts without values when an interactive decision denies a key", async () =
     configPath: fixture.configPath,
     environment,
   });
-  await expect(
-    tool.execute(
-      "1",
-      { keys: ["DENIED_KEY"] },
-      undefined,
-      undefined,
-      fixtures.context(fixture.directory, {
-        mode: "tui",
-        hasUI: true,
-        select: async () => "Deny globally",
-      }),
-    ),
-  ).rejects.toThrow(/denied/iu);
+  const execution = tool.execute(
+    "1",
+    { keys: ["DENIED_KEY"] },
+    undefined,
+    undefined,
+    fixtures.context(fixture.directory, {
+      mode: "tui",
+      hasUI: true,
+      select: async () => "Deny globally",
+    }),
+  );
+  await expect(execution).rejects.toThrow(/denied/iu);
+  await expect(execution).rejects.toMatchObject({
+    contract: {
+      code: "policy-denied",
+      category: "BLOCKED",
+      retryable: false,
+      executed: false,
+    },
+  });
   expect(reads).toEqual([]);
   expect(JSON.parse(await readFile(fixture.configPath, "utf8"))).toMatchObject({
     global: { deny: ["DENIED_KEY"] },
+  });
+});
+
+it("classifies environment reads separately from policy failures", async () => {
+  const fixture = await fixtures.createPolicyFixture({ allow: ["BROKEN"] });
+  const tool = createEnvironmentToolForTesting({
+    configPath: fixture.configPath,
+    environment: new Proxy(
+      { BROKEN: "secret" },
+      {
+        get() {
+          throw new Error("environment unavailable");
+        },
+      },
+    ),
+  });
+
+  await expect(
+    tool.execute(
+      "1",
+      { keys: ["BROKEN"] },
+      undefined,
+      undefined,
+      fixtures.context(fixture.directory),
+    ),
+  ).rejects.toMatchObject({
+    contract: {
+      code: "environment-read-failure",
+      category: "ENVIRONMENT_FAILURE",
+      retryable: true,
+      executed: true,
+    },
+    details: { category: "ENVIRONMENT_FAILURE", executed: true },
   });
 });

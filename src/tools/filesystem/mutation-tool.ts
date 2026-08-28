@@ -17,6 +17,16 @@ import {
   type FilesystemAuthorizationRequest,
 } from "./authorization.ts";
 import {
+  filesystemAuthorizationContract,
+  filesystemCancellationError,
+  filesystemError,
+  filesystemInspectionError,
+  filesystemInvalidRequest,
+  filesystemMutationError,
+  filesystemPolicyLoadError,
+  FilesystemToolError,
+} from "./errors.ts";
+import {
   canonicalExistingPath,
   canonicalMissingPath,
   isMissingPathError,
@@ -50,13 +60,6 @@ export interface FilesystemMoveDetails {
 export interface FilesystemDeleteDetails {
   readonly operation: "delete";
   readonly path: string;
-}
-
-class FilesystemMutationToolError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "FilesystemMutationToolError";
-  }
 }
 
 export type FilesystemMutationToolContext = FilesystemAuthorizationContext;
@@ -106,10 +109,8 @@ const DENIED_POLICY_SCOPES: Record<PolicyAuthorization, string> = {
   unknown: "a configured",
 };
 
-function cancellationError(): FilesystemMutationToolError {
-  const error = new FilesystemMutationToolError("Filesystem mutation cancelled");
-  error.name = "AbortError";
-  return error;
+function cancellationError(executed = false): FilesystemToolError {
+  return filesystemCancellationError("Filesystem mutation cancelled", executed);
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
@@ -118,13 +119,19 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   }
 }
 
-function invalidInput(message: string): FilesystemMutationToolError {
-  return new FilesystemMutationToolError(message);
+function invalidInput(message: string, invalidField?: string): FilesystemToolError {
+  return filesystemInvalidRequest(message, invalidField);
+}
+
+function requestField(label: string): string {
+  if (label === "Move source") return "source";
+  if (label === "Move destination") return "destination";
+  return "path";
 }
 
 function inputPath(value: unknown, label: string): string {
   if (typeof value !== "string" || value.length === 0) {
-    throw invalidInput(`${label} must not be empty`);
+    throw invalidInput(`${label} must not be empty`, label);
   }
   return value;
 }
@@ -134,11 +141,12 @@ function authorizationError(
   kind: AuthorizationErrorKind,
   request: FilesystemAuthorizationRequest,
   decision: PolicyAuthorization,
-): FilesystemMutationToolError {
+): FilesystemToolError {
   const prefix = `Tool call blocked by access policy: ${operation} ${request.access} access to "${displayPath(request.path)}"`;
   if (kind === "denied") {
-    return new FilesystemMutationToolError(
+    return filesystemError(
       `${prefix} is denied by ${DENIED_POLICY_SCOPES[decision] ?? "a configured"} policy rule.`,
+      filesystemAuthorizationContract(kind),
     );
   }
   const suffixes: Record<string, string> = {
@@ -153,7 +161,11 @@ function authorizationError(
     cancelled: " confirmation was cancelled.",
     dismissed: " confirmation was dismissed.",
   };
-  return new FilesystemMutationToolError(`${prefix}${suffixes[kind]}`);
+  const message = `${prefix}${suffixes[kind]}`;
+  if (kind === "cancelled") {
+    return filesystemCancellationError(message, false);
+  }
+  return filesystemError(message, filesystemAuthorizationContract(kind));
 }
 
 async function requireRegularFile(
@@ -166,12 +178,12 @@ async function requireRegularFile(
     stats = await fileSystem.lstat(path);
   } catch (error) {
     if (isMissingPathError(error)) {
-      throw invalidInput(`${label} does not exist`);
+      throw invalidInput(`${label} does not exist`, requestField(label));
     }
-    throw new FilesystemMutationToolError(`Unable to inspect ${label}`);
+    throw filesystemInspectionError(`Unable to inspect ${label}`);
   }
   if (stats.isSymbolicLink() || !stats.isFile()) {
-    throw invalidInput(`${label} must be a regular file`);
+    throw invalidInput(`${label} must be a regular file`, requestField(label));
   }
 }
 
@@ -183,7 +195,15 @@ async function canonicalRegularFile(
 ): Promise<string> {
   const requested = requestPath(path, cwd);
   await requireRegularFile(fileSystem, requested, label);
-  const canonical = await canonicalExistingPath(requested, fileSystem);
+  let canonical: string;
+  try {
+    canonical = await canonicalExistingPath(requested, fileSystem);
+  } catch (error) {
+    if (error instanceof FilesystemToolError) {
+      throw error;
+    }
+    throw filesystemInspectionError(`Unable to inspect ${label}`);
+  }
   await requireRegularFile(fileSystem, canonical, label);
   return canonical;
 }
@@ -196,13 +216,26 @@ async function canonicalMoveDestination(
   const requested = requestPath(path, cwd);
   try {
     await fileSystem.lstat(requested);
-    throw invalidInput("Move destination already exists");
+    throw invalidInput("Move destination already exists", "destination");
   } catch (error) {
-    if (!isMissingPathError(error)) {
+    if (error instanceof FilesystemToolError) {
       throw error;
     }
+    if (!isMissingPathError(error)) {
+      throw filesystemInspectionError("Unable to inspect Move destination");
+    }
   }
-  return canonicalMissingPath(requested, fileSystem);
+  try {
+    return await canonicalMissingPath(requested, fileSystem);
+  } catch (error) {
+    if (error instanceof FilesystemToolError) {
+      throw error;
+    }
+    if (error instanceof Error && /symbolic link/u.test(error.message)) {
+      throw invalidInput("Move destination contains a symbolic link", "destination");
+    }
+    throw filesystemInspectionError("Unable to inspect Move destination");
+  }
 }
 
 async function authorizeMutation(
@@ -219,7 +252,10 @@ async function authorizeMutation(
     if (error instanceof Error && error.name === "AbortError") {
       throw cancellationError();
     }
-    throw new FilesystemMutationToolError("Unable to load filesystem access policy");
+    if (error instanceof FilesystemToolError) {
+      throw error;
+    }
+    throw filesystemPolicyLoadError();
   }
   await authorizeAndPersistFilesystemAccesses(requests, loaded, ctx, policy, signal, {
     allowGlobal: operation !== "delete",
@@ -250,7 +286,7 @@ function requirePolicy(
     return options.policy;
   }
   if (options.configPath === undefined) {
-    throw new FilesystemMutationToolError("A policy or config path is required for testing");
+    throw filesystemInvalidRequest("A policy or config path is required for testing", "configPath");
   }
   return createPolicyStoreForTesting({ configPath: options.configPath, fs: fileSystem });
 }
@@ -273,7 +309,9 @@ function createMoveToolWithDependencies(
       const requestSignal = signal ?? ctx.signal;
       throwIfAborted(requestSignal);
       const source = await canonicalRegularFile(fileSystem, sourceInput, ctx.cwd, "Move source");
+      throwIfAborted(requestSignal);
       const destination = await canonicalMoveDestination(fileSystem, destinationInput, ctx.cwd);
+      throwIfAborted(requestSignal);
       if (source === destination) {
         throw invalidInput("Move source and destination must differ");
       }
@@ -289,18 +327,28 @@ function createMoveToolWithDependencies(
       );
       throwIfAborted(requestSignal);
       await requireRegularFile(fileSystem, source, "Move source");
+      throwIfAborted(requestSignal);
       try {
         await fileSystem.lstat(destination);
-        throw invalidInput("Move destination already exists");
+        throw invalidInput("Move destination already exists", "destination");
       } catch (error) {
-        if (!isMissingPathError(error)) {
+        if (error instanceof FilesystemToolError) {
           throw error;
+        }
+        if (!isMissingPathError(error)) {
+          throw filesystemInspectionError("Unable to inspect Move destination");
         }
       }
       try {
         await fileSystem.rename(source, destination);
       } catch {
-        throw new FilesystemMutationToolError("Unable to move file");
+        if (requestSignal?.aborted) {
+          throw cancellationError(true);
+        }
+        throw filesystemMutationError("Unable to move file");
+      }
+      if (requestSignal?.aborted) {
+        throw cancellationError(true);
       }
       return result({ operation: "move", source, destination });
     },
@@ -323,6 +371,7 @@ function createDeleteToolWithDependencies(
       const requestSignal = signal ?? ctx.signal;
       throwIfAborted(requestSignal);
       const path = await canonicalRegularFile(fileSystem, pathInput, ctx.cwd, "Delete target");
+      throwIfAborted(requestSignal);
       await authorizeMutation(
         "delete",
         [{ access: "delete", path, policyPath: dirname(path) }],
@@ -332,10 +381,17 @@ function createDeleteToolWithDependencies(
       );
       throwIfAborted(requestSignal);
       await requireRegularFile(fileSystem, path, "Delete target");
+      throwIfAborted(requestSignal);
       try {
         await fileSystem.unlink(path);
       } catch {
-        throw new FilesystemMutationToolError("Unable to delete file");
+        if (requestSignal?.aborted) {
+          throw cancellationError(true);
+        }
+        throw filesystemMutationError("Unable to delete file");
+      }
+      if (requestSignal?.aborted) {
+        throw cancellationError(true);
       }
       return result({ operation: "delete", path });
     },

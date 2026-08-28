@@ -4,6 +4,7 @@ import {
   type ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import { type AuthorizationErrorKind } from "../authorization.ts";
+import type { ToolErrorContract } from "../errors.ts";
 import { displayPath } from "../path-display.ts";
 import { createPolicyStore } from "../policy/store.ts";
 import type {
@@ -17,6 +18,14 @@ import {
   loadFilesystemPolicyForRequest,
   type FilesystemAuthorizationContext,
 } from "./authorization.ts";
+import {
+  filesystemAuthorizationContract,
+  filesystemCancellationError,
+  filesystemError,
+  filesystemPolicyEvaluationError,
+  filesystemPolicyPathResolutionError,
+  FilesystemToolError,
+} from "./errors.ts";
 import { canonicalRequestPath } from "./paths.ts";
 
 const DENIED_POLICY_SCOPES: Record<PolicyAuthorization, string> = {
@@ -93,13 +102,20 @@ function blockedReason(
   path: string,
   kind: AuthorizationErrorKind,
   decision: PolicyAuthorization,
-): Error {
+): FilesystemToolError {
   const prefix = `Tool call blocked by access policy: ${tool.name} ${access} access to "${displayPath(path)}"`;
-  return new Error(`${prefix}${blockedReasonSuffix(kind, decision)}`);
+  const message = `${prefix}${blockedReasonSuffix(kind, decision)}`;
+  if (kind === "cancelled") {
+    return filesystemCancellationError(message);
+  }
+  return filesystemError(message, filesystemAuthorizationContract(kind));
 }
 
-function blockedResult(reason: string): ToolCallEventResult {
-  return { block: true, reason };
+function blockedResult(reason: string, contract: ToolErrorContract): ToolCallEventResult {
+  return {
+    block: true,
+    reason: `${reason} ${JSON.stringify({ error: contract })}`,
+  };
 }
 
 async function authorizeFilesystemAccesses(
@@ -134,12 +150,23 @@ async function interceptFilesystemToolCall(
     return undefined;
   }
 
+  if (ctx.signal?.aborted) {
+    const error = filesystemCancellationError("Filesystem access policy request cancelled");
+    return blockedResult(error.message, error.contract);
+  }
+
   let path: string;
   try {
     path = await canonicalRequestPath(tool.path, ctx.cwd, tool.allowMissingPath);
   } catch {
+    const error = ctx.signal?.aborted
+      ? filesystemCancellationError("Filesystem access policy request cancelled")
+      : filesystemPolicyPathResolutionError();
     return blockedResult(
-      `Tool call blocked by access policy: ${tool.name} path could not be safely resolved.`,
+      ctx.signal?.aborted
+        ? error.message
+        : `Tool call blocked by access policy: ${tool.name} path could not be safely resolved.`,
+      error.contract,
     );
   }
 
@@ -148,20 +175,26 @@ async function interceptFilesystemToolCall(
   try {
     loaded = await loadFilesystemPolicyForRequest(policy, ctx.cwd, requestSignal);
   } catch (error) {
+    if (error instanceof FilesystemToolError) {
+      return blockedResult(`Tool call blocked by access policy: ${error.message}.`, error.contract);
+    }
+    const fallback = filesystemPolicyEvaluationError();
     return blockedResult(
-      error instanceof Error
-        ? `Tool call blocked by access policy: ${error.message}.`
-        : `Tool call blocked by access policy: ${tool.name} access policy could not be loaded.`,
+      `Tool call blocked by access policy: ${tool.name} access policy could not be loaded.`,
+      fallback.contract,
     );
   }
 
   try {
     await authorizeFilesystemAccesses(tool, path, loaded, ctx, policy);
   } catch (error) {
+    if (error instanceof FilesystemToolError) {
+      return blockedResult(error.message, error.contract);
+    }
+    const fallback = filesystemPolicyEvaluationError();
     return blockedResult(
-      error instanceof Error
-        ? error.message
-        : `Tool call blocked by access policy: ${tool.name} access was denied.`,
+      `Tool call blocked by access policy: ${tool.name} access was denied.`,
+      fallback.contract,
     );
   }
 
