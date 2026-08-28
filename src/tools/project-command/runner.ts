@@ -7,6 +7,7 @@ import type {
 import {
   createToolErrorContract,
   withToolErrorContract,
+  type ResultCategory,
   type ToolErrorContract,
 } from "../errors.ts";
 import { authorizeOrPrompt, type AuthorizationErrorKind } from "../authorization.ts";
@@ -55,6 +56,14 @@ import {
   type ProjectCommandOutputDetails,
   type ProjectCommandRequestParameters,
 } from "./output.ts";
+import { projectCommandResultCategory } from "./categories.ts";
+import {
+  recordProjectCommandInvocation,
+  redactProjectCommandParameters,
+  type ProjectCommandInvocationOutputMetadata,
+  type ProjectCommandInvocationReason,
+  type ProjectCommandInvocationRecorder,
+} from "../../observability/project-command-invocation.ts";
 import { ProjectCommandResolutionError, isProjectCommandResolutionError } from "./resolution.ts";
 import type { ProjectCommandResolver, ResolvedProjectCommand } from "./resolution/types.ts";
 import {
@@ -78,6 +87,11 @@ export type ProjectCommandExecutor = (
   cwd: string,
   signal: AbortSignal | undefined,
 ) => Promise<ProjectCommandExecutionOutcome>;
+
+export interface ProjectCommandInvocationOptions {
+  readonly recorder?: ProjectCommandInvocationRecorder;
+  readonly schemaHash?: string;
+}
 
 export type ProjectCommandExecute<Definitions extends readonly ProjectCommandDefinition[]> = (
   toolCallId: string,
@@ -758,6 +772,7 @@ interface ProjectCommandInvocationState {
   readonly startedAt: number;
   executionStartedAt: number | undefined;
   forced: boolean;
+  reused: boolean;
   cacheDecision: ProjectCommandCacheDecision;
   authFingerprint: string | undefined;
   policyId: string | undefined;
@@ -767,6 +782,12 @@ interface ProjectCommandInvocationState {
   relevantInputManifest: ProjectCommandRelevantInputs | undefined;
   beforeSnapshot: ProjectCommandStateSnapshot | undefined;
   producerInvocationId: string | undefined;
+  commandId: string | undefined;
+  redactedParameters: Readonly<Record<string, unknown>> | undefined;
+  resultCategory: ResultCategory | undefined;
+  status: ProjectCommandExecutionOutcome["status"] | undefined;
+  executed: boolean;
+  output: ProjectCommandInvocationOutputMetadata | undefined;
 }
 
 function createInvocationState(startedAt: number): ProjectCommandInvocationState {
@@ -774,6 +795,7 @@ function createInvocationState(startedAt: number): ProjectCommandInvocationState
     startedAt,
     executionStartedAt: undefined,
     forced: false,
+    reused: false,
     cacheDecision: "ineligible",
     authFingerprint: undefined,
     policyId: undefined,
@@ -783,7 +805,111 @@ function createInvocationState(startedAt: number): ProjectCommandInvocationState
     relevantInputManifest: undefined,
     beforeSnapshot: undefined,
     producerInvocationId: undefined,
+    commandId: undefined,
+    redactedParameters: undefined,
+    resultCategory: undefined,
+    status: undefined,
+    executed: false,
+    output: undefined,
   };
+}
+
+function setOutcomeInvocationState(
+  state: ProjectCommandInvocationState,
+  definition: ProjectCommandDefinition,
+  outcome: ProjectCommandExecutionOutcome,
+): void {
+  state.resultCategory = projectCommandResultCategory(definition, outcome);
+  state.status = outcome.status;
+  state.executed = outcome.executed ?? true;
+  state.output = {
+    stdout: {
+      truncated: outcome.stdout.truncated,
+      totalBytes: outcome.stdout.totalBytes,
+      totalLines: outcome.stdout.totalLines,
+    },
+    stderr: {
+      truncated: outcome.stderr.truncated,
+      totalBytes: outcome.stderr.totalBytes,
+      totalLines: outcome.stderr.totalLines,
+    },
+  };
+}
+
+function setCachedInvocationState(
+  state: ProjectCommandInvocationState,
+  details: ProjectCommandOutputDetails,
+): void {
+  state.reused = true;
+  state.resultCategory = details.category;
+  state.status = details.status;
+  state.executed = details.executed;
+  state.output = details.output;
+}
+
+const EARLY_FAILURE_REASONS: Partial<Record<ResultCategory, ProjectCommandInvocationReason>> = {
+  INVALID_REQUEST: "invalid-request",
+  RESOLUTION_FAILURE: "resolution-failure",
+  POLICY_FAILURE: "policy-failure",
+  BLOCKED: "policy-failure",
+  CANCELLED: "cancelled",
+};
+
+const CACHE_DECISION_REASONS: Record<ProjectCommandCacheDecision, ProjectCommandInvocationReason> =
+  {
+    miss: "executed-after-cache-miss",
+    hit: "reused-cache-hit",
+    forced: "executed-forced-cache-bypass",
+    ineligible: "executed-cache-ineligible",
+    invalidated: "executed-after-cache-invalidation",
+  };
+
+function invocationReason(state: ProjectCommandInvocationState): ProjectCommandInvocationReason {
+  const earlyFailureReason =
+    state.resultCategory === undefined ? undefined : EARLY_FAILURE_REASONS[state.resultCategory];
+  if (earlyFailureReason !== undefined) return earlyFailureReason;
+  if (state.reused) return "reused-cache-hit";
+  if (state.forced) return "executed-forced-cache-bypass";
+  if (state.status === undefined) {
+    return state.executed ? "execution-failure" : "preparation-failure";
+  }
+  return CACHE_DECISION_REASONS[state.cacheDecision];
+}
+
+function recordInvocation(
+  recorder: ProjectCommandInvocationRecorder | undefined,
+  schemaHash: string | undefined,
+  toolCallId: string,
+  ctx: ProjectCommandToolContext,
+  state: ProjectCommandInvocationState,
+): void {
+  try {
+    const sessionId = getContextSessionId(ctx);
+    if (sessionId === undefined) return;
+    const finishedAt = performance.now();
+    recordProjectCommandInvocation(recorder, {
+      sessionId,
+      toolCallId,
+      schemaHash: schemaHash ?? "unknown",
+      commandId: state.commandId,
+      redactedParameters: state.redactedParameters,
+      resultCategory: state.resultCategory ?? "IMPLEMENTATION_FAILURE",
+      status: state.status,
+      executed: state.executed,
+      reason: invocationReason(state),
+      cacheDecision: state.cacheDecision,
+      forced: state.forced,
+      reused: state.reused,
+      durationMs: elapsedMilliseconds(state.startedAt, finishedAt),
+      executionDurationMs:
+        state.executionStartedAt === undefined
+          ? 0
+          : elapsedMilliseconds(state.executionStartedAt, finishedAt),
+      output: state.output,
+    });
+  } catch {
+    // Session lookup and record construction are also observational best effort.
+  }
 }
 
 function invocationMetadataForState(
@@ -877,6 +1003,8 @@ async function prepareProjectCommand(
   ) as ProjectCommandRequestParameters & { readonly force?: boolean };
   state.forced = validatedParams.force === true;
   const params = stripForce(validatedParams);
+  state.commandId = params.commandId;
+  state.redactedParameters = redactProjectCommandParameters(params);
   const definition = byId.get(params.commandId);
   if (definition === undefined) throw invalidRequest("commandId");
   const requestSignal = signal ?? executorContext.signal;
@@ -927,6 +1055,80 @@ async function prepareProjectCommand(
   };
 }
 
+async function executePreparedProjectCommand(
+  executor: ProjectCommandExecutor,
+  cache: ProjectCommandResultCache,
+  stateSnapshotter: ProjectCommandStateSnapshotter,
+  prepared: PreparedProjectCommand,
+  toolCallId: string,
+  state: ProjectCommandInvocationState,
+  ctx: ProjectCommandToolContext,
+): Promise<AgentToolResult<ProjectCommandOutputDetails>> {
+  const inspection = inspectResultCache(
+    prepared.definition,
+    prepared.relevantInputs,
+    state.resultFingerprint,
+    state.logicalRequestKey,
+    state.forced,
+    cache,
+    prepared.requestSignal,
+    getContextSessionId(ctx),
+    state.beforeSnapshot,
+  );
+  state.cacheDecision = inspection.decision;
+
+  if (inspection.entry !== undefined && inspection.beforeSnapshot !== undefined) {
+    setCachedInvocationState(state, inspection.entry.details);
+    return result({
+      ...inspection.entry.details,
+      ...invocationMetadataForState(toolCallId, state, {
+        cacheDecision: "hit",
+        reused: true,
+        forced: false,
+        producerInvocationId: inspection.entry.producerInvocationId,
+      }),
+    });
+  }
+
+  state.executionStartedAt = performance.now();
+  const executed = await executeWithCache(
+    executor,
+    prepared.resolved,
+    prepared.projectPath,
+    prepared.requestSignal,
+    cache,
+    inspection,
+    prepared.relevantInputs,
+    state.resultFingerprint,
+    stateSnapshotter,
+  );
+  state.cacheDecision = executed.decision;
+  setOutcomeInvocationState(state, prepared.definition, executed.outcome);
+  if (executed.canStore) state.producerInvocationId = toolCallId;
+  const metadata = invocationMetadataForState(toolCallId, state);
+  const details = outputDetails(
+    prepared.identity,
+    prepared.projectPath,
+    prepared.resolved,
+    executed.outcome,
+    metadata,
+  );
+  storeResult(cache, inspection, state.resultFingerprint, executed, details, toolCallId);
+  if (isAbortedOutcome(executed.outcome, prepared.requestSignal)) {
+    throw cancellationError(cancellationOutputDetails(details));
+  }
+  if (isFailedOutcome(prepared.resolved, executed.outcome)) {
+    throw createExecutionFailure(
+      prepared.identity,
+      prepared.projectPath,
+      prepared.resolved,
+      executed.outcome,
+      metadata,
+    );
+  }
+  return result(details);
+}
+
 export function createProjectCommandExecute<
   const Definitions extends readonly ProjectCommandDefinition[],
 >(
@@ -938,6 +1140,7 @@ export function createProjectCommandExecute<
   relevantInputDiscovery: ProjectCommandRelevantInputDiscovery = createDefaultRelevantInputDiscovery(),
   stateSnapshotter: ProjectCommandStateSnapshotter = snapshotProjectCommandRelevantInputs,
   cache: ProjectCommandResultCache = createProjectCommandResultCache(),
+  invocationOptions: ProjectCommandInvocationOptions = {},
 ): ProjectCommandExecute<Definitions> {
   return async (toolCallId, rawParams, signal, _onUpdate, ctx) => {
     const state = createInvocationState(performance.now());
@@ -954,73 +1157,32 @@ export function createProjectCommandExecute<
         stateSnapshotter,
         state,
       );
-      const inspection = inspectResultCache(
-        prepared.definition,
-        prepared.relevantInputs,
-        state.resultFingerprint,
-        state.logicalRequestKey,
-        state.forced,
-        cache,
-        prepared.requestSignal,
-        getContextSessionId(ctx),
-        state.beforeSnapshot,
-      );
-      state.cacheDecision = inspection.decision;
-
-      if (inspection.entry !== undefined && inspection.beforeSnapshot !== undefined) {
-        return result({
-          ...inspection.entry.details,
-          ...invocationMetadataForState(toolCallId, state, {
-            cacheDecision: "hit",
-            reused: true,
-            forced: false,
-            producerInvocationId: inspection.entry.producerInvocationId,
-          }),
-        });
-      }
-
-      state.executionStartedAt = performance.now();
-      const executed = await executeWithCache(
+      return await executePreparedProjectCommand(
         executor,
-        prepared.resolved,
-        prepared.projectPath,
-        prepared.requestSignal,
         cache,
-        inspection,
-        prepared.relevantInputs,
-        state.resultFingerprint,
         stateSnapshotter,
+        prepared,
+        toolCallId,
+        state,
+        ctx,
       );
-      state.cacheDecision = executed.decision;
-      if (executed.canStore) state.producerInvocationId = toolCallId;
-      const metadata = invocationMetadataForState(toolCallId, state);
-      const details = outputDetails(
-        prepared.identity,
-        prepared.projectPath,
-        prepared.resolved,
-        executed.outcome,
-        metadata,
-      );
-      storeResult(cache, inspection, state.resultFingerprint, executed, details, toolCallId);
-      if (isAbortedOutcome(executed.outcome, prepared.requestSignal)) {
-        throw cancellationError(cancellationOutputDetails(details));
-      }
-      if (isFailedOutcome(prepared.resolved, executed.outcome)) {
-        throw createExecutionFailure(
-          prepared.identity,
-          prepared.projectPath,
-          prepared.resolved,
-          executed.outcome,
-          metadata,
-        );
-      }
-      return result(details);
     } catch (error) {
       if (error instanceof ProjectCommandToolError) {
+        state.resultCategory = error.contract.category;
+        state.executed = error.contract.executed;
+        if (error.contract.code === "cancelled") state.status = "cancelled";
         if (error.contract.code === "executor-failure") state.cacheDecision = "ineligible";
         throw enrichToolError(error, invocationMetadataForState(toolCallId, state));
       }
       throw error;
+    } finally {
+      recordInvocation(
+        invocationOptions.recorder,
+        invocationOptions.schemaHash,
+        toolCallId,
+        ctx,
+        state,
+      );
     }
   };
 }

@@ -1,5 +1,6 @@
 import { realpath, writeFile } from "node:fs/promises";
 import { afterEach, expect, it } from "vitest";
+import type { ProjectCommandInvocationRecord } from "../../src/observability/project-command-invocation.ts";
 import {
   getProjectCommandDefinition,
   projectCommandIdentity,
@@ -110,16 +111,36 @@ function expectInvocationMetadata(details: unknown, toolCallId: string): void {
 
 it("adds invocation metadata to an invalid request without resolved scope or output", async () => {
   const fixtureData = await fixture();
-  const tool = createProjectCommandToolForTesting({ configPath: fixtureData.configPath });
+  const records: ProjectCommandInvocationRecord[] = [];
+  const tool = createProjectCommandToolForTesting({
+    configPath: fixtureData.configPath,
+    invocationRecorder: (record) => records.push(record),
+  });
   const error = await tool
     .execute(
       "invalid-request",
       { commandId: "node_e2e", workers: 0 },
       undefined,
       undefined,
-      context(fixtureData.directory),
+      context(fixtureData.directory, {
+        sessionManager: { getSessionId: () => "invalid-session" },
+      }),
     )
     .catch((rejection: unknown) => rejection);
+  expect(records).toMatchObject([
+    {
+      sessionId: "invalid-session",
+      toolCallId: "invalid-request",
+      resultCategory: "INVALID_REQUEST",
+      executed: false,
+      cacheDecision: "ineligible",
+      reason: "invalid-request",
+      output: {
+        stdout: { totalBytes: 0, truncated: false },
+        stderr: { totalBytes: 0, truncated: false },
+      },
+    },
+  ]);
   expect(error).toBeInstanceOf(ProjectCommandToolError);
   if (!(error instanceof ProjectCommandToolError)) {
     throw new Error("expected a ProjectCommandToolError");
@@ -389,9 +410,11 @@ it("keeps exit code two as a Fallow execution failure", async () => {
     fingerprintArgs: definition.argvTemplate,
   } satisfies ResolvedProjectCommand;
   await authorize(fixtureData, definition, resolved);
+  const records: ProjectCommandInvocationRecord[] = [];
   const tool = createProjectCommandToolForTesting({
     configPath: fixtureData.configPath,
     resolver: async () => resolved,
+    invocationRecorder: (record) => records.push(record),
     executor: async () => ({
       status: "nonzero" as const,
       exit: { code: 2, signal: null },
@@ -407,9 +430,23 @@ it("keeps exit code two as a Fallow execution failure", async () => {
       { commandId: "fallow_health" },
       undefined,
       undefined,
-      context(fixtureData.directory),
+      context(fixtureData.directory, {
+        sessionManager: { getSessionId: () => "failure-session" },
+      }),
     )
     .catch((rejection: unknown) => rejection);
+  expect(records).toMatchObject([
+    {
+      sessionId: "failure-session",
+      toolCallId: "fallow-health-failure",
+      resultCategory: "IMPLEMENTATION_FAILURE",
+      status: "nonzero",
+      executed: true,
+      cacheDecision: "ineligible",
+      reason: "executed-cache-ineligible",
+      output: { stderr: { totalBytes: 15, truncated: false } },
+    },
+  ]);
   expect(error).toMatchObject({
     message: expect.stringMatching(
       /status: nonzero.*commandId: fallow_health.*resolvedCommand: .*health --format json --quiet.*parameters: \{\}.*exit: code 2.*diagnostic: "invalid options"/u,

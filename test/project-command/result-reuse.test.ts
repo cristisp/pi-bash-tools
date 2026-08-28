@@ -1,5 +1,7 @@
 import { realpath, writeFile } from "node:fs/promises";
 import { afterEach, expect, it, vi } from "vitest";
+import { hashToolParameters } from "../../src/observability/canonical-json.ts";
+import type { ProjectCommandInvocationRecord } from "../../src/observability/project-command-invocation.ts";
 import { cleanupProjectCommandFixtures, context, fixture } from "./tool-test-fixtures.ts";
 import {
   projectCommandIdentity,
@@ -82,11 +84,13 @@ it("reuses an authorized deterministic result only within the same session", asy
   const fixtureData = await fixture();
   await authorize(fixtureData);
   const executor = vi.fn(async () => successOutcome("producer"));
+  const records: ProjectCommandInvocationRecord[] = [];
   const tool = createProjectCommandToolForTesting({
     configPath: fixtureData.configPath,
     definitions,
     executor,
     relevantInputDiscovery: discovery(),
+    invocationRecorder: (record) => records.push(record),
   });
   const session = { getSessionId: () => "session-a" };
 
@@ -131,6 +135,42 @@ it("reuses an authorized deterministic result only within the same session", asy
     reused: false,
     toolCallId: "other-session-call",
   });
+  expect(records).toHaveLength(3);
+  expect(
+    records.map(({ toolCallId, reason, cacheDecision, reused }) => ({
+      toolCallId,
+      reason,
+      cacheDecision,
+      reused,
+    })),
+  ).toEqual([
+    {
+      toolCallId: "producer-call",
+      reason: "executed-after-cache-miss",
+      cacheDecision: "miss",
+      reused: false,
+    },
+    {
+      toolCallId: "consumer-call",
+      reason: "reused-cache-hit",
+      cacheDecision: "hit",
+      reused: true,
+    },
+    {
+      toolCallId: "other-session-call",
+      reason: "executed-after-cache-miss",
+      cacheDecision: "miss",
+      reused: false,
+    },
+  ]);
+  expect(records[0]).toMatchObject({
+    sessionId: "session-a",
+    schemaHash: hashToolParameters(tool.parameters),
+    resultCategory: "PASS",
+    output: { stdout: { totalBytes: 8, truncated: false } },
+  });
+  expect(records[0]).not.toHaveProperty("stdout");
+  expect(records[0]).not.toHaveProperty("resolvedCommand");
 });
 
 it("validates and strips force without changing the result fingerprint", async () => {
@@ -141,12 +181,14 @@ it("validates and strips force without changing the result fingerprint", async (
     return resolveFixedProjectCommand(cacheDefinition);
   });
   const executor = vi.fn(async () => successOutcome("value"));
+  const records: ProjectCommandInvocationRecord[] = [];
   const tool = createProjectCommandToolForTesting({
     configPath: fixtureData.configPath,
     definitions,
     resolver,
     executor,
     relevantInputDiscovery: discovery(),
+    invocationRecorder: (record) => records.push(record),
   });
   const ctx = context(fixtureData.directory, {
     sessionManager: { getSessionId: () => "session-force" },
@@ -182,6 +224,33 @@ it("validates and strips force without changing the result fingerprint", async (
     reused: true,
     producerInvocationId: "forced",
   });
+  expect(
+    records.map(({ reason, cacheDecision, forced: wasForced, reused }) => ({
+      reason,
+      cacheDecision,
+      forced: wasForced,
+      reused,
+    })),
+  ).toEqual([
+    {
+      reason: "executed-after-cache-miss",
+      cacheDecision: "miss",
+      forced: false,
+      reused: false,
+    },
+    {
+      reason: "executed-forced-cache-bypass",
+      cacheDecision: "forced",
+      forced: true,
+      reused: false,
+    },
+    {
+      reason: "reused-cache-hit",
+      cacheDecision: "hit",
+      forced: false,
+      reused: true,
+    },
+  ]);
   expect(() =>
     validateProjectCommandInput({ commandId: "cache_command", force: "yes" }, definitions),
   ).toThrow(/invalid/iu);
@@ -237,11 +306,13 @@ it("invalidates a cached result when a relevant input changes", async () => {
   await writeFile(inputPath, "before");
   await authorize(fixtureData);
   const executor = vi.fn(async () => successOutcome("value"));
+  const records: ProjectCommandInvocationRecord[] = [];
   const tool = createProjectCommandToolForTesting({
     configPath: fixtureData.configPath,
     definitions,
     executor,
     relevantInputDiscovery: discovery("input.txt"),
+    invocationRecorder: (record) => records.push(record),
   });
   const ctx = context(fixtureData.directory, {
     sessionManager: { getSessionId: () => "session-state" },
@@ -272,6 +343,10 @@ it("invalidates a cached result when a relevant input changes", async () => {
   expect(invalidated.details?.resultFingerprint).not.toBe(first.details?.resultFingerprint);
   expect(invalidated.details).not.toHaveProperty("stateSnapshot");
   expect(invalidated.details).not.toHaveProperty("contentHash");
+  expect(records.map(({ reason, cacheDecision }) => ({ reason, cacheDecision }))).toEqual([
+    { reason: "executed-after-cache-miss", cacheDecision: "miss" },
+    { reason: "executed-after-cache-invalidation", cacheDecision: "invalidated" },
+  ]);
 });
 
 it("invalidates and evicts the prior logical entry when the manifest changes", async () => {

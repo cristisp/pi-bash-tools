@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { hashToolParameters } from "../../observability/canonical-json.ts";
 import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
 import type { PolicyStore, PolicyStoreTestOptions } from "../policy/types.ts";
 import {
@@ -21,6 +22,7 @@ import {
   type ProjectCommandExecute,
   type ProjectCommandExecutor,
 } from "./runner.ts";
+import type { ProjectCommandInvocationRecorder } from "../../observability/project-command-invocation.ts";
 
 export type { ProjectCommandOutputDetails } from "./output.ts";
 export type { ProjectCommandExecutor, ProjectCommandToolContext } from "./runner.ts";
@@ -36,6 +38,13 @@ export interface ProjectCommandToolTestOptions<
   readonly relevantInputDiscovery?: ProjectCommandRelevantInputDiscovery;
   readonly stateSnapshotter?: ProjectCommandStateSnapshotter;
   readonly definitions?: Definitions;
+  readonly invocationRecorder?: ProjectCommandInvocationRecorder;
+  readonly schemaHash?: string;
+}
+
+export interface ProjectCommandToolOptions {
+  readonly invocationRecorder?: ProjectCommandInvocationRecorder;
+  readonly schemaHash?: string;
 }
 
 export type ProjectCommandToolDefinition<
@@ -75,12 +84,15 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
   definitions: Definitions,
   relevantInputDiscovery?: ProjectCommandRelevantInputDiscovery,
   stateSnapshotter?: ProjectCommandStateSnapshotter,
+  invocationOptions: ProjectCommandToolOptions = {},
 ): ProjectCommandToolDefinition<Definitions> {
   const capturedDefinitions = captureDefinitions(definitions);
   const byId = new Map<string, ProjectCommandDefinition>();
   for (const definition of capturedDefinitions) {
     byId.set(definition.commandId, definition);
   }
+  const parameters = createProjectCommandInputSchema(capturedDefinitions);
+  const schemaHash = invocationOptions.schemaHash ?? hashToolParameters(parameters);
   return {
     name: "project_command",
     label: "Project command",
@@ -103,7 +115,7 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
       "Use fallow_dead_code, fallow_dupes, fallow_health, fallow_audit, fallow_list_entry_points, or fallow_list_boundaries only with their fixed machine-readable Fallow forms.",
       "Do not use project_command for dependency installation, Git inspection, file inspection, arbitrary commands, environment access, or project mutation outside node_lint_fix and node_format_write.",
     ],
-    parameters: createProjectCommandInputSchema(capturedDefinitions),
+    parameters,
     executionMode: "sequential",
     execute: createProjectCommandExecute(
       policy,
@@ -113,16 +125,23 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
       byId,
       relevantInputDiscovery,
       stateSnapshotter,
+      undefined,
+      { recorder: invocationOptions.invocationRecorder, schemaHash },
     ),
   };
 }
 
-export function createProjectCommandTool(): ProjectCommandToolDefinition {
+export function createProjectCommandTool(
+  options: ProjectCommandToolOptions = {},
+): ProjectCommandToolDefinition {
   return createToolWithDependencies(
     createPolicyStore(),
     createProjectCommandExecutor(),
     resolveProjectCommand,
     getProjectCommandDefinitions(),
+    undefined,
+    undefined,
+    options,
   );
 }
 
@@ -159,5 +178,9 @@ export function createProjectCommandToolForTesting<
     definitions,
     options.relevantInputDiscovery,
     options.stateSnapshotter,
+    {
+      invocationRecorder: options.invocationRecorder,
+      schemaHash: options.schemaHash,
+    },
   );
 }

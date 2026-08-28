@@ -351,20 +351,22 @@ It changes error structure without adding new tool capabilities.
 
 ## Phase 5: Measurement and refinement
 
-- [ ] Record compact project-command invocation metadata using session ID and tool call ID.
-- [ ] Record schema hash, result category, duration, cache decision, output size, and truncation state.
-- [ ] Do not record environment values, source content, prompts, or complete command output.
-- [ ] Measure repeated unchanged requests before and after result reuse is enabled.
-- [ ] Measure cache hits, misses, forced runs, ineligible commands, and invalidations.
-- [ ] Measure failure categories separately from process exit status.
-- [ ] Review false reuse, unexpected invalidation, and commands that remain safely ineligible.
-- [ ] Adjust command reuse policies only from test evidence and observed behavior.
+- [x] Record compact project-command invocation metadata using session ID and tool call ID.
+- [x] Record schema hash, result category, duration, cache decision, output size, and truncation state.
+- [x] Do not record environment values, source content, prompts, or complete command output.
+- [x] Aggregate bounded per-session summaries over the existing invocation records.
+- [x] Measure repeated unchanged requests within the active runtime as cache hits that are reused.
+- [x] Measure cache hits, misses, forced runs, ineligible commands, and invalidations.
+- [x] Measure failure categories separately from process exit status.
+- [ ] Measure repeated unchanged requests before and after result reuse is enabled using real-world comparison data (evidence-dependent).
+- [ ] Review false reuse, unexpected invalidation, and commands that remain safely ineligible from observed data (evidence-dependent).
+- [ ] Adjust command reuse policies only from test evidence and observed behavior (evidence-dependent).
 
 ### Acceptance criteria
 
 - The recorded metadata can explain why a command executed or was reused.
 - The recorded metadata can attribute a failure to one session, invocation, active schema, and extension version.
-- Unchanged validation reruns decline without hiding source changes or policy changes.
+- [ ] Unchanged validation reruns decline without hiding source changes or policy changes; demonstrating this requires real before/after comparison data.
 - Measurement does not retain secrets or duplicate large context payloads.
 
 ## Deferred workstreams
