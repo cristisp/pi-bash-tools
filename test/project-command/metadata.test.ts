@@ -9,14 +9,14 @@ describe("project command metadata", () => {
     expect(schema).toContain("Report the canonical project directory");
     expect(schema).toContain("Report the Node.js runtime version");
     expect(schema).toContain("Run the exact package.json test script");
-    expect(schema).toContain("Run the exact package.json test:coverage script.");
     expect(schema).toContain(
-      "Run the exact package.json test:e2e script with optional test runner options.",
+      "Run the exact package.json test script with optional workspace-relative paths.",
     );
-    expect(schema).toContain("Run the exact package.json lint:fix script to write lint fixes.");
-    expect(schema).toContain("Run the exact package.json format:check script");
     expect(schema).toContain(
-      "Run the exact package.json format script to write formatting changes",
+      "Run the exact package.json lint script or an existing validated lint:<variant> script.",
+    );
+    expect(schema).toContain(
+      "Run the exact package.json format script or an existing validated format:<variant> script.",
     );
     expect(schema).toContain("Run Fallow dead-code analysis");
     expect(schema).toContain("Required safe revision used as the Fallow audit base.");
@@ -29,24 +29,30 @@ describe("project command metadata", () => {
 
     expect(tool.description).toContain("node_project_info reports project state in process");
     expect(tool.description).toContain(
-      "node_test, node_test_coverage, node_e2e, node_build, node_lint, node_lint_fix, node_typecheck, node_format_check, and node_format_write",
+      "supported Node script commands run only exact package.json scripts or validated existing lint:<variant>, test:<variant>, and format:<variant> family forms",
     );
     expect(tool.description).toContain(
-      "node_lint_fix and node_format_write changing project files",
+      "project mutation outside the project-controlled package scripts exposed by this catalog",
     );
     expect(tool.description).toContain("six fixed Fallow analyses");
+    expect(tool.description).toContain(
+      "Variants use bounded package-script-safe names and select the exact script configured by the project.",
+    );
     expect(tool.description).not.toContain("node_deps_install");
     expect(tool.promptSnippet).toBe(
-      "Inspect Node project state, list top-level dependencies, run one exact Node package script including lint fixes and formatting, or run one fixed Fallow analysis",
+      "Inspect Node project state, list top-level dependencies, run one exact Node package script or validated variant including lint fixes and formatting, or run one fixed Fallow analysis",
     );
     expect(tool.promptGuidelines).toContain(
       "Use project_command with commandId node_project_info before selecting an applicable Node command.",
     );
     expect(tool.promptGuidelines).toContain(
-      "Use node_test_coverage only when package.json has the exact test:coverage script.",
+      "Use node_test with optional workspace-relative paths only when package.json has the exact test script; its optional variant selects an existing validated test:<variant> script, including project-defined coverage or E2E scripts.",
     );
     expect(tool.promptGuidelines).toContain(
-      "Use node_e2e when package.json has the exact test:e2e script; pass only its structured test runner options.",
+      "Use node_format with an optional variant only when package.json has the exact format or format:<variant> script; formatting scripts may modify project files.",
+    );
+    expect(tool.promptGuidelines).toContain(
+      "Use node_build or node_typecheck only when package.json has the exact corresponding script; node_lint accepts an optional variant selecting an existing validated lint:<variant> script, including project-defined fix scripts.",
     );
   });
 });

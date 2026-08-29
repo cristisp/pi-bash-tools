@@ -12,14 +12,10 @@ const ESCAPE_CONTROL_STRING_STARTS = new Set([0x50, 0x58, 0x5e, 0x5f]);
 const NODE_PACKAGE_SCRIPT_BANNER = /^>\s+(?:@[^/\s]+\/)?[^@\s]+@[^\s]+\s+\S+(?:\s.*)?$/u;
 const NODE_PACKAGE_SCRIPT_COMMANDS = new Set([
   "node_test",
-  "node_test_coverage",
-  "node_e2e",
   "node_build",
   "node_lint",
-  "node_lint_fix",
   "node_typecheck",
-  "node_format_check",
-  "node_format_write",
+  "node_format",
 ]);
 
 function nextCodePointIndex(text: string, index: number): number {

@@ -10,8 +10,8 @@ const scope = createNodeTestScope();
 
 afterEach(scope.cleanup);
 
-describe("Node lint fix script resolution", () => {
-  it("reports and resolves only the exact lint:fix script", async () => {
+describe("Node lint variant resolution", () => {
+  it("reports and resolves the configured lint:fix variant", async () => {
     const directory = await createNodeProject(scope, {
       packageManager: "npm@10.0.0",
       scripts: {
@@ -23,16 +23,17 @@ describe("Node lint fix script resolution", () => {
     });
     await expect(readNodeProjectInfo(directory)).resolves.toMatchObject({
       scripts: ["lint", "lint:fix", "lint:fix:extra", "linter"],
-      applicableCommands: ["node_project_info", "node_deps_list", "node_lint", "node_lint_fix"],
+      applicableCommands: ["node_project_info", "node_deps_list", "node_lint"],
     });
-    const definition = getProjectCommandDefinition("node_lint_fix");
-    if (definition === undefined) throw new Error("missing node_lint_fix definition");
+    const definition = getProjectCommandDefinition("node_lint");
+    if (definition === undefined) throw new Error("missing node_lint definition");
     const resolved = await resolveNodeProjectCommand(definition, directory, {
-      commandId: "node_lint_fix",
+      commandId: "node_lint",
+      variant: "fix",
     });
     expect(resolved).toMatchObject({
       args: ["run", "lint:fix"],
-      fingerprintArgs: ["<package-manager>", "run", "lint:fix"],
+      fingerprintArgs: ["<package-manager>", "run", "lint"],
       script: "node lint-fix.js",
     });
     expect(resolved.executable.startsWith("/")).toBe(true);

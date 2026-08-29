@@ -221,7 +221,7 @@ export function redactProjectCommandParameters(
     .sort()
     .slice(0, MAX_PARAMETER_KEYS)
     .map((key) => {
-      if (key === "commandId" && typeof parameters[key] === "string") {
+      if ((key === "commandId" || key === "variant") && typeof parameters[key] === "string") {
         return [key, boundedIdentifier(parameters[key])] as const;
       }
       return [boundedIdentifier(key), redactParameterValue(parameters[key])] as const;

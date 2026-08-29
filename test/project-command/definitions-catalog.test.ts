@@ -12,14 +12,10 @@ it("contains the extension-owned command catalog in stable order", () => {
     "node_project_info",
     "node_deps_list",
     "node_test",
-    "node_test_coverage",
-    "node_e2e",
     "node_build",
     "node_lint",
-    "node_lint_fix",
     "node_typecheck",
-    "node_format_check",
-    "node_format_write",
+    "node_format",
     "fallow_dead_code",
     "fallow_dupes",
     "fallow_health",
@@ -38,7 +34,7 @@ it("defines a result-reuse policy for every built-in command", () => {
   expect(definitions.map((definition) => definition.reusePolicy)).toEqual([
     "static",
     "static",
-    ...Array.from({ length: 17 }, () => "never"),
+    ...Array.from({ length: 13 }, () => "never"),
   ]);
 });
 
@@ -64,7 +60,7 @@ it("describes the built-in command execution policies", () => {
 
 it("describes the built-in Node command policies", () => {
   const definitions = getProjectCommandDefinitions();
-  expect(definitions.slice(2, 13)).toMatchObject([
+  expect(definitions.slice(2, 9)).toMatchObject([
     { commandId: "node_project_info", risk: "observe", globalSafe: true },
     {
       commandId: "node_deps_list",
@@ -83,77 +79,27 @@ it("describes the built-in Node command policies", () => {
       risk: "project-code",
       globalSafe: false,
       fixedScriptKey: "test",
+      scriptVariantFamily: "test",
       truncationDirection: "tail",
       environmentProfile: "node-v1",
-    },
-    {
-      commandId: "node_test_coverage",
-      description: "Run the exact package.json test:coverage script.",
-      args: ["run", "test:coverage"],
-      risk: "project-code",
-      globalSafe: false,
-      fixedScriptKey: "test:coverage",
-    },
-    {
-      commandId: "node_e2e",
-      description: "Run the exact package.json test:e2e script with optional test runner options.",
-      args: ["run", "test:e2e"],
-      risk: "project-code",
-      globalSafe: false,
-      parameters: [
-        { name: "paths", kind: "workspace-paths", required: false },
-        { name: "grep", kind: "text", required: false },
-        { name: "projects", kind: "text-list", required: false },
-        { name: "workers", kind: "positive-integer", required: false },
-        { name: "retries", kind: "non-negative-integer", required: false },
-        { name: "headed", kind: "boolean", required: false },
-        { name: "list", kind: "boolean", required: false },
-      ],
-      fixedScriptKey: "test:e2e",
     },
     { commandId: "node_build", fixedScriptKey: "build" },
-    { commandId: "node_lint", fixedScriptKey: "lint" },
-    {
-      commandId: "node_lint_fix",
-      description: "Run the exact package.json lint:fix script to write lint fixes.",
-      executable: "",
-      args: ["run", "lint:fix"],
-      cwdStrategy: "canonical-project",
-      sanitizedEnvironmentProfile: "node-v1",
-      environmentProfile: "node-v1",
-      processTimeoutMs: 30_000,
-      outputLimitBytes: 50 * 1024,
-      risk: "project-code",
-      globalSafe: false,
-      applicability: "node-script",
-      bindsRepoContent: true,
-      scriptBinding: "package-script",
-      parameters: [],
-      argvTemplate: ["<package-manager>", "run", "lint:fix"],
-      fixedScriptKey: "lint:fix",
-      truncationDirection: "tail",
-    },
+    { commandId: "node_lint", fixedScriptKey: "lint", scriptVariantFamily: "lint" },
     { commandId: "node_typecheck", fixedScriptKey: "typecheck" },
     {
-      commandId: "node_format_check",
-      args: ["run", "format:check"],
-      risk: "project-code",
-      globalSafe: false,
-      fixedScriptKey: "format:check",
-    },
-    {
-      commandId: "node_format_write",
-      args: ["run", "format"],
+      commandId: "node_format",
       risk: "project-code",
       globalSafe: false,
       fixedScriptKey: "format",
+      scriptVariantFamily: "format",
+      mutatesWorkspace: true,
     },
   ]);
 });
 
 it("describes the built-in Fallow command policies", () => {
   const definitions = getProjectCommandDefinitions();
-  expect(definitions.slice(13)).toMatchObject([
+  expect(definitions.slice(9)).toMatchObject([
     {
       commandId: "fallow_dead_code",
       executable: process.execPath,

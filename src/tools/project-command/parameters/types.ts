@@ -7,19 +7,15 @@ export interface ProjectCommandParameterDeclaration {
     | "text-list"
     | "positive-integer"
     | "non-negative-integer"
-    | "boolean";
+    | "boolean"
+    | "script-variant";
   readonly required: boolean;
-  readonly mapping: "repeated-after-separator" | "flag-value" | "repeated-flag-value" | "flag";
+  readonly mapping:
+    | "repeated-after-separator"
+    | "flag-value"
+    | "repeated-flag-value"
+    | "flag"
+    | "package-script-suffix";
 }
 
 export type NodeTestParameters = Readonly<{ paths: readonly string[] }>;
-
-export interface NodeE2EParameters {
-  readonly paths: readonly string[];
-  readonly grep?: string;
-  readonly projects?: readonly string[];
-  readonly workers?: number;
-  readonly retries?: number;
-  readonly headed?: boolean;
-  readonly list?: boolean;
-}

@@ -1,14 +1,15 @@
 import { type ProjectCommandDefinition, type ResolvedCommandLine } from "../definitions.ts";
 import { ProjectCommandResolutionError, type ResolutionErrorDetails } from "../errors.ts";
 import { nodeDependencyListArgsForManager } from "../package-manager/detection.ts";
-import { effectiveNodeE2EParameters, e2eForwardedArgs } from "../parameters/e2e.ts";
-import {
-  normalizeNodeE2EParametersInternal,
-  normalizeNodeTestParametersInternal,
-} from "../parameters/normalization.ts";
+import { normalizeNodeTestParametersInternal } from "../parameters/normalization.ts";
 import { validateNodeTestPaths } from "../parameters/validation.ts";
 import type { ResolvedProjectCommand } from "../resolution/types.ts";
 import { readNodeProjectState } from "./project-state.ts";
+import {
+  isValidNodePackageScriptVariant,
+  nodePackageScriptKey,
+  nodePackageScriptVariantKey,
+} from "./package-script.ts";
 import type { NodeProjectResolutionOptions } from "../node.ts";
 import type { NodeProjectState } from "./types.ts";
 
@@ -24,12 +25,33 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function commandScript(definition: ProjectCommandDefinition): string {
-  const script = definition.fixedScriptKey;
+function commandScript(definition: ProjectCommandDefinition, parameters: unknown): string {
+  const script = nodePackageScriptKey(definition, parameters);
   if (script === undefined) {
-    throw resolutionError("probe", "invalid-node-command-definition");
+    if (definition.fixedScriptKey === undefined) {
+      throw resolutionError("probe", "invalid-node-command-definition");
+    }
+    throw resolutionError("probe", "missing-package-script-variant", {
+      basePackageScript: definition.fixedScriptKey,
+    });
   }
   return script;
+}
+
+function requireValidVariant(definition: ProjectCommandDefinition, parameters: unknown): void {
+  const variant = isRecord(parameters) ? parameters.variant : undefined;
+  if (variant === undefined) return;
+  if (
+    typeof variant !== "string" ||
+    !isValidNodePackageScriptVariant(variant) ||
+    definition.scriptVariantFamily === undefined ||
+    nodePackageScriptVariantKey(definition.scriptVariantFamily, variant) === undefined
+  ) {
+    throw resolutionError("probe", "invalid-package-script-variant", {
+      basePackageScript: definition.fixedScriptKey ?? "",
+      variant: typeof variant === "string" ? variant : "",
+    });
+  }
 }
 
 function displayCommand(executable: string, args: readonly string[]): string {
@@ -48,7 +70,9 @@ async function resolveNodeTestScriptParameters(
   if (
     parameters !== undefined &&
     (!isRecord(parameters) ||
-      Object.keys(parameters).some((key) => key !== "commandId" && key !== "paths"))
+      Object.keys(parameters).some(
+        (key) => key !== "commandId" && key !== "paths" && key !== "variant",
+      ))
   ) {
     throw resolutionError("probe", "invalid-test-parameters");
   }
@@ -62,30 +86,22 @@ async function resolveNodeTestScriptParameters(
   };
 }
 
-async function resolveNodeE2EScriptParameters(
-  parameters: unknown,
-  projectPath: string,
-): Promise<ResolvedNodeScriptParameters> {
-  const e2e = await normalizeNodeE2EParametersInternal(parameters, projectPath);
-  const forwardedArgs = e2eForwardedArgs(e2e);
-  return {
-    args: forwardedArgs.length === 0 ? [] : ["--", ...forwardedArgs],
-    effective: effectiveNodeE2EParameters(e2e),
-  };
-}
-
 async function resolveNodeScriptParameters(
   definition: ProjectCommandDefinition,
   parameters: unknown,
   projectPath: string,
 ): Promise<ResolvedNodeScriptParameters> {
+  const variant = isRecord(parameters) ? parameters.variant : undefined;
+  const variantParameters =
+    typeof variant === "string" ? Object.freeze({ variant }) : Object.freeze({});
   if (definition.commandId === "node_test") {
-    return resolveNodeTestScriptParameters(parameters, projectPath);
+    const test = await resolveNodeTestScriptParameters(parameters, projectPath);
+    return {
+      args: test.args,
+      effective: Object.freeze({ ...test.effective, ...variantParameters }),
+    };
   }
-  if (definition.commandId === "node_e2e") {
-    return resolveNodeE2EScriptParameters(parameters, projectPath);
-  }
-  return { args: [], effective: Object.freeze({}) };
+  return { args: [], effective: variantParameters };
 }
 
 type DetectedNodeProjectState = NodeProjectState & {
@@ -156,8 +172,9 @@ async function resolveNodeScriptCommand(
   projectPath: string,
   state: NodeProjectState,
 ): Promise<ResolvedProjectCommand> {
+  requireValidVariant(definition, parameters);
   const detectedState = requireDetectedNodeProjectState(state);
-  const script = commandScript(definition);
+  const script = commandScript(definition, parameters);
   if (!Object.prototype.hasOwnProperty.call(detectedState.manifest.scripts, script)) {
     throw resolutionError("probe", "inapplicable-command", {
       commandId: definition.commandId,
@@ -173,12 +190,13 @@ async function resolveNodeScriptCommand(
     });
   }
   const nodeParameters = await resolveNodeScriptParameters(definition, parameters, projectPath);
-  const args = [...definition.args, ...nodeParameters.args];
+  const args = ["run", script, ...nodeParameters.args];
   const resolved: ResolvedCommandLine = {
     executable: detectedState.managerExecutable,
     args,
     fingerprintArgs: definition.argvTemplate,
     scriptHash: detectedState.scriptHash ?? undefined,
+    scriptKey: script,
   };
   return Object.freeze({
     definition,

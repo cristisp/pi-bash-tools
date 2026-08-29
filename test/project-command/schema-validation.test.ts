@@ -1,20 +1,17 @@
 import { expect, it } from "vitest";
 import { validateProjectCommandInput } from "../../src/tools/project-command/schema.ts";
 
-it("accepts only the catalog command IDs and the supported test options", () => {
+it("accepts only the catalog command IDs and supported package-script options", () => {
   for (const commandId of [
     "workspace_path",
     "node_version",
     "node_project_info",
     "node_deps_list",
-    "node_test_coverage",
-    "node_e2e",
+    "node_test",
     "node_build",
     "node_lint",
-    "node_lint_fix",
     "node_typecheck",
-    "node_format_check",
-    "node_format_write",
+    "node_format",
     "fallow_dead_code",
     "fallow_dupes",
     "fallow_health",
@@ -34,26 +31,20 @@ it("accepts only the catalog command IDs and the supported test options", () => 
   expect(validateProjectCommandInput({ commandId: "node_test", paths: [] })).toEqual({
     commandId: "node_test",
   });
-  expect(
-    validateProjectCommandInput({
-      commandId: "node_e2e",
-      paths: ["e2e/login.spec.ts"],
-      grep: "login",
-      projects: ["chromium", "firefox"],
-      workers: 2,
-      retries: 1,
-      headed: false,
-      list: true,
-    }),
-  ).toEqual({
-    commandId: "node_e2e",
-    paths: ["e2e/login.spec.ts"],
-    grep: "login",
-    projects: ["chromium", "firefox"],
-    workers: 2,
-    retries: 1,
-    headed: false,
-    list: true,
+  expect(validateProjectCommandInput({ commandId: "node_test", variant: "coverage" })).toEqual({
+    commandId: "node_test",
+    variant: "coverage",
+  });
+  expect(validateProjectCommandInput({ commandId: "node_lint", variant: "errors:ci" })).toEqual({
+    commandId: "node_lint",
+    variant: "errors:ci",
+  });
+  expect(validateProjectCommandInput({ commandId: "node_format" })).toEqual({
+    commandId: "node_format",
+  });
+  expect(validateProjectCommandInput({ commandId: "node_format", variant: "check" })).toEqual({
+    commandId: "node_format",
+    variant: "check",
   });
 });
 
@@ -65,9 +56,7 @@ it("rejects arbitrary command fields and inline execution forms", () => {
     { commandId: "fallow" },
     { commandId: "workspace_path", args: [] },
     { commandId: "node_build", paths: [] },
-    { commandId: "node_format_check", paths: [] },
-    { commandId: "node_format_write", args: ["run", "format"] },
-    { commandId: "node_lint_fix", args: ["run", "lint:fix"] },
+    { commandId: "node_format", args: ["run", "format"] },
     { commandId: "fallow_audit" },
     { commandId: "fallow_audit", base: "" },
     { commandId: "fallow_audit", base: "--help" },
@@ -75,21 +64,17 @@ it("rejects arbitrary command fields and inline execution forms", () => {
     { commandId: "fallow_audit", base: "HEAD main" },
     { commandId: "fallow_audit", base: "HEAD", extra: true },
     { commandId: "node_test", executable: "/bin/sh" },
-    { commandId: "node_e2e", grep: "-unsafe" },
-    { commandId: "node_e2e", grep: "safe\u009btext" },
-    { commandId: "node_e2e", projects: ["safe\u009fproject"] },
     { commandId: "node_test", paths: ["safe\u0080.ts"] },
-    { commandId: "node_e2e", projects: ["chromium", "chromium"] },
-    { commandId: "node_e2e", workers: 0 },
-    { commandId: "node_e2e", retries: 11 },
-    { commandId: "node_e2e", headed: "yes" },
-    { commandId: "node_e2e", list: 1 },
-    { commandId: "node_e2e", unknown: true },
     { commandId: "node_test", paths: ["../outside"] },
     { commandId: "node_test", paths: ["-leading"] },
     { commandId: "node_test", paths: ["src\\index.ts"] },
     { commandId: "node_test", paths: ["src/*.ts"] },
     { commandId: "node_test", paths: ["src/index.ts", "src/index.ts"] },
+    { commandId: "node_lint", variant: "bad;command" },
+    { commandId: "node_lint", variant: "../outside" },
+    { commandId: "node_lint", variant: "-leading" },
+    { commandId: "node_test", variant: "../outside" },
+    { commandId: "node_format", variant: "-leading" },
     { commandId: "workspace_path", executable: "/bin/sh" },
     { commandId: "workspace_path", cwd: "/tmp" },
     { commandId: "workspace_path", shell: true },
@@ -109,7 +94,7 @@ it("rejects arbitrary command fields and inline execution forms", () => {
 
 it("reports a structured invalid request without execution", () => {
   try {
-    validateProjectCommandInput({ commandId: "node_e2e", workers: 0 });
+    validateProjectCommandInput({ commandId: "node_lint", variant: "-unsafe" });
     throw new Error("expected validation failure");
   } catch (error) {
     expect(error).toMatchObject({
@@ -118,7 +103,7 @@ it("reports a structured invalid request without execution", () => {
         code: "invalid-request",
         category: "INVALID_REQUEST",
         explanation: expect.any(String),
-        invalidField: "workers",
+        invalidField: "variant",
         retryable: false,
         executed: false,
       },
@@ -130,7 +115,7 @@ it("reports a structured invalid request without execution", () => {
           suggestedAction: "Correct the invalid request field and retry the command.",
           code: "invalid-request",
           category: "INVALID_REQUEST",
-          invalidField: "workers",
+          invalidField: "variant",
           executed: false,
         },
       },

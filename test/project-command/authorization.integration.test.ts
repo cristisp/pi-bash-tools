@@ -20,7 +20,7 @@ const scope = createProjectCommandIntegrationScope();
 afterEach(scope.cleanup);
 
 describe("project command authorization integration", () => {
-  it("requires project authorization before executing the mutating lint fix script", async () => {
+  it("requires project authorization before executing a mutating lint variant", async () => {
     const { fixture, userAgent } = await createIntegrationFixture(
       scope,
       "bash-tools-node-lint-fix-policy-",
@@ -31,17 +31,24 @@ describe("project command authorization integration", () => {
     const context = createCommandContext(fixture.directory);
 
     await expect(
-      tool.execute("node-lint-fix", { commandId: "node_lint_fix" }, undefined, undefined, context),
+      tool.execute(
+        "node-lint",
+        { commandId: "node_lint", variant: "fix" },
+        undefined,
+        undefined,
+        context,
+      ),
     ).rejects.toMatchObject({
       name: "ProjectCommandToolError",
       message: "Project command is not authorized in this mode",
     });
     expect(await readFile(join(fixture.directory, "lint-fix-target.txt"), "utf8")).toBe("before\n");
 
-    const definition = getProjectCommandDefinition("node_lint_fix");
-    if (definition === undefined) throw new Error("missing node_lint_fix definition");
+    const definition = getProjectCommandDefinition("node_lint");
+    if (definition === undefined) throw new Error("missing node_lint definition");
     const resolved = await resolveNodeProjectCommand(definition, fixture.projectPath, {
-      commandId: "node_lint_fix",
+      commandId: "node_lint",
+      variant: "fix",
     });
     await writeProjectPolicy(configPath, fixture.projectPath, [
       projectCommandIdentity(definition, resolved),
@@ -49,12 +56,12 @@ describe("project command authorization integration", () => {
 
     const response = await executeCommand(
       tool,
-      "node-lint-fix",
-      { commandId: "node_lint_fix" },
+      "node-lint",
+      { commandId: "node_lint", variant: "fix" },
       fixture.directory,
     );
     expect(response.details).toMatchObject({
-      commandId: "node_lint_fix",
+      commandId: "node_lint",
       status: "success",
       resolvedCommand: expect.stringContaining(" run lint:fix"),
     });

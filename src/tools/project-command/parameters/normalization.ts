@@ -1,8 +1,8 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { ProjectCommandResolutionError } from "../errors.ts";
-import { validateNodeE2EParameters, validateNodeTestPaths } from "./validation.ts";
-import type { NodeE2EParameters, NodeTestParameters } from "./types.ts";
+import { validateNodeTestPaths } from "./validation.ts";
+import type { NodeTestParameters } from "./types.ts";
 
 function pathResolutionError(): ProjectCommandResolutionError {
   return new ProjectCommandResolutionError("probe", "test-path-outside-workspace");
@@ -53,15 +53,4 @@ export async function normalizeNodeTestParametersInternal(
 ): Promise<NodeTestParameters> {
   const paths = validateNodeTestPaths(value);
   return Object.freeze({ paths: await normalizePaths(paths, canonicalProjectPath) });
-}
-
-export async function normalizeNodeE2EParametersInternal(
-  value: unknown,
-  canonicalProjectPath: string,
-): Promise<NodeE2EParameters> {
-  const parameters = validateNodeE2EParameters(value);
-  return Object.freeze({
-    ...parameters,
-    paths: await normalizePaths(parameters.paths, canonicalProjectPath),
-  });
 }

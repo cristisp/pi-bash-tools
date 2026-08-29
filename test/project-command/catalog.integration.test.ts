@@ -92,14 +92,10 @@ function expectNodeResponses(responses: Map<string, unknown>, projectPath: strin
         "node_project_info",
         "node_deps_list",
         "node_test",
-        "node_test_coverage",
-        "node_e2e",
         "node_build",
         "node_lint",
-        "node_lint_fix",
         "node_typecheck",
-        "node_format_check",
-        "node_format_write",
+        "node_format",
         "fallow_dead_code",
         "fallow_dupes",
         "fallow_health",
@@ -114,32 +110,21 @@ function expectNodeResponses(responses: Map<string, unknown>, projectPath: strin
     exit: { code: 0 },
     resolvedCommand: expect.stringContaining(" ls --depth=0"),
   });
-  for (const commandId of ["node_build", "node_lint", "node_typecheck"] as const) {
+  for (const commandId of ["node_build", "node_typecheck"] as const) {
     expect(responses.get(commandId)).toMatchObject({
       status: "success",
       stdout: { text: expect.stringContaining(`${commandId.replace("node_", "")}:none\n`) },
     });
   }
-  expect(responses.get("node_lint_fix")).toMatchObject({
+  expect(responses.get("node_lint")).toMatchObject({
     status: "success",
     stdout: { text: expect.stringContaining("lint:fix\n") },
     resolvedCommand: expect.stringContaining(" run lint:fix"),
   });
   expect(responses.get("node_test")).toMatchObject({
     status: "success",
-    stdout: { text: expect.stringContaining("test:fixture-runner.js\n") },
-  });
-  expect(responses.get("node_test_coverage")).toMatchObject({
-    status: "success",
     stdout: { text: expect.stringContaining("test:coverage:none\n") },
     resolvedCommand: expect.stringContaining(" run test:coverage"),
-  });
-  expect(responses.get("node_e2e")).toMatchObject({
-    status: "success",
-    stdout: { text: expect.stringContaining("e2e:--grep\n") },
-    resolvedCommand: expect.stringContaining(
-      " run test:e2e -- --grep smoke --project chromium --project firefox --workers 1 --retries 0 --list fixture-runner.js",
-    ),
   });
   expect(projectPath).toBeTruthy();
 }
@@ -148,12 +133,7 @@ async function expectMutatingNodeResponses(
   responses: Map<string, unknown>,
   fixtureDirectory: string,
 ): Promise<void> {
-  expect(responses.get("node_format_check")).toMatchObject({
-    status: "success",
-    stdout: { text: expect.stringContaining("format:check:none\n") },
-    resolvedCommand: expect.stringContaining(" run format:check"),
-  });
-  expect(responses.get("node_format_write")).toMatchObject({
+  expect(responses.get("node_format")).toMatchObject({
     status: "success",
     stdout: { text: expect.stringContaining("format:write\n") },
     resolvedCommand: expect.stringContaining(" run format"),

@@ -15,7 +15,7 @@ The extension registers exactly these custom tools:
 - `git_log` reads bounded commit IDs, authors, dates, and subjects.
 - `git_show` reads bounded output from a revision, optionally filtered by a path.
 - `environment` reads only explicitly requested environment variables after policy authorization.
-- `project_command` runs the fixed `workspace_path` and `node_version` observations, discovers Node project state with `node_project_info`, lists top-level dependencies with `node_deps_list`, runs only exact `test`, `build`, `lint`, `typecheck`, `format:check`, or `format` package scripts, and runs six fixed Fallow analyses after policy authorization.
+- `project_command` runs the fixed `workspace_path` and `node_version` observations, discovers Node project state with `node_project_info`, lists top-level dependencies with `node_deps_list`, runs exact package scripts from the supported Node command families, and runs six fixed Fallow analyses after policy authorization.
 - `move` moves or renames one authorized regular file.
 - `delete` deletes one authorized regular file.
 
@@ -138,11 +138,13 @@ If a process crashes while holding the lock, remove `bash-tools.json.lock` manua
 ## Project command policy and execution
 
 The project command tool accepts a strict discriminated input union.
-The catalog contains exactly `workspace_path`, `node_version`, `node_project_info`, `node_deps_list`, `node_test`, `node_test_coverage`, `node_e2e`, `node_build`, `node_lint`, `node_lint_fix`, `node_typecheck`, `node_format_check`, `node_format_write`, `fallow_dead_code`, `fallow_dupes`, `fallow_health`, `fallow_audit`, `fallow_list_entry_points`, and `fallow_list_boundaries`.
-`node_test` accepts optional `paths` validated as workspace-relative paths, and `fallow_audit` requires the validated `base` revision parameter.
-`node_test_coverage`, `node_lint_fix`, `node_format_check`, and `node_format_write` accept no parameters and require the exact `test:coverage`, `lint:fix`, `format:check`, and `format` package scripts, respectively.
-`node_e2e` accepts optional workspace-relative `paths`, `grep`, `projects`, `workers`, `retries`, `headed`, and `list` parameters and requires the exact `test:e2e` package script.
-These values are forwarded as fixed argument forms after the package-manager separator; the extension does not detect or invoke a particular E2E runner.
+The catalog contains exactly `workspace_path`, `node_version`, `node_project_info`, `node_deps_list`, `node_test`, `node_build`, `node_lint`, `node_typecheck`, `node_format`, `fallow_dead_code`, `fallow_dupes`, `fallow_health`, `fallow_audit`, `fallow_list_entry_points`, and `fallow_list_boundaries`.
+`node_test` accepts optional workspace-relative `paths` and an optional validated variant, and `fallow_audit` requires the validated `base` revision parameter.
+`node_lint` accepts an optional validated variant, and `node_format` accepts an optional validated variant.
+A variant selects one exact `base:<suffix>` package script key, including project-defined scripts such as `lint:fix`, `test:coverage`, `test:e2e`, and `format:check`; the selected script must exist in `package.json`.
+Variants use bounded package-script-safe segments containing letters, digits, dots, underscores, or hyphens separated by colons, and invalid or missing variants are rejected before execution.
+The selected script key participates in the command authorization fingerprint, the result cache key, the displayed command, and the per-script relevant-input hash, and variant requests remain non-cacheable like all other script commands.
+Test paths are forwarded as fixed argument forms after the package-manager separator; package-script variants select the complete project-defined command, so the extension does not detect or invoke a particular test runner.
 
 The extension owns the complete command catalog and never reads repository configuration to define commands.
 `node_project_info` reads package.json and supported lockfiles in process and reports the active Node version, package manager state, sorted script names, and applicable Node command IDs.
@@ -152,8 +154,8 @@ A missing package.json is reported as a non-Node project.
 
 `workspace_path` directly spawns `/bin/pwd` without arguments.
 `node_version` directly spawns the current Node executable with `--version`.
-The nine script commands invoke only the exact corresponding package.json scripts through a detected npm, pnpm, bun, or explicitly selected Yarn executable.
-`node_lint_fix` and `node_format_write` can change project files and are never globally safe.
+The Node script commands invoke only the exact corresponding package.json scripts, or one validated family variant form described above, through a detected npm, pnpm, bun, or explicitly selected Yarn executable.
+Package scripts are project-controlled code and are never globally safe; any selected script, including a lint, test, or format variant, may have side effects.
 
 Yarn lockfile-only projects and explicit Yarn versions other than Classic 1.x are rejected for dependency listing.
 The six Fallow commands invoke only the project-local `node_modules/.bin/fallow` target through the active Node executable with fixed JSON and quiet flags.
@@ -180,7 +182,7 @@ Project-command permissions are project-scoped, so global choices are not offere
 Command decisions migrate a version 1 environment document to a version 2 document containing the unchanged nested environment version 1 policy and a version 1 project command policy namespace.
 
 The command executor never calls `pi.exec`, performs PATH lookup, invokes npx or Corepack downloads, runs a shell, or returns raw spawn errors.
-Dependency installation, arbitrary package script names, aliases, watch modes, inline scripts, and project mutation outside `node_lint_fix` and `node_format_write` are intentionally not in this catalog.
+Dependency installation, package script families outside lint, test, and format, aliases, watch modes, inline scripts, and arbitrary command execution are intentionally not in this catalog.
 
 The corresponding Bash behavior is equivalent to the following examples, but the extension does not execute these command strings:
 

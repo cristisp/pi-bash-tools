@@ -57,6 +57,7 @@ import {
   type ProjectCommandRequestParameters,
 } from "./output.ts";
 import { projectCommandResultCategory } from "./categories.ts";
+import { projectCommandModelContent } from "./model-content.ts";
 import {
   recordProjectCommandInvocation,
   redactProjectCommandParameters,
@@ -105,7 +106,7 @@ function result(
   details: ProjectCommandOutputDetails,
 ): AgentToolResult<ProjectCommandOutputDetails> {
   return {
-    content: [{ type: "text", text: JSON.stringify(details) }],
+    content: [{ type: "text", text: JSON.stringify(projectCommandModelContent(details)) }],
     details,
   };
 }

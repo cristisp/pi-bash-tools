@@ -18,13 +18,13 @@ it("does not probe Fallow while resolving an exact Node script", async () => {
   await writeFile(join(directory, "node_modules", ".bin", "fallow"), "fallow");
   const realpathProbe = vi.fn(async (path: string) => await realpath(path));
   const lstatProbe = vi.fn(async (path: string) => await lstat(path));
-  const definition = getProjectCommandDefinition("node_lint_fix");
-  if (definition === undefined) throw new Error("missing node_lint_fix definition");
+  const definition = getProjectCommandDefinition("node_lint");
+  if (definition === undefined) throw new Error("missing node_lint definition");
 
   const resolved = await resolveNodeProjectCommand(
     definition,
     directory,
-    { commandId: "node_lint_fix" },
+    { commandId: "node_lint", variant: "fix" },
     {
       fileSystem: {
         readFile: (path, encoding) => readFile(path, encoding),
@@ -47,11 +47,14 @@ it("omits unprobed Fallow commands from missing-script diagnostics", async () =>
   });
   await mkdir(join(directory, "node_modules", ".bin"), { recursive: true });
   await writeFile(join(directory, "node_modules", ".bin", "fallow"), "fallow");
-  const definition = getProjectCommandDefinition("node_lint_fix");
-  if (definition === undefined) throw new Error("missing node_lint_fix definition");
+  const definition = getProjectCommandDefinition("node_lint");
+  if (definition === undefined) throw new Error("missing node_lint definition");
 
   await expect(
-    resolveNodeProjectCommand(definition, directory, { commandId: "node_lint_fix" }),
+    resolveNodeProjectCommand(definition, directory, {
+      commandId: "node_lint",
+      variant: "fix",
+    }),
   ).rejects.toMatchObject({
     stage: "probe",
     code: "inapplicable-command",

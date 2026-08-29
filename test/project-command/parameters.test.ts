@@ -3,12 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  normalizeNodeE2EParameters,
   normalizeNodeTestParameters,
   PROJECT_COMMAND_MAX_FORWARDED_ARGUMENT_BYTES,
   PROJECT_COMMAND_MAX_PARAMETER_ITEMS,
   PROJECT_COMMAND_MAX_PATH_LENGTH,
-  validateNodeE2EParameters,
   validateNodeTestPaths,
   validateProjectCommandRevision,
   validateWorkspacePathParameter,
@@ -45,35 +43,7 @@ describe("project command parameters", () => {
     expect(() => validateNodeTestPaths(["src/test.ts", "src/test.ts"])).toThrow();
   });
 
-  it("bounds E2E collections, path values, and forwarded arguments", () => {
-    expect(
-      validateNodeE2EParameters({
-        paths: Array.from(
-          { length: PROJECT_COMMAND_MAX_PARAMETER_ITEMS },
-          (_, index) => `path-${index}`,
-        ),
-        projects: Array.from(
-          { length: PROJECT_COMMAND_MAX_PARAMETER_ITEMS },
-          (_, index) => `project-${index}`,
-        ),
-      }).paths,
-    ).toHaveLength(PROJECT_COMMAND_MAX_PARAMETER_ITEMS);
-    expect(() =>
-      validateNodeE2EParameters({
-        paths: Array.from(
-          { length: PROJECT_COMMAND_MAX_PARAMETER_ITEMS + 1 },
-          (_, index) => `path-${index}`,
-        ),
-      }),
-    ).toThrow();
-    expect(() =>
-      validateNodeE2EParameters({
-        projects: Array.from(
-          { length: PROJECT_COMMAND_MAX_PARAMETER_ITEMS + 1 },
-          (_, index) => `project-${index}`,
-        ),
-      }),
-    ).toThrow();
+  it("bounds path values and forwarded arguments", () => {
     expect(() =>
       validateWorkspacePathParameter("a".repeat(PROJECT_COMMAND_MAX_PATH_LENGTH + 1)),
     ).toThrow();
@@ -82,54 +52,17 @@ describe("project command parameters", () => {
     ).toHaveLength(PROJECT_COMMAND_MAX_PATH_LENGTH);
 
     const paths = Array.from(
-      { length: PROJECT_COMMAND_MAX_PARAMETER_ITEMS / 2 },
+      { length: PROJECT_COMMAND_MAX_PARAMETER_ITEMS },
       (_, index) => `${index}-${"a".repeat(2035)}`,
     );
-    expect(() => validateNodeE2EParameters({ paths, grep: "g".repeat(500) })).toThrow();
+    expect(() => validateNodeTestPaths(paths)).toThrow();
     expect(PROJECT_COMMAND_MAX_FORWARDED_ARGUMENT_BYTES).toBeGreaterThan(0);
   });
 
   it("rejects C1 controls and line separators in project command text at runtime", () => {
     for (const character of ["\u0080", "\u009b", "\u009f", "\u2028", "\u2029"]) {
       expect(() => validateWorkspacePathParameter(`safe${character}.ts`)).toThrow();
-      expect(() => validateNodeE2EParameters({ grep: `safe${character}text` })).toThrow();
-      expect(() => validateNodeE2EParameters({ projects: [`safe${character}text`] })).toThrow();
       expect(() => validateProjectCommandRevision(`HEAD${character}`)).toThrow();
-    }
-  });
-
-  it("validates structured E2E options without invoking a specific runner", () => {
-    expect(
-      validateNodeE2EParameters({
-        commandId: "node_e2e",
-        paths: ["e2e/login.spec.ts"],
-        grep: "login",
-        projects: ["chromium", "firefox"],
-        workers: 2,
-        retries: 1,
-        headed: true,
-        list: false,
-      }),
-    ).toEqual({
-      paths: ["e2e/login.spec.ts"],
-      grep: "login",
-      projects: ["chromium", "firefox"],
-      workers: 2,
-      retries: 1,
-      headed: true,
-      list: false,
-    });
-    for (const value of [
-      { grep: "-login" },
-      { projects: ["chromium", "chromium"] },
-      { workers: 0 },
-      { workers: 65 },
-      { retries: -1 },
-      { retries: 11 },
-      { headed: "true" },
-      { list: 1 },
-    ]) {
-      expect(() => validateNodeE2EParameters(value)).toThrow();
     }
   });
 
@@ -150,12 +83,6 @@ describe("project command parameters", () => {
     await writeFile(join(root, "src", "test.ts"), "test");
     expect(await normalizeNodeTestParameters(["src/test.ts"], canonical)).toEqual({
       paths: ["src/test.ts"],
-    });
-    expect(
-      await normalizeNodeE2EParameters({ paths: ["src/test.ts"], workers: 1 }, canonical),
-    ).toEqual({
-      paths: ["src/test.ts"],
-      workers: 1,
     });
 
     const outside = await mkdtemp(join(tmpdir(), "bash-tools-parameters-outside-"));

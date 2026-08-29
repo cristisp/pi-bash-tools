@@ -37,24 +37,34 @@ describe("project command missing-script integration", () => {
     await writeFile(configPath, JSON.stringify({ version: 1 }));
     const tool = createProjectCommandToolForTesting({ configPath });
     const cases = [
-      { commandId: "node_format_check", script: "format:check" },
-      { commandId: "node_format_write", script: "format" },
-      { commandId: "node_lint_fix", script: "lint:fix" },
-      { commandId: "node_test", script: "test" },
-      { commandId: "node_test_coverage", script: "test:coverage" },
-      { commandId: "node_e2e", script: "test:e2e" },
+      { commandId: "node_format", parameters: { commandId: "node_format" }, script: "format" },
+      {
+        commandId: "node_format",
+        parameters: { commandId: "node_format", variant: "check" },
+        script: "format:check",
+      },
+      {
+        commandId: "node_lint",
+        parameters: { commandId: "node_lint", variant: "fix" },
+        script: "lint:fix",
+      },
+      { commandId: "node_test", parameters: { commandId: "node_test" }, script: "test" },
+      {
+        commandId: "node_test",
+        parameters: { commandId: "node_test", variant: "coverage" },
+        script: "test:coverage",
+      },
+      {
+        commandId: "node_test",
+        parameters: { commandId: "node_test", variant: "e2e" },
+        script: "test:e2e",
+      },
     ] as const;
 
     await Promise.all(
-      cases.map(async ({ commandId, script }) => {
+      cases.map(async ({ commandId, parameters, script }) => {
         await expect(
-          tool.execute(
-            commandId,
-            { commandId },
-            undefined,
-            undefined,
-            createCommandContext(project),
-          ),
+          tool.execute(commandId, parameters, undefined, undefined, createCommandContext(project)),
         ).rejects.toMatchObject({
           name: "ProjectCommandToolError",
           message: expect.stringMatching(
@@ -67,7 +77,7 @@ describe("project command missing-script integration", () => {
             status: "resolution-failure",
             executed: false,
             commandId,
-            requestedParameters: { commandId },
+            requestedParameters: parameters,
             stage: "probe",
             code: "inapplicable-command",
             resolutionDetails: {

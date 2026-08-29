@@ -22,20 +22,36 @@ describe("Node missing script diagnostics", () => {
     });
     const info = await readNodeProjectInfo(directory);
     const cases = [
-      { commandId: "node_format_check", script: "format:check" },
-      { commandId: "node_format_write", script: "format" },
-      { commandId: "node_lint_fix", script: "lint:fix" },
-      { commandId: "node_test", script: "test" },
-      { commandId: "node_test_coverage", script: "test:coverage" },
-      { commandId: "node_e2e", script: "test:e2e" },
+      { commandId: "node_format", parameters: { commandId: "node_format" }, script: "format" },
+      {
+        commandId: "node_format",
+        parameters: { commandId: "node_format", variant: "check" },
+        script: "format:check",
+      },
+      {
+        commandId: "node_lint",
+        parameters: { commandId: "node_lint", variant: "fix" },
+        script: "lint:fix",
+      },
+      { commandId: "node_test", parameters: { commandId: "node_test" }, script: "test" },
+      {
+        commandId: "node_test",
+        parameters: { commandId: "node_test", variant: "coverage" },
+        script: "test:coverage",
+      },
+      {
+        commandId: "node_test",
+        parameters: { commandId: "node_test", variant: "e2e" },
+        script: "test:e2e",
+      },
     ] as const;
 
     await Promise.all(
-      cases.map(async ({ commandId, script }) => {
+      cases.map(async ({ commandId, parameters, script }) => {
         const definition = getProjectCommandDefinition(commandId);
         if (definition === undefined) throw new Error(`missing ${commandId} definition`);
         await expect(
-          resolveNodeProjectCommand(definition, directory, { commandId }),
+          resolveNodeProjectCommand(definition, directory, parameters),
         ).rejects.toMatchObject({
           name: "ProjectCommandResolutionError",
           stage: "probe",

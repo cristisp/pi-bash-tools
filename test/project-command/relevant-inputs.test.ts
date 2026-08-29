@@ -93,6 +93,27 @@ describe("project command relevant inputs", () => {
     ]);
   });
 
+  it("keeps non-script Node commands complete when a package manifest is present", async () => {
+    const projectPath = await createNodeProject(scope, {
+      packageManager: "npm@10.0.0",
+      scripts: { test: "vitest run" },
+    });
+    const results = await Promise.all(
+      ["node_project_info", "node_deps_list"].map((commandId) =>
+        createNodeProjectRelevantInputDiscovery({
+          fileSystem: { readFile, stat },
+        }).discover({
+          definition: definition(commandId),
+          projectPath,
+          parameters: { commandId },
+        }),
+      ),
+    );
+    for (const result of results) {
+      expect(result.status).toBe("complete");
+    }
+  });
+
   it("does not return a partial basis for missing scripts or manifest reads", async () => {
     const projectPath = await createNodeProject(scope, { scripts: {} });
     const missingScript = await createNodeProjectRelevantInputDiscovery().discover({

@@ -16,21 +16,13 @@ function isAcceptedExitCode(
 function nonzeroCategory(definition: ProjectCommandDefinition): ResultCategory {
   switch (definition.fixedScriptKey ?? definition.commandId) {
     case "test":
-    case "test:coverage":
-    case "test:e2e":
     case "node_test":
-    case "node_test_coverage":
-    case "node_e2e":
       return "TEST_FAILURE";
-    case "format:check":
     case "format":
-    case "node_format_check":
-    case "node_format_write":
+    case "node_format":
       return "FORMAT_FAILURE";
     case "lint":
-    case "lint:fix":
     case "node_lint":
-    case "node_lint_fix":
       return "LINT_FAILURE";
     case "typecheck":
     case "node_typecheck":

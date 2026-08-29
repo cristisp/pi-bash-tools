@@ -5,13 +5,11 @@ import {
   type ToolErrorContract,
 } from "../../errors.ts";
 import { getProjectCommandDefinitions, type ProjectCommandDefinition } from "../definitions.ts";
-import { effectiveNodeE2EParameters } from "../parameters/e2e.ts";
+import { validateNodeTestPaths, validateProjectCommandRevision } from "../parameters.ts";
 import {
-  validateNodeE2EParameters,
-  validateNodeTestPaths,
-  validateProjectCommandRevision,
-} from "../parameters.ts";
-import { isProjectCommandResolutionError } from "../errors.ts";
+  isValidNodePackageScriptVariant,
+  nodePackageScriptVariantKey,
+} from "../node/package-script.ts";
 import type { ProjectCommandInput, ProjectCommandInputFor } from "../schema.ts";
 
 function defaultErrorContract(message: string): ToolErrorContract {
@@ -63,6 +61,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function validateNodeScriptVariant(
+  value: unknown,
+  family: "test" | "lint" | "format",
+  required = false,
+): string | undefined {
+  if (value === undefined) {
+    if (required) throw invalidRequest("variant");
+    return undefined;
+  }
+  if (
+    !isValidNodePackageScriptVariant(value) ||
+    nodePackageScriptVariantKey(family, value) === undefined
+  ) {
+    throw invalidRequest("variant");
+  }
+  return value;
+}
+
 function findDefinition(
   commandId: string,
   definitions: readonly ProjectCommandDefinition[],
@@ -81,21 +97,11 @@ function findDefinition(
 function validateRequestKeys(keys: readonly string[], commandId: string): void {
   const expectedKeys =
     commandId === "node_test"
-      ? ["commandId", "force", "paths"]
-      : commandId === "node_e2e"
-        ? [
-            "commandId",
-            "force",
-            "paths",
-            "grep",
-            "projects",
-            "workers",
-            "retries",
-            "headed",
-            "list",
-          ]
-        : commandId === "fallow_audit"
-          ? ["commandId", "force", "base"]
+      ? ["commandId", "force", "paths", "variant"]
+      : commandId === "fallow_audit"
+        ? ["commandId", "force", "base"]
+        : commandId === "node_lint" || commandId === "node_format"
+          ? ["commandId", "force", "variant"]
           : ["commandId", "force"];
   const invalidKey = keys.find((key) => !expectedKeys.includes(key));
   if (!keys.includes("commandId") || invalidKey !== undefined) {
@@ -108,12 +114,7 @@ type NormalizedProjectCommandInput = {
   readonly force?: boolean;
   readonly paths?: readonly string[];
   readonly base?: string;
-  readonly grep?: string;
-  readonly projects?: readonly string[];
-  readonly workers?: number;
-  readonly retries?: number;
-  readonly headed?: boolean;
-  readonly list?: boolean;
+  readonly variant?: string;
 };
 
 function normalizedRequest(
@@ -129,39 +130,31 @@ function normalizedRequest(
   }
   if (commandId === "node_test") {
     try {
+      const variant = validateNodeScriptVariant(params.variant, "test");
       const paths = validateNodeTestPaths(params.paths);
-      return paths.length === 0 ? { commandId } : { commandId, paths };
-    } catch {
+      const base = paths.length === 0 ? { commandId } : { commandId, paths };
+      return variant === undefined ? base : { ...base, variant };
+    } catch (error) {
+      if (error instanceof ProjectCommandToolError) throw error;
       throw invalidRequest("paths");
     }
   }
-  if (commandId === "node_e2e") {
+  if (commandId === "node_lint") {
     try {
-      return {
-        commandId,
-        ...effectiveNodeE2EParameters(validateNodeE2EParameters(params)),
-      };
+      const variant = validateNodeScriptVariant(params.variant, "lint");
+      return variant === undefined ? { commandId } : { commandId, variant };
     } catch (error) {
-      if (isProjectCommandResolutionError(error)) {
-        const field =
-          error.code.includes("path") || error.code.includes("arguments")
-            ? "paths"
-            : error.code.includes("grep")
-              ? "grep"
-              : error.code.includes("project")
-                ? "projects"
-                : error.code.includes("worker")
-                  ? "workers"
-                  : error.code.includes("retr")
-                    ? "retries"
-                    : error.code.includes("headed")
-                      ? "headed"
-                      : error.code.includes("list")
-                        ? "list"
-                        : undefined;
-        throw invalidRequest(field);
-      }
-      throw invalidRequest();
+      if (error instanceof ProjectCommandToolError) throw error;
+      throw invalidRequest("variant");
+    }
+  }
+  if (commandId === "node_format") {
+    try {
+      const variant = validateNodeScriptVariant(params.variant, "format");
+      return variant === undefined ? { commandId } : { commandId, variant };
+    } catch (error) {
+      if (error instanceof ProjectCommandToolError) throw error;
+      throw invalidRequest("variant");
     }
   }
   return { commandId };

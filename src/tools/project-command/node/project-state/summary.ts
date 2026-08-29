@@ -1,5 +1,6 @@
 import { getProjectCommandDefinitions } from "../../definitions.ts";
 import type { NodeProjectInfo } from "../../node.ts";
+import { hasNodePackageScriptVariant } from "../package-script.ts";
 import { NODE_SCRIPT_COMMANDS } from "./manifest.ts";
 
 const FALLOW_COMMAND_IDS = [
@@ -20,6 +21,15 @@ export function applicableNodeCommandsInternal(
   for (const command of NODE_SCRIPT_COMMANDS) {
     if (Object.prototype.hasOwnProperty.call(scripts, command.script)) {
       ids.add(command.commandId);
+    }
+  }
+  for (const [commandId, family] of [
+    ["node_test", "test"],
+    ["node_lint", "lint"],
+    ["node_format", "format"],
+  ] as const) {
+    if (hasNodePackageScriptVariant(scripts, family)) {
+      ids.add(commandId);
     }
   }
   if (dependencyListAvailable) {

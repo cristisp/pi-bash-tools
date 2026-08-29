@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import type { CommandIdentity } from "../policy/types.ts";
 import {
   FALLOW_AUDIT_PARAMETERS,
-  NODE_E2E_PARAMETERS,
   NODE_TEST_PARAMETERS,
   type ProjectCommandParameterDeclaration,
 } from "./parameters.ts";
@@ -31,19 +30,14 @@ export type ProjectCommandReusePolicy =
   | "workspace-snapshot";
 export type ProjectCommandReusePolicyInput = ProjectCommandReusePolicy | (string & {});
 
-const MUTATING_PROJECT_COMMAND_IDS = new Set(["node_lint_fix", "node_format_write"]);
 const UNCONTROLLED_EXTERNAL_STATE_PROJECT_COMMAND_IDS = new Set([
   "node_project_info",
   "node_deps_list",
   "node_test",
-  "node_test_coverage",
-  "node_e2e",
   "node_build",
   "node_lint",
-  "node_lint_fix",
   "node_typecheck",
-  "node_format_check",
-  "node_format_write",
+  "node_format",
   "fallow_dead_code",
   "fallow_dupes",
   "fallow_health",
@@ -79,16 +73,10 @@ export interface ProjectCommandDefinition<CommandId extends string = string> {
   readonly truncationDirection?: ProjectCommandTruncationDirection;
   readonly parameters?: readonly ProjectCommandParameterDeclaration[];
   readonly argvTemplate?: readonly string[];
-  readonly fixedScriptKey?:
-    | "test"
-    | "test:coverage"
-    | "test:e2e"
-    | "build"
-    | "lint"
-    | "lint:fix"
-    | "typecheck"
-    | "format:check"
-    | "format";
+  readonly fixedScriptKey?: "test" | "build" | "lint" | "typecheck" | "format";
+  readonly scriptVariantFamily?: "test" | "lint" | "format";
+  /** When true, the base package script is reserved and a validated variant is required. */
+  readonly requiresVariant?: boolean;
 }
 
 function freezeDefinition<const Definition extends ProjectCommandDefinition>(
@@ -241,56 +229,7 @@ const definitions = Object.freeze([
     parameters: NODE_TEST_PARAMETERS,
     argvTemplate: ["<package-manager>", "run", "test", "[--]", "<paths>"],
     fixedScriptKey: "test",
-  }),
-  freezeDefinition({
-    namespace: PROJECT_COMMAND_NAMESPACE,
-    commandId: "node_test_coverage",
-    reusePolicy: "never",
-    uncontrolledExternalState: true,
-    workspaceSnapshotApproved: false,
-    description: "Run the exact package.json test:coverage script.",
-    executable: "",
-    args: ["run", "test:coverage"],
-    cwdStrategy: "canonical-project",
-    sanitizedEnvironmentProfile: "node-v1",
-    environmentProfile: "node-v1",
-    processTimeoutMs: PROJECT_COMMAND_PROCESS_TIMEOUT_MS,
-    outputLimitBytes: PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
-    risk: "project-code",
-    globalSafe: false,
-    executionKind: "process",
-    applicability: "node-script",
-    bindsRepoContent: true,
-    scriptBinding: "package-script",
-    truncationDirection: "tail",
-    parameters: [],
-    argvTemplate: ["<package-manager>", "run", "test:coverage"],
-    fixedScriptKey: "test:coverage",
-  }),
-  freezeDefinition({
-    namespace: PROJECT_COMMAND_NAMESPACE,
-    commandId: "node_e2e",
-    reusePolicy: "never",
-    uncontrolledExternalState: true,
-    workspaceSnapshotApproved: false,
-    description: "Run the exact package.json test:e2e script with optional test runner options.",
-    executable: "",
-    args: ["run", "test:e2e"],
-    cwdStrategy: "canonical-project",
-    sanitizedEnvironmentProfile: "node-v1",
-    environmentProfile: "node-v1",
-    processTimeoutMs: PROJECT_COMMAND_PROCESS_TIMEOUT_MS,
-    outputLimitBytes: PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
-    risk: "project-code",
-    globalSafe: false,
-    executionKind: "process",
-    applicability: "node-script",
-    bindsRepoContent: true,
-    scriptBinding: "package-script",
-    truncationDirection: "tail",
-    parameters: NODE_E2E_PARAMETERS,
-    argvTemplate: ["<package-manager>", "run", "test:e2e", "[--]", "<options>", "<paths>"],
-    fixedScriptKey: "test:e2e",
+    scriptVariantFamily: "test",
   }),
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
@@ -323,7 +262,8 @@ const definitions = Object.freeze([
     reusePolicy: "never",
     uncontrolledExternalState: true,
     workspaceSnapshotApproved: false,
-    description: "Run the exact package.json lint script.",
+    description:
+      "Run the exact package.json lint script or an existing validated lint:<variant> script.",
     executable: "",
     args: ["run", "lint"],
     cwdStrategy: "canonical-project",
@@ -338,35 +278,17 @@ const definitions = Object.freeze([
     bindsRepoContent: true,
     scriptBinding: "package-script",
     truncationDirection: "tail",
-    parameters: [],
+    parameters: [
+      {
+        name: "variant",
+        kind: "script-variant",
+        required: false,
+        mapping: "package-script-suffix",
+      },
+    ],
     argvTemplate: ["<package-manager>", "run", "lint"],
     fixedScriptKey: "lint",
-  }),
-  freezeDefinition({
-    namespace: PROJECT_COMMAND_NAMESPACE,
-    commandId: "node_lint_fix",
-    reusePolicy: "never",
-    mutatesWorkspace: true,
-    uncontrolledExternalState: true,
-    workspaceSnapshotApproved: false,
-    description: "Run the exact package.json lint:fix script to write lint fixes.",
-    executable: "",
-    args: ["run", "lint:fix"],
-    cwdStrategy: "canonical-project",
-    sanitizedEnvironmentProfile: "node-v1",
-    environmentProfile: "node-v1",
-    processTimeoutMs: PROJECT_COMMAND_PROCESS_TIMEOUT_MS,
-    outputLimitBytes: PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
-    risk: "project-code",
-    globalSafe: false,
-    executionKind: "process",
-    applicability: "node-script",
-    bindsRepoContent: true,
-    scriptBinding: "package-script",
-    truncationDirection: "tail",
-    parameters: [],
-    argvTemplate: ["<package-manager>", "run", "lint:fix"],
-    fixedScriptKey: "lint:fix",
+    scriptVariantFamily: "lint",
   }),
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
@@ -395,37 +317,13 @@ const definitions = Object.freeze([
   }),
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
-    commandId: "node_format_check",
-    reusePolicy: "never",
-    uncontrolledExternalState: true,
-    workspaceSnapshotApproved: false,
-    description: "Run the exact package.json format:check script.",
-    executable: "",
-    args: ["run", "format:check"],
-    cwdStrategy: "canonical-project",
-    sanitizedEnvironmentProfile: "node-v1",
-    environmentProfile: "node-v1",
-    processTimeoutMs: PROJECT_COMMAND_PROCESS_TIMEOUT_MS,
-    outputLimitBytes: PROJECT_COMMAND_OUTPUT_LIMIT_BYTES,
-    risk: "project-code",
-    globalSafe: false,
-    executionKind: "process",
-    applicability: "node-script",
-    bindsRepoContent: true,
-    scriptBinding: "package-script",
-    truncationDirection: "tail",
-    parameters: [],
-    argvTemplate: ["<package-manager>", "run", "format:check"],
-    fixedScriptKey: "format:check",
-  }),
-  freezeDefinition({
-    namespace: PROJECT_COMMAND_NAMESPACE,
-    commandId: "node_format_write",
+    commandId: "node_format",
     reusePolicy: "never",
     mutatesWorkspace: true,
     uncontrolledExternalState: true,
     workspaceSnapshotApproved: false,
-    description: "Run the exact package.json format script to write formatting changes.",
+    description:
+      "Run the exact package.json format script or an existing validated format:<variant> script.",
     executable: "",
     args: ["run", "format"],
     cwdStrategy: "canonical-project",
@@ -440,9 +338,17 @@ const definitions = Object.freeze([
     bindsRepoContent: true,
     scriptBinding: "package-script",
     truncationDirection: "tail",
-    parameters: [],
-    argvTemplate: ["<package-manager>", "run", "format"],
+    parameters: [
+      {
+        name: "variant",
+        kind: "script-variant",
+        required: false,
+        mapping: "package-script-suffix",
+      },
+    ],
+    argvTemplate: ["<package-manager>", "run", "format:<variant>"],
     fixedScriptKey: "format",
+    scriptVariantFamily: "format",
   }),
   freezeDefinition({
     namespace: PROJECT_COMMAND_NAMESPACE,
@@ -624,8 +530,7 @@ export function normalizeProjectCommandReusePolicy(value: unknown): ProjectComma
 function projectCommandMutatesWorkspace(definition: ProjectCommandDefinition): boolean {
   return (
     definition.mutatesWorkspace === true ||
-    MUTATING_PROJECT_COMMAND_IDS.has(definition.commandId) ||
-    definition.fixedScriptKey === "lint:fix" ||
+    definition.scriptBinding === "package-script" ||
     definition.fixedScriptKey === "format"
   );
 }
@@ -682,6 +587,8 @@ export interface ResolvedCommandLine {
   readonly args: readonly string[];
   readonly fingerprintArgs?: readonly string[];
   readonly scriptHash?: string;
+  /** Selected package script key, including any validated variant suffix. */
+  readonly scriptKey?: string;
 }
 
 function commandLine(
@@ -759,6 +666,9 @@ function catalogBindingMetadata(
   return {
     parameters: definition.parameters ?? [],
     fixedScriptKey: definition.fixedScriptKey ?? null,
+    ...(resolved.scriptKey !== undefined && resolved.scriptKey !== definition.fixedScriptKey
+      ? { selectedScriptKey: resolved.scriptKey }
+      : {}),
     scriptHash: resolved.scriptHash ?? null,
     ...(definition.binaryName === undefined ? {} : { binaryName: definition.binaryName }),
     ...(definition.acceptedExitCodes === undefined

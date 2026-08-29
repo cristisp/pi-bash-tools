@@ -119,7 +119,7 @@ it("adds invocation metadata to an invalid request without resolved scope or out
   const error = await tool
     .execute(
       "invalid-request",
-      { commandId: "node_e2e", workers: 0 },
+      { commandId: "node_lint", variant: "-unsafe" },
       undefined,
       undefined,
       context(fixtureData.directory, {
@@ -157,7 +157,7 @@ it("adds invocation metadata to an invalid request without resolved scope or out
       code: "invalid-request",
       category: "INVALID_REQUEST",
       suggestedAction: "Correct the invalid request field and retry the command.",
-      invalidField: "workers",
+      invalidField: "variant",
       executed: false,
     },
   });

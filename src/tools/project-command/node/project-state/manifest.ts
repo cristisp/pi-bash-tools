@@ -5,14 +5,10 @@ import { isMissingFileError, projectStateResolutionError } from "./errors.ts";
 
 export const NODE_SCRIPT_COMMANDS = [
   { commandId: "node_test", script: "test" },
-  { commandId: "node_test_coverage", script: "test:coverage" },
-  { commandId: "node_e2e", script: "test:e2e" },
   { commandId: "node_build", script: "build" },
   { commandId: "node_lint", script: "lint" },
-  { commandId: "node_lint_fix", script: "lint:fix" },
   { commandId: "node_typecheck", script: "typecheck" },
-  { commandId: "node_format_check", script: "format:check" },
-  { commandId: "node_format_write", script: "format" },
+  { commandId: "node_format", script: "format" },
 ] as const;
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

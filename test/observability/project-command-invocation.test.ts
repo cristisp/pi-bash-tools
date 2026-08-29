@@ -20,12 +20,11 @@ function input(
     sessionId: "session-1",
     toolCallId: "call-1",
     schemaHash: "schema-hash",
-    commandId: "node_e2e",
+    commandId: "node_test",
     parameters: {
-      commandId: "node_e2e",
+      commandId: "node_test",
+      variant: "unit",
       paths: ["private/source-file.ts"],
-      grep: "private test title",
-      projects: ["private-project"],
     },
     resultCategory: "PASS",
     status: "success",
@@ -53,7 +52,7 @@ describe("project command invocation metadata", () => {
       sessionId: "session-1",
       toolCallId: "call-1",
       schemaHash: "schema-hash",
-      commandId: "node_e2e",
+      commandId: "node_test",
       resultCategory: "PASS",
       status: "success",
       executed: true,
@@ -76,9 +75,9 @@ describe("project command invocation metadata", () => {
         sessionId: "s".repeat(10_000),
         toolCallId: "t".repeat(10_000),
         parameters: {
-          commandId: "node_e2e",
+          commandId: "node_test",
+          variant: "unit",
           paths: Array.from({ length: 100 }, (_, index) => `private-${index}.ts`),
-          grep: "secret-title".repeat(10_000),
         },
       }),
     );
@@ -95,9 +94,9 @@ describe("project command invocation metadata", () => {
     expect(record.sessionId).toHaveLength(256);
     expect(record.toolCallId).toHaveLength(256);
     expect(record.parameters).toMatchObject({
-      commandId: "node_e2e",
+      commandId: "node_test",
+      variant: "unit",
       paths: { count: 16, hashes: expect.any(Array) },
-      grep: { hash: expect.any(String) },
     });
   });
 

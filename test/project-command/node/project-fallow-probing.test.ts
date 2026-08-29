@@ -9,6 +9,15 @@ const scope = createNodeTestScope();
 afterEach(scope.cleanup);
 
 describe("Node Fallow project probing", () => {
+  it("does not infer Fallow commands from package scripts", async () => {
+    const project = await createNodeProject(scope, {
+      scripts: { "fallow:health": "echo not-fallow" },
+    });
+    await expect(readNodeProjectInfo(project)).resolves.toMatchObject({
+      applicableCommands: ["node_project_info", "node_deps_list"],
+    });
+  });
+
   it("reports Fallow only for a safe in-root binary", async () => {
     const fallowCommandIds = [
       "fallow_dead_code",

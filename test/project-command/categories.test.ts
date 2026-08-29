@@ -60,26 +60,16 @@ it("maps known command families from execution state without parsing output", ()
   expect(projectCommandResultCategory(definition("node_test"), outcome("nonzero"))).toBe(
     "TEST_FAILURE",
   );
-  expect(projectCommandResultCategory(definition("node_test_coverage"), outcome("nonzero"))).toBe(
-    "TEST_FAILURE",
-  );
-  expect(projectCommandResultCategory(definition("node_e2e"), outcome("nonzero"))).toBe(
-    "TEST_FAILURE",
-  );
-  expect(projectCommandResultCategory(definition("node_format_check"), outcome("nonzero"))).toBe(
-    "FORMAT_FAILURE",
-  );
-  expect(projectCommandResultCategory(definition("node_format_write"), outcome("nonzero"))).toBe(
-    "FORMAT_FAILURE",
-  );
+
   expect(projectCommandResultCategory(definition("node_lint"), outcome("nonzero"))).toBe(
     "LINT_FAILURE",
   );
-  expect(projectCommandResultCategory(definition("node_lint_fix"), outcome("nonzero"))).toBe(
-    "LINT_FAILURE",
-  );
+
   expect(projectCommandResultCategory(definition("node_typecheck"), outcome("nonzero"))).toBe(
     "TYPE_CHECK_FAILURE",
+  );
+  expect(projectCommandResultCategory(definition("node_format"), outcome("nonzero"))).toBe(
+    "FORMAT_FAILURE",
   );
   expect(projectCommandResultCategory(definition("node_build"), outcome("nonzero"))).toBe(
     "IMPLEMENTATION_FAILURE",

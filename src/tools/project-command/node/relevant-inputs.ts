@@ -16,9 +16,10 @@ import {
   type ProjectCommandRelevantInputFile,
   type ProjectCommandRelevantInputValue,
 } from "../relevant-inputs.ts";
-import { validateNodeE2EParameters, validateNodeTestPaths } from "../parameters.ts";
+import { validateNodeTestPaths } from "../parameters.ts";
 import { readNodeProjectState } from "./project-state/reader.ts";
 import { hashNodeScriptInternal } from "./project-state/manifest.ts";
+import { nodePackageScriptKey } from "./package-script.ts";
 import type { NodeFileSystem } from "./types.ts";
 import type { NodeProjectResolutionOptions } from "../node.ts";
 import { isMissingFileError } from "./project-state/errors.ts";
@@ -55,10 +56,6 @@ function normalizedTestPaths(
   if (definition.commandId === "node_test") {
     const paths = validateNodeTestPaths(isRecord(parameters) ? parameters.paths : parameters);
     return Object.freeze(paths.map((path) => path.split("\\").join("/")));
-  }
-  if (definition.commandId === "node_e2e") {
-    const normalized = validateNodeE2EParameters(parameters);
-    return Object.freeze(normalized.paths.map((path) => path.split("\\").join("/")));
   }
   return Object.freeze([]);
 }
@@ -124,17 +121,26 @@ async function existingConfigFiles(
   );
 }
 
+function selectedScriptKey(
+  definition: ProjectCommandDefinition,
+  parameters: unknown,
+): string | undefined {
+  if (definition.fixedScriptKey === undefined) return undefined;
+  return nodePackageScriptKey(definition, parameters);
+}
+
 function stateIncompleteReason(
   definition: ProjectCommandDefinition,
+  parameters: unknown,
   state: Awaited<ReturnType<typeof readNodeProjectState>>,
 ): string | undefined {
   if (state.manifest === null && definition.commandId !== "node_project_info") {
     return "missing-package-manifest";
   }
   if (state.manifest !== null && definition.fixedScriptKey !== undefined) {
-    return state.manifest.scripts[definition.fixedScriptKey] === undefined
-      ? "missing-package-script"
-      : undefined;
+    const scriptKey = selectedScriptKey(definition, parameters);
+    if (scriptKey === undefined) return "missing-package-script-variant";
+    return state.manifest.scripts[scriptKey] === undefined ? "missing-package-script" : undefined;
   }
   return undefined;
 }
@@ -153,16 +159,18 @@ function stateFiles(
 function stateValues(
   definition: ProjectCommandDefinition,
   state: Awaited<ReturnType<typeof readNodeProjectState>>,
+  parameters: unknown,
   paths: readonly string[],
 ): ProjectCommandRelevantInputValue[] {
   const values: ProjectCommandRelevantInputValue[] = [];
-  if (state.manifest !== null && definition.fixedScriptKey !== undefined) {
-    const script = state.manifest.scripts[definition.fixedScriptKey];
-    if (script !== undefined) {
+  if (state.manifest !== null) {
+    const scriptKey = selectedScriptKey(definition, parameters);
+    const script = scriptKey === undefined ? undefined : state.manifest.scripts[scriptKey];
+    if (scriptKey !== undefined && script !== undefined) {
       values.push(
         Object.freeze({
           kind: "value",
-          name: `package-script-hash:${definition.fixedScriptKey}`,
+          name: `package-script-hash:${scriptKey}`,
           value: hashNodeScriptInternal(script),
         }),
       );
@@ -204,7 +212,7 @@ async function discoverNodeProjectCommandRelevantInputsInternal(
       },
       { allowMissing: true, probeFallow: false },
     );
-    const reason = stateIncompleteReason(request.definition, state);
+    const reason = stateIncompleteReason(request.definition, request.parameters, state);
     if (reason !== undefined) return incomplete(reason);
     const configFiles = await existingConfigFiles(
       request.projectPath,
@@ -215,7 +223,7 @@ async function discoverNodeProjectCommandRelevantInputsInternal(
       status: "complete" as const,
       inputs: canonicalProjectCommandRelevantInputs(
         stateFiles(state, configFiles),
-        stateValues(request.definition, state, paths),
+        stateValues(request.definition, state, request.parameters, paths),
       ),
     });
   } catch (error) {
