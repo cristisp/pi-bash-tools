@@ -4,6 +4,7 @@ import type {
   ExtensionContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { renderCallLine, renderStringArgument } from "../call-render.ts";
 import {
   environmentCancellationError,
   environmentContract,
@@ -100,6 +101,14 @@ function createEnvironmentToolWithDependencies(
     promptSnippet: "Read authorized environment variables",
     parameters: environmentInputSchema,
     executionMode: "sequential",
+    renderCall(args, theme) {
+      const keys = Array.isArray(args?.keys) ? args.keys : [];
+      return renderCallLine(
+        theme,
+        "environment",
+        keys.map((key) => renderStringArgument(key, theme)),
+      );
+    },
     async execute(
       _toolCallId,
       params,

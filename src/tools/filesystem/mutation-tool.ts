@@ -6,6 +6,7 @@ import type {
 import { dirname } from "node:path";
 import { Type, type Static } from "typebox";
 import { type AuthorizationErrorKind } from "../authorization.ts";
+import { renderCallLine, renderStringArgument } from "../call-render.ts";
 import { displayPath } from "../path-display.ts";
 import { createNodePolicyFileSystem, type PolicyFileSystem } from "../policy/filesystem.ts";
 import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
@@ -303,6 +304,13 @@ function createMoveToolWithDependencies(
     promptSnippet: "Move or rename an authorized file",
     parameters: moveParameters,
     executionMode: "sequential",
+    renderCall(args, theme) {
+      return renderCallLine(theme, "move", [
+        renderStringArgument(args?.source, theme),
+        theme.fg("muted", "->"),
+        renderStringArgument(args?.destination, theme),
+      ]);
+    },
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const sourceInput = inputPath(params?.source, "source");
       const destinationInput = inputPath(params?.destination, "destination");
@@ -366,6 +374,9 @@ function createDeleteToolWithDependencies(
     promptSnippet: "Delete an authorized file",
     parameters: deleteParameters,
     executionMode: "sequential",
+    renderCall(args, theme) {
+      return renderCallLine(theme, "delete", [renderStringArgument(args?.path, theme)]);
+    },
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const pathInput = inputPath(params?.path, "path");
       const requestSignal = signal ?? ctx.signal;

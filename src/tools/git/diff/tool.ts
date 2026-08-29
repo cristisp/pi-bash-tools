@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { renderCallLine, renderStringArgument } from "../../call-render.ts";
 import type { GitDiffOutput } from "./output.ts";
 import {
   MAX_CONTENT_BYTES,
@@ -60,6 +61,23 @@ export function createGitDiffTool(
       'Read a bounded Git diff for the whole repository or workspace-relative paths without changing the repository. For new path-filtered calls, use paths: ["file"]; the legacy path field remains supported.',
     promptSnippet: "Inspect a bounded Git diff",
     parameters: gitDiffParameters,
+    renderCall(args, theme) {
+      const parts: string[] = [];
+      if (args?.staged === true) {
+        parts.push(theme.fg("muted", "--staged"));
+      }
+      const paths =
+        args === undefined ? [] : "paths" in args ? args.paths : "path" in args ? [args.path] : [];
+      if (paths.length === 0) {
+        parts.push(theme.fg("muted", "(whole repository)"));
+      } else {
+        for (const path of paths) {
+          parts.push(renderStringArgument(path, theme));
+        }
+      }
+      parts.push(theme.fg("muted", `maxBytes=${args?.maxBytes ?? "?"}`));
+      return renderCallLine(theme, "git_diff", parts);
+    },
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const hasLegacyPath = "path" in params;
       const hasPaths = "paths" in params;

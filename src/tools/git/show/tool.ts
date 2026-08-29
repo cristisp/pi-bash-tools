@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { renderCallLine, renderStringArgument } from "../../call-render.ts";
 import type { GitShowOutput } from "./output.ts";
 import {
   MAX_CONTENT_BYTES,
@@ -30,6 +31,14 @@ export function createGitShowTool(
       "Read bounded output from a Git revision, optionally filtered to a workspace-relative path.",
     promptSnippet: "Inspect a bounded Git revision",
     parameters: gitShowParameters,
+    renderCall(args, theme) {
+      const parts = [
+        renderStringArgument(args?.revision, theme),
+        ...(args?.path === undefined ? [] : [renderStringArgument(args.path, theme)]),
+        theme.fg("muted", `maxBytes=${args?.maxBytes ?? "?"}`),
+      ];
+      return renderCallLine(theme, "git_show", parts);
+    },
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       validateIntegerLimit(params.maxBytes, 1, MAX_CONTENT_BYTES, "maxBytes");
       const revision = validateRevision(params.revision);

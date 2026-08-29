@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { renderCallLine, renderStringArgument } from "../../call-render.ts";
 import {
   countStatusRecords,
   MAX_RECORDS,
@@ -25,6 +26,13 @@ export function createGitStatusTool(
     description: "Read Git working tree status for the current workspace without changing files.",
     promptSnippet: "Inspect Git working tree status",
     parameters: gitStatusParameters,
+    renderCall(args, theme) {
+      return renderCallLine(
+        theme,
+        "git_status",
+        args?.path === undefined ? [] : [renderStringArgument(args.path, theme)],
+      );
+    },
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const repository = await resolveRepository(exec, ctx.cwd, signal ?? ctx.signal);
       const path =

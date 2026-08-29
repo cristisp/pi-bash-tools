@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { renderCallLine, renderStringArgument, truncateRenderText } from "../call-render.ts";
 import { hashToolParameters } from "../../observability/canonical-json.ts";
 import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
 import type { PolicyStore, PolicyStoreTestOptions } from "../policy/types.ts";
@@ -117,6 +118,15 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
     ],
     parameters,
     executionMode: "sequential",
+    renderCall(args, theme) {
+      const options: Record<string, unknown> = Object.assign({}, args);
+      const parts: string[] = [renderStringArgument(options.commandId, theme)];
+      delete options.commandId;
+      if (Object.keys(options).length > 0) {
+        parts.push(theme.fg("muted", truncateRenderText(JSON.stringify(options))));
+      }
+      return renderCallLine(theme, "project_command", parts);
+    },
     execute: createProjectCommandExecute(
       policy,
       executor,

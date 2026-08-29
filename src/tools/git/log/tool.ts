@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { renderCallLine, renderStringArgument } from "../../call-render.ts";
 import type { GitLogOutput } from "./output.ts";
 import {
   MAX_RECORDS,
@@ -28,6 +29,17 @@ export function createGitLogTool(
       "Read bounded Git commit history with safe revision and workspace-relative path filters.",
     promptSnippet: "Inspect bounded Git history",
     parameters: gitLogParameters,
+    renderCall(args, theme) {
+      const parts: string[] = [];
+      if (args?.revision !== undefined) {
+        parts.push(renderStringArgument(args.revision, theme));
+      }
+      if (args?.path !== undefined) {
+        parts.push(renderStringArgument(args.path, theme));
+      }
+      parts.push(theme.fg("muted", `maxEntries=${args?.maxEntries ?? "?"}`));
+      return renderCallLine(theme, "git_log", parts);
+    },
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       validateIntegerLimit(params.maxEntries, 1, MAX_RECORDS, "maxEntries");
       const revision =
