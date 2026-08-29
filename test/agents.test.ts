@@ -35,19 +35,19 @@ function writeProjectAgent(cwd: string, name: string) {
 }
 
 describe('discoverAgents - user agents', () => {
-	it('discovers user agents with frontmatter metadata', () => {
-		writeUserAgent('worker', { model: 'test-model', tools: 'bash, read' });
+	it('discovers user agents with frontmatter metadata and ignores a model frontmatter', () => {
+		writeUserAgent('worker', { model: 'legacy/model:high', tools: 'bash, read' });
 		const { agents, projectAgentsDir } = discoverAgents(dir, 'user');
 		expect(projectAgentsDir).toBeNull();
 		expect(agents).toHaveLength(1);
 		expect(agents[0]).toMatchObject({
 			name: 'worker',
 			description: 'worker description',
-			model: 'test-model',
 			tools: ['bash', 'read'],
 			systemPrompt: 'System prompt for worker.',
 			source: 'user',
 		});
+		expect(agents[0]).not.toHaveProperty('model');
 	});
 
 	it('skips files without name or description frontmatter', () => {

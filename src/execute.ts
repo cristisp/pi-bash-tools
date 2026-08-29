@@ -13,6 +13,13 @@ import {
 	truncateParallelOutput,
 } from './format.ts';
 import { NESTED, ownWorkspaceId } from './herdr.ts';
+import {
+	type FindModel,
+	effectivePresetName,
+	filterAvailableModels,
+	findModelFrom,
+	readPresetOverride,
+} from './presets.ts';
 import { listSubagents } from './registry.ts';
 import { runReusedAgent, runSingleAgent } from './run.ts';
 import { makeEmptyUsage } from './types.ts';
@@ -133,6 +140,8 @@ interface ExecuteContext {
 	sessionFile: string | undefined;
 	agents: AgentConfig[];
 	projectAgentsDir: string | null;
+	presetName: string | undefined;
+	presetModels: Record<string, string>;
 	cwd: string;
 	signal: AbortSignal | undefined;
 	onUpdate: OnUpdateCallback | undefined;
@@ -155,14 +164,22 @@ function buildExecuteContext(
 	onUpdate: OnUpdateCallback | undefined,
 	ctx: ExtensionContext,
 ): { executeCtx: ExecuteContext; makeDetails: ReturnType<typeof makeDetailsFor> } {
-	const agentScope: AgentScope = params.agentScope ?? getConfig().defaultAgentScope;
+	const cfg = getConfig();
+	const agentScope: AgentScope = params.agentScope ?? cfg.defaultAgentScope;
 	const sessionFile = ctx.sessionManager.getSessionFile() ?? undefined;
 	const discovery = discoverAgents(ctx.cwd, agentScope);
+	const findModel: FindModel | undefined = findModelFrom(ctx.modelRegistry);
+	const presetName = effectivePresetName(readPresetOverride(ctx.sessionManager), cfg);
+	const presetModels = presetName
+		? filterAvailableModels(cfg.modelPresets[presetName], findModel).available
+		: (Object.create(null) as Record<string, string>);
 	const executeCtx: ExecuteContext = {
 		agentScope,
 		sessionFile,
 		agents: discovery.agents,
 		projectAgentsDir: discovery.projectAgentsDir,
+		presetName,
+		presetModels,
 		cwd: ctx.cwd,
 		signal,
 		onUpdate,
@@ -231,6 +248,7 @@ async function executeChainMode(
 			makeDetails('chain'),
 			ctx.sessionFile,
 			ctx.onBlocked,
+			ctx.presetModels,
 		);
 		results.push(result);
 
@@ -329,6 +347,7 @@ async function runParallelTask(
 		makeDetails('parallel'),
 		ctx.sessionFile,
 		ctx.onBlocked,
+		ctx.presetModels,
 	);
 	allResults[index] = result;
 	emitUpdate();
@@ -396,6 +415,7 @@ async function executeSingleMode(
 		makeDetails('single'),
 		ctx.sessionFile,
 		ctx.onBlocked,
+		ctx.presetModels,
 	);
 	const isError = isFailedResult(result);
 	if (isError) {
@@ -440,6 +460,7 @@ async function executeReuseMode(
 		makeDetails('single'),
 		ctx.onBlocked,
 		ctx.sessionFile,
+		ctx.presetModels,
 	);
 	const isError = isFailedResult(result);
 	if (isError) {
@@ -573,14 +594,15 @@ function agentsResponse(
 		};
 	}
 	const lines = ctx.agents.map((a) => {
-		const model = a.model ? `, model: ${a.model}` : '';
-		return `- ${a.name} (${a.source}) - ${a.description}${model}`;
+		const model = ctx.presetModels[a.name];
+		const modelText = model ? `, model: ${model}` : ', model: (pi default)';
+		return `- ${a.name} (${a.source}) - ${a.description}${modelText}`;
 	});
 	return {
 		content: [
 			{
 				type: 'text',
-				text: `Available agents (agentScope: ${ctx.agentScope}):\n${lines.join('\n')}\n\nPick the agent whose description best fits the task and use its exact name; do not invent agent names.`,
+				text: `Available agents (agentScope: ${ctx.agentScope}, model preset: ${ctx.presetName ?? 'none'}):\n${lines.join('\n')}\n\nPick the agent whose description best fits the task and use its exact name; do not invent agent names.`,
 			},
 		],
 		details: makeDetails('single')([]),

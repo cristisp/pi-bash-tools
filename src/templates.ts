@@ -778,31 +778,10 @@ Do not make an overall code-quality or release-approval decision.
 	},
 ];
 
-export function renderAgentFile(t: AgentTemplate, model: string): string {
+export function renderAgentFile(t: AgentTemplate): string {
 	const lines: string[] = ['---', `name: ${t.name}`, `description: ${t.description}`];
 	if (t.tools) lines.push(`tools: ${t.tools}`);
-	lines.push(`model: ${model}`);
 	lines.push('---', '');
 	lines.push(t.body.trim(), '');
 	return lines.join('\n');
-}
-
-const MODEL_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
-
-export function isValidModelSpec(value: string): boolean {
-	const spec = value.trim();
-	const match =
-		/^([A-Za-z0-9][A-Za-z0-9._-]*)\/([A-Za-z0-9][A-Za-z0-9._-]*)(?::([A-Za-z]+))?$/.exec(spec);
-	if (!match) return false;
-	const level = match[3];
-	return level === undefined || MODEL_LEVELS.has(level.toLowerCase());
-}
-
-export function normalizeModelSpec(value: string): string {
-	const spec = value.trim();
-	const colon = spec.lastIndexOf(':');
-	if (colon > 0 && MODEL_LEVELS.has(spec.slice(colon + 1).toLowerCase())) {
-		return `${spec.slice(0, colon)}:${spec.slice(colon + 1).toLowerCase()}`;
-	}
-	return spec;
 }

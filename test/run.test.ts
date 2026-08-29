@@ -43,7 +43,6 @@ const agent: AgentConfig = {
 	name: 'worker',
 	description: 'worker agent',
 	systemPrompt: 'You are a worker.',
-	model: 'test-model',
 	source: 'user',
 	filePath: '/tmp/worker.md',
 };
@@ -52,7 +51,6 @@ const reviewerAgent: AgentConfig = {
 	name: 'reviewer',
 	description: 'reviewer agent',
 	systemPrompt: 'You are a reviewer.',
-	model: 'test-model',
 	source: 'user',
 	filePath: '/tmp/reviewer.md',
 };
@@ -76,6 +74,7 @@ function singleCall(
 		step?: number;
 		parentSession?: string;
 		agents?: AgentConfig[];
+		presetModels?: Record<string, string>;
 	} = {},
 ) {
 	return runSingleAgent(
@@ -89,10 +88,17 @@ function singleCall(
 		undefined,
 		makeDetails,
 		overrides.parentSession,
+		undefined,
+		overrides.presetModels,
 	);
 }
 
-function reuseCall(label = 'worker-1', task = 'next task', parentSession?: string) {
+function reuseCall(
+	label = 'worker-1',
+	task = 'next task',
+	parentSession?: string,
+	presetModels?: Record<string, string>,
+) {
 	return runReusedAgent(
 		'/tmp',
 		[agent],
@@ -103,6 +109,7 @@ function reuseCall(label = 'worker-1', task = 'next task', parentSession?: strin
 		makeDetails,
 		undefined,
 		parentSession,
+		presetModels,
 	);
 }
 
@@ -210,6 +217,63 @@ describe('runSingleAgent - launch', () => {
 		const result = await promise;
 		expect(result.exitCode).toBe(0);
 		expect(countTempDirs()).toBe(before);
+	});
+});
+
+describe('runSingleAgent - preset model', () => {
+	it('uses the preset map model in the launch command and result', async () => {
+		const result = await singleCall({ presetModels: { worker: 'p/worker-model:high' } });
+		expect(result.model).toBe('p/worker-model:high');
+		const launchArgs = vi.mocked(launchInPane).mock.calls[0];
+		expect(launchArgs[1]).toContain("--model 'p/worker-model:high'");
+	});
+
+	it('omits --model when the preset map has no entry for the agent', async () => {
+		const result = await singleCall({
+			agentName: 'reviewer',
+			agents: [reviewerAgent],
+			presetModels: { worker: 'p/worker-model:high' },
+		});
+		expect(result.model).toBeUndefined();
+		const launchArgs = vi.mocked(launchInPane).mock.calls[0];
+		expect(launchArgs[1]).not.toContain('--model');
+	});
+
+	it('omits --model when no preset map is given', async () => {
+		const result = await singleCall();
+		expect(result.model).toBeUndefined();
+		const launchArgs = vi.mocked(launchInPane).mock.calls[0];
+		expect(launchArgs[1]).not.toContain('--model');
+	});
+
+	it('ignores inherited properties when the preset map is a plain object', async () => {
+		const constructorAgent: AgentConfig = {
+			name: 'constructor',
+			description: 'oddly named agent',
+			systemPrompt: 'You are odd.',
+			source: 'user',
+			filePath: '/tmp/constructor.md',
+		};
+		const result = await singleCall({
+			agentName: 'constructor',
+			agents: [constructorAgent],
+			presetModels: {} as Record<string, string>,
+		});
+		expect(result.model).toBeUndefined();
+		const launchArgs = vi.mocked(launchInPane).mock.calls[0];
+		expect(launchArgs[1]).not.toContain('--model');
+	});
+
+	it('applies the preset model when relaunching a reused session', async () => {
+		vi.mocked(herdrCli).mockResolvedValue({ error: { code: 'pane_not_found' } });
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'no-agent' });
+		registerEntry(makeRegistryEntry({ status: 'running' }));
+		const result = await reuseCall('worker-1', 'next task', undefined, {
+			worker: 'p/worker-model:high',
+		});
+		expect(result.exitCode).toBe(0);
+		expect(result.model).toBe('p/worker-model:high');
+		expect(vi.mocked(launchInPane).mock.calls[0][1]).toContain("--model 'p/worker-model:high'");
 	});
 });
 

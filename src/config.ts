@@ -1,8 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
+import { isValidModelSpec, normalizeModelSpec } from './model-spec.ts';
 
 export type ConfigAgentScope = 'user' | 'project' | 'both';
+
+export type ModelPreset = Record<string, string>;
 
 export interface SubagentHerdrConfig {
 	maxParallelTasks: number;
@@ -19,6 +22,8 @@ export interface SubagentHerdrConfig {
 	herdrCliTimeoutMs: number;
 	defaultAgentScope: ConfigAgentScope;
 	confirmProjectAgents: boolean;
+	modelPresets: Record<string, ModelPreset>;
+	defaultPreset?: string;
 }
 
 export function configPath(): string {
@@ -40,6 +45,7 @@ export const DEFAULT_CONFIG: SubagentHerdrConfig = {
 	herdrCliTimeoutMs: 8000,
 	defaultAgentScope: 'user',
 	confirmProjectAgents: true,
+	modelPresets: {},
 };
 
 const NUMERIC_KEYS = [
@@ -56,6 +62,23 @@ const NUMERIC_KEYS = [
 	'registryLockStaleMs',
 	'herdrCliTimeoutMs',
 ] as const satisfies readonly (keyof SubagentHerdrConfig)[];
+
+export function parseModelPresets(raw: unknown): Record<string, ModelPreset> {
+	const presets: Record<string, ModelPreset> = {};
+	if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return presets;
+	for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+		if (!name || name === '__proto__') continue;
+		if (typeof value !== 'object' || value === null || Array.isArray(value)) continue;
+		const preset: ModelPreset = {};
+		for (const [agentName, spec] of Object.entries(value as Record<string, unknown>)) {
+			if (!agentName || agentName === '__proto__') continue;
+			if (typeof spec !== 'string' || !isValidModelSpec(spec)) continue;
+			preset[agentName] = normalizeModelSpec(spec);
+		}
+		if (Object.keys(preset).length > 0) presets[name] = preset;
+	}
+	return presets;
+}
 
 export function getConfig(filePath?: string): SubagentHerdrConfig {
 	const cfg = { ...DEFAULT_CONFIG };
@@ -82,6 +105,13 @@ export function getConfig(filePath?: string): SubagentHerdrConfig {
 	}
 	if (typeof overrides.confirmProjectAgents === 'boolean') {
 		cfg.confirmProjectAgents = overrides.confirmProjectAgents;
+	}
+	cfg.modelPresets = parseModelPresets(overrides.modelPresets);
+	if (
+		typeof overrides.defaultPreset === 'string' &&
+		Object.hasOwn(cfg.modelPresets, overrides.defaultPreset)
+	) {
+		cfg.defaultPreset = overrides.defaultPreset;
 	}
 	return cfg;
 }

@@ -54,7 +54,8 @@ function shellQuote(s: string): string {
 }
 
 function buildLaunchCommand(
-	agent: AgentConfig,
+	agents: AgentConfig,
+	model: string | undefined,
 	label: string,
 	sessionPath: string,
 	taskFilePath: string,
@@ -63,9 +64,9 @@ function buildLaunchCommand(
 	const parts: string[] = ['PI_SUBAGENT_NESTED=1', 'pi'];
 	parts.push('--name', shellQuote(label));
 	parts.push('--session', shellQuote(sessionPath));
-	if (agent.model) parts.push('--model', shellQuote(agent.model));
-	if (agent.tools && agent.tools.length > 0)
-		parts.push('--tools', shellQuote(agent.tools.join(',')));
+	if (model) parts.push('--model', shellQuote(model));
+	if (agents.tools && agents.tools.length > 0)
+		parts.push('--tools', shellQuote(agents.tools.join(',')));
 	if (systemPromptPath) parts.push('--append-system-prompt', shellQuote(systemPromptPath));
 	parts.push(`"$(cat ${shellQuote(taskFilePath)})"`);
 	return parts.join(' ');
@@ -195,6 +196,7 @@ async function ensurePaneExists(
 
 async function relaunchOrPrompt(
 	agent: AgentConfig | undefined,
+	model: string | undefined,
 	entry: { agent: string; sessionFile: string },
 	label: string,
 	task: string,
@@ -208,7 +210,14 @@ async function relaunchOrPrompt(
 	if (status === 'no-agent') {
 		if (!agent) return { kind: 'relaunch', error: 'no agent', tmp: null };
 		const taskTmp = await writePromptToTempFile(entry.agent, `Task: ${task}`);
-		const command = buildLaunchCommand(agent, label, entry.sessionFile, taskTmp.filePath, null);
+		const command = buildLaunchCommand(
+			agent,
+			model,
+			label,
+			entry.sessionFile,
+			taskTmp.filePath,
+			null,
+		);
 		const launchError = await launchInPane(paneId, command);
 		const tmp: AgentTempFiles = {
 			promptDir: null,
@@ -302,6 +311,7 @@ async function createFreshSubagentTab(
 
 async function launchSubagent(
 	agent: AgentConfig,
+	model: string | undefined,
 	label: string,
 	sessionPath: string,
 	taskPath: string,
@@ -309,7 +319,7 @@ async function launchSubagent(
 	paneId: string,
 	currentResult: SingleResult,
 ): Promise<boolean> {
-	const command = buildLaunchCommand(agent, label, sessionPath, taskPath, promptPath);
+	const command = buildLaunchCommand(agent, model, label, sessionPath, taskPath, promptPath);
 	const launchError = await launchInPane(paneId, command);
 	if (launchError) {
 		currentResult.exitCode = 1;
@@ -328,6 +338,7 @@ interface FreshAgentTab extends AgentTempFiles {
 
 async function launchFreshAgent(
 	agent: AgentConfig,
+	model: string | undefined,
 	defaultCwd: string,
 	cwd: string | undefined,
 	task: string,
@@ -354,6 +365,7 @@ async function launchFreshAgent(
 		}
 		const launched = await launchSubagent(
 			agent,
+			model,
 			tab.label,
 			tab.sessionPath,
 			tmp.taskPath,
@@ -408,7 +420,6 @@ function initReusedSession(
 			messages: [],
 			stderr: '',
 			usage: makeEmptyUsage(),
-			model: agent?.model,
 			label,
 			paneId: entry.paneId,
 			tabId: entry.tabId,
@@ -514,6 +525,7 @@ export async function runSingleAgent(
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
 	parentSession: string | undefined,
 	onBlocked?: (info: BlockEventInfo) => void,
+	presetModels?: Record<string, string>,
 ): Promise<SingleResult> {
 	const startedAt = Date.now();
 	const found = findAgentOrFail(agents, agentName, task, step);
@@ -522,6 +534,8 @@ export async function runSingleAgent(
 		return found;
 	}
 	const agent = found;
+	const model =
+		presetModels && Object.hasOwn(presetModels, agentName) ? presetModels[agentName] : undefined;
 
 	const currentResult: SingleResult = {
 		agent: agentName,
@@ -531,7 +545,7 @@ export async function runSingleAgent(
 		messages: [],
 		stderr: '',
 		usage: makeEmptyUsage(),
-		model: agent.model,
+		model,
 		step,
 	};
 
@@ -540,7 +554,15 @@ export async function runSingleAgent(
 	let tmpFiles: AgentTempFiles | null = null;
 
 	try {
-		const tab = await launchFreshAgent(agent, defaultCwd, cwd, task, parentSession, currentResult);
+		const tab = await launchFreshAgent(
+			agent,
+			model,
+			defaultCwd,
+			cwd,
+			task,
+			parentSession,
+			currentResult,
+		);
 		if (!tab) return currentResult;
 		tabId = tab.tabId;
 		label = tab.label;
@@ -598,6 +620,7 @@ export async function runReusedAgent(
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
 	onBlocked?: (info: BlockEventInfo) => void,
 	parentSession?: string,
+	presetModels?: Record<string, string>,
 ): Promise<SingleResult> {
 	const startedAt = Date.now();
 	const init = initReusedSession(agents, label, task, parentSession);
@@ -606,6 +629,11 @@ export async function runReusedAgent(
 		return init;
 	}
 	const { entry, agent, currentResult } = init;
+	const model =
+		presetModels && Object.hasOwn(presetModels, entry.agent)
+			? presetModels[entry.agent]
+			: undefined;
+	currentResult.model = model;
 
 	let relaunchTmp: AgentTempFiles | null = null;
 
@@ -625,7 +653,7 @@ export async function runReusedAgent(
 			updateRegistryEntry(label, { paneId, tabId, updatedAt: Date.now() });
 		}
 
-		const relaunch = await relaunchOrPrompt(agent, entry, label, task, paneId);
+		const relaunch = await relaunchOrPrompt(agent, model, entry, label, task, paneId);
 		if (!relaunch) throw new Error('relaunchOrPrompt returned no outcome');
 		relaunchTmp = relaunch.tmp;
 		if (relaunch.error) {

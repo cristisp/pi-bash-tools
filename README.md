@@ -55,11 +55,89 @@ Setting up the standard agents:
 
 - `/setup-subagents` - creates or updates the `planner`, `reviewer`, `scout`, `worker`, and
   `validator` agent files in `~/.pi/agent/agents` (they are not bundled with the
-  package), and creates `~/.pi/agent/subagent-herdr.config.json` with all
-  defaults if it does not exist yet (an existing config is left untouched). It asks for the model first, as `provider/model(:thinking_level)` -
-  e.g. `github-copilot/gpt-5.6-luna:high` or `cortecs/deepseek-v4-flash-0731`
-  (level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; the templates live in
-  `src/templates.ts`). Existing files are only overwritten after confirmation.
+  package). Agent files carry no model - the model lives in presets in the
+  config file instead. It prompts for a model with an explicit reasoning level
+  (`provider/model:thinking_level`, level: `off`, `minimal`, `low`, `medium`,
+  `high`, `xhigh`, or `max`; the templates live in `src/templates.ts`) for each
+  of the five standard agents, and writes them into the `default` preset. If the
+  config already defines presets, it asks first - declining skips the model
+  prompts and only touches the agent files; confirming updates the `default`
+  preset while preserving other presets and the `defaultPreset` setting. If the
+  config has no presets yet, it is created (or seeded) with the `default`
+  preset and `defaultPreset: "default"`. Existing agent files are only
+  overwritten after confirmation.
+
+## Model presets
+
+Subagent models are configured as named presets in
+`~/.pi/agent/subagent-herdr.config.json`. Each preset maps agent names to
+`provider/model(:thinking_level)` specs; agent files no longer carry a `model:`
+frontmatter (a leftover one is ignored).
+
+```json
+{
+  "modelPresets": {
+    "default": {
+      "planner": "github-copilot/gpt-5.6-luna:high",
+      "reviewer": "github-copilot/gpt-5.6-luna:high",
+      "scout": "github-copilot/gpt-5.6-luna:low",
+      "worker": "github-copilot/gpt-5.6-luna:high",
+      "validator": "github-copilot/gpt-5.6-luna:medium"
+    },
+    "cheap": {
+      "planner": "cortecs/deepseek-v4-flash-0731:low",
+      "scout": "cortecs/deepseek-v4-flash-0731",
+      "worker": "cortecs/deepseek-v4-flash-0731:medium"
+    }
+  },
+  "defaultPreset": "default"
+}
+```
+
+Resolution per spawn:
+
+1. The preset selected for the current Pi session (`/select-subagent-preset`),
+   falling back to `defaultPreset` when the session has no selection (or the
+   selected preset no longer exists in the config).
+2. The active preset's entry for the agent name; unknown agents and missing
+   entries mean the subagent runs with pi's default model (no `--model` flag).
+3. Models are validated against pi's model registry: at session start every
+   configured preset is checked and a warning lists agent/spec pairs whose
+   model no longer resolves; unavailable entries of the active preset are
+   pruned at spawn time so the subagent falls back to pi's default model
+   instead of launching with a dead `--model`.
+4. Invalid entries in the config are dropped (thinking levels are normalized to
+   lowercase), and `defaultPreset` is ignored unless it names a configured
+   preset.
+
+Selecting a preset:
+
+- `/select-subagent-preset` - interactive picker listing one preset per line
+  with each agent and its model/reasoning in brackets, plus a
+  `(use config default)` entry to clear the session override. Esc cancels and
+  keeps the current selection.
+- `/create-subagent-preset` - interactive preset builder: prompts for a preset
+  name, then a model with reasoning level for each agent discovered from the
+  agents directories (empty input skips that agent, so it runs on the pi
+  default model). Offers a confirmation before overwriting an existing preset
+  of the same name; other presets are preserved. The new preset is never set as
+  `defaultPreset` - change that in the config file, or select the preset per
+  session with `/select-subagent-preset`.
+
+Both commands validate each entered model twice: the spec must be syntactically
+valid with an explicit reasoning level, and `provider/model` must resolve in
+pi's model registry (unknown models are rejected with a warning and re-prompted;
+if the registry is unavailable the check fails open).
+
+The status bar shows the active preset as `subagent preset: <name>` (set on
+session start, refreshed after selecting, reverting, or running
+`/setup-subagents`; hidden when no preset is effective).
+
+The selection is stored in the session itself, so it survives restarts and
+`/resume`, forks inherit it, and different sessions can use different presets.
+Prompting a live reused session never changes its model; when a reused pane is
+dead and gets relaunched, the relaunch uses the preset resolved at reuse time.
+The `subagent(agents: true)` listing shows the resolved model per agent.
 
 Closing subagents (two entry points, same behavior):
 
@@ -164,7 +242,9 @@ file is re-read on every use, so edits take effect without a restart. Running
   "registryLockStaleMs": 5000,
   "herdrCliTimeoutMs": 8000,
   "defaultAgentScope": "user",
-  "confirmProjectAgents": true
+  "confirmProjectAgents": true,
+  "modelPresets": {},
+  "defaultPreset": "default"
 }
 ```
 
@@ -184,6 +264,8 @@ file is re-read on every use, so edits take effect without a restart. Running
 | `herdrCliTimeoutMs` | 8000 | Timeout for each herdr CLI call |
 | `defaultAgentScope` | `"user"` | Default `agentScope` when the tool call omits it (`"user"`, `"project"`, `"both"`) |
 | `confirmProjectAgents` | `true` | Default for the project-agent confirmation prompt |
+| `modelPresets` | `{}` | Named subagent model presets (see [Model presets](#model-presets)); entries map agent names to `provider/model(:thinking_level)` |
+| `defaultPreset` | - | Name of the preset used when the session has no `/select-subagent-preset` selection; must name a configured preset |
 
 ## Lifecycle of the main session
 

@@ -24,6 +24,7 @@ function ctx(overrides: Partial<ExtensionContext> = {}): ExtensionContext {
 		hasUI: false,
 		sessionManager: { getSessionFile: () => undefined },
 		ui: {} as ExtensionContext['ui'],
+		modelRegistry: { find: () => ({}) } as never,
 		...overrides,
 	} as ExtensionContext;
 }
@@ -82,7 +83,7 @@ describe('executeSubagent - mode validation', () => {
 });
 
 describe('executeSubagent - agents listing', () => {
-	it('lists agents with name, source, and description', async () => {
+	it('lists agents with name, source, description, and preset-resolved model', async () => {
 		const agentsDir = path.join(dir, 'agents');
 		fs.mkdirSync(agentsDir, { recursive: true });
 		writeAgentFile(agentsDir, 'worker.md', 'prompt', {
@@ -92,20 +93,112 @@ describe('executeSubagent - agents listing', () => {
 		writeAgentFile(agentsDir, 'reviewer.md', 'prompt', {
 			name: 'reviewer',
 			description: 'reviews code',
-			model: 'test-model',
+			model: 'ignored-frontmatter-model',
+		});
+		writeConfig({
+			modelPresets: { cheap: { reviewer: 'prov/test-model:high' } },
+			defaultPreset: 'cheap',
 		});
 		const result = await execSubagent({ agents: true });
 		expect(result.content[0]).toMatchObject({
 			type: 'text',
-			text: expect.stringContaining('- worker (user) - executes tasks'),
+			text: expect.stringContaining('- worker (user) - executes tasks, model: (pi default)'),
 		});
 		expect(result.content[0]).toMatchObject({
 			type: 'text',
-			text: expect.stringContaining('- reviewer (user) - reviews code, model: test-model'),
+			text: expect.stringContaining(
+				'- reviewer (user) - reviews code, model: prov/test-model:high',
+			),
+		});
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('model preset: cheap'),
+		});
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.not.stringContaining('ignored-frontmatter-model'),
 		});
 		expect(result.content[0]).toMatchObject({
 			type: 'text',
 			text: expect.stringContaining('do not invent agent names'),
+		});
+	});
+
+	it('falls back to the pi default for preset models missing from the registry', async () => {
+		const agentsDir = path.join(dir, 'agents');
+		fs.mkdirSync(agentsDir, { recursive: true });
+		writeAgentFile(agentsDir, 'worker.md', 'prompt', {
+			name: 'worker',
+			description: 'executes tasks',
+		});
+		writeConfig({
+			modelPresets: { cheap: { worker: 'p/gone:high' } },
+			defaultPreset: 'cheap',
+		});
+		const result = await execSubagent({ agents: true }, {
+			modelRegistry: { find: () => undefined },
+		} as unknown as Partial<ExtensionContext>);
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('- worker (user) - executes tasks, model: (pi default)'),
+		});
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('model preset: cheap'),
+		});
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.not.stringContaining('p/gone:high'),
+		});
+	});
+
+	it('does not resolve inherited properties for agents when no preset is active', async () => {
+		const agentsDir = path.join(dir, 'agents');
+		fs.mkdirSync(agentsDir, { recursive: true });
+		writeAgentFile(agentsDir, 'constructor.md', 'prompt', {
+			name: 'constructor',
+			description: 'oddly named',
+		});
+		const result = await execSubagent({ agents: true });
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('- constructor (user) - oddly named, model: (pi default)'),
+		});
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.not.stringContaining('model: function'),
+		});
+	});
+
+	it('uses the session preset override for the resolved models', async () => {
+		const agentsDir = path.join(dir, 'agents');
+		fs.mkdirSync(agentsDir, { recursive: true });
+		writeAgentFile(agentsDir, 'worker.md', 'prompt', {
+			name: 'worker',
+			description: 'executes tasks',
+		});
+		writeConfig({
+			modelPresets: {
+				cheap: { worker: 'p/cheap:low' },
+				deep: { worker: 'p/deep:high' },
+			},
+			defaultPreset: 'cheap',
+		});
+		const result = await execSubagent({ agents: true }, {
+			sessionManager: {
+				getSessionFile: () => '/sess/current.jsonl',
+				getBranch: () => [
+					{ type: 'custom', customType: 'subagent-herdr-preset', data: { preset: 'deep' } },
+				],
+			},
+		} as Partial<ExtensionContext>);
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('- worker (user) - executes tasks, model: p/deep:high'),
+		});
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('model preset: deep'),
 		});
 	});
 
