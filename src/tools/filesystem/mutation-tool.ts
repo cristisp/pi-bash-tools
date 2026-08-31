@@ -3,14 +3,16 @@ import type {
   AgentToolUpdateCallback,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, relative, sep } from "node:path";
 import { Type, type Static } from "typebox";
 import { type AuthorizationErrorKind } from "../authorization.ts";
 import { renderCallLine, renderStringArgument } from "../call-render.ts";
+import { isTrackedWorkspacePath } from "./default-access.ts";
 import { displayPath } from "../path-display.ts";
 import { createNodePolicyFileSystem, type PolicyFileSystem } from "../policy/filesystem.ts";
 import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
 import type { PolicyAuthorization, PolicyStore } from "../policy/types.ts";
+import type { GitExec } from "../git/execution.ts";
 import {
   authorizeAndPersistFilesystemAccesses,
   loadFilesystemPolicyForRequest,
@@ -73,6 +75,7 @@ type FilesystemMutationFileSystem = Pick<
 export interface FilesystemMutationToolTestOptions {
   readonly configPath?: string;
   readonly fs?: Partial<PolicyFileSystem>;
+  readonly gitExec?: GitExec;
   readonly policy?: PolicyStore;
 }
 
@@ -239,12 +242,20 @@ async function canonicalMoveDestination(
   }
 }
 
+function isPathWithin(parent: string, child: string): boolean {
+  const suffix = relative(parent, child);
+  return (
+    suffix === "" || (!isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(`..${sep}`))
+  );
+}
+
 async function authorizeMutation(
   operation: string,
   requests: readonly FilesystemAuthorizationRequest[],
   ctx: FilesystemMutationToolContext,
   policy: PolicyStore,
   signal: AbortSignal | undefined,
+  gitExec: GitExec | undefined,
 ): Promise<void> {
   let loaded;
   try {
@@ -258,8 +269,22 @@ async function authorizeMutation(
     }
     throw filesystemPolicyLoadError();
   }
+  const source = requests[0]?.path;
+  const defaultAllow =
+    gitExec === undefined || source === undefined
+      ? undefined
+      : async (request: FilesystemAuthorizationRequest): Promise<boolean> => {
+          if (!isPathWithin(loaded.projectPath, request.path)) {
+            return false;
+          }
+          if (operation === "move" && request.path !== source) {
+            return isTrackedWorkspacePath(source, loaded.projectPath, gitExec, signal);
+          }
+          return isTrackedWorkspacePath(request.path, loaded.projectPath, gitExec, signal);
+        };
   await authorizeAndPersistFilesystemAccesses(requests, loaded, ctx, policy, signal, {
     allowGlobal: operation !== "delete",
+    defaultAllow,
     promptText: ({ access, path, policyPath }) =>
       policyPath === undefined
         ? `Authorize ${access} access for ${operation} to ${displayPath(path)}?`
@@ -295,6 +320,7 @@ function requirePolicy(
 function createMoveToolWithDependencies(
   policy: PolicyStore,
   fileSystem: FilesystemMutationFileSystem,
+  gitExec: GitExec | undefined,
 ): FilesystemMoveToolDefinition {
   return {
     name: "move",
@@ -332,6 +358,7 @@ function createMoveToolWithDependencies(
         ctx,
         policy,
         requestSignal,
+        gitExec,
       );
       throwIfAborted(requestSignal);
       await requireRegularFile(fileSystem, source, "Move source");
@@ -366,6 +393,7 @@ function createMoveToolWithDependencies(
 function createDeleteToolWithDependencies(
   policy: PolicyStore,
   fileSystem: FilesystemMutationFileSystem,
+  gitExec: GitExec | undefined,
 ): FilesystemDeleteToolDefinition {
   return {
     name: "delete",
@@ -389,6 +417,7 @@ function createDeleteToolWithDependencies(
         ctx,
         policy,
         requestSignal,
+        gitExec,
       );
       throwIfAborted(requestSignal);
       await requireRegularFile(fileSystem, path, "Delete target");
@@ -409,26 +438,34 @@ function createDeleteToolWithDependencies(
   };
 }
 
-export function createMoveTool(): FilesystemMoveToolDefinition {
+export function createMoveTool(gitExec?: GitExec): FilesystemMoveToolDefinition {
   const fileSystem = createNodePolicyFileSystem();
-  return createMoveToolWithDependencies(createPolicyStore(), fileSystem);
+  return createMoveToolWithDependencies(createPolicyStore(), fileSystem, gitExec);
 }
 
-export function createDeleteTool(): FilesystemDeleteToolDefinition {
+export function createDeleteTool(gitExec?: GitExec): FilesystemDeleteToolDefinition {
   const fileSystem = createNodePolicyFileSystem();
-  return createDeleteToolWithDependencies(createPolicyStore(), fileSystem);
+  return createDeleteToolWithDependencies(createPolicyStore(), fileSystem, gitExec);
 }
 
 export function createMoveToolForTesting(
   options: FilesystemMutationToolTestOptions,
 ): FilesystemMoveToolDefinition {
   const fileSystem = createFileSystem(options);
-  return createMoveToolWithDependencies(requirePolicy(options, fileSystem), fileSystem);
+  return createMoveToolWithDependencies(
+    requirePolicy(options, fileSystem),
+    fileSystem,
+    options.gitExec,
+  );
 }
 
 export function createDeleteToolForTesting(
   options: FilesystemMutationToolTestOptions,
 ): FilesystemDeleteToolDefinition {
   const fileSystem = createFileSystem(options);
-  return createDeleteToolWithDependencies(requirePolicy(options, fileSystem), fileSystem);
+  return createDeleteToolWithDependencies(
+    requirePolicy(options, fileSystem),
+    fileSystem,
+    options.gitExec,
+  );
 }

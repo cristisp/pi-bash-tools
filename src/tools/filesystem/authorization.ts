@@ -36,6 +36,7 @@ export type FilesystemAuthorizationError = (
 
 export interface FilesystemAuthorizationOptions {
   readonly allowGlobal?: boolean;
+  readonly defaultAllow?: (request: FilesystemAuthorizationRequest) => Promise<boolean>;
   readonly promptText?: (request: FilesystemAuthorizationRequest) => string;
   readonly error: FilesystemAuthorizationError;
 }
@@ -83,6 +84,7 @@ async function authorizeFilesystemAccess(
   options: FilesystemAuthorizationOptions,
 ): Promise<FilesystemDecisionRequest | undefined> {
   const policyPath = request.policyPath ?? request.path;
+  const defaultAllowed = (await options.defaultAllow?.(request)) ?? false;
   let matchedDecision: PolicyAuthorization = "unknown";
   return authorizeOrPrompt<string, FilesystemDecisionRequest>({
     identity: policyPath,
@@ -97,7 +99,7 @@ async function authorizeFilesystemAccess(
       if (matchedDecision === "unknown" && identity !== request.path) {
         matchedDecision = findFilesystemPolicyDecision(current, identity, request.access);
       }
-      return matchedDecision;
+      return matchedDecision === "unknown" && defaultAllowed ? "allow-project" : matchedDecision;
     },
     recordDecisions: (projectPath, requests, requestSignal) =>
       policy.recordDecisions(projectPath, requests, requestSignal),

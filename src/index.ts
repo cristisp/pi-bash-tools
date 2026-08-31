@@ -37,6 +37,6 @@ export default function (pi: ExtensionAPI): void {
       invocationRecorder: invocationSessionRecorder.invocationRecorder,
     }),
   );
-  pi.registerTool(createMoveTool());
-  pi.registerTool(createDeleteTool());
+  pi.registerTool(createMoveTool(exec));
+  pi.registerTool(createDeleteTool(exec));
 }

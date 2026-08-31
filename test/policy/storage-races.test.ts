@@ -1,13 +1,16 @@
 import { mkdir, readFile, realpath, rename, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createPolicyStoreForTesting } from "../../src/tools/policy/store.ts";
 import { findEnvironmentPolicyDecision } from "../../src/tools/policy/decisions.ts";
 import { createPolicyTestFixtures } from "./test-fixtures.ts";
 
 const fixtures = createPolicyTestFixtures();
 
-afterEach(() => fixtures.cleanup());
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await fixtures.cleanup();
+});
 
 it("preserves unrelated decisions during serialized updates", async () => {
   const directory = await fixtures.createDirectory();
@@ -111,14 +114,14 @@ it("times out on an existing lock without reclaiming it", async () => {
   const lockPath = `${configPath}.lock`;
   const projectPath = await realpath(directory);
   await writeFile(lockPath, "held by another process");
-  const store = createPolicyStoreForTesting({ configPath });
-
   const started = Date.now();
+  vi.spyOn(Date, "now")
+    .mockReturnValueOnce(started)
+    .mockReturnValue(started + 5_001);
   await expect(
-    store.recordDecisions(projectPath, [
+    createPolicyStoreForTesting({ configPath }).recordDecisions(projectPath, [
       { kind: "environment", key: "LOCKED", decision: "allow-project" },
     ]),
   ).rejects.toThrow(/invalid or unreadable/iu);
-  expect(Date.now() - started).toBeGreaterThanOrEqual(5_000);
   expect(await readFile(lockPath, "utf8")).toBe("held by another process");
 }, 10_000);

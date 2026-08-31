@@ -115,6 +115,10 @@ The filesystem namespace has version `2`, with separate read, write, move, and d
 `allowDelete` controls the `delete` tool.
 Delete prompts authorize the containing folder, so an approved `allowDelete` folder applies to files in that folder and all of its descendants.
 A project and all of its descendants have implicit read and write access for the active workspace.
+Tracked files under the active workspace also have implicit move and delete access when Git is available.
+For `move`, the tracked source grants the move to a new destination under the active workspace; untracked existing files are never implicitly approved.
+Untracked files and paths outside the active workspace remain unknown and require an explicit approval.
+If Git cannot identify the repository or tracked path, the mutation remains unknown and requires an explicit approval.
 Explicit deny rules take precedence over both implicit access and explicit allow rules.
 A path rule applies to the path itself and its descendants.
 This recursive behavior applies to folder paths in every filesystem capability, including `allowDelete`.

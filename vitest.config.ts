@@ -1,9 +1,10 @@
 import { defineConfig } from "vitest/config";
 
+const sequentialTestFiles = ["test/policy/directory/security.test.ts"];
+
 export default defineConfig({
   test: {
     environment: "node",
-    fileParallelism: false,
     include: ["test/**/*.test.ts"],
     coverage: {
       provider: "v8",
@@ -14,5 +15,21 @@ export default defineConfig({
         branches: 75,
       },
     },
+    projects: [
+      {
+        test: {
+          name: "parallel",
+          include: ["test/**/*.test.ts"],
+          exclude: sequentialTestFiles,
+        },
+      },
+      {
+        test: {
+          name: "sequential",
+          include: sequentialTestFiles,
+          fileParallelism: false,
+        },
+      },
+    ],
   },
 });

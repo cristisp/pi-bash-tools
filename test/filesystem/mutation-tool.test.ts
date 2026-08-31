@@ -6,13 +6,21 @@ import {
   createMoveToolForTesting,
   type FilesystemMutationToolContext,
 } from "../../src/tools/filesystem/mutation-tool.ts";
+import type { GitExec } from "../../src/tools/git/execution.ts";
+import {
+  createGitIntegrationFixtures,
+  gitIntegration,
+  makeRealGitExec,
+} from "../git/integration-fixtures.ts";
 import { createPolicyTestFixtures } from "../policy/test-fixtures.ts";
 
 const fixtures = createPolicyTestFixtures();
+const gitFixtures = createGitIntegrationFixtures();
 
 afterEach(async () => {
   vi.useRealTimers();
   await fixtures.cleanup();
+  await gitFixtures.cleanup();
 });
 
 function context(
@@ -34,6 +42,21 @@ async function configPath(directory: string): Promise<string> {
   const path = join(await realpath(directory), "bash-tools.json");
   await writeFile(path, JSON.stringify({ version: 1 }));
   return path;
+}
+
+function trackedGitExec(repositoryRoot: string, trackedPaths: readonly string[]): GitExec {
+  return async (_command, args) => {
+    if (args[3] === "rev-parse") {
+      return { stdout: `${repositoryRoot}\n`, stderr: "", code: 0, killed: false };
+    }
+    if (args[3] === "ls-files") {
+      const pathspec = args.at(-1)?.replace(/^:\(literal\)/u, "");
+      const stdout =
+        pathspec !== undefined && trackedPaths.includes(pathspec) ? `${pathspec}\0` : "";
+      return { stdout, stderr: "", code: 0, killed: false };
+    }
+    return { stdout: "", stderr: "unsupported", code: 1, killed: false };
+  };
 }
 
 it.each(["move", "delete"] as const)(
@@ -87,6 +110,80 @@ it.each(["move", "delete"] as const)(
     await expect(readFile(path, "utf8")).resolves.toBe("content");
   },
 );
+
+it("implicitly authorizes tracked workspace mutations but not untracked files", async () => {
+  const directory = await fixtures.createDirectory();
+  const source = join(directory, "source.txt");
+  const destination = join(directory, "destination.txt");
+  const trackedDelete = join(directory, "tracked-delete.txt");
+  const untrackedDelete = join(directory, "untracked-delete.txt");
+  await writeFile(source, "content");
+  await writeFile(trackedDelete, "tracked");
+  await writeFile(untrackedDelete, "untracked");
+  const canonicalDirectory = await realpath(directory);
+  const config = await configPath(directory);
+  const gitExec = trackedGitExec(canonicalDirectory, ["source.txt", "tracked-delete.txt"]);
+
+  await expect(
+    createMoveToolForTesting({ configPath: config, gitExec }).execute(
+      "1",
+      { source, destination },
+      undefined,
+      undefined,
+      context(directory),
+    ),
+  ).resolves.toMatchObject({ details: { operation: "move" } });
+  await expect(
+    createDeleteToolForTesting({ configPath: config, gitExec }).execute(
+      "2",
+      { path: trackedDelete },
+      undefined,
+      undefined,
+      context(directory),
+    ),
+  ).resolves.toMatchObject({ details: { operation: "delete" } });
+  await expect(
+    createDeleteToolForTesting({ configPath: config, gitExec }).execute(
+      "3",
+      { path: untrackedDelete },
+      undefined,
+      undefined,
+      context(directory),
+    ),
+  ).rejects.toThrow(/requires approval that is unavailable/iu);
+  expect(JSON.parse(await readFile(config, "utf8"))).toEqual({ version: 1 });
+});
+
+gitIntegration("Git-backed default mutation authorization", () => {
+  it("allows tracked mutations and still requires approval for untracked files", async () => {
+    const repository = await gitFixtures.createRepository();
+    const source = join(repository.directory, "README.md");
+    const destination = join(repository.directory, "README-renamed.md");
+    const untracked = join(repository.directory, "untracked.txt");
+    await writeFile(untracked, "untracked");
+    const config = await configPath(repository.directory);
+    const gitExec = makeRealGitExec();
+
+    await expect(
+      createMoveToolForTesting({ configPath: config, gitExec }).execute(
+        "1",
+        { source, destination },
+        undefined,
+        undefined,
+        context(repository.directory),
+      ),
+    ).resolves.toMatchObject({ details: { operation: "move" } });
+    await expect(
+      createDeleteToolForTesting({ configPath: config, gitExec }).execute(
+        "2",
+        { path: untracked },
+        undefined,
+        undefined,
+        context(repository.directory),
+      ),
+    ).rejects.toThrow(/requires approval that is unavailable/iu);
+  });
+});
 
 it("moves a regular file within the active workspace", async () => {
   const directory = await fixtures.createDirectory();
