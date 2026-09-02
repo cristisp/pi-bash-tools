@@ -1,3 +1,4 @@
+import { normalizeBooleanInput } from "../boolean.ts";
 import {
   createToolErrorContract,
   suggestedActionForCategory,
@@ -73,6 +74,10 @@ function gitContract(
 }
 
 export function invalidGitRequest(message: string, invalidField?: string): GitToolError {
+  const action =
+    invalidField === undefined
+      ? "Correct the request shape or value and retry."
+      : `Correct the ${invalidField} field or request shape and retry.`;
   const contract = gitContract(
     "invalid-request",
     "INVALID_REQUEST",
@@ -81,7 +86,39 @@ export function invalidGitRequest(message: string, invalidField?: string): GitTo
     false,
     invalidField,
   );
-  return new GitToolError(message, withToolErrorContract({}, contract), contract);
+  return new GitToolError(
+    `${message}; action: ${action}`,
+    withToolErrorContract({ remediation: action }, contract),
+    contract,
+  );
+}
+
+export function normalizeGitBoolean(value: unknown, label: string): boolean | undefined {
+  try {
+    return normalizeBooleanInput(value, label);
+  } catch {
+    throw invalidGitRequest(
+      `${label} must be a boolean or the literal string "true" or "false"`,
+      label,
+    );
+  }
+}
+
+export function validateGitRequestKeys(
+  value: unknown,
+  allowedKeys: readonly string[],
+  shape: string,
+): asserts value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw invalidGitRequest(`request must be an object matching ${shape}`);
+  }
+  const invalidKey = Object.keys(value).find((key) => !allowedKeys.includes(key));
+  if (invalidKey !== undefined) {
+    throw invalidGitRequest(
+      `unsupported request field "${invalidKey}"; accepted shape: ${shape}`,
+      invalidKey,
+    );
+  }
 }
 
 function cancellationError(executed: boolean): GitToolError {

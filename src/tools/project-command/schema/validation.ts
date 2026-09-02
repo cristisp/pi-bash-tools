@@ -5,6 +5,8 @@ import {
   type ToolErrorContract,
 } from "../../errors.ts";
 import { getProjectCommandDefinitions, type ProjectCommandDefinition } from "../definitions.ts";
+import { normalizeBooleanInput } from "../../boolean.ts";
+import { projectCommandIdGuidance } from "../command-id-guidance.ts";
 import { validateNodeTestPaths, validateProjectCommandRevision } from "../parameters.ts";
 import {
   isValidNodePackageScriptVariant,
@@ -40,19 +42,36 @@ export class ProjectCommandToolError extends Error {
   }
 }
 
-export function invalidRequest(invalidField?: string): ProjectCommandToolError {
+type InvalidRequestDetails = object & {
+  readonly remediation?: unknown;
+  readonly correctedExample?: unknown;
+};
+
+export function invalidRequest(
+  invalidField?: string,
+  details: InvalidRequestDetails = {},
+): ProjectCommandToolError {
+  const remediation =
+    typeof details.remediation === "string"
+      ? details.remediation
+      : invalidField === undefined
+        ? "Provide a request matching one of the supported project command shapes and retry."
+        : `Correct the ${invalidField} field and retry the command.`;
   const contract = createToolErrorContract({
     code: "invalid-request",
     category: "INVALID_REQUEST",
     explanation: "The project command request does not match the supported command schema.",
     ...(invalidField === undefined ? {} : { invalidField }),
+    ...(details.correctedExample === undefined
+      ? {}
+      : { correctedExample: details.correctedExample }),
     suggestedAction: suggestedActionForCategory("INVALID_REQUEST"),
     retryable: false,
     executed: false,
   });
   return new ProjectCommandToolError(
-    "Project command request is invalid",
-    withToolErrorContract({}, contract),
+    `Project command request is invalid; action: ${remediation}`,
+    withToolErrorContract(details, contract),
     contract,
   );
 }
@@ -85,11 +104,13 @@ function findDefinition(
 ): ProjectCommandDefinition {
   const matches = definitions.filter((definition) => definition.commandId === commandId);
   if (matches.length !== 1) {
-    throw invalidRequest("commandId");
+    const guidance = projectCommandIdGuidance(commandId, definitions);
+    throw invalidRequest("commandId", guidance);
   }
   const definition = matches[0];
   if (definition === undefined) {
-    throw invalidRequest("commandId");
+    const guidance = projectCommandIdGuidance(commandId, definitions);
+    throw invalidRequest("commandId", guidance);
   }
   return definition;
 }
@@ -170,20 +191,23 @@ export function validateProjectCommandInput(
 ): NormalizedProjectCommandInput {
   try {
     if (!isRecord(params)) {
-      throw invalidRequest();
+      throw invalidRequest(undefined, projectCommandIdGuidance("", definitions));
     }
     const request = params;
     const commandId = request.commandId;
     if (typeof commandId !== "string") {
-      throw invalidRequest("commandId");
+      throw invalidRequest("commandId", projectCommandIdGuidance("", definitions));
     }
     findDefinition(commandId, definitions);
     validateRequestKeys(Object.keys(request), commandId);
-    if (request.force !== undefined && typeof request.force !== "boolean") {
+    let force: boolean | undefined;
+    try {
+      force = normalizeBooleanInput(request.force, "force");
+    } catch {
       throw invalidRequest("force");
     }
     const normalized = normalizedRequest(request, commandId);
-    return request.force === true ? { ...normalized, force: true } : normalized;
+    return force === true ? { ...normalized, force: true } : normalized;
   } catch (error) {
     if (error instanceof ProjectCommandToolError) {
       throw error;

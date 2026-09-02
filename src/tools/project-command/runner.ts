@@ -184,6 +184,7 @@ async function resolveCommandForTool(
   projectPath: string,
   signal: AbortSignal | undefined,
   params: ProjectCommandRequestParameters,
+  definitions: readonly ProjectCommandDefinition[],
 ): Promise<ResolvedProjectCommand> {
   try {
     return await resolver(definition, projectPath, signal, params);
@@ -195,11 +196,12 @@ async function resolveCommandForTool(
       throw commandCancellationError();
     }
     if (isProjectCommandResolutionError(error)) {
-      throw createResolutionFailure(params, error);
+      throw createResolutionFailure(params, error, definitions);
     }
     throw createResolutionFailure(
       params,
       new ProjectCommandResolutionError("probe", "resolution-failure"),
+      definitions,
     );
   }
 }
@@ -1017,6 +1019,7 @@ async function prepareProjectCommand(
     loaded.projectPath,
     requestSignal,
     params,
+    capturedDefinitions,
   );
   throwIfRequestAborted(requestSignal);
   const relevantInputs = await discoverRelevantInputs(

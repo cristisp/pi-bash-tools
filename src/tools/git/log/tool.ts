@@ -10,14 +10,27 @@ import {
   validateIntegerLimit,
 } from "../output.ts";
 import { resolvePath, resolveRepository } from "../repository.ts";
-import { runGit, validateRevision, type GitExec } from "../execution.ts";
+import { runGit, validateGitRequestKeys, validateRevision, type GitExec } from "../execution.ts";
 import { defineGitTool, type GitToolDefinition } from "../tool.ts";
 
-const gitLogParameters = Type.Object({
-  path: Type.Optional(Type.String({ description: "Optional workspace-relative path" })),
-  revision: Type.Optional(Type.String({ description: "Optional Git revision or revision range" })),
-  maxEntries: Type.Integer({ minimum: 1, maximum: MAX_RECORDS, description: "Maximum commits" }),
-});
+const gitLogParameters = Type.Object(
+  {
+    path: Type.Optional(Type.String({ description: "Optional workspace-relative path" })),
+    revision: Type.Optional(
+      Type.String({ description: "Optional Git revision or revision range" }),
+    ),
+    maxEntries: Type.Integer({
+      minimum: 1,
+      maximum: MAX_RECORDS,
+      description: "Maximum commits",
+    }),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Accepted shape: { maxEntries: integer, path?: workspace-relative path, revision?: safe Git revision }.",
+  },
+);
 
 export function createGitLogTool(
   exec: GitExec,
@@ -41,6 +54,11 @@ export function createGitLogTool(
       return renderCallLine(theme, "git_log", parts);
     },
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      validateGitRequestKeys(
+        params,
+        ["path", "revision", "maxEntries"],
+        "{ maxEntries: integer, path?: string, revision?: string }",
+      );
       validateIntegerLimit(params.maxEntries, 1, MAX_RECORDS, "maxEntries");
       const revision =
         params.revision === undefined ? undefined : validateRevision(params.revision);

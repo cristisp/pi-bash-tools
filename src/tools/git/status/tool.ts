@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { Type } from "typebox";
 import { renderCallLine, renderStringArgument } from "../../call-render.ts";
+import { booleanInputSchema } from "../../boolean.ts";
 import {
   countStatusRecords,
   MAX_RECORDS,
@@ -8,18 +10,35 @@ import {
   STRUCTURED_OUTPUT_LIMIT,
   truncateUtf8,
 } from "../output.ts";
-import type { GitStatusOutput } from "./output.ts";
+import type { GitStatusChangedOutput, GitStatusOutput } from "./output.ts";
 import { resolvePath, resolveRepository } from "../repository.ts";
-import { runGit, type GitExec } from "../execution.ts";
+import { normalizeGitBoolean, runGit, validateGitRequestKeys, type GitExec } from "../execution.ts";
 import { defineGitTool, type GitToolDefinition } from "../tool.ts";
 
-const gitStatusParameters = Type.Object({
-  path: Type.Optional(Type.String({ description: "Optional workspace-relative path" })),
-});
+const gitStatusParameters = Type.Object(
+  {
+    path: Type.Optional(Type.String({ description: "Optional workspace-relative path" })),
+    refresh: Type.Optional(booleanInputSchema),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Optionally request a fresh rendering even when the status is unchanged. The default is false.",
+  },
+);
 
 export function createGitStatusTool(
   exec: GitExec,
 ): GitToolDefinition<typeof gitStatusParameters, GitStatusOutput> {
+  const previousByRequest = new Map<
+    string,
+    {
+      readonly digest: string;
+      readonly entryCount: number;
+      readonly output: GitStatusChangedOutput["output"];
+    }
+  >();
+
   return defineGitTool({
     name: "git_status",
     label: "Git status",
@@ -27,13 +46,19 @@ export function createGitStatusTool(
     promptSnippet: "Inspect Git working tree status",
     parameters: gitStatusParameters,
     renderCall(args, theme) {
-      return renderCallLine(
-        theme,
-        "git_status",
-        args?.path === undefined ? [] : [renderStringArgument(args.path, theme)],
-      );
+      const parts = args?.path === undefined ? [] : [renderStringArgument(args.path, theme)];
+      if (args?.refresh === true || args?.refresh === "true") {
+        parts.push(theme.fg("muted", "refresh"));
+      }
+      return renderCallLine(theme, "git_status", parts);
     },
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      validateGitRequestKeys(
+        params,
+        ["path", "refresh"],
+        '{ path?: string, refresh?: boolean | "true" | "false" }',
+      );
+      const refresh = normalizeGitBoolean(params.refresh, "refresh") === true;
       const repository = await resolveRepository(exec, ctx.cwd, signal ?? ctx.signal);
       const path =
         params.path === undefined ? undefined : await resolvePath(repository, params.path);
@@ -56,7 +81,31 @@ export function createGitStatusTool(
         ...bounded.output,
         truncated: bounded.output.truncated || recordCount > MAX_RECORDS,
       };
-      return makeToolResult({ repositoryRoot: repository.root, entries, output });
+      const key = JSON.stringify([repository.root, path ?? null]);
+      const digest = createHash("sha256").update(result.stdout, "utf8").digest("hex");
+      const previous = previousByRequest.get(key);
+      if (previous !== undefined && previous.digest === digest && !refresh) {
+        return makeToolResult({
+          repositoryRoot: repository.root,
+          unchanged: true as const,
+          previous,
+          output: { truncated: false, totalBytes: 0, totalLines: 0 },
+          message:
+            "Git status is unchanged since the previous request. Use { refresh: true } to force a fresh rendering.",
+        });
+      }
+      const current = {
+        digest,
+        entryCount: recordCount,
+        output,
+      };
+      previousByRequest.set(key, current);
+      return makeToolResult({
+        repositoryRoot: repository.root,
+        unchanged: false as const,
+        entries,
+        output,
+      });
     },
   });
 }

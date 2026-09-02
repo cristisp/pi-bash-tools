@@ -203,7 +203,7 @@ it("validates and strips force without changing the result fingerprint", async (
   );
   const forced = await tool.execute(
     "forced",
-    { commandId: "cache_command", force: true },
+    { commandId: "cache_command", force: "true" },
     undefined,
     undefined,
     ctx,

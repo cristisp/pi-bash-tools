@@ -1,4 +1,5 @@
 import { Type, type Static, type TObject, type TUnion } from "typebox";
+import { booleanInputSchema, type BooleanInput } from "../boolean.ts";
 import {
   getProjectCommandDefinitions,
   type ProjectCommandDefinition,
@@ -30,29 +31,29 @@ type InputForDefinition<Definition extends ProjectCommandDefinition> =
     ? Definition["commandId"] extends "node_test"
       ? {
           readonly commandId: Definition["commandId"];
-          readonly force?: boolean;
+          readonly force?: BooleanInput;
           readonly paths?: readonly string[];
           readonly variant?: string;
         }
       : Definition["commandId"] extends "node_lint"
         ? {
             readonly commandId: Definition["commandId"];
-            readonly force?: boolean;
+            readonly force?: BooleanInput;
             readonly variant?: string;
           }
         : Definition["commandId"] extends "node_format"
           ? {
               readonly commandId: Definition["commandId"];
-              readonly force?: boolean;
+              readonly force?: BooleanInput;
               readonly variant?: string;
             }
           : Definition["commandId"] extends "fallow_audit"
             ? {
                 readonly commandId: Definition["commandId"];
-                readonly force?: boolean;
+                readonly force?: BooleanInput;
                 readonly base: string;
               }
-            : { readonly commandId: Definition["commandId"]; readonly force?: boolean }
+            : { readonly commandId: Definition["commandId"]; readonly force?: BooleanInput }
     : never;
 
 export type ProjectCommandInputFor<Definitions extends readonly ProjectCommandDefinition[]> =
@@ -62,9 +63,7 @@ type ProjectCommandRuntimeInputSchema = TUnion;
 
 function variantForDefinition(definition: ProjectCommandDefinition): TObject {
   const commandId = Type.Literal(definition.commandId, { description: definition.description });
-  const force = Type.Optional(
-    Type.Boolean({ description: "Bypass a reusable result cache for this invocation." }),
-  );
+  const force = Type.Optional(booleanInputSchema);
   if (definition.commandId === "node_test") {
     return Type.Object(
       {

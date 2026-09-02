@@ -1,6 +1,11 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
+import type {
+  GitDiffOutput,
+  GitDiffPatchOutput,
+  GitDiffSummaryOutput,
+} from "../../src/tools/git/diff/output.ts";
 import { createGitDiffTool } from "../../src/tools/git/diff/tool.ts";
 import {
   gitIntegration,
@@ -12,6 +17,16 @@ import {
 } from "./integration-fixtures.ts";
 
 const fixtures = createGitIntegrationFixtures();
+
+function patchDetails(details: GitDiffOutput): GitDiffPatchOutput {
+  if (details.mode !== "patch") throw new Error("expected a patch response");
+  return details;
+}
+
+function summaryDetails(details: GitDiffOutput): GitDiffSummaryOutput {
+  if (details.mode !== "summary") throw new Error("expected a summary response");
+  return details;
+}
 
 afterEach(() => fixtures.cleanup());
 
@@ -33,15 +48,115 @@ gitIntegration("Git diff with a real Git process", () => {
 
     const response = await createGitDiffTool(makeRealGitExec()).execute(
       "diff",
-      { paths: ["space name.txt"], maxBytes: 1024 },
+      { mode: "patch", paths: ["space name.txt"], maxBytes: 1024 },
       undefined,
       undefined,
       repository.context,
     );
 
-    expect(response.details.patch).toContain("space name.txt");
+    expect(patchDetails(response.details).patch).toContain("space name.txt");
     expect(await exists(textconvMarker)).toBe(false);
     expect(await exists(externalMarker)).toBe(false);
+  });
+
+  it("returns coherent staged and worktree summaries without hunk bodies", async () => {
+    const repository = await fixtures.createRepository();
+    await writeFile(join(repository.directory, "README.md"), "staged content\n");
+    await rawGit(repository.directory, ["add", "README.md"]);
+    await writeFile(join(repository.directory, "README.md"), "worktree content\n");
+    await writeFile(join(repository.directory, "space name.txt"), "staged-only content\n");
+    await rawGit(repository.directory, ["add", "space name.txt"]);
+    await writeFile(join(repository.directory, "binary.bin"), Buffer.from([9, 8, 7, 6, 5]));
+    await writeFile(join(repository.directory, "untracked.txt"), "untracked content\n");
+
+    const tool = createGitDiffTool(makeRealGitExec());
+    const staged = summaryDetails(
+      (
+        await tool.execute(
+          "staged-summary",
+          { staged: true, maxBytes: 64 * 1024 },
+          undefined,
+          undefined,
+          repository.context,
+        )
+      ).details,
+    );
+    const worktree = summaryDetails(
+      (
+        await tool.execute(
+          "worktree-summary",
+          { maxBytes: 64 * 1024 },
+          undefined,
+          undefined,
+          repository.context,
+        )
+      ).details,
+    );
+    const scoped = summaryDetails(
+      (
+        await tool.execute(
+          "scoped-summary",
+          { paths: ["README.md"], maxBytes: 64 * 1024 },
+          undefined,
+          undefined,
+          repository.context,
+        )
+      ).details,
+    );
+
+    expect(staged.status).toEqual([
+      { path: "README.md", indexStatus: "M", worktreeStatus: " " },
+      { path: "space name.txt", indexStatus: "M", worktreeStatus: " " },
+    ]);
+    expect(staged.stat).toContain("README.md");
+    expect(staged.stat).toContain("space name.txt");
+    expect(staged.stat).not.toContain("binary.bin");
+    expect(staged.hunks.map((hunk) => hunk.path)).toEqual(["README.md", "space name.txt"]);
+
+    expect(worktree.status).toEqual([
+      { path: "README.md", indexStatus: " ", worktreeStatus: "M" },
+      { path: "binary.bin", indexStatus: " ", worktreeStatus: "M" },
+      { path: "untracked.txt", indexStatus: " ", worktreeStatus: "?" },
+    ]);
+    expect(worktree.stat).toContain("README.md");
+    expect(worktree.stat).toContain("binary.bin");
+    expect(worktree.stat).not.toContain("space name.txt");
+    expect(worktree.hunks).toEqual([{ path: "README.md", header: expect.stringContaining("@@") }]);
+
+    expect(scoped.status).toEqual([{ path: "README.md", indexStatus: " ", worktreeStatus: "M" }]);
+    expect(scoped.stat).toContain("README.md");
+    expect(scoped.stat).not.toContain("binary.bin");
+    expect(scoped.hunks).toEqual([{ path: "README.md", header: expect.stringContaining("@@") }]);
+
+    for (const summary of [staged, worktree, scoped]) {
+      const serialized = JSON.stringify(summary);
+      expect(serialized).not.toContain("staged content");
+      expect(serialized).not.toContain("worktree content");
+      expect(serialized).not.toContain("untracked content");
+    }
+  });
+
+  it("decodes quoted hunk paths for a non-ASCII filename", async () => {
+    const repository = await fixtures.createRepository();
+    const fileName = "café.txt";
+    await writeFile(join(repository.directory, fileName), "initial café\n");
+    await rawGit(repository.directory, ["add", fileName]);
+    await rawGit(repository.directory, ["commit", "--quiet", "-m", "non-ASCII file"]);
+    await writeFile(join(repository.directory, fileName), "changed café\n");
+
+    const response = summaryDetails(
+      (
+        await createGitDiffTool(makeRealGitExec()).execute(
+          "quoted-path-summary",
+          { paths: [fileName], maxBytes: 64 * 1024 },
+          undefined,
+          undefined,
+          repository.context,
+        )
+      ).details,
+    );
+
+    expect(response.hunks).toEqual([{ path: fileName, header: expect.stringContaining("@@") }]);
   });
 
   it("returns staged, unstaged, binary, space-containing, empty, and truncated diffs", async () => {
@@ -55,85 +170,86 @@ gitIntegration("Git diff with a real Git process", () => {
     const tool = createGitDiffTool(makeRealGitExec());
     const wholeRepository = await tool.execute(
       "whole",
-      { maxBytes: 4096 },
+      { mode: "patch", maxBytes: 4096 },
       undefined,
       undefined,
       repository.context,
     );
     const selected = await tool.execute(
       "selected",
-      { paths: ["README.md", "space name.txt"], maxBytes: 4096 },
+      { mode: "patch", paths: ["README.md", "space name.txt"], maxBytes: 4096 },
       undefined,
       undefined,
       repository.context,
     );
     const legacy = await tool.execute(
       "legacy",
-      { path: "README.md", maxBytes: 4096 },
+      { mode: "patch", path: "README.md", maxBytes: 4096 },
       undefined,
       undefined,
       repository.context,
     );
     const unstaged = await tool.execute(
       "unstaged",
-      { paths: ["README.md"], maxBytes: 4096 },
+      { mode: "patch", paths: ["README.md"], maxBytes: 4096 },
       undefined,
       undefined,
       repository.context,
     );
     const staged = await tool.execute(
       "staged",
-      { staged: true, paths: ["README.md"], maxBytes: 4096 },
+      { mode: "patch", staged: true, paths: ["README.md"], maxBytes: 4096 },
       undefined,
       undefined,
       repository.context,
     );
     const binary = await tool.execute(
       "binary",
-      { paths: ["binary.bin"], maxBytes: 4096 },
+      { mode: "patch", paths: ["binary.bin"], maxBytes: 4096 },
       undefined,
       undefined,
       repository.context,
     );
     const spaces = await tool.execute(
       "spaces",
-      { paths: ["space name.txt"], maxBytes: 4096 },
+      { mode: "patch", paths: ["space name.txt"], maxBytes: 4096 },
       undefined,
       undefined,
       repository.context,
     );
     const empty = await tool.execute(
       "empty",
-      { paths: ["does-not-exist.txt"], maxBytes: 4096 },
+      { mode: "patch", paths: ["does-not-exist.txt"], maxBytes: 4096 },
       undefined,
       undefined,
       repository.context,
     );
     const truncated = await tool.execute(
       "truncated",
-      { paths: ["README.md"], maxBytes: 5 },
+      { mode: "patch", paths: ["README.md"], maxBytes: 5 },
       undefined,
       undefined,
       repository.context,
     );
 
-    expect(wholeRepository.details.patch).toContain("README.md");
-    expect(wholeRepository.details.patch).toContain("space name.txt");
-    expect(wholeRepository.details.patch).toContain("binary.bin");
-    expect(selected.details.patch).toContain("README.md");
-    expect(selected.details.patch).toContain("space name.txt");
-    expect(selected.details.patch).not.toContain("binary.bin");
-    expect(legacy.details.patch).toContain("README.md");
-    expect(legacy.details.patch).toContain("unstaged change again");
-    expect(unstaged.details.patch).toContain("unstaged change again");
-    expect(staged.details.patch).toContain("unstaged change");
-    expect(binary.details.patch).toMatch(/binary files|git binary patch/iu);
-    expect(spaces.details.patch).toContain("space name.txt");
+    expect(patchDetails(wholeRepository.details).patch).toContain("README.md");
+    expect(patchDetails(wholeRepository.details).patch).toContain("space name.txt");
+    expect(patchDetails(wholeRepository.details).patch).toContain("binary.bin");
+    expect(patchDetails(selected.details).patch).toContain("README.md");
+    expect(patchDetails(selected.details).patch).toContain("space name.txt");
+    expect(patchDetails(selected.details).patch).not.toContain("binary.bin");
+    expect(patchDetails(legacy.details).patch).toContain("README.md");
+    expect(patchDetails(legacy.details).patch).toContain("unstaged change again");
+    expect(patchDetails(unstaged.details).patch).toContain("unstaged change again");
+    expect(patchDetails(staged.details).patch).toContain("unstaged change");
+    expect(patchDetails(binary.details).patch).toMatch(/binary files|git binary patch/iu);
+    expect(patchDetails(spaces.details).patch).toContain("space name.txt");
     expect(empty.details).toEqual({
+      mode: "patch",
       patch: "",
       output: { truncated: false, totalBytes: 0, totalLines: 0 },
     });
-    expect(truncated.details.patch).toHaveLength(5);
+    expect(patchDetails(truncated.details).patch).toHaveLength(5);
     expect(truncated.details.output.truncated).toBe(true);
   });
 });

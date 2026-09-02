@@ -95,6 +95,7 @@ it("keeps schema variants strict and preserves command-specific fields", () => {
   expect(variants).toHaveLength(15);
   expect(variants.every((variant) => !variant.additionalProperties)).toBe(true);
   expect(variants.every((variant) => JSON.stringify(variant).includes('"force"'))).toBe(true);
+  expect(variants.every((variant) => JSON.stringify(variant).includes('"true"'))).toBe(true);
 });
 
 it("uses the supplied definitions for schema and validation", () => {

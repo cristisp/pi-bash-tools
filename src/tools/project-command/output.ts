@@ -14,6 +14,8 @@ import type { ProjectCommandExecutionOutcome, ProjectCommandOutput } from "./exe
 import type { ProjectCommandCacheDecision } from "./cache.ts";
 import { boundProjectCommandText, projectCommandDiagnostic } from "./diagnostics.ts";
 import type { ProjectCommandResolutionError } from "./errors.ts";
+import { getProjectCommandDefinitions, type ProjectCommandDefinition } from "./definitions.ts";
+import { projectCommandIdGuidance } from "./command-id-guidance.ts";
 import type { ResolvedProjectCommand } from "./resolution/types.ts";
 import { ProjectCommandToolError } from "./schema.ts";
 
@@ -302,6 +304,7 @@ export function createExecutionFailure(
 export function createResolutionFailure(
   params: ProjectCommandRequestParameters,
   error: ProjectCommandResolutionError,
+  definitions: readonly ProjectCommandDefinition[] = getProjectCommandDefinitions(),
 ): ProjectCommandToolError {
   const contract = createToolErrorContract({
     code: "resolution-failure",
@@ -311,9 +314,11 @@ export function createResolutionFailure(
     retryable: true,
     executed: false,
   });
+  const guidance = projectCommandIdGuidance(params.commandId, definitions);
   const details = withToolErrorContract(
     {
       ...error.details,
+      ...guidance,
       status: "resolution-failure" as const,
       executed: false as const,
       commandId: params.commandId,
@@ -335,6 +340,7 @@ export function createResolutionFailure(
     `code: ${error.code}`,
     "execution: not attempted",
     `details: ${serializeDiagnostic(error.details)}`,
+    `action: ${guidance.remediation}`,
   ].join("; ");
   return new ProjectCommandToolError(message, details, contract);
 }

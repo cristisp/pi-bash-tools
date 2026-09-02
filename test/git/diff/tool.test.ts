@@ -1,5 +1,15 @@
 import { expect, it } from "vitest";
-import { createGitDiffTool } from "../../../src/tools/git/diff/tool.ts";
+import { createGitDiffTool, DEFAULT_GIT_DIFF_MAX_BYTES } from "../../../src/tools/git/diff/tool.ts";
+import type {
+  GitDiffOutput,
+  GitDiffPatchOutput,
+  GitDiffSummaryOutput,
+} from "../../../src/tools/git/diff/output.ts";
+import {
+  MAX_CONTENT_BYTES,
+  MAX_RECORDS,
+  STRUCTURED_OUTPUT_LIMIT,
+} from "../../../src/tools/git/output.ts";
 import type { GitExec } from "../../../src/tools/git/execution.ts";
 import type { GitToolContext } from "../../../src/tools/git/tool.ts";
 
@@ -7,7 +17,17 @@ const cwd = process.cwd();
 const context: GitToolContext = { cwd, signal: undefined };
 const result = (stdout = "", stderr = "", code = 0) => ({ stdout, stderr, code, killed: false });
 
-function successfulExec(stdout = ""): { exec: GitExec; calls: string[][] } {
+function patchDetails(details: GitDiffOutput): GitDiffPatchOutput {
+  if (details.mode !== "patch") throw new Error("expected a patch response");
+  return details;
+}
+
+function summaryDetails(details: GitDiffOutput): GitDiffSummaryOutput {
+  if (details.mode !== "summary") throw new Error("expected a summary response");
+  return details;
+}
+
+function patchExec(stdout = ""): { exec: GitExec; calls: string[][] } {
   const calls: string[][] = [];
   const exec: GitExec = async (_command, args) => {
     calls.push([...args]);
@@ -16,11 +36,11 @@ function successfulExec(stdout = ""): { exec: GitExec; calls: string[][] } {
   return { exec, calls };
 }
 
-it("supports staged diffs and paths containing spaces", async () => {
-  const { exec, calls } = successfulExec("diff --git a/file name.txt b/file name.txt\n");
+it("supports explicit staged patches and paths containing spaces", async () => {
+  const { exec, calls } = patchExec("diff --git a/file name.txt b/file name.txt\n");
   const response = await createGitDiffTool(exec).execute(
     "1",
-    { staged: true, paths: ["src", "README.md"], maxBytes: 1024 },
+    { mode: "patch", staged: true, paths: ["src", "README.md"], maxBytes: 1024 },
     undefined,
     undefined,
     context,
@@ -38,21 +58,22 @@ it("supports staged diffs and paths containing spaces", async () => {
     "src",
     "README.md",
   ]);
-  expect(response.details.patch).toContain("file name.txt");
+  expect(calls.some((call) => call[3] === "status")).toBe(false);
+  expect(patchDetails(response.details).patch).toContain("file name.txt");
   expect(response.details.output).toEqual({
     truncated: false,
-    totalBytes: Buffer.byteLength("diff --git a/file name.txt b/file name.txt\n"),
+    totalBytes: Buffer.byteLength("diff --git a/file name.txt b/file name.txt\n", "utf8"),
     totalLines: 1,
   });
 });
 
-it("exposes strict, mutually exclusive path schema variants", () => {
+it("keeps strict, mutually exclusive path schema variants with an optional mode and limit", () => {
   type SchemaVariant = {
     readonly additionalProperties?: boolean;
     readonly properties?: Readonly<Record<string, unknown>>;
     readonly required?: readonly string[];
   };
-  const schema = createGitDiffTool(successfulExec().exec).parameters as {
+  const schema = createGitDiffTool(patchExec().exec).parameters as {
     readonly anyOf?: readonly SchemaVariant[];
   };
   const variants = schema.anyOf ?? [];
@@ -60,56 +81,268 @@ it("exposes strict, mutually exclusive path schema variants", () => {
   expect(variants).toHaveLength(3);
   expect(variants.every((variant) => variant.additionalProperties === false)).toBe(true);
   expect(variants.map((variant) => Object.keys(variant.properties ?? {}).sort())).toEqual([
-    ["maxBytes", "staged"],
-    ["maxBytes", "path", "staged"],
-    ["maxBytes", "paths", "staged"],
+    ["maxBytes", "mode", "staged"],
+    ["maxBytes", "mode", "path", "staged"],
+    ["maxBytes", "mode", "paths", "staged"],
   ]);
   expect(variants.map((variant) => [...(variant.required ?? [])].sort())).toEqual([
-    ["maxBytes"],
-    ["maxBytes", "path"],
-    ["maxBytes", "paths"],
+    [],
+    ["path"],
+    ["paths"],
   ]);
-
-  const pathsVariant = variants[2];
-  expect(pathsVariant?.properties?.paths).toMatchObject({
-    type: "array",
-    items: { type: "string" },
-    description: expect.stringMatching(/paths: \["file"\]/u),
+  expect(variants.every((variant) => !variant.required?.includes("maxBytes"))).toBe(true);
+  expect(variants[0]?.properties?.mode).toMatchObject({
+    anyOf: [{ const: "summary" }, { const: "patch" }],
   });
-  expect(
-    variants.some((variant) =>
-      ["maxBytes", "path", "paths", "staged"].every((key) =>
-        Object.hasOwn(variant.properties ?? {}, key),
-      ),
-    ),
-  ).toBe(false);
 });
 
-it("supports omitted, single, and multiple path filters", async () => {
-  const wholeRepository = successfulExec();
+it("defaults to a bounded summary with status, stat, and hunk headers but no body", async () => {
+  const calls: string[][] = [];
+  const exec: GitExec = async (_command, args) => {
+    calls.push([...args]);
+    if (args[3] === "rev-parse") return result(`${cwd}\n`);
+    if (args[3] === "status") return result(" M README.md\0?? new.txt\0");
+    if (args.includes("--stat")) {
+      return result(" README.md | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n");
+    }
+    return result(
+      "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@ heading\n-old body\n+new body\n",
+    );
+  };
+  const response = await createGitDiffTool(exec).execute(
+    "summary",
+    {},
+    undefined,
+    undefined,
+    context,
+  );
+
+  expect(response.details).toMatchObject({
+    mode: "summary",
+    status: [
+      { path: "README.md", indexStatus: " ", worktreeStatus: "M" },
+      { path: "new.txt", indexStatus: " ", worktreeStatus: "?" },
+    ],
+    stat: expect.stringContaining("README.md"),
+    hunks: [{ path: "README.md", header: "@@ -1 +1 @@ heading" }],
+    output: { truncated: false },
+    message: expect.stringContaining("hunk bodies are omitted"),
+  });
+  expect(JSON.stringify(response.details)).not.toContain("old body");
+  expect(JSON.stringify(response.details)).not.toContain("new body");
+  expect(calls.slice(1).map((call) => call[3])).toEqual(["status", "diff", "diff"]);
+});
+
+it("filters summary status to the selected staged or worktree column", async () => {
+  const statusOutput = "MM mixed.txt\0M  staged-only.txt\0 M worktree-only.txt\0?? untracked.txt\0";
+  const run = async (staged: boolean) => {
+    const calls: string[][] = [];
+    const exec: GitExec = async (_command, args) => {
+      calls.push([...args]);
+      if (args[3] === "rev-parse") return result(`${cwd}\n`);
+      if (args[3] === "status") return result(statusOutput);
+      if (args.includes("--stat")) return result("stat\n");
+      return result("diff --git a/mixed.txt b/mixed.txt\n@@ -1 +1 @@\n");
+    };
+    const response = await createGitDiffTool(exec).execute(
+      staged ? "staged-summary" : "worktree-summary",
+      { staged, maxBytes: 1024 },
+      undefined,
+      undefined,
+      context,
+    );
+    return { response, calls };
+  };
+
+  const staged = await run(true);
+  expect(summaryDetails(staged.response.details).status).toEqual([
+    { path: "mixed.txt", indexStatus: "M", worktreeStatus: " " },
+    { path: "staged-only.txt", indexStatus: "M", worktreeStatus: " " },
+  ]);
+  expect(staged.calls[1]).not.toContain("--cached");
+  expect(staged.calls[2]).toContain("--cached");
+  expect(staged.calls[3]).toContain("--cached");
+
+  const worktree = await run(false);
+  expect(summaryDetails(worktree.response.details).status).toEqual([
+    { path: "mixed.txt", indexStatus: " ", worktreeStatus: "M" },
+    { path: "worktree-only.txt", indexStatus: " ", worktreeStatus: "M" },
+    { path: "untracked.txt", indexStatus: " ", worktreeStatus: "?" },
+  ]);
+  expect(worktree.calls[2]).not.toContain("--cached");
+  expect(worktree.calls[3]).not.toContain("--cached");
+});
+
+it("retains rename origins only for a selected rename or copy status", async () => {
+  const statusOutput =
+    "RM staged-rename.txt\0old-staged.txt\0MR worktree-rename.txt\0old-worktree.txt\0";
+  const exec: GitExec = async (_command, args) => {
+    if (args[3] === "rev-parse") return result(`${cwd}\n`);
+    if (args[3] === "status") return result(statusOutput);
+    if (args.includes("--stat")) return result("");
+    return result("");
+  };
+
+  const staged = await createGitDiffTool(exec).execute(
+    "staged-rename",
+    { staged: true, maxBytes: 1024 },
+    undefined,
+    undefined,
+    context,
+  );
+  expect(summaryDetails(staged.details).status).toEqual([
+    {
+      path: "staged-rename.txt",
+      indexStatus: "R",
+      worktreeStatus: " ",
+      renamedFrom: "old-staged.txt",
+    },
+    { path: "worktree-rename.txt", indexStatus: "M", worktreeStatus: " " },
+  ]);
+
+  const worktree = await createGitDiffTool(exec).execute(
+    "worktree-rename",
+    { maxBytes: 1024 },
+    undefined,
+    undefined,
+    context,
+  );
+  expect(summaryDetails(worktree.details).status).toEqual([
+    { path: "staged-rename.txt", indexStatus: " ", worktreeStatus: "M" },
+    {
+      path: "worktree-rename.txt",
+      indexStatus: " ",
+      worktreeStatus: "R",
+      renamedFrom: "old-worktree.txt",
+    },
+  ]);
+});
+
+it("keeps complete status metadata while returning at most MAX_RECORDS entries", async () => {
+  const makeStatus = (count: number) =>
+    Array.from({ length: count }, (_, index) => `M  record-${index}-${"x".repeat(30)}.txt\0`).join(
+      "",
+    );
+  const run = async (count: number) => {
+    const statusOutput = makeStatus(count);
+    const exec: GitExec = async (_command, args) => {
+      if (args[3] === "rev-parse") return result(`${cwd}\n`);
+      if (args[3] === "status") return result(statusOutput);
+      return result("");
+    };
+    return createGitDiffTool(exec).execute(
+      `records-${count}`,
+      { staged: true, maxBytes: MAX_CONTENT_BYTES },
+      undefined,
+      undefined,
+      context,
+    );
+  };
+
+  const exact = await run(MAX_RECORDS);
+  const over = await run(MAX_RECORDS + 1);
+  expect(Buffer.byteLength(makeStatus(MAX_RECORDS + 1), "utf8")).toBeGreaterThan(
+    STRUCTURED_OUTPUT_LIMIT,
+  );
+  const completeStatus = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      path: `record-${index}-${"x".repeat(30)}.txt`,
+      indexStatus: "M",
+      worktreeStatus: " ",
+    }));
+  const expectedBytes = (count: number) =>
+    Buffer.byteLength(
+      JSON.stringify({ status: completeStatus(count), stat: "", hunks: [] }),
+      "utf8",
+    );
+
+  expect(summaryDetails(exact.details).status).toHaveLength(MAX_RECORDS);
+  expect(exact.details.output).toEqual({
+    truncated: false,
+    totalBytes: expectedBytes(MAX_RECORDS),
+    totalLines: 1,
+  });
+  expect(summaryDetails(over.details).status).toHaveLength(MAX_RECORDS);
+  expect(over.details.output).toEqual({
+    truncated: true,
+    totalBytes: expectedBytes(MAX_RECORDS + 1),
+    totalLines: 1,
+  });
+  expect(over.details.message).toMatch(/INCOMPLETE/iu);
+});
+
+it("uses complete multibyte summary metadata when maxBytes bounds the display", async () => {
+  const statusOutput = " M café-路径.txt\0";
+  const stat = ` café-路径.txt | 2 +-
+`;
+  const exec: GitExec = async (_command, args) => {
+    if (args[3] === "rev-parse") return result(`${cwd}\n`);
+    if (args[3] === "status") return result(statusOutput);
+    if (args.includes("--stat")) return result(stat);
+    return result("diff --git a/café-路径.txt b/café-路径.txt\n@@ -1 +1 @@\n-old\n+new\n");
+  };
+  const completeStatus = [{ path: "café-路径.txt", indexStatus: " ", worktreeStatus: "M" }];
+  const completeHunks = [{ path: "café-路径.txt", header: "@@ -1 +1 @@" }];
+  const completeText = JSON.stringify({
+    status: completeStatus,
+    stat,
+    hunks: completeHunks,
+  });
+
+  const bounded = await createGitDiffTool(exec).execute(
+    "multibyte-bounded",
+    { maxBytes: Buffer.byteLength(completeText, "utf8") - 1 },
+    undefined,
+    undefined,
+    context,
+  );
+  expect(bounded.details.output).toEqual({
+    truncated: true,
+    totalBytes: Buffer.byteLength(completeText, "utf8"),
+    totalLines: 1,
+  });
+  expect(JSON.stringify(bounded.details)).not.toContain("-old");
+  expect(JSON.stringify(bounded.details)).not.toContain("+new");
+
+  const complete = await createGitDiffTool(exec).execute(
+    "multibyte-complete",
+    { maxBytes: Buffer.byteLength(completeText, "utf8") },
+    undefined,
+    undefined,
+    context,
+  );
+  expect(complete.details.output).toEqual({
+    truncated: false,
+    totalBytes: Buffer.byteLength(completeText, "utf8"),
+    totalLines: 1,
+  });
+});
+
+it("supports omitted, single, and multiple path filters for explicit patches", async () => {
+  const wholeRepository = patchExec();
   await createGitDiffTool(wholeRepository.exec).execute(
     "whole",
-    { maxBytes: 1024 },
+    { mode: "patch", maxBytes: 1024 },
     undefined,
     undefined,
     context,
   );
   expect(wholeRepository.calls[1].slice(-1)).toEqual(["--"]);
 
-  const onePath = successfulExec();
+  const onePath = patchExec();
   await createGitDiffTool(onePath.exec).execute(
     "one",
-    { paths: ["src"], maxBytes: 1024 },
+    { mode: "patch", paths: ["src"], maxBytes: 1024 },
     undefined,
     undefined,
     context,
   );
   expect(onePath.calls[1].slice(-2)).toEqual(["--", "src"]);
 
-  const multiplePaths = successfulExec();
+  const multiplePaths = patchExec();
   await createGitDiffTool(multiplePaths.exec).execute(
     "multiple",
-    { paths: ["src", "README.md"], maxBytes: 1024 },
+    { mode: "patch", paths: ["src", "README.md"], maxBytes: 1024 },
     undefined,
     undefined,
     context,
@@ -117,16 +350,15 @@ it("supports omitted, single, and multiple path filters", async () => {
   expect(multiplePaths.calls[1].slice(-3)).toEqual(["--", "src", "README.md"]);
 });
 
-it("preserves legacy single-path execution compatibility", async () => {
-  const { exec, calls } = successfulExec("legacy diff\n");
+it("preserves legacy single-path patch compatibility", async () => {
+  const { exec, calls } = patchExec("legacy diff\n");
   const response = await createGitDiffTool(exec).execute(
     "legacy",
-    { path: "src", staged: true, maxBytes: 1024 },
+    { mode: "patch", path: "src", staged: true, maxBytes: 1024 },
     undefined,
     undefined,
     context,
   );
-
   expect(calls[1]).toEqual([
     "--no-optional-locks",
     "-c",
@@ -139,43 +371,57 @@ it("preserves legacy single-path execution compatibility", async () => {
     "--",
     "src",
   ]);
-  expect(response.details.patch).toBe("legacy diff\n");
-});
-
-it("bounds output", async () => {
-  const long = successfulExec("0123456789abcdef");
-  const response = await createGitDiffTool(long.exec).execute(
-    "1",
-    { maxBytes: 5 },
-    undefined,
-    undefined,
-    context,
-  );
-  expect(response.details.patch).toBe("01234");
-  expect(response.details.output).toEqual({ truncated: true, totalBytes: 16, totalLines: 1 });
-});
-
-it("returns empty and binary-safe representations", async () => {
-  const empty = successfulExec("");
-  const emptyResponse = await createGitDiffTool(empty.exec).execute(
-    "1",
-    { maxBytes: 100 },
-    undefined,
-    undefined,
-    context,
-  );
-  expect(emptyResponse.details).toEqual({
-    patch: "",
-    output: { truncated: false, totalBytes: 0, totalLines: 0 },
+  expect(patchDetails(response.details).patch).toBe("legacy diff\n");
+  expect(response.details.output).toEqual({
+    truncated: false,
+    totalBytes: Buffer.byteLength("legacy diff\n", "utf8"),
+    totalLines: 1,
   });
+});
 
-  const binary = successfulExec("Binary files a/x and b/x differ\n");
-  const binaryResponse = await createGitDiffTool(binary.exec).execute(
-    "1",
-    { maxBytes: 100 },
+it("uses the stable default summary limit and explicitly describes patch truncation", async () => {
+  const { exec } = patchExec("0123456789abcdef");
+  const summary = await createGitDiffTool(exec).execute(
+    "summary-default",
+    {},
     undefined,
     undefined,
     context,
   );
-  expect(binaryResponse.details.patch).toContain("Binary files");
+  expect(DEFAULT_GIT_DIFF_MAX_BYTES).toBe(16 * 1024);
+  expect(summary.details.mode).toBe("summary");
+
+  const long = patchExec("0123456789abcdef");
+  const response = await createGitDiffTool(long.exec).execute(
+    "patch-truncated",
+    { mode: "patch", maxBytes: 5 },
+    undefined,
+    undefined,
+    context,
+  );
+  expect(patchDetails(response.details).patch).toBe("01234");
+  expect(response.details.output).toEqual({ truncated: true, totalBytes: 16, totalLines: 1 });
+  expect(response.details.message).toMatch(/INCOMPLETE|larger maxBytes/iu);
+});
+
+it("returns empty and binary-safe explicit patches", async () => {
+  const empty = patchExec();
+  const emptyResponse = await createGitDiffTool(empty.exec).execute(
+    "empty",
+    { mode: "patch", maxBytes: 100 },
+    undefined,
+    undefined,
+    context,
+  );
+  expect(patchDetails(emptyResponse.details).patch).toBe("");
+
+  const binary = patchExec("Binary files a/x and b/x differ\n");
+  const binaryResponse = await createGitDiffTool(binary.exec).execute(
+    "binary",
+    { mode: "patch", maxBytes: 100 },
+    undefined,
+    undefined,
+    context,
+  );
+  expect(patchDetails(binaryResponse.details).patch).toContain("Binary files");
 });

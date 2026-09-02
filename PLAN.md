@@ -1,596 +1,322 @@
-# Bash Tools Plan
+# Bash Tools Implementation Plan
 
-## Purpose
+## Status
 
-Improve the existing `@ztc/bash-tools` extension through better contract observability, consistent project-command results, and safe suppression of unchanged validation runs.
+This plan supersedes the previous roadmap in this file.
 
-This plan deliberately focuses on the tools that already exist.
-New tools and additional operating-system support will be considered separately when there is measured demand and an agreed design.
+The current implementation scope is limited to R5 and R2 from `docs/handoffs/bash-tools-flow-cache-requirements.md`.
 
-## Current baseline
+Do not begin implementation of R1, R1a, R3, R4, or R7 until the current scope has been completed and reviewed.
 
-The extension currently registers these custom tools:
+The R2 behavior that depends on the R1 persistent cache is explicitly deferred until the R1 work is authorized.
 
-- `git_status`.
-- `git_diff`.
-- `git_log`.
-- `git_show`.
-- `environment`.
-- `project_command`.
-- `move`.
-- `delete`.
+## Context and measured priorities
 
-The extension also applies filesystem policy to Pi's built-in `read`, `write`, `edit`, `ls`, `find`, and `grep` tools through a `tool_call` interceptor.
-The `move` and `delete` tools enforce filesystem policy within their own implementations.
-Unrestricted Bash is not governed by the filesystem interceptor.
+A measurement window over 334 Pi sessions found that orchestration cost is dominated by repeated context and tool-result output rather than by agent count.
 
-The existing `project_command` implementation already provides fixed command definitions, schema validation, canonical project resolution, policy authorization, bounded output, cancellation, process timeouts, and stable command-definition fingerprints.
-Those fingerprints represent authorization identities and must remain separate from fingerprints used to reuse command results.
+The largest relevant signals are oversized `git_diff` results and repeated `project_command` executions.
 
-## Goals
+The baseline for this work is:
 
-- Record the exact tool contracts active during each session.
-- Make project-command failures consistently classified and actionable.
-- Prevent unchanged validation commands from being executed repeatedly when reuse is demonstrably safe.
-- Preserve policy authorization on every request, including requests that may reuse an earlier result.
-- Produce compact metadata that can explain cache decisions and failures without retaining source content, environment values, or full command output.
-- Keep all new behavior testable through injected dependencies and deterministic fixtures.
+- `git_diff`: 547 calls, 4,279,168 result tokens, p95 result size of 49,847 tokens, and a maximum of 99,330 tokens.
+- `project_command`: 2,163 calls, 1,075 excess duplicate calls, 130 validation errors, and 24 resolution errors.
+- `git_log`: 64 calls with 31 errors.
+- `git_status`: 676 calls with 130 errors and 269 exact duplicate calls.
+- Tool errors overall: 1,393, of which approximately 898 were interface friction rather than real command failures.
 
-## Non-goals
+Rank improvements by steps and tokens first.
 
-- Adding new tools.
-- Adding support for additional operating systems.
-- Replacing existing tools with parallel alternatives.
-- Replacing Pi's built-in read or edit tools or changing their core input and mutation semantics.
-- Adding arbitrary command execution.
-- Building the complete audit-retention system in the first implementation batch.
-- Reusing results across sessions or process restarts.
-- Treating project trust or project-command authorization as process isolation.
+Treat dollar attribution as a tiebreaker because the source measurement is not reliable enough for cost-based ranking.
 
-## Design principles
+## Non-negotiable constraints
 
-### Keep authorization and result identities separate
+- Do not import from or depend on `subagent-herdr`.
+- Consume orchestration information only through the environment contract when that work is eventually enabled.
+- Do not add role or workflow policy to `bash-tools`.
+- Do not weaken authorization, confirmation, filesystem, or command policy gates.
+- Preserve existing behavior when orchestration environment variables are absent.
+- Keep cached or summarized output bounded and distinguishable from complete output.
+- Preserve the existing `project_command` cache decision vocabulary: `miss`, `hit`, `forced`, `ineligible`, and `invalidated`.
+- Keep command-definition fingerprints separate from result-reuse fingerprints.
+- Treat command output as untrusted text and do not retain unnecessary source content, environment values, secrets, or full logs.
 
-The existing project-command fingerprint identifies the approved command definition, resolved executable shape, and package-script binding.
-It remains the policy authorization identity.
+## Immediate implementation sequence
 
-A new result fingerprint will identify one resolved command request and the relevant project state used by that request.
-Changing result-reuse behavior must not silently change persisted authorization decisions.
+### Phase 1: R5 schema and interface friction
 
-### Authorize before reuse
+#### Project-command validation
 
-Every project-command request must load current policy and complete authorization before a cached result can be returned.
-A previously authorized and cached command must not bypass a later deny rule or unavailable confirmation requirement.
+- [ ] Normalize the literal strings `"true"` and `"false"` to booleans for boolean parameters, at minimum `project_command.force`.
+- [ ] Preserve normal boolean validation for all other values.
+- [ ] Keep `force` as a per-call fresh-run escape hatch and do not include it in semantic request fingerprints.
+- [ ] Include the valid `commandId` set in project-command schema and resolution errors.
+- [ ] Include the nearest valid command identifier when a requested identifier is close to a supported value.
+- [ ] Make the nearest-match suggestion deterministic.
+- [ ] Add an actionable remediation line to every validation and resolution error.
 
-### Default to no reuse
+#### Command variant compatibility
 
-Every command definition must have an explicit result-reuse policy.
-The default policy must be `never`.
+- [ ] Add regression coverage proving that colon-suffixed identifiers such as `node_format:check` are accepted by the command identifier contract.
+- [ ] Ensure the legacy underscore form produces an actionable error naming the accepted colon-suffixed form.
+- [ ] Verify that package-script variant validation remains consistent with the command identifier pattern and package manifest mapping.
 
-A command becomes reusable only when its relevant inputs can be identified and it is not known to depend on uncontrolled external state.
-Mutating commands must never be reusable.
+#### Git-log and Git-status contracts
 
-### Keep process status and result category distinct
+- [ ] Audit the public and runtime argument contracts for `git_log` and `git_status` against the observed failure cases.
+- [ ] Represent mutually exclusive `git_log` request shapes separately where the current union is not self-describing.
+- [ ] Name the violated constraint and the accepted shape in each relevant error.
+- [ ] Ensure invalid Git requests identify the field or shape that must be corrected.
+- [ ] Investigate the observed `git_log` and `git_status` error categories before changing successful request behavior.
+- [ ] Add regression tests for each corrected failure shape.
 
-The existing process statuses describe execution mechanics:
+#### Duplicate Git-status requests
 
-- `success`.
-- `nonzero`.
-- `timeout`.
-- `spawn-failure`.
-- `cancelled`.
+- [ ] Detect an unchanged repeated `git_status` request within the supported scope.
+- [ ] Return a compact unchanged indication and the relevant prior reference or metadata instead of blindly reprinting identical status output.
+- [ ] Preserve an explicit way to request fresh status when needed.
+- [ ] Keep duplicate suppression independent from authorization and filesystem policy.
+- [ ] Do not introduce cross-process persistence as part of R5.
 
-A separate result category will describe the higher-level outcome.
-Existing status, exit, stdout, stderr, timeout, and cancellation fields must remain available.
+#### R5 acceptance criteria
 
-### Keep audit data compact
+- [ ] Error rates for `project_command`, `git_log`, and `git_status` decrease by more than half in the added invocation measurements.
+- [ ] `git_diff` validation errors decrease by more than half after the R2 schema changes are included.
+- [ ] No validation error is emitted without an actionable remediation line.
+- [ ] A string boolean supplied for `force` follows the same execution and cache semantics as the corresponding boolean value.
+- [ ] Invalid command identifiers identify valid alternatives and provide a nearest match where one exists.
+- [ ] Existing authorization and successful result shapes do not regress.
 
-Audit and inventory records must contain metadata rather than source content or complete outputs.
-Environment values must never be recorded.
-Unknown or sensitive argument values must be redacted or represented by a stable hash.
-
-### Use Pi lifecycle identifiers
+### Phase 2: R2 bounded and summary-first Git diff
 
-Pi's existing session ID and tool call ID will identify invocations.
-The extension must not introduce a second unrelated invocation ID system.
+#### Request contract
 
-## Phase 1: Active tool contract inventory (complete)
-
-### Implementation
-
-- [x] Load the extension version from `package.json` at runtime through a single source.
-- [x] Add canonical JSON serialization for JSON-compatible metadata.
-- [x] Preserve array order while sorting object keys recursively.
-- [x] Add SHA-256 hashing for serialized tool parameter schemas.
-- [x] Record all configured tools from `pi.getAllTools()` during `session_start`.
-- [x] Record the active tool names from `pi.getActiveTools()`.
-- [x] Record each tool's name, active state, source provenance, and schema hash.
-- [x] Record the extension version, session ID, session-start reason, hash algorithm, and inventory format version.
-- [x] Persist the inventory through `pi.appendEntry()` so it remains outside model context.
-- [x] Deduplicate only an identical inventory recorded more than once in the same active runtime.
-- [x] Record a new inventory after reload when schemas, provenance, or active tools change.
-
-### Proposed files
-
-- `src/version.ts`.
-- `src/observability/canonical-json.ts`.
-- `src/observability/tool-inventory.ts`.
-- `src/observability/types.ts`.
-- `src/index.ts`.
-- `test/index.test.ts`.
-- `test/observability/tool-inventory.test.ts`.
-
-### Policy coverage inventory
-
-- [x] Add a table-driven test proving that `read`, `write`, `edit`, `ls`, `find`, and `grep` are handled by the filesystem `tool_call` interceptor.
-- [x] Add tests proving that `move` and `delete` use policy within their implementations rather than inheriting interceptor authorization.
-- [x] Add a test proving that an unknown tool receives no filesystem authorization accidentally.
-- [x] Add a test documenting that Bash is outside the filesystem interceptor.
-- [x] Keep canonicalization and symlink resolution tests associated with the existing policy implementation.
-
-### Acceptance criteria (met)
-
-- Every active tool can be associated with its exact parameter-schema hash and source provenance.
-- Inventory records contain no source content, environment values, prompts, or tool outputs.
-- Equivalent schemas produce the same hash regardless of object-key insertion order.
-- Array ordering remains significant to schema hashes.
-- Reloading with a changed schema or active tool set produces a new inventory record.
-- Tests explicitly distinguish interceptor-governed tools from tools that enforce policy internally.
-
-## Phase 2: Structured project-command outcomes (complete)
-
-### Stable error contract
-
-- [x] Define a structured error contract that can later be reused by all existing tool families.
-- [x] Apply the contract to `project_command` first.
-- [x] Give every error a stable code and result category.
-- [x] Include the invalid field when a specific field caused validation failure.
-- [x] Include a concise explanation.
-- [x] Support a corrected example field only when the correction is unambiguous.
-- [x] State whether retrying the identical request can succeed.
-- [x] State whether command execution was attempted.
-- [x] Preserve fail-closed behavior for policy and authorization errors.
-
-### Result categories
-
-- [x] Add `PASS`.
-- [x] Add `INVALID_REQUEST`.
-- [x] Add `IMPLEMENTATION_FAILURE`.
-- [x] Add `TEST_FAILURE`.
-- [x] Add `FORMAT_FAILURE`.
-- [x] Add `LINT_FAILURE`.
-- [x] Add `TYPE_CHECK_FAILURE`.
-- [x] Add `RESOLUTION_FAILURE`.
-- [x] Add `POLICY_FAILURE`.
-- [x] Add `ENVIRONMENT_FAILURE`.
-- [x] Add `TIMEOUT`.
-- [x] Add `SPAWN_FAILURE`.
-- [x] Add `CANCELLED`.
-- [x] Add `BLOCKED`.
-
-`PASS` means that the tool accepted the command outcome as normal data.
-For example, an accepted Fallow findings exit code can be `PASS` even when the returned analysis contains findings.
-
-`BLOCKED` represents a deliberate denial or an unavailable authorization path.
-`POLICY_FAILURE` represents a failure to load, evaluate, confirm, or persist policy rather than an intentional denial.
-Categories must be assigned from known execution state and must not be guessed by parsing arbitrary output text.
-
-### Result metadata
-
-- [x] Add the current `toolCallId` as the invocation identifier.
-- [x] Add `executed`.
-- [x] Add `reused` as `false` until Phase 3 reuse is implemented.
-- [x] Add total duration and command-execution duration separately.
-- [x] Add normalized command scope.
-- [x] Add output truncation metadata.
-- [x] Add a deterministic primary diagnostic.
-- [x] Add a suggested next action.
-- [x] Add retryability metadata.
-- [x] Keep exit information separate from the result category.
-- [x] Distinguish confirmation timeout from command timeout.
-
-### Diagnostic extraction
-
-- [x] Prefer bounded stderr when it contains a meaningful diagnostic.
-- [x] Fall back to bounded stdout when stderr is empty.
-- [x] Remove terminal control sequences from the compact diagnostic.
-- [x] Keep the bounded raw stdout and stderr fields unchanged.
-- [x] Keep diagnostic extraction deterministic and command-family aware where reliable parsing exists.
-- [x] Avoid claiming that an arbitrary first output line is actionable when it is only a command banner.
-
-### Proposed files
-
-- `src/tools/errors.ts`.
-- `src/tools/project-command/categories.ts`.
-- `src/tools/project-command/diagnostics.ts`.
-- `src/tools/project-command/output.ts`.
-- `src/tools/project-command/runner.ts`.
-- `src/tools/project-command/schema/validation.ts`.
-
-### Acceptance criteria (met)
-
-- Successful, accepted-nonzero, failed, timed-out, blocked, and cancelled requests have stable categories.
-- Policy denial, policy infrastructure failure, confirmation timeout, process timeout, and nonzero exit are distinguishable.
-- Failure details state whether execution occurred.
-- Existing process details remain backward-compatible.
-- One compact diagnostic and one suggested action are available when they can be determined safely.
-
-## Phase 3: Result fingerprints and session-local reuse
-
-### Session state
-
-- [x] Key all reusable results by Pi session ID.
-- [x] Keep cache contents in memory only.
-- [x] Do not restore cache entries when a session is resumed in a new extension runtime.
-- [x] Use Pi's `toolCallId` to identify the invocation that produced a reusable result.
-- [x] Return the producing invocation ID when a result is reused.
-- [x] Rely on `project_command` sequential execution mode to prevent duplicate concurrent execution.
-
-### Force behavior
-
-- [x] Add an optional `force` boolean to every project-command schema variant.
-- [x] Validate `force` consistently at runtime.
-- [x] Exclude `force` from the semantic result fingerprint.
-- [x] Exclude `force` from arguments forwarded to command resolution or execution.
-- [x] Report a forced execution as a cache bypass.
-
-### Reuse policy
-
-- [x] Add an explicit reuse policy to every command definition.
-- [x] Support `never`, `static`, `project-metadata`, and `workspace-snapshot` policies.
-- [x] Default missing or unknown policies to `never`.
-- [x] Keep `node_lint_fix` and `node_format_write` permanently non-reusable.
-- [x] Treat commands that depend on uncontrolled external state as non-reusable.
-- [x] Review build, test, coverage, and E2E commands individually instead of assuming that all package scripts are non-mutating.
-- [x] Require an explicit test and rationale before making any project-code command reusable.
-
-### Result fingerprint
-
-- [x] Add a versioned result-fingerprint format.
-- [x] Include the extension version.
-- [x] Include the authorization command fingerprint.
-- [x] Include the canonical project path rather than its display form.
-- [x] Include normalized effective parameters.
-- [x] Include the selected process timeout and output limit.
-- [x] Include the reuse-policy identifier.
-- [x] Include a canonical manifest of relevant input paths and hashes.
-- [x] Record which files and configuration values contributed to the fingerprint.
-- [x] Keep content out of the fingerprint metadata returned to the session.
-
-### Relevant inputs
-
-- [x] Implement relevant-input discovery separately from command resolution.
-- [x] Allow resolution to expose discovered paths without making resolution responsible for hashing them.
-- [x] Include `package.json` when package scripts or package-manager selection affect the command.
-- [x] Include relevant lockfiles when package-manager selection or dependency state affects the command.
-- [x] Include the selected package-script hash.
-- [x] Include explicit test paths and command-specific configuration when applicable.
-- [x] Use a conservative workspace snapshot only for definitions explicitly approved for that strategy.
-- [x] Mark the command non-reusable when complete relevant-input discovery fails.
-- [x] Never silently fall back to an incomplete fingerprint.
-
-### Mutation detection
-
-- [x] Capture relevant project state before executing a reusable project-code command.
-- [x] Capture relevant project state after execution.
-- [x] Do not cache the result when execution changes relevant project state.
-- [x] Treat created, removed, replaced, or metadata-changed relevant files as mutation.
-- [x] Do not use a successful exit code as evidence that a command was non-mutating.
-
-### Cacheable outcomes
-
-- [x] Cache successful outcomes for eligible commands.
-- [x] Cache deterministic nonzero validation outcomes for eligible commands.
-- [x] Treat accepted nonzero Fallow outcomes according to the command's explicit reuse policy.
-- [x] Do not cache authorization denials or confirmation failures.
-- [x] Do not cache policy load or persistence failures.
-- [x] Do not cache incomplete resolution failures.
-- [x] Do not cache timeouts.
-- [x] Do not cache spawn failures.
-- [x] Do not cache cancellations.
-- [x] Do not cache results from mutating commands.
-
-### Cache metadata
-
-- [x] Report `miss` when an eligible result is not present.
-- [x] Report `hit` when execution is skipped and an earlier result is returned.
-- [x] Report `forced` when `force` bypasses an available result.
-- [x] Report `ineligible` when the command or outcome cannot be reused.
-- [x] Report `invalidated` when a prior command request exists but relevant inputs changed.
-- [x] Return the result fingerprint for eligible requests.
-- [x] Return the producing invocation ID for cache hits.
-- [x] Preserve the original outcome while marking the current response as reused.
-
-### Proposed files
-
-- `src/tools/project-command/cache.ts`.
-- `src/tools/project-command/fingerprint.ts`.
-- `src/tools/project-command/state-snapshot.ts`.
-- `src/tools/project-command/relevant-inputs.ts`.
-- `src/tools/project-command/definitions.ts`.
-- `src/tools/project-command/schema.ts`.
-- `src/tools/project-command/schema/validation.ts`.
-- `src/tools/project-command/runner.ts`.
-- `src/tools/project-command/output.ts`.
-- `src/tools/project-command/tool.ts`.
-- `src/tools/project-command/node/relevant-inputs.ts`.
-- `src/tools/project-command/node/types.ts`.
-- `src/tools/project-command/parameters/validation.ts`.
-- `src/tools/project-command/parameters/text-validation.ts`.
-- `src/tools/project-command/defined-properties.ts`.
-
-### Acceptance criteria (met)
-
-- [x] An identical eligible request with unchanged relevant inputs executes at most once in one active session unless forced.
-- [x] A relevant source or configuration change invalidates the prior result.
-- [x] A policy change can block a request even when a matching cached result exists.
-- [x] Mutating and externally dependent commands are never served from cache.
-- [x] Timeouts, spawn failures, cancellations, and policy failures are never served from cache.
-- [x] Cache entries do not cross session IDs or extension runtime restarts.
-- [x] Cache metadata explains every reuse, bypass, ineligibility decision, and invalidation.
-
-## Phase 4: Extend the stable error contract to existing tools (complete)
-
-This phase begins only after the project-command contract has been exercised and stabilized.
-It changes error structure without adding new tool capabilities.
-
-- [x] Apply stable error codes to the existing Git tools.
-- [x] Apply stable error codes to the environment tool.
-- [x] Apply stable error codes to filesystem policy interception.
-- [x] Apply stable error codes to `move` and `delete`.
-- [x] Use the same field, explanation, example, retryability, and execution-attempt conventions.
-- [x] Preserve existing policy decisions and fail-closed behavior.
-- [x] Avoid changing public success-result shapes unless needed for consistency.
-
-### Acceptance criteria (met)
-
-- Equivalent validation failures have equivalent structured details across existing tool families.
-- Every failure indicates whether an unchanged retry can succeed.
-- Authorization denial remains distinguishable from policy infrastructure failure.
-- No tool gains broader filesystem or command authority through the refactor.
-
-## Phase 5: Measurement and refinement
-
-- [x] Record compact project-command invocation metadata using session ID and tool call ID.
-- [x] Record schema hash, result category, duration, cache decision, output size, and truncation state.
-- [x] Do not record environment values, source content, prompts, or complete command output.
-- [x] Aggregate bounded per-session summaries over the existing invocation records.
-- [x] Measure repeated unchanged requests within the active runtime as cache hits that are reused.
-- [x] Measure cache hits, misses, forced runs, ineligible commands, and invalidations.
-- [x] Measure failure categories separately from process exit status.
-- [ ] Measure repeated unchanged requests before and after result reuse is enabled using real-world comparison data (evidence-dependent).
-- [ ] Review false reuse, unexpected invalidation, and commands that remain safely ineligible from observed data (evidence-dependent).
-- [ ] Adjust command reuse policies only from test evidence and observed behavior (evidence-dependent).
-
-### Acceptance criteria
-
-- The recorded metadata can explain why a command executed or was reused.
-- The recorded metadata can attribute a failure to one session, invocation, active schema, and extension version.
-- [ ] Unchanged validation reruns decline without hiding source changes or policy changes; demonstrating this requires real before/after comparison data.
-- Measurement does not retain secrets or duplicate large context payloads.
+- [ ] Make `maxBytes` optional for `git_diff`.
+- [ ] Use a default between 8 KiB and 16 KiB, selected and documented as a stable constant.
+- [ ] Retain the existing upper bound for explicit full-patch requests.
+- [ ] Preserve the legacy single `path` form while continuing to recommend the `paths` array for new path-scoped requests.
+- [ ] Add an explicit summary-first mode.
+- [ ] Add an explicit full-patch escape hatch, such as `full: true` or an explicitly requested large `maxBytes`.
+- [ ] Keep the request shapes mutually clear and reject conflicting path or output-mode parameters with actionable errors.
+
+#### Summary mode
+
+- [ ] Return `git status --porcelain` data, `git diff --stat` data, and hunk headers containing `@@` lines with function context.
+- [ ] Do not include hunk bodies in summary mode.
+- [ ] Keep summary output bounded independently from full patch output.
+- [ ] Include enough per-file information for a caller to choose a scoped follow-up.
+- [ ] Support fetching full hunks for an explicit path list so reviewers can retrieve only the files they are reviewing.
+- [ ] Preserve staged versus worktree selection in every mode.
+
+#### Truncation behavior
+
+- [ ] Continue using the existing UTF-8-safe truncation metadata: `truncated`, `totalBytes`, and `totalLines`.
+- [ ] Surface truncation in model-facing text rather than exposing it only in structured details.
+- [ ] When the default cap is exceeded, return the summary, total output size, and per-file sizes where available.
+- [ ] Do not return a byte-sliced patch that could be mistaken for a complete diff.
+- [ ] State the scoped follow-up required to retrieve additional hunks.
+- [ ] Ensure the full-patch escape hatch is explicit in the rendered call and response metadata.
+
+#### Summary cache boundary
+
+- [ ] Define the summary cache key as repository identity, absolute working directory, HEAD, dirty-file digest, and staged state.
+- [ ] Keep the cache key content-addressed and deterministic.
+- [ ] Do not implement the disk-backed cross-process backend during this phase because that belongs to R1.
+- [ ] Once R1 is authorized, route the summary through the R1 store so separate processes in one permitted flow can share one snapshot.
+- [ ] Ensure a changed working tree cannot reuse a prior summary.
+
+#### R2 acceptance criteria
+
+- [ ] The default `git_diff` result size is reduced by an order-of-countable-margin relative to the baseline.
+- [ ] A truncated response explicitly states that it is incomplete, reports the total size, and gives a scoped follow-up.
+- [ ] Summary mode contains status, stat, and hunk headers without hunk bodies.
+- [ ] Explicit path-scoped retrieval returns only the requested file hunks.
+- [ ] Full patches remain available only through an explicit request.
+- [ ] Staged and unstaged results remain correct and distinct.
+- [ ] The no-environment path preserves existing behavior except for the intentionally changed R2 default and response contract documented by this plan.
+
+### Phase 3: Focused validation and measurement
+
+- [ ] Add unit tests for boolean normalization, nearest command matching, command-shape errors, diff-mode validation, truncation text, and summary parsing.
+- [ ] Add integration tests for `git_diff` summary, staged output, explicit path hunks, full-patch escape hatch, and truncation.
+- [ ] Add regression tests for malformed `git_log` and `git_status` requests.
+- [ ] Add tests proving that existing authorization and confirmation gates still run before command execution.
+- [ ] Run focused tests for every changed module.
+- [ ] Run the complete test suite.
+- [ ] Run the project lint script, which includes TypeScript checking through the Oxlint TypeScript plugin.
+- [ ] Run the formatter check without rewriting unrelated files.
+- [ ] Inspect the final Git diff for accidental policy, authorization, or unrelated contract changes.
+- [ ] Record before-and-after invocation measurements for validation errors, duplicate status calls, diff result sizes, truncation, and scoped follow-up usage.
 
 ## Deferred workstreams
 
-The workstreams in this section remain part of the roadmap but are not scheduled within the first five phases.
-They improve existing tools and workflows without committing to new tool names, new execution capabilities, or additional operating-system support.
-Their implementation order will be decided from evidence gathered by the earlier phases.
+The following requirements are acknowledged but are not part of the current implementation batch.
 
-### Built-in read metadata
+### R1: Flow-scoped result cache backend
 
-- [ ] Evaluate a Pi-supported wrapper or result-interception design for the built-in `read` tool.
-- [ ] Preserve the existing read tool rather than registering a parallel repository reader.
-- [ ] Return a content hash, canonical path, file size, requested range, actual range, and truncation status.
-- [ ] Preserve Pi's existing line and byte limits.
-- [ ] Detect binary files before returning unusable textual content.
-- [ ] Detect unusually large lines and return bounded metadata rather than an uncontrolled payload.
-- [ ] Add explicit continuation metadata for bounded follow-up reads.
-- [ ] Keep source content out of audit records.
+- [ ] Add a disk-backed implementation of the existing `ProjectCommandResultCache` interface.
+- [ ] Use the existing namespace argument as the scope key, with a flow namespace only when a validated flow identity is present.
+- [ ] Keep the process-local cache as the default and no-environment fallback.
+- [ ] Store provenance including producing session, role, flow, repository identity, absolute working directory, HEAD, snapshot digest, and write time.
+- [ ] Use atomic replacement, exclusive locking, stale-lock stealing, corruption-as-miss behavior, and bounded age and size eviction.
+- [ ] Prevent hits across repositories or absolute working directories.
+- [ ] Add `producerScope: "session" | "flow"` to details and invocation records.
+- [ ] Add separate-process, invalidation, isolation, poisoning, and interrupted-write tests.
 
-### Duplicate-read detection
+### R1a: Spawner-set evidence scope
 
-- [ ] Key read observations by canonical path, requested range, and content hash.
-- [ ] Detect identical unchanged reads within one session.
-- [ ] Return a compact reference when Pi's integration points allow the duplicate payload to be avoided safely.
-- [ ] Invalidate prior references when the file hash changes.
-- [ ] Design an explicit reread control that remains compatible with Pi's built-in tool contract.
-- [ ] Record duplicate-read events without duplicating source content.
-- [ ] Verify that deduplication never returns content for a different range or file version.
+- [ ] Read `PI_ORCHESTRATION_EVIDENCE_SCOPE` as the maximum scope available to the process.
+- [ ] Treat an unset value as `session`.
+- [ ] Allow a call parameter to narrow scope only.
+- [ ] Record requested and effective scope on every invocation.
+- [ ] Keep `force` independent of evidence scope.
+- [ ] Prevent a process with `session` scope from receiving a flow-scoped hit by any parameter combination.
 
-### Built-in edit metadata
+### R3: Composite verification
 
-- [ ] Evaluate a Pi-supported result-interception design for the built-in `edit` tool.
-- [ ] Preserve the existing transactional multi-replacement input contract.
-- [ ] Preserve Pi's per-file mutation queue and concurrency guarantees.
-- [ ] Return matched ranges and changed ranges when the host API exposes them safely.
-- [ ] Return the resulting content hash.
-- [ ] Return structured details for missing, stale, ambiguous, overlapping, and no-op replacements.
-- [ ] Identify the specific replacement responsible for an edit failure.
-- [ ] Avoid registering a parallel patch or edit tool.
+- [ ] Add a fixed-order `verify` command for format, lint, typecheck, and tests.
+- [ ] Support optional path scoping and `continueOnFailure`.
+- [ ] Reuse validation results only when repository state, working directory, and resolved command list are unchanged.
+- [ ] Return compact unchanged results with a ref and bounded failure tail.
+- [ ] Give `verify` a separate configurable aggregate budget and per-step timeout.
+- [ ] Use one authorization decision for the composed operation.
 
-### Read and edit acceptance criteria
+### R4: Tool-issued validation references
 
-- Agents can determine whether previously read content is still current.
-- Identical unchanged ranges can be recognized without confusing file versions.
-- Edit failures identify the affected replacement and stable failure category.
-- Existing read limits, transactional edits, and mutation serialization do not regress.
+- [ ] Return stable opaque refs from cache-eligible `project_command` executions and `verify`.
+- [ ] Add lookup without execution.
+- [ ] Store exact resolved command, state digest, working directory, HEAD, covered identifiers, result, exit code, and timestamps.
+- [ ] Keep `covers` opaque and preserve it verbatim.
+- [ ] Mark records non-reusable when a reliable state digest is unavailable.
 
-### Filesystem policy verification
+### R7: Orchestration join keys and output telemetry
 
-- [ ] Verify canonicalization before authorization for existing paths.
-- [ ] Verify canonicalization before authorization for missing write destinations.
-- [ ] Verify symlink escape handling for read, write, edit, search, move, and delete operations.
-- [ ] Verify path replacement races around authorization and mutation boundaries.
-- [ ] Verify that unsupported and unrecognized tools cannot inherit filesystem authorization.
-- [ ] Keep Bash explicitly documented as outside the built-in filesystem interceptor.
+- [ ] Add flow, delegation, and role identifiers to project-command invocation records when present.
+- [ ] Persist truncation, total bytes, total lines, effective scope, and repeated-request context.
+- [ ] Add a step count or batch marker if the host can expose it.
+- [ ] Keep all orchestration fields absent when the environment is absent.
 
-### Move and delete dry-run behavior
+### R6: Actionable errors for edit, resolution, and policy
 
-- [ ] Add an explicit dry-run option to the existing `move` tool.
-- [ ] Add an explicit dry-run option to the existing `delete` tool.
-- [ ] Return canonical affected paths and the policy decisions that real execution would require.
-- [ ] Ensure dry-run performs no mutation.
-- [ ] Ensure dry-run does not persist mutation authorization.
-- [ ] Ensure dry-run authorization cannot be reused implicitly by a later mutating request.
-- [ ] Preserve the existing regular-file and destination-collision restrictions.
-- [ ] Avoid introducing recursive or broad filesystem mutation.
+- [ ] Report edit match counts and distinguish zero matches from ambiguous matches.
+- [ ] Include nearest candidates, line numbers, and whitespace-mismatch hints.
+- [ ] Consider an optional edit dry-run preflight.
+- [ ] Include nearest existing paths in resolution errors.
+- [ ] Include authorized roots and stable rule kinds in policy denials.
 
-### Filesystem acceptance criteria
+### R8: Batch reads and read references
 
-- Canonicalization and symlink tests cover every existing filesystem operation explicitly.
-- Dry-run results accurately preview paths and required decisions without changing policy or files.
-- Existing move and delete safety properties do not regress.
-- No broader mutation authority is introduced.
+- [ ] Add bounded batch reads with per-path ranges and per-path errors.
+- [ ] Return an unchanged result and prior ref for repeated content-hash-equivalent reads.
+- [ ] Normalize reported paths to repository-relative paths.
 
-### Project-command timeout review
+### R9: Curated read-only probe surface
 
-- [ ] Record representative durations for each existing project-command definition.
-- [ ] Measure legitimate test, build, and analysis durations before changing the current timeout.
-- [ ] Define command-specific timeouts only where measurements justify them.
-- [ ] Keep a hard upper bound for every command definition.
-- [ ] Include the selected timeout in authorization identity review, result fingerprints, and audit metadata.
-- [ ] Record confirmation duration separately from process-execution duration.
-- [ ] Keep confirmation timeout, process timeout, cancellation, and nonzero exit distinguishable.
+- [ ] Evaluate whether existing tools can be made discoverable enough to prevent hallucinated shell-style probes.
+- [ ] If needed, add one read-only probe surface covering file metadata, directory listing, and Git introspection.
+- [ ] Return the closest supported tool when an unknown tool can be intercepted.
 
-### Timeout acceptance criteria
+## Design decisions and handoff responses
 
-- Timeout values are justified by measured command behavior.
-- Every process remains subject to a hard upper bound.
-- Changing a security-relevant timeout cannot silently reuse an incompatible authorization or result.
-- Audit data identifies which timeout applied and where time was spent.
+### Existing cache interface
 
-### Complete audit retention
+The R1 implementation should reuse the existing `ProjectCommandResultCache` interface.
 
-- [ ] Define a versioned invocation-record format for all existing tools.
-- [ ] Record session ID, tool call ID, tool name, extension version, and schema hash.
-- [ ] Record validated argument metadata with sensitive values redacted.
-- [ ] Record canonical paths and policy decisions where applicable.
-- [ ] Record confirmation outcomes, duration, exit status, output size, and truncation state.
-- [ ] Record validation-cache and duplicate-read decisions.
-- [ ] Avoid retaining environment values, source content, prompts, or complete command output.
-- [ ] Define retention and rotation behavior for local audit data.
-- [ ] Apply restrictive permissions to audit files and their parent directories.
-- [ ] Verify that imported session analysis can correlate records by session ID and tool call ID.
+Its first argument is already a string namespace, although it is currently named `sessionId`.
 
-### Session handoff metadata
+The disk-backed implementation can interpret that namespace as either a session namespace or a flow namespace without changing logical request keys.
 
-- [ ] Generate a compact summary of files and ranges read, hashes observed, files changed, commands run, and failures encountered.
-- [ ] Make handoff metadata usable by parent agents and subagents without copying source content.
-- [ ] Mark reread guidance as advisory.
-- [ ] Invalidate handoff evidence when observed file hashes no longer match.
-- [ ] Keep handoff metadata bounded and versioned.
+If clearer naming is needed, rename the implementation parameter internally or introduce a semantic alias without breaking existing injected test caches.
 
-### Audit and handoff acceptance criteria
+A separate persistence interface is not required unless atomic locking, eviction, or corruption recovery cannot be expressed cleanly behind the existing cache seam.
 
-- A failed call can be attributed to one invocation and one active schema.
-- Policy and confirmation outcomes are distinguishable without parsing prose.
-- Audit retention cannot expose secrets or duplicate large model context.
-- Handoffs provide reusable mechanical evidence while remaining safe when files change.
+### Verify authorization
 
-### Using existing tools during development
+The preferred authorization shape for R3 is one composed policy decision for the `verify` request.
 
-- [ ] Use policy-controlled `grep`, `find`, and `ls` for normal repository inspection.
-- [ ] Record operations that still require Bash and the reason each existing tool was insufficient.
-- [ ] Categorize Bash calls by inspection, validation, Git, filesystem, package, and exceptional operations.
-- [ ] Record whether an existing narrow tool could have performed each operation.
-- [ ] Track successful task completion and workaround cost alongside Bash-call count.
-- [ ] Use observed gaps to guide future discussions without preselecting new tools.
+The underlying format, lint, typecheck, and test commands must still be resolved and recorded individually.
 
-### Comprehensive failure-path exercises
+A single gate avoids four prompts while preserving the policy boundary around the complete operation.
 
-- [ ] Test empty and unsafe paths.
-- [ ] Test empty and unsafe revisions.
-- [ ] Test invalid Git input variants and legacy compatibility.
-- [ ] Test missing files, directory reads, and out-of-range reads.
-- [ ] Test invalid search expressions and output truncation.
-- [ ] Test stale, ambiguous, overlapping, and no-op edits.
-- [ ] Test workspace and symlink escapes.
-- [ ] Test move destination collisions and delete authorization.
-- [ ] Test confirmation timeout, policy denial, and non-interactive behavior.
-- [ ] Test duplicate validation requests and relevant-input invalidation.
-- [ ] Test duplicate unchanged reads and hash invalidation.
-- [ ] Test process timeout, cancellation, and mutating-command authorization.
+### Verify budget
 
-### Post-implementation session analysis
+`verify` should receive a separate configurable aggregate budget and per-step timeout rather than changing the defaults for ordinary `project_command` calls.
 
-- [ ] Re-run the session analysis using the same baseline methodology as `findings.md`.
-- [ ] Compare failed tool-result rates.
-- [ ] Compare malformed input, policy, confirmation, timeout, and command-failure categories.
-- [ ] Compare unchanged validation reruns.
-- [ ] Compare exact duplicate and repeated reads.
-- [ ] Compare Bash usage for operations covered by existing tools.
-- [ ] Compare cache-read tokens, output tokens, cost, completion time, and tool-call volume.
-- [ ] Check for increased workarounds, unresolved tasks, or subagent count caused by over-restriction.
-- [ ] Revise priorities from measured results rather than assumptions.
+Its model-facing result should be bounded and should return the failure tail for the failing step.
 
-### Internal-use and measurement acceptance criteria
+Streaming is not required for the first design if the full output remains retrievable by a stable ref after R4 is implemented.
 
-- Failure and duplicate rates decline without reducing successful task completion.
-- Validation calls per coherent edit batch decline.
-- Existing narrow tools replace equivalent Bash usage where practical.
-- Audit data is sufficient to explain regressions and adjust existing behavior.
-- Future capability discussions are grounded in recorded gaps rather than a predetermined tool list.
+### R8 priority
 
-## Required test strategy
+R8 is deferred.
 
-### Unit tests
+R2 and R3 remove more result tokens and duplicate validation work per unit of implementation effort.
 
-- [x] Test canonical metadata serialization and hashing.
-- [x] Test result-category mapping as pure functions.
-- [x] Test diagnostic extraction as pure functions.
-- [x] Test result-fingerprint stability and sensitivity.
-- [x] Test cache eligibility and cache-decision functions.
-- [x] Test force normalization and exclusion from result fingerprints.
+R8 should be reconsidered after the R2 and R3 measurements and after the consuming read-manifest work is available.
 
-### Integration tests
+### Flow-end signal
 
-- [x] Exercise session inventory through a realistic mocked Pi extension lifecycle.
-- [x] Execute the same project command twice and assert that the executor runs once when reuse is eligible.
-- [x] Modify a relevant source file and assert that the command executes again.
-- [x] Modify package metadata or a relevant lockfile and assert invalidation where applicable.
-- [x] Change policy after an initial execution and assert that the cached result cannot bypass the new decision.
-- [x] Run a mutating command twice and assert that both requests execute.
-- [x] Simulate timeout, spawn failure, cancellation, policy denial, and confirmation timeout.
-- [x] Verify that none of those outcomes becomes reusable.
-- [x] Verify that separate session IDs do not share results.
-- [x] Verify that `force: true` executes and records a forced bypass.
+A flow-end signal is not required for the cache design.
 
-### Regression validation
+TTL and size-based eviction are sufficient for correctness.
 
-- [x] Run focused tests for every changed project-command module.
-- [x] Run the complete test suite.
-- [x] Run lint, which includes TypeScript checking in this project.
-- [x] Run the formatter check without rewriting unrelated analysis files.
-- [x] Inspect the final Git diff for accidental contract or policy changes.
+An optional `flow.json` liveness hint may improve cleanup but must never be required input or a reason for a request to fail.
 
-## Implementation sequence
+### Downscoped evidence requests
 
-1. Implement active tool inventory and policy coverage tests. **Completed.**
-2. Introduce structured project-command errors and result categories. **Completed.**
-3. Add project-command diagnostics, duration, scope, and retry metadata. **Completed.**
-4. Define command reuse policies and the relevant-input interface. **Completed.**
-5. Add versioned result fingerprints. **Completed.**
-6. Add session-local result storage and `force` behavior. **Completed.**
-7. Enable reuse command by command only after each command's input and mutation tests pass. **Completed for the currently approved reusable definitions.**
-8. Extend the stable error contract to the other existing tool families. **Completed.**
-9. Add compact measurement records and refine behavior from evidence.
+The preferred behavior for a request asking for `flow` scope when the spawner grants only `session` scope is an actionable rejection.
 
-After step 9, select deferred workstreams from measured impact, security risk, and implementation dependencies.
-Do not interpret their order in this document as a commitment to implement them sequentially.
+A rejection makes the narrowing-only rule visible and avoids allowing a caller to mistake a session-scoped result for a flow-scoped result.
 
-## First implementation target
+The response must include the effective scope and record it regardless of whether the final implementation chooses rejection or silent downscope.
 
-The first implementation target was Phase 1.
+## No-environment fallback guarantee
 
-It added:
+When none of the orchestration environment variables is present, `bash-tools` must use the existing process-local, session-scoped cache path and must not perform flow-store reads or writes.
 
-- The runtime extension version loaded from package metadata.
-- Canonical schema serialization and SHA-256 hashing.
-- Session-start inventory records for configured and active tools.
-- Source provenance and inventory version metadata.
-- Explicit filesystem-policy coverage tests.
+The existing namespace, authorization sequence, cache decisions, command execution, and result formatting remain unchanged except where an explicitly approved R2 contract change intentionally changes `git_diff` defaults.
 
-It should not change project-command execution, schemas, authorization identities, or success-result shapes.
-It should not add result caching.
-It should not add new tools or platform support.
+No role, flow, delegation, scope, persistence, or cross-process behavior may be inferred from the absence of the environment.
 
-The first pull request is complete when a recorded session inventory can identify the exact active schema and provenance for every available tool without storing sensitive or high-volume content.
+A normal interactive Pi session therefore remains a zero-change path for all future orchestration features.
+
+## Priority ranking
+
+The implementation priority from the `bash-tools` side is:
+
+1. **R5 - Remove the schema tax.** It eliminates wasted retries and interface-friction steps immediately.
+2. **R2 - Bounded diff by default.** It removes the largest measured tool-result token source.
+3. **R1a - Spawner-set evidence scope.** It is a safety prerequisite for any flow-scoped reuse.
+4. **R1 - Flow-scoped result cache backend.** It enables cross-process reuse after scope enforcement is in place.
+5. **R3 - Composite verification.** It targets the largest repeated validation-call pattern once shared storage exists.
+6. **R7 - Observability join keys.** It makes the orchestration savings and safety properties measurable.
+7. **R4 - Tool-issued validation refs.** It makes validation evidence portable and resolvable after the shared store exists.
+8. **R6 - Actionable edit, resolution, and policy errors.** It addresses meaningful interface friction but has a smaller measured token impact.
+9. **R8 - Batch reads and read references.** It is valuable but overlaps with the lower-cost read-manifest work and follows larger R2 and R3 wins.
+10. **R9 - Curated read-only probe surface.** It addresses a smaller hallucinated-tool signal and should follow evidence from the higher-impact work.
+
+R1 and R1a should be released together for cross-process reuse even though R1a is listed first in the safety ranking.
+
+R2's bounded and summary-first behavior is current work.
+
+R2's cross-process summary sharing waits for the R1 backend and must not be implemented through an implicit or model-selected flow scope.
+
+## Files expected to change in the current batch
+
+- `src/tools/project-command/schema.ts` and related schema-definition modules.
+- `src/tools/project-command/schema/validation.ts`.
+- `src/tools/project-command/parameters/` modules as required by the command-shape audit.
+- `src/tools/git/diff/tool.ts`.
+- `src/tools/git/output.ts` or focused Git diff helper modules.
+- Existing Git and project-command test modules, with new focused tests where an existing test file is not appropriate.
+
+The exact file list may be narrowed after the implementation code and current test seams are inspected.
+
+## Completion checklist
+
+- [ ] R5 and the current non-persistent portion of R2 are implemented.
+- [ ] Tests cover valid, invalid, repeated, staged, unstaged, scoped, full, and truncated requests.
+- [ ] No-environment behavior remains compatible with the documented fallback guarantee.
+- [ ] Authorization and confirmation gates remain intact.
+- [ ] Lint, typechecking, formatting, focused tests, and the full test suite pass.
+- [ ] Before-and-after measurements are recorded for the targeted baseline signals.
+- [ ] Deferred workstreams remain untouched unless explicitly authorized in a later plan update.

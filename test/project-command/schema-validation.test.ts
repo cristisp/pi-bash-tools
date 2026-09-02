@@ -46,6 +46,10 @@ it("accepts only the catalog command IDs and supported package-script options", 
     commandId: "node_format",
     variant: "check",
   });
+  expect(validateProjectCommandInput({ commandId: "node_format", variant: "check:ci" })).toEqual({
+    commandId: "node_format",
+    variant: "check:ci",
+  });
 });
 
 it("rejects arbitrary command fields and inline execution forms", () => {
@@ -89,6 +93,52 @@ it("rejects arbitrary command fields and inline execution forms", () => {
   ];
   for (const request of invalidRequests) {
     expect(() => validateProjectCommandInput(request)).toThrow(/invalid/iu);
+  }
+});
+
+it("normalizes exact string booleans without changing force semantics", () => {
+  expect(validateProjectCommandInput({ commandId: "workspace_path", force: "true" })).toEqual({
+    commandId: "workspace_path",
+    force: true,
+  });
+  expect(validateProjectCommandInput({ commandId: "workspace_path", force: "false" })).toEqual({
+    commandId: "workspace_path",
+  });
+  expect(() => validateProjectCommandInput({ commandId: "workspace_path", force: "TRUE" })).toThrow(
+    /force|invalid/iu,
+  );
+  expect(() => validateProjectCommandInput({ commandId: "workspace_path", force: 1 })).toThrow(
+    /force|invalid/iu,
+  );
+});
+
+it("describes valid command IDs and deterministic nearest and legacy matches", () => {
+  expect(() => validateProjectCommandInput({ commandId: "node_formatt" })).toThrow(/node_format/u);
+  try {
+    validateProjectCommandInput({ commandId: "node_format_check" });
+    throw new Error("expected legacy command ID to fail");
+  } catch (error) {
+    expect(error).toMatchObject({
+      message: expect.stringContaining('{ commandId: "node_format", variant: "check" }'),
+      details: {
+        validCommandIds: expect.arrayContaining(["node_format"]),
+        nearestCommandId: "node_format",
+        canonicalCommandId: "node_format",
+        canonicalVariant: "check",
+        correctedExample: { commandId: "node_format", variant: "check" },
+        remediation: expect.stringContaining("instead of embedding the variant"),
+      },
+    });
+  }
+  try {
+    validateProjectCommandInput({ commandId: "not_a_command" });
+    throw new Error("expected unknown command ID to fail");
+  } catch (error) {
+    expect(error).toMatchObject({
+      details: {
+        validCommandIds: expect.arrayContaining(["workspace_path", "node_format"]),
+      },
+    });
   }
 });
 

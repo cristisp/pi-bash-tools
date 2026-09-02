@@ -1,6 +1,7 @@
 import { readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
+import type { GitStatusChangedOutput, GitStatusOutput } from "../../src/tools/git/status/output.ts";
 import { createGitStatusTool } from "../../src/tools/git/status/tool.ts";
 import {
   gitIntegration,
@@ -12,6 +13,11 @@ import {
 } from "./integration-fixtures.ts";
 
 const fixtures = createGitIntegrationFixtures();
+
+function changed(details: GitStatusOutput): GitStatusChangedOutput {
+  if (details.unchanged) throw new Error("expected a rendered status");
+  return details;
+}
 
 afterEach(() => fixtures.cleanup());
 
@@ -65,7 +71,7 @@ gitIntegration("Git status with a real Git process", () => {
 
     const tool = createGitStatusTool(makeRealGitExec());
     const all = await tool.execute("status", {}, undefined, undefined, repository.context);
-    expect(all.details.entries).toEqual(
+    expect(changed(all.details).entries).toEqual(
       expect.arrayContaining([
         {
           path: "renamed file.txt",
@@ -84,7 +90,7 @@ gitIntegration("Git status with a real Git process", () => {
       undefined,
       repository.context,
     );
-    expect(filtered.details.entries).toEqual([
+    expect(changed(filtered.details).entries).toEqual([
       { path: "renamed file.txt", indexStatus: "A", worktreeStatus: " " },
     ]);
   });
@@ -108,7 +114,7 @@ gitIntegration("Git status with a real Git process", () => {
       repository.context,
     );
 
-    expect(response.details.entries).toHaveLength(2000);
+    expect(changed(response.details).entries).toHaveLength(2000);
     expect(response.details.output.truncated).toBe(true);
     expect(response.details.output.totalBytes).toBeGreaterThan(0);
     expect(response.details.output.totalLines).toBe(2001);
