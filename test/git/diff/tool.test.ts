@@ -131,6 +131,16 @@ it("defaults to a bounded summary with status, stat, and hunk headers but no bod
   expect(JSON.stringify(response.details)).not.toContain("old body");
   expect(JSON.stringify(response.details)).not.toContain("new body");
   expect(calls.slice(1).map((call) => call[3])).toEqual(["status", "diff", "diff"]);
+  expect(calls.find((call) => call.includes("--stat"))).toEqual([
+    "--no-optional-locks",
+    "-c",
+    "core.fsmonitor=false",
+    "diff",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--stat",
+    "--",
+  ]);
 });
 
 it("filters summary status to the selected staged or worktree column", async () => {

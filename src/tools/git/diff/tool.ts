@@ -87,9 +87,9 @@ function statusArgs(paths: readonly string[]): string[] {
 }
 
 function diffStatArgs(stagedMode: boolean, paths: readonly string[]): string[] {
-  const args = ["diff", "--no-ext-diff", "--no-textconv", "--binary"];
+  const args = ["diff", "--no-ext-diff", "--no-textconv"];
   if (stagedMode) args.push("--cached");
-  args.push("--no-patch", "--stat", "--", ...paths);
+  args.push("--stat", "--", ...paths);
   return args;
 }
 
