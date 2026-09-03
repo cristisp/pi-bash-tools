@@ -831,7 +831,7 @@ export async function runReusedAgent(
 			sessionFile: entry.sessionFile,
 			parentSession,
 			reused: true,
-			reuseCount: entry.reuseCount ?? 0,
+			reuseCount: findEntry(label)?.reuseCount ?? entry.reuseCount ?? 0,
 			aborted: abortedRun,
 		});
 		if (relaunchTmp) {

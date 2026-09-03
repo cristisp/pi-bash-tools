@@ -275,7 +275,8 @@ append-only telemetry log:
 - `~/.pi/agent/subagent-herdr.telemetry.jsonl` - one record per delegation turn:
   identity, outcome (`settled` / `failed` / `aborted`), usage, tool-call and
   failed-tool-call counts, repeated reads, turns, and time spent waiting on
-  approvals or steers
+  approvals or steers. `reuseCount` is the session's reuse count after this turn,
+  recorded from the registry, so `reused: true` implies `reuseCount > 0`
 
 Flow directories idle past `flowRetentionDays` are pruned at session start. The
 store is best-effort: when it is unwritable, delegation works normally and only

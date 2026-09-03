@@ -451,6 +451,16 @@ describe('runReusedAgent - reuse accounting', () => {
 			tasks: ['next task'],
 		});
 	});
+
+	it('records the post-increment reuse count in the telemetry record', async () => {
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'working' });
+		registerEntry(makeRegistryEntry({ status: 'done', reuseCount: 2 }));
+		await reuseCall();
+		const records = readTelemetryRecords();
+		const last = records[records.length - 1];
+		expect(last).toMatchObject({ label: 'worker-1', reused: true, reuseCount: 3 });
+		expect(last?.reuseCount).toBe(readRegistry().tabs['ws1:worker-1']?.reuseCount);
+	});
 });
 
 describe('delegation identity', () => {

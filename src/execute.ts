@@ -131,7 +131,7 @@ export const SubagentParams = Type.Object({
 	acceptanceCriteria: Type.Optional(
 		Type.Array(Type.String(), {
 			description:
-				'Acceptance-criteria ids this delegation must satisfy (for example ["F-001","F-002"]). Recorded and exported to the child as PI_ORCHESTRATION_CRITERIA.',
+				'Acceptance-criteria ids this delegation must satisfy (for example ["AC-001","AC-002"]). Recorded and exported to the child as PI_ORCHESTRATION_CRITERIA.',
 		}),
 	),
 	evidenceScope: Type.Optional(
