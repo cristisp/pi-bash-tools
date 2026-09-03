@@ -25,6 +25,10 @@ function runSummaryMeta(e: RegistryEntry): string | null {
 	const parts = [`tools:${run.toolCalls}`];
 	if (run.failedToolCalls) parts.push(`tool-errors:${run.failedToolCalls}`);
 	if (run.repeatedReads) parts.push(`rereads:${run.repeatedReads}`);
+	if (run.manifestRereads) parts.push(`manifest-rereads:${run.manifestRereads}`);
+	if (run.discoveryCalls !== undefined) parts.push(`discovery:${run.discoveryCalls}`);
+	if (run.fullValidationPasses !== undefined) parts.push(`validation:${run.fullValidationPasses}`);
+	if (run.outputTokens !== undefined) parts.push(`output:${formatTokens(run.outputTokens)}`);
 	if (run.turns) parts.push(`turns:${run.turns}`);
 	if (run.cost) parts.push(`$${run.cost.toFixed(4)}`);
 	const blocked = (run.approvalMs ?? 0) + (run.steerMs ?? 0);
@@ -38,10 +42,23 @@ function identityMeta(e: RegistryEntry): string[] {
 	const delegation = shortId(e.delegationId);
 	if (delegation) meta.push(`delegation:${delegation}`);
 	if (e.flowId) meta.push(`flow:${e.flowId}`);
+	if (e.rootSession) meta.push(`root:${e.rootSession}`);
+	if (e.parentPaneId) meta.push(`parent-pane:${e.parentPaneId}`);
 	if (typeof e.tier === 'number') meta.push(`tier:${e.tier}`);
 	if (e.workflowMode) meta.push(`mode:${e.workflowMode}`);
 	if (e.reviewMode) meta.push(`review:${e.reviewMode}`);
+	if (e.scope?.paths?.length) meta.push(`scope:${e.scope.paths.join(',')}`);
+	if (e.scope?.hunks?.length) meta.push(`hunks:${e.scope.hunks.join(',')}`);
+	if (e.scope?.outOfScope?.length) meta.push(`out-of-scope:${e.scope.outOfScope.join(',')}`);
+	if (e.reviewSurfacePath) meta.push(`surface:${e.reviewSurfacePath}`);
+	const manifestPath =
+		e.readManifest?.persistedPath ??
+		e.readManifest?.manifestPath ??
+		e.lastRun?.readManifest?.persistedPath ??
+		e.lastRun?.readManifest?.manifestPath;
+	if (manifestPath) meta.push(`manifest:${manifestPath}`);
 	if (e.evidenceScope) meta.push(`evidence:${e.evidenceScope}`);
+	if (e.budget) meta.push(`budget:${e.budget.outcome}/${e.budget.breaches.length}`);
 	return meta;
 }
 

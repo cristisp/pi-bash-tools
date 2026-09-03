@@ -46,6 +46,25 @@ describe('renderSubagentCall', () => {
 		expect(text).toContain('<muted> [user]</muted>');
 		expect(text).toContain('<dim>do the thing</dim>');
 	});
+	it('renders orchestration identity on calls', () => {
+		const text = textOf(
+			renderSubagentCall(
+				{
+					agent: 'worker',
+					task: 'do the thing',
+					tier: 2,
+					taskId: 'T-001',
+					workflowMode: 'remediation',
+					reviewMode: 'validation',
+				},
+				theme,
+			),
+		);
+		expect(text).toContain('tier:2');
+		expect(text).toContain('task:T-001');
+		expect(text).toContain('mode:remediation');
+		expect(text).toContain('review:validation');
+	});
 	it('truncates long tasks', () => {
 		const long = 'x'.repeat(100);
 		const text = textOf(renderSubagentCall({ agent: 'worker', task: long }, theme));
@@ -222,6 +241,37 @@ describe('renderSubagentResult - single collapsed', () => {
 		expect(text).toContain('(no output)');
 		expect(text).toContain('1 turn ↑10 ↓20 $0.0010 ctx:30');
 		expect(text).toContain('time:1.5s tools:2 msgs:3 io:10/20 max-ctx:1.0k');
+	});
+	it('renders explicit root and parent-pane attribution', () => {
+		const text = textOf(
+			renderResult(
+				singleDetails([
+					makeSingleResult({
+						delegationId: 'delegation-1',
+						rootSession: '/tmp/root.jsonl',
+						parentPaneId: 'ws1:p0',
+					}),
+				]),
+				false,
+			),
+		);
+		expect(text).toContain('delegation-1');
+		expect(text).toContain('parent pane ws1:p0');
+		expect(text).toContain('root session /tmp/root.jsonl');
+	});
+	it('renders hunk and out-of-scope attribution', () => {
+		const text = textOf(
+			renderResult(
+				singleDetails([
+					makeSingleResult({
+						scope: { hunks: ['src/run.ts@@1,4'], outOfScope: ['docs/'] },
+					}),
+				]),
+				false,
+			),
+		);
+		expect(text).toContain('hunks src/run.ts@@1,4');
+		expect(text).toContain('out of scope docs/');
 	});
 	it('renders a failed single result with stop reason', () => {
 		const r = makeSingleResult({

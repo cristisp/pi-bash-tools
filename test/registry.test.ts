@@ -255,6 +255,31 @@ describe('listSubagents', () => {
 		expect(listSubagents({ verbose: true })).toContain('report: /tmp/reports/worker-1-1.md');
 	});
 
+	it('shows scope, review surface, and persisted manifest metadata', () => {
+		registerEntry(
+			makeRegistryEntry({
+				scope: { paths: ['src/run.ts'], hunks: ['@@ -1 +1 @@'], outOfScope: ['docs'] },
+				reviewSurfacePath: '/tmp/review-surface.md',
+				readManifest: {
+					v: 1,
+					manifestPath: '/tmp/read-manifest.json',
+					persistedPath: '/tmp/persisted-read-manifest.json',
+					artifactPaths: [],
+					allowedPaths: ['src/run.ts'],
+					priorReports: [],
+					establishedEvidence: [],
+					doNotReread: [],
+				},
+			}),
+		);
+		const out = listSubagents({ verbose: true });
+		expect(out).toContain('scope:src/run.ts');
+		expect(out).toContain('hunks:@@ -1 +1 @@');
+		expect(out).toContain('out-of-scope:docs');
+		expect(out).toContain('surface:/tmp/review-surface.md');
+		expect(out).toContain('manifest:/tmp/persisted-read-manifest.json');
+	});
+
 	it('says when a session left no report on disk', () => {
 		registerEntry(makeRegistryEntry({}));
 		expect(listSubagents({ verbose: true })).toContain('report: none');

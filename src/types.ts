@@ -15,6 +15,59 @@ export interface BlockEventInfo {
 
 export type RegistryStatus = 'running' | 'done';
 
+export type BudgetPolicy = 'steer' | 'abort';
+
+export type BudgetMetric =
+	| 'toolCalls'
+	| 'discoveryCalls'
+	| 'fullValidationPasses'
+	| 'failedToolCalls'
+	| 'repeatedReads'
+	| 'outputTokens'
+	| 'wallTimeMs';
+
+export type BudgetOutcome = 'within' | 'steered' | 'report_only' | 'aborted';
+
+export interface RoleBudget {
+	toolCalls: number;
+	discoveryCalls: number;
+	fullValidationPasses: number;
+	failedToolCalls: number;
+	repeatedReads: number;
+	outputTokens: number;
+	wallTimeMs: number;
+	budgetPolicy: BudgetPolicy;
+}
+
+export interface BudgetUsage {
+	toolCalls: number;
+	discoveryCalls: number;
+	fullValidationPasses: number;
+	failedToolCalls: number;
+	repeatedReads: number;
+	outputTokens: number;
+	wallTimeMs: number;
+}
+
+export interface BudgetBreach {
+	metric: BudgetMetric;
+	limit: number;
+	observed: number;
+	at: number;
+}
+
+export interface BudgetSummary {
+	role: string;
+	limits: RoleBudget;
+	usage: BudgetUsage;
+	outcome: BudgetOutcome;
+	breaches: BudgetBreach[];
+	steerIssued: boolean;
+	reportOnly: boolean;
+	/** Opaque provenance token for the automatic steer message emitted in this turn. */
+	automaticSteerId?: string;
+}
+
 export type EvidenceScope = 'session' | 'flow';
 
 export type WorkflowMode = 'initial' | 'remediation';
@@ -33,16 +86,42 @@ export interface LedgerRunInfo {
 	injection?: LedgerInjection;
 }
 
+export interface ReviewScope {
+	paths?: string[];
+	hunks?: string[];
+	outOfScope?: string[];
+}
+
+export interface ReadManifest {
+	v: 1;
+	flowId?: string;
+	manifestPath?: string;
+	persistedPath?: string;
+	artifactPaths: string[];
+	allowedPaths: string[];
+	priorReports: string[];
+	establishedEvidence: string[];
+	doNotReread: string[];
+}
+
 /** Orchestration context supplied by the delegating call. */
 export interface OrchestrationContext {
 	/** Stable task identity, preserved across remediation attempts of the same work. */
 	taskId?: string;
+	/** Session file of the root Pi session that owns this flow. */
+	rootSession?: string;
+	/** Pane that directly launched this delegation. */
+	parentPaneId?: string;
 	tier?: number;
 	workflowMode?: WorkflowMode;
 	reviewMode?: ReviewMode;
 	acceptanceCriteria?: string[];
 	/** Requested evidence scope; may only narrow the configured scope. */
 	evidenceScope?: EvidenceScope;
+	/** Files and hunks assigned to this delegation for focused review. */
+	scope?: ReviewScope;
+	/** Flow-owned snapshot of the review surface. */
+	reviewSurfacePath?: string;
 }
 
 /** Identity resolved for one delegation, exported into the child environment. */
@@ -60,17 +139,25 @@ export interface RunSummary {
 	toolCalls: number;
 	failedToolCalls: number;
 	repeatedReads: number;
+	manifestRereads?: number;
 	turns: number;
 	cost: number;
 	contextTokens: number;
 	blockEvents?: number;
 	approvalMs?: number;
 	steerMs?: number;
+	discoveryCalls?: number;
+	fullValidationPasses?: number;
+	outputTokens?: number;
 	reportTokens?: number;
 	report?: ReportSummary;
 	/** Ledger revision written for this turn, and how the pointer reached the child. */
 	ledgerRevision?: number;
 	ledgerInjection?: LedgerInjection;
+	scope?: ReviewScope;
+	reviewSurfacePath?: string;
+	readManifest?: ReadManifest;
+	budget?: BudgetSummary;
 }
 
 /** Measured size and provenance of a child report handed back to the parent. */
@@ -113,18 +200,26 @@ export interface RegistryEntry {
 	delegationId?: string;
 	/** Shared by every delegation spawned by one root session. */
 	flowId?: string;
+	/** Session file of the root Pi session that owns this entry. */
+	rootSession?: string;
+	/** Pane that directly launched this entry. */
+	parentPaneId?: string;
 	tier?: number;
 	workflowMode?: WorkflowMode;
 	reviewMode?: ReviewMode;
 	acceptanceCriteria?: string[];
 	taskId?: string;
 	evidenceScope?: EvidenceScope;
+	scope?: ReviewScope;
+	reviewSurfacePath?: string;
+	readManifest?: ReadManifest;
 	/**
 	 * Ledger revision this session was launched against. A reuse turn whose ledger head has advanced
 	 * past it gets a fresh pointer in its task text, because the appended system prompt is frozen.
 	 */
 	ledgerRevisionAtLaunch?: number;
 	lastRun?: RunSummary;
+	budget?: BudgetSummary;
 }
 
 export interface FlowParticipant {
@@ -167,6 +262,7 @@ export interface ExecutionMetrics {
 	toolCalls: number;
 	failedToolCalls: number;
 	repeatedReads: number;
+	manifestRereads?: number;
 	messageCount: number;
 	taskChars: number;
 	outputChars: number;
@@ -175,6 +271,9 @@ export interface ExecutionMetrics {
 	blockEvents: number;
 	approvalMs: number;
 	steerMs: number;
+	discoveryCalls?: number;
+	fullValidationPasses?: number;
+	outputTokens?: number;
 }
 
 export interface TelemetryRecord {
@@ -193,6 +292,10 @@ export interface TelemetryRecord {
 	acceptanceCriteria?: string[];
 	evidenceScope: EvidenceScope;
 	parentSession?: string;
+	/** Explicit root session attribution; normally the same as parentSession. */
+	rootSession?: string;
+	/** Pane that directly launched this child. */
+	parentPaneId?: string;
 	childModel?: string;
 	reused: boolean;
 	reuseCount: number;
@@ -205,6 +308,10 @@ export interface TelemetryRecord {
 	report?: ReportSummary;
 	ledgerRevision?: number;
 	ledgerInjection?: LedgerInjection;
+	scope?: ReviewScope;
+	reviewSurfacePath?: string;
+	readManifest?: ReadManifest;
+	budget?: BudgetSummary;
 }
 
 export interface SingleResult {
@@ -230,7 +337,16 @@ export interface SingleResult {
 	blockedPreview?: string;
 	/** Delegation this turn belongs to; stable across reuses of the same session. */
 	delegationId?: string;
+	scope?: ReviewScope;
+	reviewSurfacePath?: string;
+	readManifest?: ReadManifest;
 	flowId?: string;
+	tier?: number;
+	workflowMode?: WorkflowMode;
+	reviewMode?: ReviewMode;
+	taskId?: string;
+	rootSession?: string;
+	parentPaneId?: string;
 	/** Accumulated user-interaction wait observed during this turn. */
 	blockDurations?: { count: number; approvalMs: number; steerMs: number };
 	/** Bounded report handed to the parent; full text persisted when a flow exists. */
@@ -238,6 +354,7 @@ export interface SingleResult {
 	/** Flow ledger revision written for this turn, and how its pointer reached the child. */
 	ledgerRevision?: number;
 	ledgerInjection?: LedgerInjection;
+	budget?: BudgetSummary;
 }
 
 export interface SubagentDetails {

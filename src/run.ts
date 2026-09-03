@@ -3,14 +3,18 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { withFileMutationQueue } from '@earendil-works/pi-coding-agent';
 import type { AgentConfig } from './agents.ts';
-import { getConfig } from './config.ts';
+import { getConfig, roleBudgetFor } from './config.ts';
 import {
 	delegationFromEntry,
+	ENV_FLOW,
+	ENV_ROOT_SESSION,
 	orchestrationEnv,
 	resolveDelegation,
 	type EvidenceScopePolicy,
 } from './delegation.ts';
 import { ensureFlow, recordFlowParticipant } from './flow.ts';
+import { ensureReviewSurface } from './scope.ts';
+import { manifestGuidance, writeReadManifest } from './manifest.ts';
 import {
 	appendLedgerRevision,
 	ledgerPrefixBlock,
@@ -41,6 +45,8 @@ import {
 } from './herdr.ts';
 import { pollSubagent } from './poll.ts';
 import { buildReportDigest, estimateTokens, writeRoleReport } from './report.ts';
+import { budgetSummaryFromMetrics } from './budget.ts';
+import { measureExecutionMetrics } from './metrics.ts';
 import {
 	allocateLabel,
 	findEntry,
@@ -56,6 +62,7 @@ import type {
 	DelegationContext,
 	OnUpdateCallback,
 	OrchestrationContext,
+	ReadManifest,
 	RegistryEntry,
 	RoleReport,
 	SingleResult,
@@ -79,6 +86,33 @@ function shellQuote(s: string): string {
 	return `'${s.replaceAll("'", "'\\''")}'`;
 }
 
+function scopeGuidance(delegation: DelegationContext): string {
+	const scope = delegation.scope;
+	const lines = ['## Assigned review scope'];
+	if (delegation.reviewSurfacePath)
+		lines.push(`Shared review surface snapshot: ${delegation.reviewSurfacePath}`);
+	if (scope?.paths?.length) lines.push(`In-scope paths: ${scope.paths.join(', ')}`);
+	if (scope?.hunks?.length) lines.push(`Assigned hunks: ${scope.hunks.join(', ')}`);
+	if (scope?.outOfScope?.length) lines.push(`Out of scope: ${scope.outOfScope.join(', ')}`);
+	if (!delegation.reviewSurfacePath && !scope) return '';
+	lines.push(
+		'Report only on the assigned scope. Do not broaden it without an explicit escalation.',
+	);
+	return lines.join('\n');
+}
+
+function scopedTask(
+	task: string,
+	delegation: DelegationContext,
+	readManifest?: ReadManifest,
+): string {
+	const sections = [
+		delegation.scope ? scopeGuidance(delegation) : '',
+		readManifest?.persistedPath ? manifestGuidance(readManifest.persistedPath) : '',
+	].filter(Boolean);
+	return sections.length > 0 ? `${sections.join('\n\n')}\n\n${task}` : task;
+}
+
 function buildLaunchCommand(
 	agents: AgentConfig,
 	model: string | undefined,
@@ -88,7 +122,7 @@ function buildLaunchCommand(
 	systemPromptPath: string | null,
 	delegation?: DelegationContext,
 ): string {
-	const env: Record<string, string> = { PI_SUBAGENT_NESTED: '1' };
+	const env: Record<string, string> = { PI_SUBAGENT_NESTED: '1', PI_SUBAGENT_LABEL: label };
 	if (delegation) Object.assign(env, orchestrationEnv(delegation));
 	const parts: string[] = Object.entries(env).map(([key, value]) => `${key}=${shellQuote(value)}`);
 	parts.push('pi');
@@ -102,15 +136,26 @@ function buildLaunchCommand(
 	return parts.join(' ');
 }
 
-function removeTempFiles(dir: string | null, filePath: string | null): void {
-	if (filePath)
-		try {
-			fs.unlinkSync(filePath);
-		} catch {}
+function removeTempFiles(
+	dir: string | null,
+	filePath: string | null,
+	extraPath?: string | null,
+): void {
+	for (const target of [filePath, extraPath]) {
+		if (target)
+			try {
+				fs.unlinkSync(target);
+			} catch {}
+	}
 	if (dir)
 		try {
 			fs.rmdirSync(dir);
 		} catch {}
+}
+
+function budgetAbortMessage(result: SingleResult): string {
+	const breaches = result.budget?.breaches.map((breach) => breach.metric).join(', ');
+	return `Budget enforcement aborted ${result.agent}${breaches ? ` after exceeding ${breaches}` : ''}.`;
 }
 
 // fallow-ignore-next-line complexity
@@ -122,8 +167,21 @@ async function applyOutcome(
 	label: string,
 	cleanup: boolean,
 ): Promise<'done' | 'aborted'> {
+	const budgetAborted = currentResult.budget?.outcome === 'aborted';
+	if (budgetAborted) {
+		currentResult.exitCode = 1;
+		if (!currentResult.stderr) currentResult.stderr = budgetAbortMessage(currentResult);
+	}
 	if (outcome === 'aborted') {
-		if (cleanup) {
+		if (budgetAborted) {
+			if (cleanup && tabId) await closeTab(tabId);
+			if (label)
+				updateRegistryEntry(label, {
+					status: 'done',
+					updatedAt: Date.now(),
+					...completionPatch(currentResult),
+				});
+		} else if (cleanup) {
 			if (tabId) await closeTab(tabId);
 			if (label) removeRegistryEntry(label);
 		}
@@ -148,48 +206,26 @@ async function applyOutcome(
 }
 
 function recordExecutionMetrics(result: SingleResult, startedAt: number): void {
-	let toolCalls = 0;
-	let failedToolCalls = 0;
-	let repeatedReads = 0;
-	let maxContextTokens = 0;
-	let turns = 0;
-	const readCounts = new Map<string, number>();
-	for (const message of result.messages) {
-		if (message.role === 'assistant') {
-			turns++;
-			for (const part of message.content) {
-				if (part.type !== 'toolCall') continue;
-				toolCalls++;
-				if (part.name === 'read') {
-					const args = part.arguments;
-					const filePath = typeof args.file_path === 'string' ? args.file_path : args.path;
-					if (typeof filePath === 'string') {
-						const key = `${filePath}:${String(args.offset ?? '')}:${String(args.limit ?? '')}`;
-						const count = readCounts.get(key) ?? 0;
-						if (count > 0) repeatedReads++;
-						readCounts.set(key, count + 1);
-					}
-				}
-			}
-			maxContextTokens = Math.max(maxContextTokens, message.usage.totalTokens || 0);
-		} else if (message.role === 'toolResult' && message.isError) {
-			failedToolCalls++;
-		}
-	}
-	result.metrics = {
-		durationMs: Math.max(0, Date.now() - startedAt),
-		toolCalls,
-		failedToolCalls,
-		repeatedReads,
-		messageCount: result.messages.length,
-		taskChars: result.task.length,
-		outputChars: getFinalOutput(result.messages).length,
-		maxContextTokens,
-		turns,
-		blockEvents: result.blockDurations?.count ?? 0,
-		approvalMs: result.blockDurations?.approvalMs ?? 0,
-		steerMs: result.blockDurations?.steerMs ?? 0,
-	};
+	const metrics = measureExecutionMetrics(result, startedAt);
+	result.metrics = metrics;
+	const cfg = getConfig();
+	const limits = roleBudgetFor(result.agent, cfg);
+	const existing = result.budget;
+	result.budget = budgetSummaryFromMetrics(
+		result.agent,
+		limits,
+		{
+			toolCalls: metrics.toolCalls,
+			discoveryCalls: metrics.discoveryCalls ?? 0,
+			fullValidationPasses: metrics.fullValidationPasses ?? 0,
+			failedToolCalls: metrics.failedToolCalls,
+			repeatedReads: metrics.repeatedReads,
+			outputTokens: metrics.outputTokens ?? 0,
+			wallTimeMs: Math.max(metrics.durationMs, existing?.usage.wallTimeMs ?? 0),
+		},
+		existing,
+	);
+	if (result.budget.outcome === 'aborted') result.exitCode = 1;
 }
 
 function scopePolicy(cfg = getConfig()): EvidenceScopePolicy {
@@ -233,6 +269,7 @@ function attachRoleReport(
 		flowId: delegation.flowId,
 		label: label || delegation.role,
 		delegation,
+		readManifest: currentResult.readManifest,
 		output,
 	});
 	if (reportPath) report.path = reportPath;
@@ -264,11 +301,12 @@ function emitDelegationTelemetry(
 	context: DelegationFinishContext,
 ): void {
 	if (!delegation) return;
-	const outcome = context.aborted
-		? 'aborted'
-		: isFailedResult(currentResult)
-			? 'failed'
-			: 'settled';
+	const outcome =
+		context.aborted || currentResult.budget?.outcome === 'aborted'
+			? 'aborted'
+			: isFailedResult(currentResult)
+				? 'failed'
+				: 'settled';
 	const childLedger = parseLedgerBlock(getFinalOutput(currentResult.messages));
 	const revision = appendLedgerRevision({
 		flowId: delegation.flowId,
@@ -307,13 +345,26 @@ function emitDelegationTelemetry(
 	);
 	if (!context.label) return;
 	recordFlowParticipant({ flowId: delegation.flowId, label: context.label, agent: context.agent });
-	if (currentResult.metrics)
-		updateRegistryEntry(context.label, {
-			lastRun: buildRunSummary(currentResult.metrics, currentResult.usage, currentResult.report, {
+	if (currentResult.metrics) {
+		const lastRun = buildRunSummary(
+			currentResult.metrics,
+			currentResult.usage,
+			currentResult.report,
+			{
 				revision: currentResult.ledgerRevision,
 				injection: currentResult.ledgerInjection,
-			}),
+			},
+			Date.now(),
+			currentResult.budget,
+		);
+		lastRun.scope = currentResult.scope;
+		lastRun.reviewSurfacePath = currentResult.reviewSurfacePath;
+		lastRun.readManifest = currentResult.readManifest;
+		updateRegistryEntry(context.label, {
+			lastRun,
+			...(currentResult.readManifest ? { readManifest: currentResult.readManifest } : {}),
 		});
+	}
 }
 
 function failedResult(
@@ -371,6 +422,20 @@ async function relaunchOrPrompt(
 	if (status === 'no-agent') {
 		if (!agent) return { kind: 'relaunch', error: 'no agent', tmp: null };
 		const taskTmp = await writePromptToTempFile(entry.agent, `Task: ${task}`);
+		let manifestPath: string | null = null;
+		let readManifest: ReadManifest | undefined;
+		if (delegation) {
+			try {
+				const manifest = await writeReadManifest(taskTmp.dir, delegation);
+				manifestPath = manifest.path;
+				readManifest = manifest.manifest;
+				await fs.promises.writeFile(
+					taskTmp.filePath,
+					`Task: ${task}\n\n${manifestGuidance(manifest.path)}`,
+					'utf8',
+				);
+			} catch {}
+		}
 		const command = buildLaunchCommand(
 			agent,
 			model,
@@ -386,22 +451,45 @@ async function relaunchOrPrompt(
 			promptPath: null,
 			taskDir: taskTmp.dir,
 			taskPath: taskTmp.filePath,
+			manifestPath,
+			readManifest,
 		};
 		return { kind: 'relaunch', error: launchError ?? '', tmp };
 	}
 	let promptError = '';
+	let manifestTmp: AgentTempFiles | null = null;
+	if (delegation?.scope) {
+		let tmp: { dir: string; filePath: string } | null = null;
+		try {
+			tmp = await writePromptToTempFile(entry.agent, 'read manifest follows');
+			const manifest = await writeReadManifest(tmp.dir, delegation);
+			manifestTmp = {
+				promptDir: null,
+				promptPath: null,
+				taskDir: tmp.dir,
+				taskPath: tmp.filePath,
+				manifestPath: manifest.path,
+				readManifest: manifest.manifest,
+			};
+		} catch {
+			if (tmp) removeTempFiles(tmp.dir, tmp.filePath);
+		}
+	}
+	const promptTask = manifestTmp?.manifestPath
+		? `${task}\n\n${manifestGuidance(manifestTmp.manifestPath)}`
+		: task;
 	for (let attempt = 0; attempt < 3; attempt++) {
 		try {
-			const resp = await herdrCli(['agent', 'prompt', paneId, task]);
+			const resp = await herdrCli(['agent', 'prompt', paneId, promptTask]);
 			const code = herdrErrorCode(resp);
-			if (!code) return { kind: 'prompt', error: '', tmp: null };
+			if (!code) return { kind: 'prompt', error: '', tmp: manifestTmp };
 			promptError = herdrErrorText(resp) || code;
 		} catch (err) {
 			promptError = (err as Error).message;
 		}
 		if (attempt < 2) await sleep(1000);
 	}
-	return { kind: 'prompt', error: promptError, tmp: null };
+	return { kind: 'prompt', error: promptError, tmp: manifestTmp };
 }
 
 // fallow-ignore-next-line complexity
@@ -410,25 +498,49 @@ interface AgentTempFiles {
 	promptPath: string | null;
 	taskDir: string;
 	taskPath: string;
+	manifestPath: string | null;
+	readManifest?: ReadManifest;
 }
 
 async function writeAgentTempFiles(
 	agent: AgentConfig,
 	task: string,
 	ledger?: LedgerPointer,
+	delegation?: DelegationContext,
 ): Promise<AgentTempFiles> {
 	let promptDir: string | null = null;
 	let promptPath: string | null = null;
-	const systemPrompt = ledger
-		? [agent.systemPrompt.trim(), ledgerPrefixBlock(ledger)].filter(Boolean).join('\n\n')
-		: agent.systemPrompt;
+	const taskTmp = await writePromptToTempFile(agent.name, `Task: ${task}`);
+	let manifestPath: string | null = null;
+	let readManifest: ReadManifest | undefined;
+	if (delegation) {
+		try {
+			const manifest = await writeReadManifest(taskTmp.dir, delegation);
+			manifestPath = manifest.path;
+			readManifest = manifest.manifest;
+		} catch {}
+	}
+	const systemPrompt = [
+		agent.systemPrompt.trim(),
+		ledger ? ledgerPrefixBlock(ledger) : '',
+		delegation ? scopeGuidance(delegation) : '',
+		manifestPath ? manifestGuidance(manifestPath) : '',
+	]
+		.filter(Boolean)
+		.join('\n\n');
 	if (systemPrompt.trim()) {
 		const tmp = await writePromptToTempFile(agent.name, systemPrompt);
 		promptDir = tmp.dir;
 		promptPath = tmp.filePath;
 	}
-	const taskTmp = await writePromptToTempFile(agent.name, `Task: ${task}`);
-	return { promptDir, promptPath, taskDir: taskTmp.dir, taskPath: taskTmp.filePath };
+	return {
+		promptDir,
+		promptPath,
+		taskDir: taskTmp.dir,
+		taskPath: taskTmp.filePath,
+		manifestPath,
+		readManifest,
+	};
 }
 
 async function createFreshSubagentTab(
@@ -446,6 +558,8 @@ async function createFreshSubagentTab(
 	currentResult.label = label;
 	currentResult.delegationId = delegation.delegationId;
 	if (delegation.flowId) currentResult.flowId = delegation.flowId;
+	if (delegation.rootSession) currentResult.rootSession = delegation.rootSession;
+	if (delegation.parentPaneId) currentResult.parentPaneId = delegation.parentPaneId;
 	const sessionPath = alloc.sessionFile;
 
 	const workspaceId = await resolveOwnWorkspace();
@@ -477,6 +591,8 @@ async function createFreshSubagentTab(
 		contextTokens: 0,
 		tasks: [task],
 		parentSession,
+		...(delegation.rootSession ? { rootSession: delegation.rootSession } : {}),
+		...(delegation.parentPaneId ? { parentPaneId: delegation.parentPaneId } : {}),
 		delegationId: delegation.delegationId,
 		...(delegation.flowId ? { flowId: delegation.flowId } : {}),
 		...(typeof delegation.tier === 'number' ? { tier: delegation.tier } : {}),
@@ -487,9 +603,12 @@ async function createFreshSubagentTab(
 			: {}),
 		...(delegation.taskId ? { taskId: delegation.taskId } : {}),
 		evidenceScope: delegation.evidenceScope,
+		scope: delegation.scope,
+		reviewSurfacePath: delegation.reviewSurfacePath,
+		...(currentResult.readManifest ? { readManifest: currentResult.readManifest } : {}),
 		...(ledgerRevisionAtLaunch === undefined ? {} : { ledgerRevisionAtLaunch }),
 	});
-	ensureFlow({ flowId: delegation.flowId, rootSession: parentSession });
+	ensureFlow({ flowId: delegation.flowId, rootSession: delegation.rootSession ?? parentSession });
 	recordFlowParticipant({ flowId: delegation.flowId, label, agent: agent.name });
 	return { paneId: created.paneId, tabId: created.tabId, label, sessionPath };
 }
@@ -540,16 +659,22 @@ async function launchFreshAgent(
 	currentResult: SingleResult,
 	delegation: DelegationContext,
 ): Promise<FreshAgentTab | null> {
+	if (!delegation.reviewSurfacePath)
+		delegation.reviewSurfacePath = ensureReviewSurface(delegation.flowId, cwd ?? defaultCwd);
+	currentResult.scope = delegation.scope;
+	currentResult.reviewSurfacePath = delegation.reviewSurfacePath;
 	const dispatch = recordLedgerDispatch(delegation, { reused: false });
 	if (dispatch) currentResult.ledgerInjection = 'prefix';
 	const tmp = await writeAgentTempFiles(
 		agent,
 		task,
 		getConfig().ledgerPointers ? dispatch : undefined,
+		delegation,
 	);
+	currentResult.readManifest = tmp.readManifest;
 	const cleanupTmp = (): void => {
 		removeTempFiles(tmp.promptDir, tmp.promptPath);
-		removeTempFiles(tmp.taskDir, tmp.taskPath);
+		removeTempFiles(tmp.taskDir, tmp.taskPath, tmp.manifestPath);
 	};
 	try {
 		const tab = await createFreshSubagentTab(
@@ -625,8 +750,17 @@ function initReusedSession(
 			stderr: '',
 			usage: makeEmptyUsage(),
 			label,
+			readManifest: entry.readManifest,
 			paneId: entry.paneId,
 			tabId: entry.tabId,
+			delegationId: entry.delegationId,
+			flowId: entry.flowId,
+			rootSession: entry.rootSession ?? entry.parentSession,
+			parentPaneId: entry.parentPaneId,
+			tier: entry.tier,
+			workflowMode: entry.workflowMode,
+			reviewMode: entry.reviewMode,
+			taskId: entry.taskId,
 		},
 	};
 }
@@ -743,6 +877,9 @@ export async function runSingleAgent(
 		role: agentName,
 		policy: scopePolicy(),
 		parentSession,
+		rootSession: process.env[ENV_ROOT_SESSION] ?? parentSession,
+		parentPaneId: HERDR_PANE_ID,
+		flowId: process.env[ENV_FLOW],
 		orchestration,
 	});
 	const model =
@@ -758,7 +895,21 @@ export async function runSingleAgent(
 		usage: makeEmptyUsage(),
 		model,
 		step,
+		...(orchestration?.tier !== undefined ? { tier: orchestration.tier } : {}),
+		...(orchestration?.workflowMode ? { workflowMode: orchestration.workflowMode } : {}),
+		...(orchestration?.reviewMode ? { reviewMode: orchestration.reviewMode } : {}),
+		...(orchestration?.taskId ? { taskId: orchestration.taskId } : {}),
 	};
+	currentResult.delegationId = delegation.delegationId;
+	currentResult.flowId = delegation.flowId;
+	currentResult.rootSession = delegation.rootSession;
+	currentResult.parentPaneId = delegation.parentPaneId;
+	currentResult.scope = delegation.scope;
+	currentResult.reviewSurfacePath = delegation.reviewSurfacePath;
+	currentResult.tier = delegation.tier;
+	currentResult.workflowMode = delegation.workflowMode;
+	currentResult.reviewMode = delegation.reviewMode;
+	currentResult.taskId = delegation.taskId;
 
 	let tabId: string | null = null;
 	let label = '';
@@ -786,6 +937,8 @@ export async function runSingleAgent(
 			promptPath: tab.promptPath,
 			taskDir: tab.taskDir,
 			taskPath: tab.taskPath,
+			manifestPath: tab.manifestPath,
+			readManifest: tab.readManifest,
 		};
 
 		await pollAndApply(
@@ -824,7 +977,7 @@ export async function runSingleAgent(
 		});
 		if (tmpFiles) {
 			removeTempFiles(tmpFiles.promptDir, tmpFiles.promptPath);
-			removeTempFiles(tmpFiles.taskDir, tmpFiles.taskPath);
+			removeTempFiles(tmpFiles.taskDir, tmpFiles.taskPath, tmpFiles.manifestPath);
 		}
 	}
 }
@@ -858,9 +1011,24 @@ export async function runReusedAgent(
 		return init;
 	}
 	const { entry, agent, currentResult } = init;
-	const delegation = delegationFromEntry(entry, { policy: scopePolicy(), orchestration });
+	const delegation = delegationFromEntry(entry, {
+		policy: scopePolicy(),
+		orchestration,
+		rootSession: entry.rootSession ?? parentSession,
+		parentPaneId: HERDR_PANE_ID,
+	});
+	if (!delegation.reviewSurfacePath)
+		delegation.reviewSurfacePath = ensureReviewSurface(delegation.flowId, entry.cwd || defaultCwd);
 	currentResult.delegationId = delegation.delegationId;
-	if (delegation.flowId) currentResult.flowId = delegation.flowId;
+	currentResult.flowId = delegation.flowId;
+	currentResult.rootSession = delegation.rootSession;
+	currentResult.parentPaneId = delegation.parentPaneId;
+	currentResult.scope = delegation.scope;
+	currentResult.reviewSurfacePath = delegation.reviewSurfacePath;
+	currentResult.tier = delegation.tier;
+	currentResult.workflowMode = delegation.workflowMode;
+	currentResult.reviewMode = delegation.reviewMode;
+	currentResult.taskId = delegation.taskId;
 	const model =
 		presetModels && Object.hasOwn(presetModels, entry.agent)
 			? presetModels[entry.agent]
@@ -876,10 +1044,17 @@ export async function runReusedAgent(
 			!entry.ledgerRevisionAtLaunch || (dispatch?.revision ?? 0) > entry.ledgerRevisionAtLaunch;
 		if (dispatch && advanced) currentResult.ledgerInjection = 'turn';
 		const turnTask = dispatch && advanced ? `${ledgerTurnLine(dispatch)}\n\n${task}` : task;
+		const scopedTurnTask = scopedTask(turnTask, delegation, currentResult.readManifest);
 		updateRegistryEntry(label, {
 			status: 'running',
 			updatedAt: Date.now(),
+			budget: undefined,
+			blockedSince: undefined,
+			blockReason: undefined,
+			blockedPreview: undefined,
 			delegationId: delegation.delegationId,
+			...(delegation.rootSession ? { rootSession: delegation.rootSession } : {}),
+			...(delegation.parentPaneId ? { parentPaneId: delegation.parentPaneId } : {}),
 			...(delegation.flowId ? { flowId: delegation.flowId } : {}),
 			...(typeof delegation.tier === 'number' ? { tier: delegation.tier } : {}),
 			...(delegation.workflowMode ? { workflowMode: delegation.workflowMode } : {}),
@@ -889,6 +1064,8 @@ export async function runReusedAgent(
 				: {}),
 			...(delegation.taskId ? { taskId: delegation.taskId } : {}),
 			evidenceScope: delegation.evidenceScope,
+			scope: delegation.scope,
+			reviewSurfacePath: delegation.reviewSurfacePath,
 			...(dispatch ? { ledgerRevisionAtLaunch: dispatch.revision } : {}),
 		});
 		recordTask(label, entry, task);
@@ -910,12 +1087,18 @@ export async function runReusedAgent(
 			model,
 			entry,
 			label,
-			turnTask,
+			scopedTurnTask,
 			paneId,
 			delegation,
 		);
 		if (!relaunch) throw new Error('relaunchOrPrompt returned no outcome');
 		relaunchTmp = relaunch.tmp;
+		if (relaunch.tmp?.readManifest) currentResult.readManifest = relaunch.tmp.readManifest;
+		if (currentResult.readManifest)
+			updateRegistryEntry(label, {
+				readManifest: currentResult.readManifest,
+				updatedAt: Date.now(),
+			});
 		if (relaunch.error) {
 			currentResult.exitCode = 1;
 			currentResult.stderr = `Could not ${relaunch.kind} subagent ${label} in pane ${paneId} (${relaunch.error}).`;
@@ -946,6 +1129,8 @@ export async function runReusedAgent(
 		return currentResult;
 	} finally {
 		recordExecutionMetrics(currentResult, startedAt);
+		if (!abortedRun && currentResult.exitCode !== 0 && label)
+			updateRegistryEntry(label, completionPatch(currentResult));
 		attachRoleReport(currentResult, delegation, label);
 		emitDelegationTelemetry(currentResult, delegation, {
 			label,
@@ -958,7 +1143,7 @@ export async function runReusedAgent(
 		});
 		if (relaunchTmp) {
 			removeTempFiles(relaunchTmp.promptDir, relaunchTmp.promptPath);
-			removeTempFiles(relaunchTmp.taskDir, relaunchTmp.taskPath);
+			removeTempFiles(relaunchTmp.taskDir, relaunchTmp.taskPath, relaunchTmp.manifestPath);
 		}
 	}
 }

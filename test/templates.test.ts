@@ -1,7 +1,31 @@
-import { describe, expect, it } from 'vitest';
+import * as fs from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { configPath } from '../src/config.ts';
 import { AGENT_TEMPLATES, renderAgentFile } from '../src/templates.ts';
+import { makeTempDir, stubEnv } from './helpers.ts';
 
 describe('renderAgentFile', () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	it('renders current role budgets when configuration changes after module load', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({ roleBudgets: { worker: { toolCalls: 3, fullValidationPasses: 1 } } }),
+		);
+		const worker = AGENT_TEMPLATES.find((template) => template.name === 'worker');
+		const out = renderAgentFile(worker!);
+
+		expect(out).toContain('Use up to 3 implementation tool calls');
+		expect(out).toContain('no more than 1 full validation passes');
+		expect(out).toContain('Live enforcement limits for worker: tool calls 3');
+		expect(out).not.toContain('Use up to 24 implementation tool calls');
+		expect(out).not.toContain('Live enforcement limits for worker: tool calls 24');
+	});
+
 	it('renders frontmatter with name, description, and tools but no model', () => {
 		const out = renderAgentFile(AGENT_TEMPLATES[0]);
 		expect(out).toContain('---');
@@ -34,7 +58,7 @@ describe('renderAgentFile', () => {
 			'validator',
 		]);
 	});
-	it('includes workflow classification and ledger guidance without duplicating system guidance', () => {
+	it('includes pointer-based ledger guidance and the child output contract', () => {
 		const ledgerFields = [
 			'workflow_version:',
 			'task_id:',
@@ -66,6 +90,15 @@ describe('renderAgentFile', () => {
 		for (const t of AGENT_TEMPLATES) {
 			expect(t.body, `${t.name} must carry workflow classification guidance`).toContain(
 				'## Workflow classification',
+			);
+			expect(t.body, `${t.name} must read the supplied ledger pointer`).toContain(
+				'Read the ledger at the pointer you were given',
+			);
+			expect(t.body, `${t.name} must describe the child ledger contribution`).toContain(
+				'Your response must include one fenced machine-readable ledger block',
+			);
+			expect(t.body, `${t.name} must not expect a ledger in the task`).not.toContain(
+				'The task should include a structured finding ledger',
 			);
 			for (const field of ledgerFields) {
 				expect(t.body, `${t.name} must carry ledger field ${field}`).toContain(field);
@@ -116,6 +149,9 @@ describe('renderAgentFile', () => {
 		expect(reviewer?.body).toContain('Use up to 12 read-only inspection calls');
 		expect(worker?.body).toContain(
 			'Increment attempt and record what changed since the previous attempt',
+		);
+		expect(worker?.body).toContain(
+			'Read the structured finding ledger from the pointer supplied by the delegating session',
 		);
 		expect(worker?.body).toContain('Use up to 24 implementation tool calls');
 		expect(validator?.body).toContain('Run each unchanged command once by default');

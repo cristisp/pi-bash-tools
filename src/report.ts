@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { flowReportsDir } from './flow.ts';
-import type { DelegationContext } from './types.ts';
+import type { DelegationContext, ReadManifest } from './types.ts';
 
 const FENCED_BLOCK = /```[ \t]*([A-Za-z0-9_-]*)[ \t]*\r?\n([\s\S]*?)```/g;
 const LEDGER_MARKER = /^[ \t]*workflow_version[ \t]*:/m;
@@ -105,6 +105,7 @@ export interface RoleReportWrite {
 	flowId?: string;
 	label: string;
 	delegation: DelegationContext;
+	readManifest?: ReadManifest;
 	output: string;
 	now?: number;
 }
@@ -127,6 +128,10 @@ export function writeRoleReport(write: RoleReportWrite): string | undefined {
 	if (delegation.reviewMode) meta.push(`- reviewMode: ${delegation.reviewMode}`);
 	if (delegation.acceptanceCriteria?.length)
 		meta.push(`- criteria: ${delegation.acceptanceCriteria.join(', ')}`);
+	if (delegation.scope) meta.push(`- scope: ${JSON.stringify(delegation.scope)}`);
+	if (delegation.reviewSurfacePath) meta.push(`- reviewSurface: ${delegation.reviewSurfacePath}`);
+	const manifestPath = write.readManifest?.persistedPath ?? write.readManifest?.manifestPath;
+	if (manifestPath) meta.push(`- readManifest: ${manifestPath}`);
 	const doc = `# Role report: ${write.label} (${delegation.role})\n\n${meta.join('\n')}\n- completedAt: ${new Date(now).toISOString()}\n- reportTokens: ~${estimateTokens(write.output)}\n\n---\n\n${write.output}\n`;
 	try {
 		fs.mkdirSync(dir, { recursive: true });

@@ -59,6 +59,9 @@ export interface SessionScan {
 	carryTokens: number;
 	/** Subagent result tokens a root session received in total. */
 	receivedTokens: number;
+	/** Root-session read requests targeting a flow report file. */
+	reportReads: number;
+	reportReadTimestamps: number[];
 }
 
 const REPORT_PATH_RE = /\[full report: ([^\]\s]+)\]/;
@@ -87,6 +90,63 @@ interface SessionMessage {
 	message?: { role?: string; toolName?: string; content?: unknown };
 }
 
+interface SessionContentBlock {
+	type?: string;
+	text?: string;
+	name?: string;
+	toolName?: string;
+	arguments?: unknown;
+	input?: unknown;
+}
+
+function contentBlocks(message: { content?: unknown }): SessionContentBlock[] {
+	return Array.isArray(message.content) ? (message.content as SessionContentBlock[]) : [];
+}
+
+function toolArguments(block: SessionContentBlock): Record<string, unknown> | null {
+	const value = block.arguments ?? block.input;
+	if (typeof value === 'string') {
+		try {
+			const parsed: unknown = JSON.parse(value);
+			return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+				? (parsed as Record<string, unknown>)
+				: null;
+		} catch {
+			return null;
+		}
+	}
+	return value && typeof value === 'object' && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: null;
+}
+
+function isFlowReportPath(value: unknown): value is string {
+	if (typeof value !== 'string') return false;
+	const segments = value.replaceAll('\\', '/').split('/').filter(Boolean);
+	return segments.some(
+		(segment, index) =>
+			segment === 'flows' &&
+			Boolean(segments[index + 1]) &&
+			segments[index + 2] === 'reports' &&
+			Boolean(segments[index + 3]?.endsWith('.md')) &&
+			index + 4 === segments.length,
+	);
+}
+
+function reportReadTimestamps(entry: SessionMessage): number[] {
+	if (entry.message?.role !== 'assistant') return [];
+	const at = Date.parse(String(entry.timestamp ?? '')) || 0;
+	return contentBlocks(entry.message)
+		.filter((block) => {
+			const type = block.type;
+			const name = block.name ?? block.toolName;
+			if (type !== 'toolCall' && type !== 'tool_use') return false;
+			if (name !== 'read') return false;
+			return isFlowReportPath(toolArguments(block)?.path);
+		})
+		.map(() => at);
+}
+
 export function scanSession(filePath: string, child: boolean): SessionScan {
 	const lines = readFileSync(filePath, 'utf8').split('\n').filter(Boolean);
 	const parsed: SessionMessage[] = [];
@@ -104,7 +164,16 @@ export function scanSession(filePath: string, child: boolean): SessionScan {
 		results: [],
 		carryTokens: 0,
 		receivedTokens: 0,
+		reportReads: 0,
+		reportReadTimestamps: [],
 	};
+	if (!child) {
+		for (const entry of parsed) {
+			const timestamps = reportReadTimestamps(entry);
+			scan.reportReadTimestamps.push(...timestamps);
+		}
+		scan.reportReads = scan.reportReadTimestamps.length;
+	}
 	const assistantAt: number[] = [];
 	parsed.forEach((entry, index) => {
 		if (entry.message?.role === 'assistant') assistantAt.push(index);
@@ -200,6 +269,9 @@ export interface Measurement {
 	};
 	joined: number;
 	reportTurns: number;
+	rootReportReads: number;
+	rootReportReadsBefore: number;
+	rootReportReadsAfter: number;
 	telemetryFrom: number;
 	childrenInTelemetryWindow: number;
 	byRole: {
@@ -244,6 +316,9 @@ export function measure(
 	let delegatingRootsAfter = 0;
 	let childrenInWindow = 0;
 	let unattributedChildren = 0;
+	let rootReportReads = 0;
+	let rootReportReadsBefore = 0;
+	let rootReportReadsAfter = 0;
 	const telemetryChildFiles = new Set(
 		records.map((r) => r.sessionFile).filter((f): f is string => Boolean(f)),
 	);
@@ -261,6 +336,9 @@ export function measure(
 		}
 		rootCarryTokens += scan.carryTokens;
 		rootReceivedTokens += scan.receivedTokens;
+		rootReportReads += scan.reportReads;
+		rootReportReadsBefore += scan.reportReadTimestamps.filter((at) => at > 0 && at < cutoff).length;
+		rootReportReadsAfter += scan.reportReadTimestamps.filter((at) => at >= cutoff).length;
 		if (!scan.results.length) continue;
 		delegatingRoots++;
 		if (scan.results.some((r) => r.at < cutoff)) delegatingRootsBefore++;
@@ -329,6 +407,9 @@ export function measure(
 		},
 		joined,
 		reportTurns: reportTurns.length,
+		rootReportReads,
+		rootReportReadsBefore,
+		rootReportReadsAfter,
 		byRole,
 		childrenInTelemetryWindow: childrenInWindow,
 		unattributedChildren,
@@ -389,6 +470,19 @@ export function renderMarkdown(m: Measurement): string {
 			]),
 		);
 	}
+	lines.push('');
+	lines.push('## Root report reads (the W3 Slice D signal)');
+	lines.push('');
+	lines.push(
+		'These are root-session read requests targeting files under `flows/*/reports/*.md`; child ' +
+			'session reads are excluded.',
+	);
+	lines.push('');
+	lines.push(row(['window', 'report reads']));
+	lines.push(row(['---', '---:']));
+	lines.push(row(['before cutoff', m.rootReportReadsBefore]));
+	lines.push(row(['at or after cutoff', m.rootReportReadsAfter]));
+	lines.push(row(['all', m.rootReportReads]));
 	lines.push('');
 	lines.push('## Root carry (the W3 target)');
 	lines.push('');

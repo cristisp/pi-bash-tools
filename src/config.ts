@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { isValidModelSpec, normalizeModelSpec } from './model-spec.ts';
-import type { EvidenceScope } from './types.ts';
+import type { EvidenceScope, RoleBudget, BudgetPolicy } from './types.ts';
 
 export type ConfigAgentScope = 'user' | 'project' | 'both';
 
@@ -39,6 +39,8 @@ export interface SubagentHerdrConfig {
 	evidenceScopeDefault: EvidenceScope;
 	/** Per-role overrides of evidenceScopeDefault. */
 	evidenceScopeByRole: Record<string, EvidenceScope>;
+	/** Per-agent live budgets. Unlisted roles use the default budget. */
+	roleBudgets: Record<string, RoleBudget>;
 	modelPresets: Record<string, ModelPreset>;
 	defaultPreset?: string;
 }
@@ -46,6 +48,31 @@ export interface SubagentHerdrConfig {
 export function configPath(): string {
 	return path.join(getAgentDir(), 'subagent-herdr.config.json');
 }
+
+const DEFAULT_ROLE_BUDGET: RoleBudget = {
+	toolCalls: 24,
+	discoveryCalls: 24,
+	fullValidationPasses: 2,
+	failedToolCalls: 3,
+	repeatedReads: 3,
+	outputTokens: 1000,
+	wallTimeMs: 10 * 60 * 1000,
+	budgetPolicy: 'steer',
+};
+
+export const DEFAULT_ROLE_BUDGETS: Record<string, RoleBudget> = {
+	scout: { ...DEFAULT_ROLE_BUDGET, toolCalls: 20, discoveryCalls: 8, outputTokens: 800 },
+	planner: { ...DEFAULT_ROLE_BUDGET, toolCalls: 20, discoveryCalls: 6, outputTokens: 800 },
+	worker: { ...DEFAULT_ROLE_BUDGET, outputTokens: 1000 },
+	validator: {
+		...DEFAULT_ROLE_BUDGET,
+		toolCalls: 20,
+		discoveryCalls: 12,
+		fullValidationPasses: 8,
+		outputTokens: 800,
+	},
+	reviewer: { ...DEFAULT_ROLE_BUDGET, toolCalls: 12, discoveryCalls: 12, outputTokens: 1000 },
+};
 
 export const DEFAULT_CONFIG: SubagentHerdrConfig = {
 	maxParallelTasks: 8,
@@ -57,7 +84,7 @@ export const DEFAULT_CONFIG: SubagentHerdrConfig = {
 	abortGraceMs: 60_000,
 	steerTimeoutMs: 60_000,
 	perTaskOutputCap: 50 * 1024,
-	reportDigestTokens: 600,
+	reportDigestTokens: 250,
 	reportContractPolicy: 'flag',
 	ledgerMaxRevisions: 60,
 	ledgerPointers: true,
@@ -69,6 +96,7 @@ export const DEFAULT_CONFIG: SubagentHerdrConfig = {
 	flowRetentionDays: 14,
 	evidenceScopeDefault: 'flow',
 	evidenceScopeByRole: { validator: 'session' },
+	roleBudgets: DEFAULT_ROLE_BUDGETS,
 	modelPresets: {},
 };
 
@@ -77,6 +105,16 @@ const DEFAULT_EVIDENCE_SCOPE_BY_ROLE: Record<string, EvidenceScope> = { validato
 const EVIDENCE_SCOPES = new Set<EvidenceScope>(['session', 'flow']);
 
 const REPORT_CONTRACT_POLICIES = new Set<ReportContractPolicy>(['flag', 'reject']);
+const BUDGET_POLICIES = new Set<BudgetPolicy>(['steer', 'abort']);
+const BUDGET_KEYS = [
+	'toolCalls',
+	'discoveryCalls',
+	'fullValidationPasses',
+	'failedToolCalls',
+	'repeatedReads',
+	'outputTokens',
+	'wallTimeMs',
+] as const satisfies readonly (keyof RoleBudget)[];
 
 const NUMERIC_KEYS = [
 	'maxParallelTasks',
@@ -104,6 +142,37 @@ export function parseEvidenceScopes(raw: unknown): Record<string, EvidenceScope>
 		if (EVIDENCE_SCOPES.has(value as EvidenceScope)) scopes[role] = value as EvidenceScope;
 	}
 	return scopes;
+}
+
+export function parseRoleBudgets(raw: unknown): Record<string, RoleBudget> {
+	const budgets: Record<string, RoleBudget> = {};
+	if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return budgets;
+	for (const [role, value] of Object.entries(raw as Record<string, unknown>)) {
+		if (
+			!role ||
+			role === '__proto__' ||
+			typeof value !== 'object' ||
+			value === null ||
+			Array.isArray(value)
+		)
+			continue;
+		const source = value as Record<string, unknown>;
+		const base = { ...(DEFAULT_ROLE_BUDGETS[role] ?? DEFAULT_ROLE_BUDGET) };
+		for (const key of BUDGET_KEYS) {
+			const candidate = source[key];
+			if (typeof candidate === 'number' && Number.isFinite(candidate) && candidate > 0) {
+				base[key] = candidate;
+			}
+		}
+		if (BUDGET_POLICIES.has(source.budgetPolicy as BudgetPolicy))
+			base.budgetPolicy = source.budgetPolicy as BudgetPolicy;
+		budgets[role] = base;
+	}
+	return budgets;
+}
+
+export function roleBudgetFor(role: string, cfg: SubagentHerdrConfig = getConfig()): RoleBudget {
+	return { ...(cfg.roleBudgets[role] ?? DEFAULT_ROLE_BUDGETS[role] ?? DEFAULT_ROLE_BUDGET) };
 }
 
 export function parseModelPresets(raw: unknown): Record<string, ModelPreset> {
@@ -161,6 +230,10 @@ export function getConfig(filePath?: string): SubagentHerdrConfig {
 	cfg.evidenceScopeByRole = {
 		...DEFAULT_EVIDENCE_SCOPE_BY_ROLE,
 		...parseEvidenceScopes(overrides.evidenceScopeByRole),
+	};
+	cfg.roleBudgets = {
+		...DEFAULT_ROLE_BUDGETS,
+		...parseRoleBudgets(overrides.roleBudgets),
 	};
 	cfg.modelPresets = parseModelPresets(overrides.modelPresets);
 	if (

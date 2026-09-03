@@ -31,6 +31,12 @@ export function formatExecutionMetrics(metrics: ExecutionMetrics): string {
 	];
 	if (metrics.failedToolCalls) parts.push(`tool-errors:${metrics.failedToolCalls}`);
 	if (metrics.repeatedReads) parts.push(`rereads:${metrics.repeatedReads}`);
+	if (metrics.manifestRereads) parts.push(`manifest-rereads:${metrics.manifestRereads}`);
+	if (metrics.discoveryCalls !== undefined) parts.push(`discovery:${metrics.discoveryCalls}`);
+	if (metrics.fullValidationPasses !== undefined)
+		parts.push(`validation:${metrics.fullValidationPasses}`);
+	if (metrics.outputTokens !== undefined)
+		parts.push(`output:${formatTokens(metrics.outputTokens)}`);
 	if (metrics.maxContextTokens) parts.push(`max-ctx:${formatTokens(metrics.maxContextTokens)}`);
 	return parts.join(' ');
 }
@@ -263,6 +269,12 @@ export function completionPatch(currentResult: SingleResult): Partial<RegistryEn
 		blockedSince: undefined,
 		blockReason: undefined,
 		blockedPreview: undefined,
+		...(currentResult.budget ? { budget: currentResult.budget } : {}),
+		...(currentResult.scope ? { scope: currentResult.scope } : {}),
+		...(currentResult.reviewSurfacePath
+			? { reviewSurfacePath: currentResult.reviewSurfacePath }
+			: {}),
+		...(currentResult.readManifest ? { readManifest: currentResult.readManifest } : {}),
 	};
 	if (isFailedResult(currentResult)) {
 		const error = getResultOutput(currentResult).replace(/\s+/g, ' ').trim();
@@ -284,6 +296,7 @@ export function buildRunSummary(
 	report?: ReportSummary,
 	ledger?: LedgerRunInfo,
 	now = Date.now(),
+	budget?: SingleResult['budget'],
 ): RunSummary {
 	const summary: RunSummary = {
 		at: now,
@@ -296,10 +309,16 @@ export function buildRunSummary(
 		contextTokens: usage.contextTokens || metrics.maxContextTokens,
 	};
 	if (metrics.blockEvents) summary.blockEvents = metrics.blockEvents;
+	if (metrics.discoveryCalls !== undefined) summary.discoveryCalls = metrics.discoveryCalls;
+	if (metrics.fullValidationPasses !== undefined)
+		summary.fullValidationPasses = metrics.fullValidationPasses;
+	if (metrics.outputTokens !== undefined) summary.outputTokens = metrics.outputTokens;
+	if (metrics.manifestRereads) summary.manifestRereads = metrics.manifestRereads;
 	if (metrics.approvalMs) summary.approvalMs = metrics.approvalMs;
 	if (metrics.steerMs) summary.steerMs = metrics.steerMs;
 	if (ledger?.revision !== undefined) summary.ledgerRevision = ledger.revision;
 	if (ledger?.injection && ledger.injection !== 'none') summary.ledgerInjection = ledger.injection;
+	if (budget) summary.budget = budget;
 	if (report) {
 		summary.reportTokens = report.tokens;
 		// The registry is read on every delegation: keep counts and provenance, never the text.

@@ -51,6 +51,18 @@ describe('sessionStatsText', () => {
 				workflowMode: 'remediation',
 				acceptanceCriteria: ['F-001', 'F-002'],
 				evidenceScope: 'session',
+				scope: { paths: ['src/run.ts'], hunks: ['@@ -1 +1 @@'], outOfScope: ['docs'] },
+				reviewSurfacePath: '/tmp/review-surface.md',
+				readManifest: {
+					v: 1,
+					manifestPath: '/tmp/read-manifest.json',
+					persistedPath: '/tmp/persisted-read-manifest.json',
+					artifactPaths: [],
+					allowedPaths: ['src/run.ts'],
+					priorReports: [],
+					establishedEvidence: [],
+					doNotReread: [],
+				},
 				lastRun: {
 					at: Date.now(),
 					durationMs: 4000,
@@ -71,6 +83,11 @@ describe('sessionStatsText', () => {
 		expect(out).toContain('mode: remediation');
 		expect(out).toContain('criteria: F-001,F-002');
 		expect(out).toContain('evidence: session');
+		expect(out).toContain('scope: src/run.ts');
+		expect(out).toContain('hunks: @@ -1 +1 @@');
+		expect(out).toContain('out of scope: docs');
+		expect(out).toContain('surface: /tmp/review-surface.md');
+		expect(out).toContain('manifest: /tmp/persisted-read-manifest.json');
 		expect(out).toContain(
 			'last run: tools:12 tool-errors:2 rereads:3 turns:6 $0.0987 ctx:42k waiting:2.5s',
 		);

@@ -1,9 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
+import * as path from 'node:path';
+import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import type {
 	DelegationContext,
 	EvidenceScope,
 	OrchestrationContext,
 	RegistryEntry,
+	ReviewScope,
 } from './types.ts';
 
 export const ENV_FLOW = 'PI_ORCHESTRATION_FLOW';
@@ -15,10 +18,14 @@ export const ENV_TASK = 'PI_ORCHESTRATION_TASK';
 export const ENV_REVIEW_MODE = 'PI_ORCHESTRATION_REVIEW_MODE';
 export const ENV_CRITERIA = 'PI_ORCHESTRATION_CRITERIA';
 export const ENV_EVIDENCE_SCOPE = 'PI_ORCHESTRATION_EVIDENCE_SCOPE';
+export const ENV_ROOT_SESSION = 'PI_ORCHESTRATION_ROOT_SESSION';
+export const ENV_PARENT_PANE = 'PI_ORCHESTRATION_PARENT_PANE';
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const CRITERION_PATTERN = /^[A-Za-z0-9._:-]{1,32}$/;
 const MAX_CRITERIA = 64;
+const MAX_SCOPE_ITEMS = 100;
+const MAX_SCOPE_ITEM_LENGTH = 512;
 
 /** Only the two scope knobs are needed to resolve identity. */
 export interface EvidenceScopePolicy {
@@ -77,6 +84,52 @@ export function sanitizeTaskId(taskId: unknown): string | undefined {
 	return typeof taskId === 'string' && CRITERION_PATTERN.test(taskId) ? taskId : undefined;
 }
 
+function canonicalScopeItem(item: string): string | undefined {
+	const normalized = item.trim().replaceAll('\\', '/');
+	const hasControlCharacter = Array.from(normalized).some((character) => {
+		const code = character.codePointAt(0) ?? 0;
+		return code <= 0x1f || code === 0x7f;
+	});
+	if (!normalized || normalized.length > MAX_SCOPE_ITEM_LENGTH || hasControlCharacter)
+		return undefined;
+	if (normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) return undefined;
+	const segments = normalized.split('/').filter((segment) => segment.length > 0 && segment !== '.');
+	if (segments.length === 0 || segments.some((segment) => segment === '..')) return undefined;
+	return segments.join('/');
+}
+
+function scopeItems(value: unknown): string[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const items = value
+		.filter((item): item is string => typeof item === 'string')
+		.map(canonicalScopeItem)
+		.filter((item): item is string => item !== undefined)
+		.filter((item, index, all) => all.indexOf(item) === index)
+		.slice(0, MAX_SCOPE_ITEMS);
+	return items.length > 0 ? items : undefined;
+}
+
+function validReviewSurfacePath(flowId: string | undefined, value: unknown): value is string {
+	if (!flowId || typeof value !== 'string') return false;
+	return (
+		path.resolve(value) ===
+		path.join(getAgentDir(), 'subagent-herdr', 'flows', flowId, 'predigest', 'review-surface.md')
+	);
+}
+
+export function sanitizeReviewScope(scope: unknown): ReviewScope | undefined {
+	if (!scope || typeof scope !== 'object') return undefined;
+	const value = scope as Record<string, unknown>;
+	const sanitized: ReviewScope = {};
+	const paths = scopeItems(value.paths);
+	const hunks = scopeItems(value.hunks);
+	const outOfScope = scopeItems(value.outOfScope);
+	if (paths) sanitized.paths = paths;
+	if (hunks) sanitized.hunks = hunks;
+	if (outOfScope) sanitized.outOfScope = outOfScope;
+	return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
+
 export function resolveDelegation(options: {
 	role: string;
 	policy?: Partial<EvidenceScopePolicy>;
@@ -84,12 +137,18 @@ export function resolveDelegation(options: {
 	orchestration?: OrchestrationContext;
 	delegationId?: string;
 	flowId?: string;
+	rootSession?: string;
+	parentPaneId?: string;
 }): DelegationContext {
 	const orchestration = options.orchestration ?? {};
 	const flowId = isOpaqueId(options.flowId) ? options.flowId : deriveFlowId(options.parentSession);
 	const delegation: DelegationContext = {
 		delegationId: isOpaqueId(options.delegationId) ? options.delegationId : newDelegationId(),
 		role: options.role,
+		...((options.rootSession ?? options.parentSession)
+			? { rootSession: options.rootSession ?? options.parentSession }
+			: {}),
+		...(options.parentPaneId ? { parentPaneId: options.parentPaneId } : {}),
 		evidenceScope: narrowEvidenceScope(
 			evidenceScopeForRole(options.role, options.policy),
 			orchestration.evidenceScope,
@@ -103,6 +162,10 @@ export function resolveDelegation(options: {
 	if (orchestration.reviewMode) delegation.reviewMode = orchestration.reviewMode;
 	if (orchestration.acceptanceCriteria?.length)
 		delegation.acceptanceCriteria = sanitizeCriteria(orchestration.acceptanceCriteria);
+	const scope = sanitizeReviewScope(orchestration.scope);
+	if (scope) delegation.scope = scope;
+	if (validReviewSurfacePath(flowId, orchestration.reviewSurfacePath))
+		delegation.reviewSurfacePath = orchestration.reviewSurfacePath;
 	return delegation;
 }
 
@@ -113,6 +176,8 @@ export function orchestrationFromEntry(entry: RegistryEntry): OrchestrationConte
 	if (entry.reviewMode) orchestration.reviewMode = entry.reviewMode;
 	if (entry.acceptanceCriteria?.length) orchestration.acceptanceCriteria = entry.acceptanceCriteria;
 	if (entry.evidenceScope) orchestration.evidenceScope = entry.evidenceScope;
+	if (entry.scope) orchestration.scope = entry.scope;
+	if (entry.reviewSurfacePath) orchestration.reviewSurfacePath = entry.reviewSurfacePath;
 	const taskId = sanitizeTaskId(entry.taskId);
 	if (taskId) orchestration.taskId = taskId;
 	return orchestration;
@@ -127,6 +192,8 @@ export function delegationFromEntry(
 	options: {
 		policy?: Partial<EvidenceScopePolicy>;
 		orchestration?: OrchestrationContext;
+		rootSession?: string;
+		parentPaneId?: string;
 	} = {},
 ): DelegationContext {
 	const policy: Partial<EvidenceScopePolicy> = {
@@ -140,6 +207,8 @@ export function delegationFromEntry(
 		delegationId: entry.delegationId,
 		flowId: entry.flowId,
 		orchestration: { ...orchestrationFromEntry(entry), ...options.orchestration },
+		rootSession: options.rootSession ?? entry.rootSession ?? entry.parentSession,
+		parentPaneId: options.parentPaneId ?? entry.parentPaneId,
 	});
 }
 
@@ -157,5 +226,7 @@ export function orchestrationEnv(delegation: DelegationContext): Record<string, 
 	if (delegation.acceptanceCriteria?.length)
 		env[ENV_CRITERIA] = delegation.acceptanceCriteria.join(',');
 	if (delegation.taskId) env[ENV_TASK] = delegation.taskId;
+	if (delegation.rootSession) env[ENV_ROOT_SESSION] = delegation.rootSession;
+	if (delegation.parentPaneId) env[ENV_PARENT_PANE] = delegation.parentPaneId;
 	return env;
 }

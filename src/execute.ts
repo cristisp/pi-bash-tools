@@ -6,7 +6,12 @@ import { Type, type Static } from 'typebox';
 import { discoverAgents } from './agents.ts';
 import type { AgentConfig, AgentScope } from './agents.ts';
 import { getConfig } from './config.ts';
-import { sanitizeCriteria, sanitizeTaskId } from './delegation.ts';
+import {
+	deriveFlowId,
+	sanitizeCriteria,
+	sanitizeReviewScope,
+	sanitizeTaskId,
+} from './delegation.ts';
 import { applyOutputByteCap, getFinalOutput, getResultOutput, isFailedResult } from './format.ts';
 import { NESTED, ownWorkspaceId } from './herdr.ts';
 import {
@@ -18,25 +23,51 @@ import {
 } from './presets.ts';
 import { listSubagents } from './registry.ts';
 import { runReusedAgent, runSingleAgent } from './run.ts';
+import { ensureReviewSurface } from './scope.ts';
+import { REUSE_WORKFLOW_GUIDANCE } from './templates.ts';
 import { makeEmptyUsage } from './types.ts';
 import type {
 	BlockEventInfo,
 	OnUpdateCallback,
 	OrchestrationContext,
+	ReviewScope,
 	SingleResult,
 	SubagentDetails,
 } from './types.ts';
+
+const ReviewScope = Type.Object({
+	paths: Type.Optional(
+		Type.Array(Type.String({ maxLength: 512, description: 'In-scope repository paths' }), {
+			maxItems: 100,
+		}),
+	),
+	hunks: Type.Optional(
+		Type.Array(Type.String({ maxLength: 512, description: 'In-scope diff hunk identifiers' }), {
+			maxItems: 100,
+		}),
+	),
+	outOfScope: Type.Optional(
+		Type.Array(
+			Type.String({ maxLength: 512, description: 'Repository areas explicitly out of scope' }),
+			{
+				maxItems: 100,
+			},
+		),
+	),
+});
 
 const TaskItem = Type.Object({
 	agent: Type.String({ description: 'Name of the agent to invoke' }),
 	task: Type.String({ description: 'Task to delegate to the agent' }),
 	cwd: Type.Optional(Type.String({ description: 'Working directory for the agent process' })),
+	scope: Type.Optional(ReviewScope),
 });
 
 const ChainItem = Type.Object({
 	agent: Type.String({ description: 'Name of the agent to invoke' }),
 	task: Type.String({ description: 'Task with optional {previous} placeholder for prior output' }),
 	cwd: Type.Optional(Type.String({ description: 'Working directory for the agent process' })),
+	scope: Type.Optional(ReviewScope),
 });
 
 const AgentScopeSchema = StringEnum(['user', 'project', 'both'] as const, {
@@ -44,9 +75,6 @@ const AgentScopeSchema = StringEnum(['user', 'project', 'both'] as const, {
 		'Which agent directories to use. Default: "user" (or config defaultAgentScope). Use "both" to include project-local agents.',
 	default: 'user',
 });
-
-const REUSE_WORKFLOW_DESCRIPTION =
-	'For safe reuse, first call subagent with listSubagents: true, select an exact active-session entry, copy its bare reuseLabel, call subagent_stats with that label, and reuse only when the stats and task history show it is appropriate. Reuse is for same-role worker continuation or narrowly scoped remediation; prefer fresh sessions for planning, scouting, review, validation, security, audit, changed scope, or independent reasoning. Start fresh for high context, many turns, repeated reuse, mismatched task history, changed evidence, or when independence is required. Never infer or increment labels, use labels from another workspace, or pass workspace:label to reuseLabel or subagent_stats.';
 
 export const SubagentParams = Type.Object({
 	agent: Type.Optional(
@@ -77,7 +105,7 @@ export const SubagentParams = Type.Object({
 	),
 	listSubagents: Type.Optional(
 		Type.Boolean({
-			description: `${REUSE_WORKFLOW_DESCRIPTION} Each entry shows the exact bare label to pass as reuseLabel.`,
+			description: `${REUSE_WORKFLOW_GUIDANCE} Each entry shows the exact bare label to pass as reuseLabel.`,
 		}),
 	),
 	listLabel: Type.Optional(
@@ -135,6 +163,7 @@ export const SubagentParams = Type.Object({
 				'Acceptance-criteria ids this delegation must satisfy (for example ["AC-001","AC-002"]). Recorded and exported to the child as PI_ORCHESTRATION_CRITERIA.',
 		}),
 	),
+	scope: Type.Optional(ReviewScope),
 	evidenceScope: Type.Optional(
 		StringEnum(['session', 'flow'] as const, {
 			description:
@@ -143,7 +172,7 @@ export const SubagentParams = Type.Object({
 	),
 	reuseLabel: Type.Optional(
 		Type.String({
-			description: `${REUSE_WORKFLOW_DESCRIPTION} Continue the selected session in place (preserving its context); send task as the next message.`,
+			description: `${REUSE_WORKFLOW_GUIDANCE} Continue the selected session in place (preserving its context); send task as the next message.`,
 		}),
 	),
 });
@@ -210,6 +239,7 @@ function orchestrationFromParams(params: SubagentParams): OrchestrationContext {
 	if (params.reviewMode) orchestration.reviewMode = params.reviewMode;
 	if (params.acceptanceCriteria?.length)
 		orchestration.acceptanceCriteria = sanitizeCriteria(params.acceptanceCriteria);
+	if (params.scope) orchestration.scope = params.scope;
 	if (params.evidenceScope) orchestration.evidenceScope = params.evidenceScope;
 	return orchestration;
 }
@@ -306,7 +336,10 @@ async function executeChainMode(
 			ctx.sessionFile,
 			ctx.onBlocked,
 			ctx.presetModels,
-			ctx.orchestration,
+			{
+				...ctx.orchestration,
+				...(step.scope ? { scope: step.scope } : {}),
+			},
 		);
 		results.push(result);
 
@@ -384,6 +417,7 @@ async function runParallelTask(
 	allResults: SingleResult[],
 	emitUpdate: () => void,
 	makeDetails: ReturnType<typeof makeDetailsFor>,
+	effectiveScope: ReviewScope | undefined,
 ): Promise<SingleResult> {
 	const result = await runSingleAgent(
 		ctx.cwd,
@@ -403,7 +437,12 @@ async function runParallelTask(
 		ctx.sessionFile,
 		ctx.onBlocked,
 		ctx.presetModels,
-		ctx.orchestration,
+		task.scope === undefined
+			? {
+					...ctx.orchestration,
+					...(effectiveScope ? { scope: effectiveScope } : {}),
+				}
+			: { ...ctx.orchestration, scope: effectiveScope },
 	);
 	allResults[index] = result;
 	emitUpdate();
@@ -450,6 +489,25 @@ function parallelSummaryText(results: SingleResult[]): string {
 	return `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join('\n\n---\n\n')}`;
 }
 
+function scopesOverlap(left: string, right: string): boolean {
+	return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+function disjointScopeError(scopes: (ReviewScope | undefined)[]): string | undefined {
+	for (let i = 0; i < scopes.length; i++) {
+		const left = scopes[i]?.paths ?? [];
+		for (let j = i + 1; j < scopes.length; j++) {
+			const right = scopes[j]?.paths ?? [];
+			const overlap = left.find((scopePath) =>
+				right.some((other) => scopesOverlap(scopePath, other)),
+			);
+			if (overlap)
+				return `Parallel review scopes overlap at ${overlap}; assign disjoint paths before fan-out.`;
+		}
+	}
+	return undefined;
+}
+
 async function executeParallelMode(
 	ctx: ExecuteContext,
 	tasks: Static<typeof TaskItem>[],
@@ -467,11 +525,30 @@ async function executeParallelMode(
 			details: makeDetails('parallel')([]),
 		};
 	}
+	const effectiveScopes = tasks.map((task) =>
+		sanitizeReviewScope(task.scope ?? ctx.orchestration.scope),
+	);
+	const scopeError = disjointScopeError(effectiveScopes);
+	if (scopeError)
+		return { content: [{ type: 'text', text: scopeError }], details: makeDetails('parallel')([]) };
 
+	const flowId = deriveFlowId(ctx.sessionFile);
+	const reviewSurfacePath = ensureReviewSurface(flowId, ctx.cwd);
+	const fanOutContext = reviewSurfacePath
+		? { ...ctx, orchestration: { ...ctx.orchestration, reviewSurfacePath } }
+		: ctx;
 	const allResults = initParallelResults(tasks);
-	const emitUpdate = makeParallelUpdateEmit(ctx, allResults, makeDetails);
+	const emitUpdate = makeParallelUpdateEmit(fanOutContext, allResults, makeDetails);
 	const results = await mapWithConcurrencyLimit(tasks, getConfig().maxConcurrency, (task, index) =>
-		runParallelTask(ctx, task, index, allResults, emitUpdate, makeDetails),
+		runParallelTask(
+			fanOutContext,
+			task,
+			index,
+			allResults,
+			emitUpdate,
+			makeDetails,
+			effectiveScopes[index],
+		),
 	);
 	return {
 		content: [{ type: 'text', text: parallelSummaryText(results) }],

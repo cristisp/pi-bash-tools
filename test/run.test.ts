@@ -21,6 +21,11 @@ vi.mock('../src/poll.ts', () => ({
 	pollSubagent: vi.fn(),
 }));
 
+vi.mock('../src/manifest.ts', async (importOriginal) => {
+	const mod = await importOriginal<typeof import('../src/manifest.ts')>();
+	return { ...mod, writeReadManifest: vi.fn(mod.writeReadManifest) };
+});
+
 import {
 	closeTab,
 	createTaskTab,
@@ -31,8 +36,9 @@ import {
 	resolveWorkspaceName,
 } from '../src/herdr.ts';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
-import { DEFAULT_CONFIG, configPath } from '../src/config.ts';
+import { DEFAULT_CONFIG, configPath, roleBudgetFor } from '../src/config.ts';
 import { ledgerPath, parseLedger } from '../src/ledger.ts';
+import { writeReadManifest } from '../src/manifest.ts';
 import { pollSubagent } from '../src/poll.ts';
 import { runReusedAgent, runSingleAgent } from '../src/run.ts';
 import { registerEntry } from '../src/registry.ts';
@@ -300,6 +306,37 @@ describe('runSingleAgent - preset model', () => {
 });
 
 describe('runSingleAgent - failures', () => {
+	it('persists a lastError when budget enforcement aborts a fresh child', async () => {
+		vi.mocked(pollSubagent).mockImplementation(async (...args) => {
+			args[4].budget = {
+				role: 'worker',
+				limits: roleBudgetFor('worker'),
+				usage: {
+					toolCalls: 25,
+					discoveryCalls: 0,
+					fullValidationPasses: 0,
+					failedToolCalls: 0,
+					repeatedReads: 0,
+					outputTokens: 0,
+					wallTimeMs: 0,
+				},
+				outcome: 'aborted',
+				breaches: [{ metric: 'toolCalls', limit: 24, observed: 25, at: Date.now() }],
+				steerIssued: false,
+				reportOnly: false,
+			};
+			return 'aborted';
+		});
+
+		await expect(singleCall({ parentSession: '/sess/parent.jsonl' })).rejects.toThrow(
+			'Subagent was aborted',
+		);
+		expect(readRegistry().tabs['ws1:worker-1']).toMatchObject({
+			status: 'done',
+			lastError: expect.stringContaining('Budget enforcement aborted worker'),
+		});
+	});
+
 	it('cleans up and unregisters on launch failure', async () => {
 		vi.mocked(launchInPane).mockResolvedValue('boom');
 		const before = countTempDirs();
@@ -369,6 +406,10 @@ describe('runReusedAgent - relaunch', () => {
 		expect(result.stderr).toContain(
 			'Could not relaunch subagent worker-1 in pane ws1:p10 (relaunch exploded)',
 		);
+		expect(readRegistry().tabs['ws1:worker-1']).toMatchObject({
+			status: 'done',
+			lastError: expect.stringContaining('Could not relaunch'),
+		});
 	});
 });
 
@@ -382,6 +423,60 @@ describe('runReusedAgent - prompting', () => {
 		expect(createTaskTab).not.toHaveBeenCalled();
 	});
 
+	it('cleans up the temporary directory when manifest setup fails', async () => {
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'working' });
+		vi.mocked(writeReadManifest).mockRejectedValueOnce(new Error('manifest unavailable'));
+		registerEntry(makeRegistryEntry({ status: 'running', parentSession: '/sess/parent.jsonl' }));
+		const before = countTempDirs();
+		const result = await runReusedAgent(
+			'/tmp',
+			[agent],
+			'worker-1',
+			'next task',
+			undefined,
+			undefined,
+			makeDetails,
+			undefined,
+			'/sess/parent.jsonl',
+			undefined,
+			{ scope: { paths: ['src/run.ts'] } },
+		);
+		expect(result.exitCode).toBe(0);
+		const prompt = vi
+			.mocked(herdrCli)
+			.mock.calls.map((call) => call[0])
+			.find((args) => args[0] === 'agent' && args[1] === 'prompt');
+		expect(prompt?.[3]).toContain('next task');
+		expect(prompt?.[3]).not.toContain('Read the bounded manifest');
+		expect(countTempDirs()).toBe(before);
+	});
+
+	it('retains manifest metadata and cleans up after a scoped reused prompt', async () => {
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'working' });
+		registerEntry(makeRegistryEntry({ status: 'running', parentSession: '/sess/parent.jsonl' }));
+		const before = countTempDirs();
+		const result = await runReusedAgent(
+			'/tmp',
+			[agent],
+			'worker-1',
+			'next task',
+			undefined,
+			undefined,
+			makeDetails,
+			undefined,
+			'/sess/parent.jsonl',
+			undefined,
+			{ scope: { paths: ['src/run.ts'] } },
+		);
+		expect(result.exitCode).toBe(0);
+		expect(result.readManifest?.persistedPath).toContain('predigest/manifests/');
+		expect(fs.existsSync(result.readManifest?.persistedPath as string)).toBe(true);
+		expect(countTempDirs()).toBe(before);
+		expect(readRegistry().tabs['ws1:worker-1']?.readManifest?.persistedPath).toBe(
+			result.readManifest?.persistedPath,
+		);
+	});
+
 	it('retries prompting and reports persistent failures', async () => {
 		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'working' });
 		vi.mocked(herdrCli).mockResolvedValue({ error: { code: 'prompt_failed' } });
@@ -391,6 +486,10 @@ describe('runReusedAgent - prompting', () => {
 		expect(result.stderr).toContain(
 			'Could not prompt subagent worker-1 in pane ws1:p10 (prompt_failed)',
 		);
+		expect(readRegistry().tabs['ws1:worker-1']).toMatchObject({
+			status: 'done',
+			lastError: expect.stringContaining('Could not prompt'),
+		});
 		const promptCalls = vi.mocked(herdrCli).mock.calls.filter((c) => c[0][0] === 'agent');
 		expect(promptCalls).toHaveLength(3);
 	});

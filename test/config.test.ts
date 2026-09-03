@@ -1,6 +1,13 @@
 import * as fs from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { configPath, DEFAULT_CONFIG, getConfig, parseModelPresets } from '../src/config.ts';
+import {
+	configPath,
+	DEFAULT_CONFIG,
+	DEFAULT_ROLE_BUDGETS,
+	getConfig,
+	parseModelPresets,
+	parseRoleBudgets,
+} from '../src/config.ts';
 import { makeTempDir, stubEnv } from './helpers.ts';
 
 function writeConfigFile(partial: Record<string, unknown>): void {
@@ -15,6 +22,7 @@ describe('getConfig - defaults', () => {
 	it('returns defaults when no config file exists', () => {
 		const dir = makeTempDir();
 		stubEnv(dir);
+		expect(DEFAULT_CONFIG.reportDigestTokens).toBe(250);
 		expect(getConfig()).toEqual(DEFAULT_CONFIG);
 	});
 
@@ -56,6 +64,7 @@ describe('getConfig - overrides', () => {
 			flowRetentionDays: 7,
 			evidenceScopeDefault: 'session',
 			evidenceScopeByRole: { validator: 'session' },
+			roleBudgets: DEFAULT_ROLE_BUDGETS,
 			modelPresets: { fast: { worker: 'p/m:high' } },
 			defaultPreset: 'fast',
 		};
@@ -150,6 +159,32 @@ describe('getConfig - model presets', () => {
 			toString: { scout: 'p/n:low' },
 		});
 		expect(cfg.defaultPreset).toBe('constructor');
+	});
+});
+
+describe('parseRoleBudgets', () => {
+	it('merges valid role limits with role defaults and ignores invalid values', () => {
+		expect(
+			parseRoleBudgets({
+				worker: { toolCalls: 40, outputTokens: 1200, budgetPolicy: 'abort', failedToolCalls: -1 },
+				bad: 'nope',
+				__proto__: { toolCalls: 1 },
+			}),
+		).toEqual({
+			worker: {
+				...DEFAULT_ROLE_BUDGETS.worker,
+				toolCalls: 40,
+				outputTokens: 1200,
+				budgetPolicy: 'abort',
+			},
+		});
+	});
+
+	it('returns an empty record for malformed input', () => {
+		expect(parseRoleBudgets(undefined)).toEqual({});
+		expect(parseRoleBudgets(null)).toEqual({});
+		expect(parseRoleBudgets('nope')).toEqual({});
+		expect(parseRoleBudgets([])).toEqual({});
 	});
 });
 

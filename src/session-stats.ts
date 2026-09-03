@@ -153,6 +153,11 @@ function reuseHints(entry: RegistryEntry | undefined, parsed: ParsedSession): st
 	if (entry?.reuseCount && entry.reuseCount > 0) {
 		hints.push(`Reused ${entry.reuseCount} time(s); verify task continuity before reusing again.`);
 	}
+	if (entry?.lastRun?.manifestRereads) {
+		hints.push(
+			`Re-read ${entry.lastRun.manifestRereads} manifest-protected path(s); inspect the evidence gap before reusing.`,
+		);
+	}
 	return hints;
 }
 
@@ -160,11 +165,25 @@ function identityLine(entry: RegistryEntry): string {
 	const parts: string[] = [];
 	if (entry.delegationId) parts.push(`delegation: ${entry.delegationId}`);
 	if (entry.flowId) parts.push(`flow: ${entry.flowId}`);
+	if (entry.rootSession) parts.push(`root: ${entry.rootSession}`);
+	if (entry.parentPaneId) parts.push(`parent pane: ${entry.parentPaneId}`);
 	if (typeof entry.tier === 'number') parts.push(`tier: ${entry.tier}`);
 	if (entry.workflowMode) parts.push(`mode: ${entry.workflowMode}`);
 	if (entry.reviewMode) parts.push(`review: ${entry.reviewMode}`);
 	if (entry.acceptanceCriteria?.length)
 		parts.push(`criteria: ${entry.acceptanceCriteria.join(',')}`);
+	if (entry.scope?.paths?.length) parts.push(`scope: ${entry.scope.paths.join(',')}`);
+	if (entry.scope?.hunks?.length) parts.push(`hunks: ${entry.scope.hunks.join(',')}`);
+	if (entry.scope?.outOfScope?.length)
+		parts.push(`out of scope: ${entry.scope.outOfScope.join(',')}`);
+	if (entry.reviewSurfacePath) parts.push(`surface: ${entry.reviewSurfacePath}`);
+	const manifestPath =
+		entry.readManifest?.persistedPath ??
+		entry.readManifest?.manifestPath ??
+		entry.lastRun?.readManifest?.persistedPath ??
+		entry.lastRun?.readManifest?.manifestPath;
+	if (manifestPath) parts.push(`manifest: ${manifestPath}`);
+	if (entry.budget) parts.push(`budget: ${entry.budget.outcome}/${entry.budget.breaches.length}`);
 	parts.push(`evidence: ${entry.evidenceScope ?? 'unknown'}`);
 	return parts.join('  ');
 }
@@ -175,6 +194,11 @@ function lastRunLine(entry: RegistryEntry): string | null {
 	const parts = [`tools:${run.toolCalls}`];
 	if (run.failedToolCalls) parts.push(`tool-errors:${run.failedToolCalls}`);
 	if (run.repeatedReads) parts.push(`rereads:${run.repeatedReads}`);
+	if (run.manifestRereads) parts.push(`manifest-rereads:${run.manifestRereads}`);
+	if (run.discoveryCalls !== undefined) parts.push(`discovery:${run.discoveryCalls}`);
+	if (run.fullValidationPasses !== undefined) parts.push(`validation:${run.fullValidationPasses}`);
+	if (run.outputTokens !== undefined) parts.push(`output:${formatTokens(run.outputTokens)}`);
+	if (run.budget) parts.push(`budget:${run.budget.outcome}/${run.budget.breaches.length}`);
 	if (run.turns) parts.push(`turns:${run.turns}`);
 	if (run.cost) parts.push(`$${run.cost.toFixed(4)}`);
 	if (run.contextTokens) parts.push(`ctx:${formatTokens(run.contextTokens)}`);

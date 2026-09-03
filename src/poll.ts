@@ -1,9 +1,11 @@
 import * as fs from 'node:fs';
 import type { Message } from '@earendil-works/pi-ai';
 import { formatBlockedPreview, findPendingToolCall, getFinalOutput, statusTag } from './format.ts';
+import { BUDGET_STEER_MESSAGE } from './budget.ts';
 import { getConfig } from './config.ts';
 import { getAgentStatus, sleep } from './herdr.ts';
-import { updateRegistryEntry } from './registry.ts';
+import { findEntry, updateRegistryEntry } from './registry.ts';
+import { measureExecutionMetrics } from './metrics.ts';
 import type { SubagentHerdrConfig } from './config.ts';
 import type {
 	BlockEventInfo,
@@ -90,7 +92,20 @@ function processSessionMessage(
 	trackToolCalls(msg, pendingToolCalls);
 	state.lastEntryAt = Date.now();
 	if (msg.role === 'user') {
-		state.userMessages++;
+		const text =
+			typeof msg.content === 'string'
+				? msg.content
+				: msg.content
+						.filter((part) => part.type === 'text')
+						.map((part) => (part.type === 'text' ? part.text : ''))
+						.join(' ');
+		const budget = currentResult.label
+			? findEntry(currentResult.label)?.budget
+			: currentResult.budget;
+		const automaticSteerId = budget?.automaticSteerId;
+		const isAutomaticBudgetSteer =
+			automaticSteerId !== undefined && text === `${BUDGET_STEER_MESSAGE} [${automaticSteerId}]`;
+		if (!isAutomaticBudgetSteer) state.userMessages++;
 		state.lastMessageRole = 'user';
 		if (state.steerPendingSince === null) state.steerPendingSince = Date.now();
 	}
@@ -319,7 +334,7 @@ function evaluatePollStep(
 	currentResult: SingleResult,
 	cfg: SubagentHerdrConfig,
 ): {
-	outcome: 'settled' | 'gone' | 'failed' | null;
+	outcome: 'settled' | 'gone' | 'failed' | 'aborted' | null;
 	sawWorking: boolean;
 	candidate: number | null;
 	lastKnownAt: number;
@@ -385,7 +400,7 @@ async function pollIteration(
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
 	onBlocked: ((info: BlockEventInfo) => void) | undefined,
-): Promise<'settled' | 'gone' | 'failed' | null> {
+): Promise<'settled' | 'gone' | 'failed' | 'aborted' | null> {
 	const cfg = getConfig();
 	const prevStatus = currentResult.herdrStatus;
 	const { status } = await getAgentStatus(paneId);
@@ -393,6 +408,10 @@ async function pollIteration(
 		currentResult.herdrStatus = status;
 	}
 	tail.read();
+	currentResult.metrics = measureExecutionMetrics(currentResult, startedAt);
+	const liveEntry = currentResult.label ? findEntry(currentResult.label) : undefined;
+	if (liveEntry?.budget) currentResult.budget = liveEntry.budget;
+	if (currentResult.budget?.outcome === 'aborted') return 'aborted';
 	currentResult.steered = tailState.userMessages > 1;
 	state.prevReason = handleBlockedTransition(
 		currentResult,

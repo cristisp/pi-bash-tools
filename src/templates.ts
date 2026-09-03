@@ -1,4 +1,8 @@
+import { roleBudgetFor } from './config.ts';
 import { ledgerShapeBlock } from './ledger.ts';
+
+export const REUSE_WORKFLOW_GUIDANCE =
+	'For safe reuse, first call subagent with listSubagents: true, select an exact active-session entry, copy its bare reuseLabel, call subagent_stats with that label, and reuse only when the stats and task history show it is appropriate. Reuse is for same-role worker continuation and narrowly scoped remediation; prefer fresh sessions for planning, scouting, review, validation, security, audit, changed scope, or independent reasoning. Start fresh for high context, many turns, repeated reuse, mismatched task history, changed evidence, or when independence is required. Never infer or increment labels, use labels from another workspace, or pass workspace:label to reuseLabel or subagent_stats.';
 
 export interface AgentTemplate {
 	filename: string;
@@ -25,7 +29,15 @@ uncertainty, impact, or validation requirements exceed it.
 
 ## Orchestration ledger
 
-Every handoff must preserve one compact ledger. Use the same task and criterion identities across all roles. Do not omit fields; use none, [], or {} when a field has no applicable value.
+The delegating session supplies the current flow ledger through a pointer in the appended system prompt on a fresh launch or in the task prefix on a reuse turn. Read the ledger at the pointer you were given with the \`read\` tool before your first substantive action. It is the source of truth for the current task, acceptance criteria, scope, evidence, and prior verdicts. Do not expect the task text to contain the full ledger or reconstruct its state from memory. If no pointer is supplied, report that the ledger context is unavailable rather than inventing prior state.
+
+The ledger is append-only and parent-owned. Never write to it. Preserve the current task and criterion identities from the ledger, and record any unresolved evidence gap or transition in your own response.
+
+## Read manifest
+
+When the child receives a read-manifest path, read that bounded manifest before reacquiring repository context. Use its artifact paths, prior reports, and established evidence instead of rebuilding shared context. Treat its do-not-reread list as already established evidence; make an additional read only for a named evidence gap and state that gap in the report. If no manifest is supplied, report that the manifest context is unavailable rather than inventing its contents.
+
+Your response must include one fenced machine-readable ledger block using this shape. This block is your contribution to the parent, which folds it into a new flow-ledger revision; it does not replace reading the flow ledger. Do not omit fields; use none, [], or {} when a field has no applicable value.
 
 ${ledgerShapeBlock()}
 
@@ -99,25 +111,66 @@ const REMEDIATION_DISCIPLINE = `## Remediation discipline
 
 Increment attempt and record what changed since the previous attempt, which new test or evidence addresses each finding, and the hypothesis for any retry. Stop when the request, command, patch, or evidence is unchanged. Escalate when finding scope changes, evidence stops improving, or resolution requires user risk acceptance. Preserve unresolved findings as OPEN.`;
 
-const SCOUT_BUDGET = `## Investigation budget
+function liveBudgetGuidance(role: string): string {
+	const budget = roleBudgetFor(role);
+	return `\n\nLive enforcement limits for ${role}: tool calls ${budget.toolCalls}, discovery calls ${budget.discoveryCalls}, full validation passes ${budget.fullValidationPasses}, failed tool calls ${budget.failedToolCalls}, repeated reads ${budget.repeatedReads}, output tokens ${budget.outputTokens}, wall time ${budget.wallTimeMs}ms. When a limit is reached, stop non-report work and return the required ledger block and report.`;
+}
 
-Use up to 8 discovery queries, 12 focused reads, and an 800-word handoff. Report compact usage as budget: queries/reads/output. Stop at the limit, record the remaining evidence gap, and request escalation rather than broadening silently.`;
+function roleBudgetText(
+	role: string,
+	heading: string,
+	body: (budget: ReturnType<typeof roleBudgetFor>) => string,
+): string {
+	return `${heading}\n\n${body(roleBudgetFor(role))}${liveBudgetGuidance(role)}`;
+}
 
-const PLANNER_BUDGET = `## Planning budget
+function budgetSection(role: string): string {
+	switch (role) {
+		case 'scout':
+			return roleBudgetText(
+				'scout',
+				'## Investigation budget',
+				(budget) =>
+					`Use up to ${budget.discoveryCalls} discovery queries, focused reads as needed, and an ${budget.outputTokens}-word handoff. Report compact usage as budget: queries/reads/output. Stop at the limit, record the remaining evidence gap, and request escalation rather than broadening silently.`,
+			);
+		case 'planner':
+			return roleBudgetText(
+				'planner',
+				'## Planning budget',
+				(budget) =>
+					`Use up to ${budget.discoveryCalls} evidence-gap inspections, focused reads as needed, and an ${budget.outputTokens}-word plan. Report compact usage as budget: inspections/reads/output. Stop at the limit and report unresolved gaps rather than reacquiring complete context.`,
+			);
+		case 'worker':
+			return roleBudgetText(
+				'worker',
+				'## Implementation budget',
+				(budget) =>
+					`Use up to ${budget.toolCalls} implementation tool calls, no more than ${budget.fullValidationPasses} full validation passes, and a ${budget.outputTokens.toLocaleString('en-US')}-word completion report. Report compact usage as budget: tool_calls/full_validations/output. If insufficient, stop and report the reason and remaining evidence gap.`,
+			);
+		case 'validator':
+			return roleBudgetText(
+				'validator',
+				'## Validation budget',
+				() =>
+					'Use the fixed required-check list. Run each unchanged command once by default; retry only to distinguish flakiness or an environment issue. Report compact usage as budget: checks/retries/output. Keep the report under the configured output limit.',
+			);
+		case 'reviewer':
+			return roleBudgetText(
+				'reviewer',
+				'## Review budget',
+				(budget) =>
+					`Use up to ${budget.toolCalls} read-only inspection calls, avoid unrelated rediscovery, and keep the report under ${budget.outputTokens.toLocaleString('en-US')} words. Report compact usage as budget: inspections/output. If insufficient, report the evidence gap instead of silently broadening scope.`,
+			);
+		default:
+			return '';
+	}
+}
 
-Use up to 6 evidence-gap inspections, 10 focused reads, and an 800-word plan. Report compact usage as budget: inspections/reads/output. Stop at the limit and report unresolved gaps rather than reacquiring complete context.`;
-
-const WORKER_BUDGET = `## Implementation budget
-
-Use up to 24 implementation tool calls, no more than 2 full validation passes, and a 1,000-word completion report. Report compact usage as budget: tool_calls/full_validations/output. If insufficient, stop and report the reason and remaining evidence gap.`;
-
-const VALIDATOR_BUDGET = `## Validation budget
-
-Use the fixed required-check list. Run each unchanged command once by default; retry only to distinguish flakiness or an environment issue. Report compact usage as budget: checks/retries/output. Keep the report under 800 words.`;
-
-const REVIEWER_BUDGET = `## Review budget
-
-Use up to 12 read-only inspection calls, avoid unrelated rediscovery, and keep the report under 1,000 words. Report compact usage as budget: inspections/output. If insufficient, report the evidence gap instead of silently broadening scope.`;
+const SCOUT_BUDGET = budgetSection('scout');
+const PLANNER_BUDGET = budgetSection('planner');
+const WORKER_BUDGET = budgetSection('worker');
+const VALIDATOR_BUDGET = budgetSection('validator');
+const REVIEWER_BUDGET = budgetSection('reviewer');
 
 export const AGENT_TEMPLATES: AgentTemplate[] = [
 	{
@@ -519,7 +572,7 @@ In initial mode:
 
 Use remediation after a reviewer returns FAIL.
 
-The task should include a structured finding ledger with stable finding IDs.
+Read the structured finding ledger from the pointer supplied by the delegating session. Preserve its stable finding IDs during remediation.
 
 In remediation mode:
 
@@ -753,10 +806,25 @@ Do not make an overall code-quality or release-approval decision.
 	},
 ];
 
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function currentBudgetBody(template: AgentTemplate): string {
+	const replacement = budgetSection(template.name);
+	if (!replacement) return template.body;
+	const heading = replacement.split('\n\n', 1)[0];
+	const liveMarker = `Live enforcement limits for ${template.name}:`;
+	const pattern = new RegExp(
+		`${escapeRegExp(heading)}\\n\\n[^\\n]*\\n\\n${escapeRegExp(liveMarker)}[^\\n]*`,
+	);
+	return template.body.replace(pattern, replacement);
+}
+
 export function renderAgentFile(t: AgentTemplate): string {
 	const lines: string[] = ['---', `name: ${t.name}`, `description: ${t.description}`];
 	if (t.tools) lines.push(`tools: ${t.tools}`);
 	lines.push('---', '');
-	lines.push(t.body.trim(), '');
+	lines.push(currentBudgetBody(t).trim(), '');
 	return lines.join('\n');
 }

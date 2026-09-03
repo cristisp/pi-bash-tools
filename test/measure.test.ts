@@ -35,6 +35,23 @@ function subagentResult(at: string, chars: number, reportPath?: string): string 
 	});
 }
 
+function readCall(at: string, path: string): string {
+	return JSON.stringify({
+		type: 'message',
+		timestamp: at,
+		message: {
+			role: 'assistant',
+			content: [
+				{
+					type: 'toolCall',
+					name: 'read',
+					arguments: { path, offset: 1, limit: 100 },
+				},
+			],
+		},
+	});
+}
+
 function telemetryRecord(overrides: Record<string, unknown>): string {
 	return JSON.stringify({
 		v: 1,
@@ -73,6 +90,9 @@ function fixture(): string {
 		[
 			JSON.stringify({ type: 'session', version: 3 }),
 			msg('assistant', '2026-09-01T10:00:00.000Z'),
+			readCall('2026-09-01T10:00:05.000Z', reportPath),
+			readCall('2026-09-01T10:00:06.000Z', reportPath),
+			readCall('2026-09-01T10:00:07.000Z', join(dir, 'PLAN.md')),
 			subagentResult('2026-09-01T10:00:10.000Z', 800),
 			msg('assistant', '2026-09-01T10:00:20.000Z'),
 			msg('assistant', '2026-09-01T10:00:30.000Z'),
@@ -81,7 +101,10 @@ function fixture(): string {
 	);
 	writeFileSync(
 		join(sessions, 'subagent-wQ-worker-1.jsonl'),
-		[msg('assistant', '2026-09-01T10:00:05.000Z')].join('\n'),
+		[
+			msg('assistant', '2026-09-01T10:00:05.000Z'),
+			readCall('2026-09-01T10:00:06.000Z', reportPath),
+		].join('\n'),
 	);
 	writeFileSync(
 		join(dir, 'subagent-herdr.telemetry.jsonl'),
@@ -145,6 +168,16 @@ describe('session scanning', () => {
 		expect(scan.results[1].reportPath).toBe(join(dir, 'flows', 'f1', 'reports', 'worker-1-1.md'));
 	});
 
+	it('counts flow report reads only from root sessions', () => {
+		const dir = fixture();
+		const root = scanSession(join(dir, 'sessions', '--cwd--', 'root.jsonl'), false);
+		const child = scanSession(join(dir, 'sessions', 'subagent-wQ-worker-1.jsonl'), true);
+		expect(root.reportReads).toBe(2);
+		expect(root.reportReadTimestamps).toHaveLength(2);
+		expect(root.reportReadTimestamps.every((at) => at > 0)).toBe(true);
+		expect(child.reportReads).toBe(0);
+	});
+
 	it('ignores a torn final telemetry line', () => {
 		expect(readTelemetry(fixture())).toHaveLength(2);
 	});
@@ -165,6 +198,14 @@ describe('measure', () => {
 		const m = measure(fixture());
 		expect(m.joined).toBe(1);
 		expect(m.reportTurns).toBe(1);
+	});
+
+	it('reports root flow-report reads around the cutoff', () => {
+		const cutoff = Date.parse('2026-09-01T10:00:05.500Z');
+		const m = measure(fixture(), cutoff);
+		expect(m.rootReportReads).toBe(2);
+		expect(m.rootReportReadsBefore).toBe(1);
+		expect(m.rootReportReadsAfter).toBe(1);
 	});
 
 	it('reports per-role report sizes and ledger compliance', () => {
@@ -191,6 +232,8 @@ describe('measure', () => {
 		const m = measure(fixture());
 		const md = renderMarkdown(m);
 		expect(md).toContain('## Delivered `subagent` result size');
+		expect(md).toContain('## Root report reads (the W3 Slice D signal)');
+		expect(md).toContain('| all | 2 |');
 		expect(md).toContain('before cutoff');
 		expect(md).toContain('baseline 2026-08-26..09-02');
 		expect(md).toContain('| reviewer | 1 | 3000 | 600 | 20% | 0/1 | $0.0100 |');

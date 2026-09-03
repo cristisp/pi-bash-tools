@@ -74,11 +74,17 @@ export function buildTelemetryRecord(input: TelemetryInput, now = Date.now()): T
 	if (delegation.acceptanceCriteria?.length)
 		record.acceptanceCriteria = delegation.acceptanceCriteria;
 	if (input.parentSession) record.parentSession = input.parentSession;
+	if (delegation.rootSession) record.rootSession = delegation.rootSession;
+	if (delegation.parentPaneId) record.parentPaneId = delegation.parentPaneId;
+	if (delegation.scope) record.scope = delegation.scope;
+	if (delegation.reviewSurfacePath) record.reviewSurfacePath = delegation.reviewSurfacePath;
+	if (result.readManifest) record.readManifest = result.readManifest;
 	if (result.model) record.childModel = result.model;
 	if (result.stopReason) record.stopReason = result.stopReason;
 	if (input.sessionFile) record.sessionFile = input.sessionFile;
 	if (input.ledger?.revision !== undefined) record.ledgerRevision = input.ledger.revision;
 	if (input.ledger?.injection) record.ledgerInjection = input.ledger.injection;
+	if (result.budget) record.budget = result.budget;
 	const report = input.report;
 	if (report) {
 		const summary: ReportSummary = {

@@ -89,7 +89,7 @@ describe('signalLines', () => {
 
 describe('buildReportDigest', () => {
 	it('keeps the ledger verbatim and strips it from the body', () => {
-		const built = buildReportDigest(LEGGED, 600);
+		const built = buildReportDigest(LEGGED, 250);
 		expect(built.ledgerParsed).toBe(true);
 		expect(built.truncated).toBe(false);
 		expect(built.digest).toContain('workflow_version: 1');
@@ -98,7 +98,7 @@ describe('buildReportDigest', () => {
 	});
 
 	it('surfaces status lines instead when the child emitted no ledger', () => {
-		const built = buildReportDigest(UNLEDGED, 600);
+		const built = buildReportDigest(UNLEDGED, 250);
 		expect(built.ledgerParsed).toBe(false);
 		expect(built.digest).toContain('no ledger block emitted');
 		expect(built.digest).toContain('Validation Verdict: PASS');
@@ -138,7 +138,19 @@ describe('writeRoleReport', () => {
 		const file = writeRoleReport({
 			flowId: 'f123',
 			label: 'worker-1',
-			delegation: delegation(),
+			delegation: delegation({
+				scope: { paths: ['src/run.ts'] },
+				reviewSurfacePath: '/tmp/review-surface.md',
+			}),
+			readManifest: {
+				v: 1,
+				persistedPath: '/tmp/read-manifest.json',
+				artifactPaths: [],
+				allowedPaths: [],
+				priorReports: [],
+				establishedEvidence: [],
+				doNotReread: [],
+			},
 			output: LEGGED,
 			now: 1700000000000,
 		});
@@ -147,6 +159,9 @@ describe('writeRoleReport', () => {
 		expect(written).toContain('# Role report: worker-1 (worker)');
 		expect(written).toContain('- delegation: d-1');
 		expect(written).toContain('- mode: initial');
+		expect(written).toContain('- scope: {"paths":["src/run.ts"]}');
+		expect(written).toContain('- reviewSurface: /tmp/review-surface.md');
+		expect(written).toContain('- readManifest: /tmp/read-manifest.json');
 		expect(written).toContain('workflow_version: 1');
 	});
 

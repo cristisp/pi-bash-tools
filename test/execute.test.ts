@@ -501,6 +501,61 @@ describe('executeSubagent - parallel and chain', () => {
 		});
 	});
 
+	it('rejects equivalent overlapping parallel scopes before fan-out', async () => {
+		const { runSingleAgent } = await mockedRuns();
+		const result = await execSubagent({
+			tasks: [
+				{ agent: 'worker', task: 'a', scope: { paths: ['src//run.ts'] } },
+				{ agent: 'worker', task: 'b', scope: { paths: ['./src/run.ts'] } },
+			],
+		});
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('Parallel review scopes overlap at src/run.ts'),
+		});
+		expect(runSingleAgent).not.toHaveBeenCalled();
+	});
+
+	it('rejects overlapping inherited parent scopes before fan-out', async () => {
+		const { runSingleAgent } = await mockedRuns();
+		const result = await execSubagent({
+			scope: { paths: ['src'] },
+			tasks: [
+				{ agent: 'worker', task: 'a' },
+				{ agent: 'reviewer', task: 'b' },
+			],
+		});
+		expect(result.content[0]).toMatchObject({
+			type: 'text',
+			text: expect.stringContaining('Parallel review scopes overlap at src'),
+		});
+		expect(runSingleAgent).not.toHaveBeenCalled();
+	});
+
+	it('pre-digests the review surface before parallel fan-out', async () => {
+		const { runSingleAgent } = await mockedRuns();
+		const result = await execSubagent(
+			{
+				tasks: [
+					{ agent: 'worker', task: 'a', scope: { paths: ['src/run.ts'] } },
+					{ agent: 'reviewer', task: 'b', scope: { paths: ['src/execute.ts'] } },
+				],
+			},
+			{ sessionManager: { getSessionFile: () => '/sess/current.jsonl' } as never },
+		);
+		expect(result.content[0]).toMatchObject({ text: expect.stringContaining('Parallel:') });
+		expect(runSingleAgent.mock.calls.map((call) => call[12])).toEqual([
+			expect.objectContaining({
+				scope: { paths: ['src/run.ts'] },
+				reviewSurfacePath: expect.any(String),
+			}),
+			expect.objectContaining({
+				scope: { paths: ['src/execute.ts'] },
+				reviewSurfacePath: expect.any(String),
+			}),
+		]);
+	});
+
 	it('aggregates failed parallel runs', async () => {
 		const result = await execSubagent({
 			tasks: [

@@ -6,6 +6,7 @@ import {
 	registerSelectPresetCommand,
 	registerSetupCommand,
 } from './src/commands.ts';
+import { registerBudgetEnforcement } from './src/budget.ts';
 import { HERDR_ENV, HERDR_PANE_ID, HERDR_SOCKET_PATH, NESTED } from './src/herdr.ts';
 import { pruneFlows } from './src/flow.ts';
 import { registerInputHandler } from './src/input.ts';
@@ -22,6 +23,7 @@ function hasHerdrEnv(): boolean {
 
 export default function (pi: ExtensionAPI) {
 	if (!hasHerdrEnv()) return;
+	if (NESTED) registerBudgetEnforcement(pi);
 	if (!NESTED) {
 		reconcileRegistry().catch(() => {});
 		pi.on('session_start', () => {

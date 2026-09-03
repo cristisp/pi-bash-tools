@@ -11,6 +11,8 @@ vi.mock('../src/herdr.ts', async (importOriginal) => {
 });
 
 import { getAgentStatus } from '../src/herdr.ts';
+import { BUDGET_STEER_MESSAGE, BUDGET_STEER_PREFIX } from '../src/budget.ts';
+import { roleBudgetFor } from '../src/config.ts';
 import { pollSubagent } from '../src/poll.ts';
 import { registerEntry } from '../src/registry.ts';
 import { readRegistry } from '../src/registry-store.ts';
@@ -22,6 +24,7 @@ import type {
 } from '../src/types.ts';
 import {
 	assistantMsg,
+	makeRegistryEntry,
 	makeSingleResult,
 	makeTempDir,
 	toolResultMsg,
@@ -200,18 +203,44 @@ describe('pollSubagent - settling', () => {
 		expect(result.stopReason).toBe('stop');
 	});
 
-	it('marks results as steered when the user steers multiple times', async () => {
+	it('counts a manual prefix message but excludes only the actual automatic steer', async () => {
 		const dir = makeTempDir();
+		const automaticSteerId = 'automatic-secret';
+		registerEntry(
+			makeRegistryEntry({
+				label: 'worker-1',
+				budget: {
+					role: 'worker',
+					limits: roleBudgetFor('worker'),
+					usage: {
+						toolCalls: 0,
+						discoveryCalls: 0,
+						fullValidationPasses: 0,
+						failedToolCalls: 0,
+						repeatedReads: 0,
+						outputTokens: 0,
+						wallTimeMs: 0,
+					},
+					outcome: 'steered',
+					breaches: [],
+					steerIssued: true,
+					reportOnly: true,
+					automaticSteerId,
+				},
+			}),
+		);
 		const sessionFile = writeSessionFile(dir, 'session.jsonl', [
 			userMsg('original task'),
 			assistantMsg('first answer'),
-			userMsg('do it differently'),
+			userMsg(`${BUDGET_STEER_MESSAGE} [${automaticSteerId}]`),
+			assistantMsg('budget response'),
+			userMsg(`${BUDGET_STEER_PREFIX} manually authored message`),
 			assistantMsg('second answer'),
 		]);
 		vi.mocked(getAgentStatus)
 			.mockResolvedValueOnce({ status: 'working' })
 			.mockResolvedValue({ status: 'gone' });
-		const result = makeSingleResult();
+		const result = makeSingleResult({ label: 'worker-1' });
 		await expect(startPoll(sessionFile, result)).resolves.toBe('gone');
 		expect(result.steered).toBe(true);
 	});

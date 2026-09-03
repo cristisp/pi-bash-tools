@@ -216,6 +216,17 @@ export function appendLedgerRevision(input: LedgerRevisionInput): LedgerPointer 
 			if (input.delegation.reviewMode) fields.review_mode = input.delegation.reviewMode;
 			if (input.delegation.acceptanceCriteria?.length)
 				fields.acceptance_criteria = input.delegation.acceptanceCriteria.join(',');
+			if (input.delegation.scope) {
+				const scope = [
+					...(input.delegation.scope.paths ?? []),
+					...(input.delegation.scope.hunks ?? []),
+				].join(',');
+				if (scope) fields.finding_scope = scope;
+				if (input.delegation.scope.outOfScope?.length)
+					fields.out_of_scope = input.delegation.scope.outOfScope.join(',');
+			}
+			if (input.delegation.reviewSurfacePath)
+				fields.evidence_refs = input.delegation.reviewSurfacePath;
 			if (input.label) fields.label = input.label;
 			if (input.reused !== undefined) fields.reused = String(input.reused);
 			fields.delegation_id = input.delegation.delegationId;

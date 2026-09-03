@@ -90,9 +90,35 @@ function singleHeaderText(
 	isError: boolean,
 ): string {
 	let header = `${icon} ${theme.fg('toolTitle', theme.bold(displayName))}${theme.fg('muted', ` (${r.agentSource})`)}`;
+	const identity: string[] = [];
+	if (r.delegationId) identity.push(`delegation:${r.delegationId}`);
+	if (typeof r.tier === 'number') identity.push(`tier:${r.tier}`);
+	if (identity.length > 0) header += ` ${theme.fg('dim', `[${identity.join(' ')}]`)}`;
 	if (r.steered) header += ` ${theme.fg('warning', '[steered]')}`;
 	if (isError && r.stopReason) header += ` ${theme.fg('error', `[${r.stopReason}]`)}`;
 	return header;
+}
+
+function callIdentityMeta(args: SubagentParams, theme: Theme): string {
+	const identity: string[] = [];
+	if (typeof args.tier === 'number') identity.push(`tier:${args.tier}`);
+	if (args.taskId) identity.push(`task:${args.taskId}`);
+	if (args.workflowMode) identity.push(`mode:${args.workflowMode}`);
+	if (args.reviewMode) identity.push(`review:${args.reviewMode}`);
+	return identity.length > 0 ? ` ${theme.fg('dim', `[${identity.join(' ')}]`)}` : '';
+}
+
+function resultAttribution(r: SingleResult, theme: Theme): string | null {
+	const parts: string[] = [];
+	if (r.parentPaneId) parts.push(`parent pane ${r.parentPaneId}`);
+	if (r.rootSession) parts.push(`root session ${r.rootSession}`);
+	if (r.scope?.paths?.length) parts.push(`scope ${r.scope.paths.join(',')}`);
+	if (r.scope?.hunks?.length) parts.push(`hunks ${r.scope.hunks.join(',')}`);
+	if (r.scope?.outOfScope?.length) parts.push(`out of scope ${r.scope.outOfScope.join(',')}`);
+	if (r.reviewSurfacePath) parts.push(`surface ${r.reviewSurfacePath}`);
+	const manifestPath = r.readManifest?.persistedPath ?? r.readManifest?.manifestPath;
+	if (manifestPath) parts.push(`manifest ${manifestPath}`);
+	return parts.length > 0 ? theme.fg('muted', parts.join('  ')) : null;
 }
 
 function addToolCallItems(container: Container, displayItems: DisplayItem[], theme: Theme): void {
@@ -155,6 +181,13 @@ function addExpandedResultBlock(
 	if (usageStr) container.addChild(new Text(theme.fg('dim', usageStr), 0, 0));
 	if (r.metrics)
 		container.addChild(new Text(theme.fg('dim', formatExecutionMetrics(r.metrics)), 0, 0));
+	if (r.budget)
+		container.addChild(
+			new Text(
+				theme.fg('dim', `budget:${r.budget.outcome} breaches:${r.budget.breaches.length}`),
+				0,
+			),
+		);
 }
 
 function addUsageTotal(container: Container, results: SingleResult[], theme: Theme): void {
@@ -169,7 +202,8 @@ function renderChainCall(args: SubagentParams, scope: AgentScope, theme: Theme):
 	let text =
 		theme.fg('toolTitle', theme.bold('subagent ')) +
 		theme.fg('accent', `chain (${args.chain!.length} steps)`) +
-		theme.fg('muted', ` [${scope}]`);
+		theme.fg('muted', ` [${scope}]`) +
+		callIdentityMeta(args, theme);
 	for (let i = 0; i < Math.min(args.chain!.length, 3); i++) {
 		const step = args.chain![i];
 		const cleanTask = step.task.replace(/\{previous\}/g, '').trim();
@@ -190,7 +224,8 @@ function renderParallelCall(args: SubagentParams, scope: AgentScope, theme: Them
 	let text =
 		theme.fg('toolTitle', theme.bold('subagent ')) +
 		theme.fg('accent', `parallel (${args.tasks!.length} tasks)`) +
-		theme.fg('muted', ` [${scope}]`);
+		theme.fg('muted', ` [${scope}]`) +
+		callIdentityMeta(args, theme);
 	for (const t of args.tasks!.slice(0, 3)) {
 		const preview = t.task.length > 40 ? `${t.task.slice(0, 40)}...` : t.task;
 		text += `\n  ${theme.fg('accent', t.agent)}${theme.fg('dim', ` ${preview}`)}`;
@@ -230,6 +265,7 @@ function renderReuseCall(args: SubagentParams, scope: AgentScope, theme: Theme):
 		theme.fg('toolTitle', theme.bold('subagent ')) +
 			theme.fg('accent', `reuse ${args.reuseLabel}`) +
 			theme.fg('muted', ` [${scope}]`) +
+			callIdentityMeta(args, theme) +
 			reuseMetaParts(findEntry(args.reuseLabel!), theme) +
 			`\n  ${theme.fg('dim', preview)}`,
 		0,
@@ -267,7 +303,8 @@ function renderSingleCall(args: SubagentParams, scope: AgentScope, theme: Theme)
 	let text =
 		theme.fg('toolTitle', theme.bold('subagent ')) +
 		theme.fg('accent', agentName) +
-		theme.fg('muted', ` [${scope}]`);
+		theme.fg('muted', ` [${scope}]`) +
+		callIdentityMeta(args, theme);
 	text += `\n  ${theme.fg('dim', preview)}`;
 	return new Text(text, 0, 0);
 }
@@ -312,6 +349,8 @@ function renderSingleExpanded(
 	if (r.herdrStatus === 'blocked')
 		container.addChild(new Text(theme.fg('warning', blockedSummaryLine(r)), 0, 0));
 	if (r.paneId) container.addChild(new Text(theme.fg('muted', `pane ${r.paneId}`), 0, 0));
+	const attribution = resultAttribution(r, theme);
+	if (attribution) container.addChild(new Text(attribution, 0, 0));
 	container.addChild(new Spacer(1));
 	container.addChild(new Text(theme.fg('muted', '─── Task ───'), 0, 0));
 	container.addChild(new Text(theme.fg('dim', r.task), 0, 0));
@@ -352,6 +391,10 @@ function renderSingleResult(
 			text += `\n${theme.fg('muted', '(Ctrl+O to expand)')}`;
 	}
 	if (r.paneId) text += `\n${theme.fg('muted', `pane ${r.paneId}`)}`;
+	const attribution = resultAttribution(r, theme);
+	if (attribution) text += `\n${attribution}`;
+	if (r.budget)
+		text += `\n${theme.fg('dim', `budget:${r.budget.outcome} breaches:${r.budget.breaches.length}`)}`;
 	const usageStr = formatUsageStats(r.usage, r.model);
 	if (usageStr) text += `\n${theme.fg('dim', usageStr)}`;
 	if (r.metrics) text += `\n${theme.fg('dim', formatExecutionMetrics(r.metrics))}`;

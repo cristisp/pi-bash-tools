@@ -12,11 +12,9 @@ import { executeSubagent, SubagentParams } from './execute.ts';
 import { closeSubagentFlow, sessionLinkedEntries } from './registry.ts';
 import { REGISTRY_PATH } from './registry-store.ts';
 import { renderSubagentCall, renderSubagentResult } from './render.ts';
+import { REUSE_WORKFLOW_GUIDANCE } from './templates.ts';
 import { sessionStatsText } from './session-stats.ts';
 import type { SubagentDetails } from './types.ts';
-
-const REUSE_WORKFLOW_DESCRIPTION =
-	'For safe reuse, first call subagent with listSubagents: true, select an exact active-session entry, copy its bare reuseLabel, call subagent_stats with that label, and reuse only when the stats and task history show it is appropriate. Reuse is for same-role worker continuation or narrowly scoped remediation; prefer fresh sessions for planning, scouting, review, validation, security, audit, changed scope, or independent reasoning. Start fresh for high context, many turns, repeated reuse, mismatched task history, changed evidence, or when independence is required. Never infer or increment labels, use labels from another workspace, or pass workspace:label to reuseLabel or subagent_stats.';
 
 export function registerSubagentTool(pi: ExtensionAPI) {
 	pi.registerTool({
@@ -28,7 +26,7 @@ export function registerSubagentTool(pi: ExtensionAPI) {
 			'Tabs stay open after finishing until closed manually; sessions can be reused (preserving context).',
 			`Registry of all subagent sessions: ${REGISTRY_PATH} (read it to find reusable sessions and their session files).`,
 			`Registry entries include ctx:<tokens> - the context size at the last completed turn; use it to decide between reuseLabel and a fresh session.`,
-			REUSE_WORKFLOW_DESCRIPTION,
+			REUSE_WORKFLOW_GUIDANCE,
 			'Before reusing a session, call subagent_stats with the bare label from the active Pi session list (e.g. worker-1) to check its context size, turn count, prior tasks, and reuse history, and judge whether reuse is actually cheaper than a fresh session.',
 			'Reusing a review/audit/verification session anchors it on its earlier findings - it will tend to re-check the issues it already found and miss newly introduced ones. For a fresh review of code that changed since the session last ran, prefer a new session, or explicitly instruct the reused session to re-examine from scratch.',
 			'Labels are scoped per herdr workspace: each workspace has its own worker-1, worker-2, ... numbering and session files; visibility and reuse are scoped to the active Pi session.',
@@ -73,7 +71,7 @@ export function registerSubagentStatsTool(pi: ExtensionAPI) {
 		name: 'subagent_stats',
 		label: 'Subagent Session Stats',
 		description: [
-			`${REUSE_WORKFLOW_DESCRIPTION} This tool is the stats step and must run before reuse.`,
+			`${REUSE_WORKFLOW_GUIDANCE} This tool is the stats step and must run before reuse.`,
 			'Reports compact reuse-relevant stats: context size, turns, input/output usage, cost, reuse count, recent task history, the last error or the path of the last role report, and only relevant warnings.',
 			'Context size and turns come from the session file itself, so the report is current even while the session runs.',
 			'Use this to judge cost and impact: a session with a large context, many turns, or many reuses is usually better replaced by a fresh session; a session whose task history does not match the new task topic is a poor reuse target.',

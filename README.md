@@ -43,10 +43,12 @@ Optional delegation context (recorded and exported, never behaviour-changing on
 its own): `taskId` (e.g. `"T-001"`, reused by every remediation attempt of the
 same work), `tier` (0-4), `workflowMode` (`initial` | `remediation`), `reviewMode`
 (`primary` | `security` | `validation` | `remediation`), `acceptanceCriteria`
-(e.g. `["AC-001","AC-002"]`), and `evidenceScope` (`session` | `flow`). They apply
-to every delegation in the call (single, parallel, chain, reuse) and show up on
-the registry entry, in `subagent_stats`, and in the telemetry log. Attempt numbers
-are counted from the flow ledger rather than trusted from the call.
+(e.g. `["AC-001","AC-002"]`), `scope` (in-scope paths, hunk identifiers, and
+out-of-scope areas), and `evidenceScope` (`session` | `flow`). They apply to every
+delegation in the call (single, parallel, chain, reuse) and show up on the registry
+entry, in `subagent_stats`, and in the telemetry log. Parallel task scopes must be
+disjoint. Attempt numbers are counted from the flow ledger rather than trusted from
+the call.
 
 Reuse judgment: before `reuseLabel`, agents should check `subagent_stats` and
 judge cost/impact (context size, turn count, prior tasks, reuse history). Reuse
@@ -224,8 +226,9 @@ was reused) and `tasks` (the last 5 tasks it was given, for topical-fit
 judgment), plus the delegation identity (`delegationId`, `flowId`, `taskId`,
 `tier`, `workflowMode`, `reviewMode`, `acceptanceCriteria`, `evidenceScope`,
 `ledgerRevisionAtLaunch`) and `lastRun` (tool calls, tool errors, repeated reads,
-turns, cost, context, wait time, the report digest summary, and the ledger
-revision and pointer route for the most recent completed turn). It is:
+turns, cost, context, wait time, the report digest summary, scope, review-surface,
+manifest, and the ledger revision and pointer route for the most recent completed
+turn). It is:
 
 - **Workspace-scoped** - entries are keyed `<workspace>:<label>`, so every herdr
   workspace has its own `worker-1`, `worker-2`, ... and its own session files
@@ -249,6 +252,8 @@ variables and recorded on its registry entry:
 | `PI_ORCHESTRATION_CRITERIA` | `acceptanceCriteria` ids, comma-separated |
 | `PI_ORCHESTRATION_TASK` | `taskId`, when supplied |
 | `PI_ORCHESTRATION_EVIDENCE_SCOPE` | Widest evidence scope the child may reuse (`session` or `flow`) |
+| `PI_ORCHESTRATION_ROOT_SESSION` | Explicit root Pi session attribution |
+| `PI_ORCHESTRATION_PARENT_PANE` | Pane that directly launched the child |
 
 The contract:
 
@@ -279,7 +284,7 @@ append-only telemetry log:
   `createdAt` and `lastUsedAt`
 - `~/.pi/agent/subagent-herdr/flows/<flowId>/reports/` - the full report of every
   settled delegation, as `reports/<label>-<timestamp>.md`
-- `~/.pi/agent/subagent-herdr/flows/<flowId>/predigest/` - reserved for pre-digested evidence
+- `~/.pi/agent/subagent-herdr/flows/<flowId>/predigest/` - the shared review-surface snapshot and persisted read manifests
 - `~/.pi/agent/subagent-herdr/flows/<flowId>/ledger.md` - the flow ledger, one
   machine-readable revision per delegation boundary
 - `~/.pi/agent/subagent-herdr.telemetry.jsonl` - one record per delegation turn:
@@ -287,6 +292,11 @@ append-only telemetry log:
   failed-tool-call counts, repeated reads, turns, and time spent waiting on
   approvals or steers. `reuseCount` is the session's reuse count after this turn,
   recorded from the registry, so `reused: true` implies `reuseCount > 0`
+
+A scoped fan-out receives one flow-level review-surface snapshot containing working-tree status, diff stat, and hunk headers at `predigest/review-surface.md`.
+Each child also receives a temporary read manifest containing its allowed paths, prior report paths, established evidence, and do-not-reread paths.
+The manifest is persisted under `predigest/manifests/` and its path is included in the role report, registry, `subagent_stats`, and telemetry.
+Manifest-protected rereads appear in `subagent_stats` as a warning when a do-not-reread path is read more than once in the turn; the first read is retained as evidence and a documented evidence-gap read is never blocked.
 
 Flow directories idle past `flowRetentionDays` are pruned at session start. The
 store is best-effort: when it is unwritable, delegation works normally and only
@@ -363,6 +373,7 @@ an absolute backstop applied to every result path.
 The registry and telemetry record only the counts, the truncation flag, the
 ledger-parsed flag and the path - never the report text itself, otherwise the
 store that every delegation reads would reintroduce the re-read cost this removes.
+Analyzer-facing telemetry fields are documented in [analysis/TELEMETRY_SCHEMA.md](analysis/TELEMETRY_SCHEMA.md).
 The registry holds no report prose at all: a settled turn is represented by its
 `lastRun.report` counts plus the report path, and only a failed turn keeps its
 error text (bounded to 500 characters), because that is the one diagnosis with no
@@ -388,7 +399,7 @@ file is re-read on every use, so edits take effect without a restart. Running
   "abortGraceMs": 60000,
   "steerTimeoutMs": 60000,
   "perTaskOutputCap": 51200,
-  "reportDigestTokens": 600,
+  "reportDigestTokens": 250,
   "reportContractPolicy": "flag",
   "ledgerMaxRevisions": 60,
   "ledgerPointers": true,
@@ -400,6 +411,13 @@ file is re-read on every use, so edits take effect without a restart. Running
   "flowRetentionDays": 14,
   "evidenceScopeDefault": "flow",
   "evidenceScopeByRole": { "validator": "session" },
+  "roleBudgets": {
+    "scout": { "toolCalls": 20, "discoveryCalls": 8, "fullValidationPasses": 2, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 800, "wallTimeMs": 600000, "budgetPolicy": "steer" },
+    "planner": { "toolCalls": 20, "discoveryCalls": 6, "fullValidationPasses": 2, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 800, "wallTimeMs": 600000, "budgetPolicy": "steer" },
+    "worker": { "toolCalls": 24, "discoveryCalls": 24, "fullValidationPasses": 2, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 1000, "wallTimeMs": 600000, "budgetPolicy": "steer" },
+    "validator": { "toolCalls": 20, "discoveryCalls": 12, "fullValidationPasses": 8, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 800, "wallTimeMs": 600000, "budgetPolicy": "steer" },
+    "reviewer": { "toolCalls": 12, "discoveryCalls": 12, "fullValidationPasses": 2, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 1000, "wallTimeMs": 600000, "budgetPolicy": "steer" }
+  },
   "modelPresets": {},
   "defaultPreset": "default"
 }
@@ -416,7 +434,7 @@ file is re-read on every use, so edits take effect without a restart. Running
 | `abortGraceMs` | 60000 | Grace period after an abort before finishing |
 | `steerTimeoutMs` | 60000 | Wait for a steer while blocked before finishing |
 | `perTaskOutputCap` | 51200 | Per-task byte cap in parallel summaries (bytes) |
-| `reportDigestTokens` | 600 | Token budget for the digest a child's report is reduced to |
+| `reportDigestTokens` | 250 | Token budget for the digest a child's report is reduced to |
 | `reportContractPolicy` | `"flag"` | `"flag"` or `"reject"` a report that omits its ledger block |
 | `ledgerMaxRevisions` | 60 | Ledger revisions kept per flow before the oldest are dropped |
 | `ledgerPointers` | true | Whether children receive ledger pointers (and the ledger is written at all) |
@@ -428,8 +446,15 @@ file is re-read on every use, so edits take effect without a restart. Running
 | `flowRetentionDays` | 14 | Days a flow directory survives without a delegation before pruning removes it |
 | `evidenceScopeDefault` | `"flow"` | Widest evidence scope a delegated child may reuse (`"session"` or `"flow"`) |
 | `evidenceScopeByRole` | `{"validator":"session"}` | Per-role overrides of `evidenceScopeDefault`; keeps validators independent of the evidence they audit |
+| `roleBudgets` | role defaults | Live limits for tool calls, discovery, validation, failed calls, repeated reads, output tokens, wall time, and enforcement policy |
 | `modelPresets` | `{}` | Named subagent model presets (see [Model presets](#model-presets)); entries map agent names to `provider/model(:thinking_level)` |
 | `defaultPreset` | - | Name of the preset used when the session has no `/select-subagent-preset` selection; must name a configured preset |
+
+Role budgets accept positive finite numeric limits and either `steer` or `abort` as the policy.
+Invalid per-role values are ignored and fall back to the role defaults.
+A `steer` breach sends one automatic budget message, then permits only reads of the active flow ledger or persisted reports.
+An `abort` breach stops the child turn.
+Live usage and breach state are shown in registry status, child results, and telemetry.
 
 ## Lifecycle of the main session
 
