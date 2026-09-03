@@ -6,6 +6,7 @@ import { makeEmptyUsage } from './types.ts';
 import type {
 	DelegationContext,
 	ExecutionMetrics,
+	LedgerRunInfo,
 	ReportSummary,
 	SingleResult,
 	TelemetryRecord,
@@ -27,6 +28,7 @@ export interface TelemetryInput {
 	sessionFile?: string;
 	result: SingleResult;
 	report?: ReportSummary;
+	ledger?: LedgerRunInfo;
 }
 
 function metricsFallback(result: SingleResult): ExecutionMetrics {
@@ -65,6 +67,7 @@ export function buildTelemetryRecord(input: TelemetryInput, now = Date.now()): T
 		metrics: result.metrics ?? metricsFallback(result),
 	};
 	if (delegation.flowId) record.flowId = delegation.flowId;
+	if (delegation.taskId) record.taskId = delegation.taskId;
 	if (typeof delegation.tier === 'number') record.tier = delegation.tier;
 	if (delegation.workflowMode) record.workflowMode = delegation.workflowMode;
 	if (delegation.reviewMode) record.reviewMode = delegation.reviewMode;
@@ -74,6 +77,8 @@ export function buildTelemetryRecord(input: TelemetryInput, now = Date.now()): T
 	if (result.model) record.childModel = result.model;
 	if (result.stopReason) record.stopReason = result.stopReason;
 	if (input.sessionFile) record.sessionFile = input.sessionFile;
+	if (input.ledger?.revision !== undefined) record.ledgerRevision = input.ledger.revision;
+	if (input.ledger?.injection) record.ledgerInjection = input.ledger.injection;
 	const report = input.report;
 	if (report) {
 		const summary: ReportSummary = {

@@ -6,7 +6,7 @@ import { Type, type Static } from 'typebox';
 import { discoverAgents } from './agents.ts';
 import type { AgentConfig, AgentScope } from './agents.ts';
 import { getConfig } from './config.ts';
-import { sanitizeCriteria } from './delegation.ts';
+import { sanitizeCriteria, sanitizeTaskId } from './delegation.ts';
 import { applyOutputByteCap, getFinalOutput, getResultOutput, isFailedResult } from './format.ts';
 import { NESTED, ownWorkspaceId } from './herdr.ts';
 import {
@@ -103,6 +103,12 @@ export const SubagentParams = Type.Object({
 				'List available agents (name, description, source) for the current agentScope; call this before picking an agent name',
 		}),
 	),
+	taskId: Type.Optional(
+		Type.String({
+			description:
+				'Stable task identity for this work (for example "T-001"), reused by every remediation attempt of the same work. Recorded in the flow ledger and exported to the child as PI_ORCHESTRATION_TASK. Attempt numbers are counted from the ledger, so do not track them here.',
+		}),
+	),
 	tier: Type.Optional(
 		Type.Integer({
 			minimum: 0,
@@ -195,6 +201,10 @@ function makeDetailsFor(ctx: ExecuteContext) {
 
 function orchestrationFromParams(params: SubagentParams): OrchestrationContext {
 	const orchestration: OrchestrationContext = {};
+	if (params.taskId) {
+		const taskId = sanitizeTaskId(params.taskId);
+		if (taskId) orchestration.taskId = taskId;
+	}
 	if (typeof params.tier === 'number') orchestration.tier = params.tier;
 	if (params.workflowMode) orchestration.workflowMode = params.workflowMode;
 	if (params.reviewMode) orchestration.reviewMode = params.reviewMode;
@@ -414,6 +424,7 @@ function deliverableText(result: SingleResult, fallback?: string): string {
 	const parts = [report.digest || (fallback ?? '(no output)')];
 	const notes: string[] = [];
 	if (report.path) notes.push(`full report: ${report.path}`);
+	if (result.ledgerRevision !== undefined) notes.push(`ledger rev ${result.ledgerRevision}`);
 	if (notes.length > 0) parts.push(`[${notes.join('; ')}]`);
 	// A short acknowledgement has no report shape to enforce; the note would be pure noise.
 	if (!report.ledgerParsed && report.tokens >= CONTRACT_NOTE_MIN_TOKENS) {

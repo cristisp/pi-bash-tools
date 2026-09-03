@@ -11,6 +11,7 @@ export const ENV_DELEGATION = 'PI_DELEGATION_ID';
 export const ENV_ROLE = 'PI_ORCHESTRATION_ROLE';
 export const ENV_TIER = 'PI_ORCHESTRATION_TIER';
 export const ENV_MODE = 'PI_ORCHESTRATION_MODE';
+export const ENV_TASK = 'PI_ORCHESTRATION_TASK';
 export const ENV_REVIEW_MODE = 'PI_ORCHESTRATION_REVIEW_MODE';
 export const ENV_CRITERIA = 'PI_ORCHESTRATION_CRITERIA';
 export const ENV_EVIDENCE_SCOPE = 'PI_ORCHESTRATION_EVIDENCE_SCOPE';
@@ -71,6 +72,11 @@ export function sanitizeCriteria(criteria: readonly string[]): string[] {
 		.slice(0, MAX_CRITERIA);
 }
 
+/** Task ids share the criterion alphabet so both survive env, shell quoting and grep. */
+export function sanitizeTaskId(taskId: unknown): string | undefined {
+	return typeof taskId === 'string' && CRITERION_PATTERN.test(taskId) ? taskId : undefined;
+}
+
 export function resolveDelegation(options: {
 	role: string;
 	policy?: Partial<EvidenceScopePolicy>;
@@ -90,6 +96,8 @@ export function resolveDelegation(options: {
 		),
 	};
 	if (flowId) delegation.flowId = flowId;
+	const taskId = sanitizeTaskId(orchestration.taskId);
+	if (taskId) delegation.taskId = taskId;
 	if (typeof orchestration.tier === 'number') delegation.tier = orchestration.tier;
 	if (orchestration.workflowMode) delegation.workflowMode = orchestration.workflowMode;
 	if (orchestration.reviewMode) delegation.reviewMode = orchestration.reviewMode;
@@ -105,6 +113,8 @@ export function orchestrationFromEntry(entry: RegistryEntry): OrchestrationConte
 	if (entry.reviewMode) orchestration.reviewMode = entry.reviewMode;
 	if (entry.acceptanceCriteria?.length) orchestration.acceptanceCriteria = entry.acceptanceCriteria;
 	if (entry.evidenceScope) orchestration.evidenceScope = entry.evidenceScope;
+	const taskId = sanitizeTaskId(entry.taskId);
+	if (taskId) orchestration.taskId = taskId;
 	return orchestration;
 }
 
@@ -146,5 +156,6 @@ export function orchestrationEnv(delegation: DelegationContext): Record<string, 
 	if (delegation.reviewMode) env[ENV_REVIEW_MODE] = delegation.reviewMode;
 	if (delegation.acceptanceCriteria?.length)
 		env[ENV_CRITERIA] = delegation.acceptanceCriteria.join(',');
+	if (delegation.taskId) env[ENV_TASK] = delegation.taskId;
 	return env;
 }

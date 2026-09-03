@@ -1,3 +1,5 @@
+import { ledgerShapeBlock } from './ledger.ts';
+
 export interface AgentTemplate {
 	filename: string;
 	name: string;
@@ -25,34 +27,7 @@ uncertainty, impact, or validation requirements exceed it.
 
 Every handoff must preserve one compact ledger. Use the same task and criterion identities across all roles. Do not omit fields; use none, [], or {} when a field has no applicable value.
 
-\`\`\`text
-workflow_version: 1
-task_id:
-attempt:
-workflow_tier:
-workflow_mode:
-review_mode:
-delegation_status:
-validation_verdict:
-review_verdict:
-session_strategy:
-session_strategy_reason:
-finding_scope:
-acceptance_criteria:
-scope:
-out_of_scope:
-evidence_refs:
-invariants:
-changed_files:
-validation_refs:
-findings:
-baseline_failures:
-environment_blockers:
-unresolved_questions:
-transition_reason:
-recommended_next_action:
-budget:
-\`\`\`
+${ledgerShapeBlock()}
 
 The main session assigns stable acceptance-criterion IDs such as AC-001 and preserves them across every transition. Reviewers assign stable finding IDs such as F-001 when findings are created. Preserve finding IDs across remediation attempts and never merge or renumber them.
 

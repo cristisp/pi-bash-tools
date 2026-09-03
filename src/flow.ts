@@ -29,6 +29,18 @@ export function flowReportsDir(flowId: string): string {
 	return path.join(flowDirFor(flowId), REPORTS_SUBDIR);
 }
 
+/**
+ * Manifest accessors for callers that already hold the flow lock. The lock is one per flow directory,
+ * so a caller inside `withFileLock` must use these rather than any locking helper, or it deadlocks.
+ */
+export function readFlowManifest(flowId: string): FlowManifest | null {
+	return readManifest(flowId);
+}
+
+export function writeFlowManifest(flowId: string, manifest: FlowManifest): void {
+	writeManifest(flowId, manifest);
+}
+
 function readManifest(flowId: string): FlowManifest | null {
 	try {
 		const parsed = JSON.parse(fs.readFileSync(flowManifestPath(flowId), 'utf-8'));

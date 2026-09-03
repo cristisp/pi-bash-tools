@@ -184,6 +184,11 @@ function lastRunLine(entry: RegistryEntry): string | null {
 		const ledger = run.report.ledgerParsed ? '' : ':no-ledger';
 		parts.push(`report:${run.report.digestTokens}/${run.report.tokens}${ledger}`);
 	}
+	if (run.ledgerRevision !== undefined) {
+		parts.push(
+			`ledger:r${run.ledgerRevision}${run.ledgerInjection ? `/${run.ledgerInjection}` : ''}`,
+		);
+	}
 	return `last run: ${parts.join(' ')}`;
 }
 

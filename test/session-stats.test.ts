@@ -244,6 +244,29 @@ describe('sessionStatsText', () => {
 		expect(out).toContain('report:550/3000');
 	});
 
+	it('names the ledger revision and how its pointer reached the child', async () => {
+		const sessionFile = writeSessionFile(dir, 'sessions/subagent-ws1-worker-1.jsonl', []);
+		registerEntry(
+			makeRegistryEntry({
+				sessionFile,
+				lastRun: {
+					at: 1,
+					durationMs: 10,
+					toolCalls: 1,
+					failedToolCalls: 0,
+					repeatedReads: 0,
+					turns: 1,
+					cost: 0,
+					contextTokens: 10,
+					ledgerRevision: 4,
+					ledgerInjection: 'turn',
+				},
+			}),
+		);
+		const out = await sessionStatsText('worker-1');
+		expect(out).toContain('ledger:r4/turn');
+	});
+
 	it('keeps task and error previews compact', async () => {
 		const sessionFile = writeSessionFile(dir, 'sessions/subagent-ws1-worker-1.jsonl', []);
 		registerEntry(

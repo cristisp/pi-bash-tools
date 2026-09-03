@@ -24,6 +24,10 @@ export interface SubagentHerdrConfig {
 	/** Estimated-token budget for the report digest delivered to the parent. */
 	reportDigestTokens: number;
 	reportContractPolicy: ReportContractPolicy;
+	/** Ledger revisions kept per flow; the oldest are dropped when appending past this count. */
+	ledgerMaxRevisions: number;
+	/** Whether children receive ledger pointers in their prompts at all. */
+	ledgerPointers: boolean;
 	registryLockTimeoutMs: number;
 	registryLockStaleMs: number;
 	herdrCliTimeoutMs: number;
@@ -55,6 +59,8 @@ export const DEFAULT_CONFIG: SubagentHerdrConfig = {
 	perTaskOutputCap: 50 * 1024,
 	reportDigestTokens: 600,
 	reportContractPolicy: 'flag',
+	ledgerMaxRevisions: 60,
+	ledgerPointers: true,
 	registryLockTimeoutMs: 10_000,
 	registryLockStaleMs: 5000,
 	herdrCliTimeoutMs: 8000,
@@ -87,6 +93,7 @@ const NUMERIC_KEYS = [
 	'herdrCliTimeoutMs',
 	'flowRetentionDays',
 	'reportDigestTokens',
+	'ledgerMaxRevisions',
 ] as const satisfies readonly (keyof SubagentHerdrConfig)[];
 
 export function parseEvidenceScopes(raw: unknown): Record<string, EvidenceScope> {
@@ -141,6 +148,9 @@ export function getConfig(filePath?: string): SubagentHerdrConfig {
 	}
 	if (typeof overrides.confirmProjectAgents === 'boolean') {
 		cfg.confirmProjectAgents = overrides.confirmProjectAgents;
+	}
+	if (typeof overrides.ledgerPointers === 'boolean') {
+		cfg.ledgerPointers = overrides.ledgerPointers;
 	}
 	if (EVIDENCE_SCOPES.has(overrides.evidenceScopeDefault as EvidenceScope)) {
 		cfg.evidenceScopeDefault = overrides.evidenceScopeDefault as EvidenceScope;

@@ -46,6 +46,8 @@ describe('getConfig - overrides', () => {
 			perTaskOutputCap: 1024,
 			reportDigestTokens: 400,
 			reportContractPolicy: 'reject',
+			ledgerMaxRevisions: 25,
+			ledgerPointers: false,
 			registryLockTimeoutMs: 2000,
 			registryLockStaleMs: 1000,
 			herdrCliTimeoutMs: 4000,

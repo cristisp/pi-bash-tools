@@ -31,6 +31,8 @@ import {
 	resolveWorkspaceName,
 } from '../src/herdr.ts';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
+import { DEFAULT_CONFIG, configPath } from '../src/config.ts';
+import { ledgerPath, parseLedger } from '../src/ledger.ts';
 import { pollSubagent } from '../src/poll.ts';
 import { runReusedAgent, runSingleAgent } from '../src/run.ts';
 import { registerEntry } from '../src/registry.ts';
@@ -425,7 +427,93 @@ describe('runReusedAgent - lookups', () => {
 		registerEntry(makeRegistryEntry({ status: 'done', parentSession: '/sess/current.jsonl' }));
 		const result = await reuseCall('worker-1', 'next task', '/sess/current.jsonl');
 		expect(result.exitCode).toBe(0);
-		expect(herdrCli).toHaveBeenCalledWith(['agent', 'prompt', 'ws1:p10', 'next task']);
+		const prompt = vi
+			.mocked(herdrCli)
+			.mock.calls.map((call) => call[0])
+			.find((args) => args[1] === 'prompt');
+		expect(prompt?.[3]).toMatch(
+			/^ledger: .*ledger\.md@\d+ \(advanced since your session started; read it with the read tool before continuing\)\n\nnext task$/,
+		);
+	});
+});
+
+describe('runReusedAgent - flow ledger', () => {
+	it('keeps the raw task out of the ledger pointer line when pointers are off', async () => {
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'working' });
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({ ...structuredClone(DEFAULT_CONFIG), ledgerPointers: false }),
+		);
+		try {
+			registerEntry(
+				makeRegistryEntry({ status: 'done', parentSession: '/sess/current.jsonl', flowId: 'f1' }),
+			);
+			const result = await reuseCall('worker-1', 'next task', '/sess/current.jsonl');
+			expect(result.exitCode).toBe(0);
+			expect(herdrCli).toHaveBeenCalledWith(['agent', 'prompt', 'ws1:p10', 'next task']);
+			expect(result.ledgerInjection).toBe('none');
+		} finally {
+			fs.rmSync(configPath(), { force: true });
+		}
+	});
+
+	it('writes a dispatch revision and points the launch prompt at it', async () => {
+		let promptText = '';
+		vi.mocked(launchInPane).mockImplementation(async (_paneId, command) => {
+			const match = /--append-system-prompt '?([^'\s]+)'?/.exec(command);
+			if (match?.[1]) promptText = fs.readFileSync(match[1], 'utf-8');
+			return null;
+		});
+		const result = await singleCall({
+			parentSession: '/sess/parent.jsonl',
+			orchestration: { taskId: 'T-001', acceptanceCriteria: ['AC-001'] },
+		});
+		expect(result.ledgerInjection).toBe('prefix');
+		expect(promptText).toContain('You are a worker.');
+		expect(promptText).toContain('## Orchestration ledger');
+		const ledger = fs.readFileSync(ledgerPath(result.flowId ?? 'missing'), 'utf-8');
+		expect(ledger).toContain('kind: dispatch');
+		expect(ledger).toContain('task_id: T-001');
+		expect(ledger).toContain('attempt: 1');
+		expect(ledger).toContain('acceptance_criteria: AC-001');
+		expect(parseLedger(ledger).map((revision) => revision.revision)).toEqual([1, 2]);
+	});
+
+	it('folds the child ledger and the report path into a result revision', async () => {
+		vi.mocked(pollSubagent).mockImplementation(async (...args) => {
+			args[4].messages.push(assistantMsg(LEDGER_REPORT));
+			return 'settled';
+		});
+		const result = await singleCall({
+			parentSession: '/sess/parent.jsonl',
+			orchestration: { taskId: 'T-002' },
+		});
+		const ledger = fs.readFileSync(ledgerPath(result.flowId ?? 'missing'), 'utf-8');
+		expect(ledger).toContain('kind: result');
+		expect(ledger).toContain('delegation_status: completed');
+		expect(ledger).toContain('validation_verdict: PASS');
+		expect(ledger).toContain(`report: ${result.report?.path}`);
+		expect(result.ledgerRevision).toBe(2);
+		const [record] = readTelemetryRecords();
+		expect(record).toMatchObject({
+			taskId: 'T-002',
+			ledgerRevision: 2,
+			ledgerInjection: 'prefix',
+		});
+	});
+
+	it('counts attempts from the ledger rather than trusting the caller', async () => {
+		let flowId = 'missing';
+		for (const round of [1, 2]) {
+			const result = await singleCall({
+				parentSession: '/sess/parent.jsonl',
+				orchestration: { taskId: 'T-003', tier: round },
+			});
+			flowId = result.flowId ?? flowId;
+		}
+		const ledger = fs.readFileSync(ledgerPath(flowId), 'utf-8');
+		expect(ledger).toContain('attempt: 1');
+		expect(ledger).toContain('attempt: 2');
 	});
 });
 

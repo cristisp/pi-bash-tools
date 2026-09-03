@@ -12,6 +12,13 @@ import {
 } from './delegation.ts';
 import { ensureFlow, recordFlowParticipant } from './flow.ts';
 import {
+	appendLedgerRevision,
+	ledgerPrefixBlock,
+	ledgerTurnLine,
+	type LedgerPointer,
+} from './ledger.ts';
+import { parseLedgerBlock } from './report.ts';
+import {
 	buildRunSummary,
 	completionPatch,
 	getFinalOutput,
@@ -232,6 +239,25 @@ function attachRoleReport(
 	currentResult.report = report;
 }
 
+/**
+ * Records the dispatch revision and returns the pointer to hand the child. `undefined` means the
+ * flow has no ledger, in which case the child is told nothing rather than something untrue.
+ */
+function recordLedgerDispatch(
+	delegation: DelegationContext,
+	options: { reused: boolean; label?: string },
+): LedgerPointer | undefined {
+	if (!getConfig().ledgerPointers) return undefined;
+	ensureFlow({ flowId: delegation.flowId });
+	return appendLedgerRevision({
+		flowId: delegation.flowId,
+		kind: 'dispatch',
+		delegation,
+		reused: options.reused,
+		...(options.label ? { label: options.label } : {}),
+	});
+}
+
 function emitDelegationTelemetry(
 	currentResult: SingleResult,
 	delegation: DelegationContext | undefined,
@@ -243,6 +269,23 @@ function emitDelegationTelemetry(
 		: isFailedResult(currentResult)
 			? 'failed'
 			: 'settled';
+	const childLedger = parseLedgerBlock(getFinalOutput(currentResult.messages));
+	const revision = appendLedgerRevision({
+		flowId: delegation.flowId,
+		kind: 'result',
+		delegation,
+		label: context.label || undefined,
+		reused: context.reused,
+		outcome,
+		exitCode: currentResult.exitCode,
+		toolCalls: currentResult.metrics?.toolCalls,
+		failedToolCalls: currentResult.metrics?.failedToolCalls,
+		turns: currentResult.metrics?.turns,
+		reportPath: currentResult.report?.path,
+		childFields: childLedger?.fields,
+	});
+	if (revision) currentResult.ledgerRevision = revision.revision;
+	if (!currentResult.ledgerInjection) currentResult.ledgerInjection = 'none';
 	appendTelemetryRecord(
 		buildTelemetryRecord({
 			delegation,
@@ -256,13 +299,20 @@ function emitDelegationTelemetry(
 			sessionFile: context.sessionFile,
 			result: currentResult,
 			report: currentResult.report,
+			ledger: {
+				revision: currentResult.ledgerRevision,
+				injection: currentResult.ledgerInjection,
+			},
 		}),
 	);
 	if (!context.label) return;
 	recordFlowParticipant({ flowId: delegation.flowId, label: context.label, agent: context.agent });
 	if (currentResult.metrics)
 		updateRegistryEntry(context.label, {
-			lastRun: buildRunSummary(currentResult.metrics, currentResult.usage, currentResult.report),
+			lastRun: buildRunSummary(currentResult.metrics, currentResult.usage, currentResult.report, {
+				revision: currentResult.ledgerRevision,
+				injection: currentResult.ledgerInjection,
+			}),
 		});
 }
 
@@ -362,11 +412,18 @@ interface AgentTempFiles {
 	taskPath: string;
 }
 
-async function writeAgentTempFiles(agent: AgentConfig, task: string): Promise<AgentTempFiles> {
+async function writeAgentTempFiles(
+	agent: AgentConfig,
+	task: string,
+	ledger?: LedgerPointer,
+): Promise<AgentTempFiles> {
 	let promptDir: string | null = null;
 	let promptPath: string | null = null;
-	if (agent.systemPrompt.trim()) {
-		const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
+	const systemPrompt = ledger
+		? [agent.systemPrompt.trim(), ledgerPrefixBlock(ledger)].filter(Boolean).join('\n\n')
+		: agent.systemPrompt;
+	if (systemPrompt.trim()) {
+		const tmp = await writePromptToTempFile(agent.name, systemPrompt);
 		promptDir = tmp.dir;
 		promptPath = tmp.filePath;
 	}
@@ -382,6 +439,7 @@ async function createFreshSubagentTab(
 	currentResult: SingleResult,
 	task: string,
 	delegation: DelegationContext,
+	ledgerRevisionAtLaunch?: number,
 ): Promise<{ paneId: string; tabId: string; label: string; sessionPath: string } | null> {
 	const alloc = allocateLabel(agent.name);
 	const label = alloc.label;
@@ -427,7 +485,9 @@ async function createFreshSubagentTab(
 		...(delegation.acceptanceCriteria?.length
 			? { acceptanceCriteria: delegation.acceptanceCriteria }
 			: {}),
+		...(delegation.taskId ? { taskId: delegation.taskId } : {}),
 		evidenceScope: delegation.evidenceScope,
+		...(ledgerRevisionAtLaunch === undefined ? {} : { ledgerRevisionAtLaunch }),
 	});
 	ensureFlow({ flowId: delegation.flowId, rootSession: parentSession });
 	recordFlowParticipant({ flowId: delegation.flowId, label, agent: agent.name });
@@ -480,7 +540,13 @@ async function launchFreshAgent(
 	currentResult: SingleResult,
 	delegation: DelegationContext,
 ): Promise<FreshAgentTab | null> {
-	const tmp = await writeAgentTempFiles(agent, task);
+	const dispatch = recordLedgerDispatch(delegation, { reused: false });
+	if (dispatch) currentResult.ledgerInjection = 'prefix';
+	const tmp = await writeAgentTempFiles(
+		agent,
+		task,
+		getConfig().ledgerPointers ? dispatch : undefined,
+	);
 	const cleanupTmp = (): void => {
 		removeTempFiles(tmp.promptDir, tmp.promptPath);
 		removeTempFiles(tmp.taskDir, tmp.taskPath);
@@ -494,6 +560,7 @@ async function launchFreshAgent(
 			currentResult,
 			task,
 			delegation,
+			dispatch?.revision,
 		);
 		if (!tab) {
 			cleanupTmp();
@@ -804,6 +871,11 @@ export async function runReusedAgent(
 	let abortedRun = false;
 
 	try {
+		const dispatch = recordLedgerDispatch(delegation, { reused: true, label });
+		const advanced =
+			!entry.ledgerRevisionAtLaunch || (dispatch?.revision ?? 0) > entry.ledgerRevisionAtLaunch;
+		if (dispatch && advanced) currentResult.ledgerInjection = 'turn';
+		const turnTask = dispatch && advanced ? `${ledgerTurnLine(dispatch)}\n\n${task}` : task;
 		updateRegistryEntry(label, {
 			status: 'running',
 			updatedAt: Date.now(),
@@ -815,7 +887,9 @@ export async function runReusedAgent(
 			...(delegation.acceptanceCriteria?.length
 				? { acceptanceCriteria: delegation.acceptanceCriteria }
 				: {}),
+			...(delegation.taskId ? { taskId: delegation.taskId } : {}),
 			evidenceScope: delegation.evidenceScope,
+			...(dispatch ? { ledgerRevisionAtLaunch: dispatch.revision } : {}),
 		});
 		recordTask(label, entry, task);
 
@@ -831,7 +905,15 @@ export async function runReusedAgent(
 			updateRegistryEntry(label, { paneId, tabId, updatedAt: Date.now() });
 		}
 
-		const relaunch = await relaunchOrPrompt(agent, model, entry, label, task, paneId, delegation);
+		const relaunch = await relaunchOrPrompt(
+			agent,
+			model,
+			entry,
+			label,
+			turnTask,
+			paneId,
+			delegation,
+		);
 		if (!relaunch) throw new Error('relaunchOrPrompt returned no outcome');
 		relaunchTmp = relaunch.tmp;
 		if (relaunch.error) {

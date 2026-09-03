@@ -21,8 +21,22 @@ export type WorkflowMode = 'initial' | 'remediation';
 
 export type ReviewMode = 'primary' | 'security' | 'validation' | 'remediation';
 
+/**
+ * How a ledger pointer reached a child: in the launch-time system prompt, in the task text of a
+ * reuse turn, or not at all (no flow, or pointers disabled).
+ */
+export type LedgerInjection = 'prefix' | 'turn' | 'none';
+
+/** What one turn wrote to the flow ledger, kept on the run summary and the telemetry record. */
+export interface LedgerRunInfo {
+	revision?: number;
+	injection?: LedgerInjection;
+}
+
 /** Orchestration context supplied by the delegating call. */
 export interface OrchestrationContext {
+	/** Stable task identity, preserved across remediation attempts of the same work. */
+	taskId?: string;
 	tier?: number;
 	workflowMode?: WorkflowMode;
 	reviewMode?: ReviewMode;
@@ -54,6 +68,9 @@ export interface RunSummary {
 	steerMs?: number;
 	reportTokens?: number;
 	report?: ReportSummary;
+	/** Ledger revision written for this turn, and how the pointer reached the child. */
+	ledgerRevision?: number;
+	ledgerInjection?: LedgerInjection;
 }
 
 /** Measured size and provenance of a child report handed back to the parent. */
@@ -100,7 +117,13 @@ export interface RegistryEntry {
 	workflowMode?: WorkflowMode;
 	reviewMode?: ReviewMode;
 	acceptanceCriteria?: string[];
+	taskId?: string;
 	evidenceScope?: EvidenceScope;
+	/**
+	 * Ledger revision this session was launched against. A reuse turn whose ledger head has advanced
+	 * past it gets a fresh pointer in its task text, because the appended system prompt is frozen.
+	 */
+	ledgerRevisionAtLaunch?: number;
 	lastRun?: RunSummary;
 }
 
@@ -117,6 +140,11 @@ export interface FlowManifest {
 	createdAt: number;
 	lastUsedAt: number;
 	participants: FlowParticipant[];
+	/**
+	 * Highest ledger revision this extension has ever issued for the flow. Revision numbers continue
+	 * from it, so a truncated or rewritten ledger cannot cause a revision to be reused.
+	 */
+	lastLedgerRevision?: number;
 }
 
 export interface Registry {
@@ -154,6 +182,7 @@ export interface TelemetryRecord {
 	at: number;
 	flowId?: string;
 	delegationId: string;
+	taskId?: string;
 	workspace: string;
 	label: string;
 	agent: string;
@@ -174,6 +203,8 @@ export interface TelemetryRecord {
 	metrics: ExecutionMetrics;
 	sessionFile?: string;
 	report?: ReportSummary;
+	ledgerRevision?: number;
+	ledgerInjection?: LedgerInjection;
 }
 
 export interface SingleResult {
@@ -204,6 +235,9 @@ export interface SingleResult {
 	blockDurations?: { count: number; approvalMs: number; steerMs: number };
 	/** Bounded report handed to the parent; full text persisted when a flow exists. */
 	report?: RoleReport;
+	/** Flow ledger revision written for this turn, and how its pointer reached the child. */
+	ledgerRevision?: number;
+	ledgerInjection?: LedgerInjection;
 }
 
 export interface SubagentDetails {

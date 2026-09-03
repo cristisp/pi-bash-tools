@@ -203,6 +203,7 @@ describe('buildRunSummary', () => {
 			makeMetrics({ toolCalls: 2, durationMs: 1000 }),
 			usage,
 			report,
+			undefined,
 			1234,
 		);
 		expect(summary).toEqual({
@@ -226,7 +227,7 @@ describe('buildRunSummary', () => {
 	});
 
 	it('omits the report block when no report was built', () => {
-		const summary = buildRunSummary(makeMetrics(), usage, undefined, 1234);
+		const summary = buildRunSummary(makeMetrics(), usage, undefined, undefined, 1234);
 		expect(summary.report).toBeUndefined();
 		expect(summary.reportTokens).toBeUndefined();
 	});

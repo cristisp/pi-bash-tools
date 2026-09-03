@@ -40,11 +40,13 @@ The extension registers two tools, `subagent` and `subagent_stats`. `subagent` m
   the last run, and relevant warnings.
 
 Optional delegation context (recorded and exported, never behaviour-changing on
-its own): `tier` (0-4), `workflowMode` (`initial` | `remediation`), `reviewMode`
+its own): `taskId` (e.g. `"T-001"`, reused by every remediation attempt of the
+same work), `tier` (0-4), `workflowMode` (`initial` | `remediation`), `reviewMode`
 (`primary` | `security` | `validation` | `remediation`), `acceptanceCriteria`
-(e.g. `["F-001","F-002"]`), and `evidenceScope` (`session` | `flow`). They apply
+(e.g. `["AC-001","AC-002"]`), and `evidenceScope` (`session` | `flow`). They apply
 to every delegation in the call (single, parallel, chain, reuse) and show up on
-the registry entry, in `subagent_stats`, and in the telemetry log.
+the registry entry, in `subagent_stats`, and in the telemetry log. Attempt numbers
+are counted from the flow ledger rather than trusted from the call.
 
 Reuse judgment: before `reuseLabel`, agents should check `subagent_stats` and
 judge cost/impact (context size, turn count, prior tasks, reuse history). Reuse
@@ -219,10 +221,11 @@ file, working directory, status, last error, and context size
 (`contextTokens` - the context size at the last completed turn, for reuse
 vs. new decisions). Entries also track `reuseCount` (how many times the session
 was reused) and `tasks` (the last 5 tasks it was given, for topical-fit
-judgment), plus the delegation identity (`delegationId`, `flowId`, `tier`,
-`workflowMode`, `reviewMode`, `acceptanceCriteria`, `evidenceScope`) and
-`lastRun` (tool calls, tool errors, repeated reads, turns, cost, context, wait
-time and the report digest summary for the most recent completed turn). It is:
+judgment), plus the delegation identity (`delegationId`, `flowId`, `taskId`,
+`tier`, `workflowMode`, `reviewMode`, `acceptanceCriteria`, `evidenceScope`,
+`ledgerRevisionAtLaunch`) and `lastRun` (tool calls, tool errors, repeated reads,
+turns, cost, context, wait time, the report digest summary, and the ledger
+revision and pointer route for the most recent completed turn). It is:
 
 - **Workspace-scoped** - entries are keyed `<workspace>:<label>`, so every herdr
   workspace has its own `worker-1`, `worker-2`, ... and its own session files
@@ -244,6 +247,7 @@ variables and recorded on its registry entry:
 | `PI_ORCHESTRATION_MODE` | `workflowMode`, when supplied |
 | `PI_ORCHESTRATION_REVIEW_MODE` | `reviewMode`, when supplied |
 | `PI_ORCHESTRATION_CRITERIA` | `acceptanceCriteria` ids, comma-separated |
+| `PI_ORCHESTRATION_TASK` | `taskId`, when supplied |
 | `PI_ORCHESTRATION_EVIDENCE_SCOPE` | Widest evidence scope the child may reuse (`session` or `flow`) |
 
 The contract:
@@ -263,6 +267,8 @@ The contract:
   `workflowMode` updates on a reuse turn land in the registry and the telemetry
   record only. Consumers that key caches on these values should treat the
   launch-time identity as immutable for the life of the child process
+- the same immutability applies to the appended system prompt, which is why the
+  flow ledger reaches a child as a pointer (see below) instead of as its body
 
 ## Orchestration store
 
@@ -274,6 +280,8 @@ append-only telemetry log:
 - `~/.pi/agent/subagent-herdr/flows/<flowId>/reports/` - the full report of every
   settled delegation, as `reports/<label>-<timestamp>.md`
 - `~/.pi/agent/subagent-herdr/flows/<flowId>/predigest/` - reserved for pre-digested evidence
+- `~/.pi/agent/subagent-herdr/flows/<flowId>/ledger.md` - the flow ledger, one
+  machine-readable revision per delegation boundary
 - `~/.pi/agent/subagent-herdr.telemetry.jsonl` - one record per delegation turn:
   identity, outcome (`settled` / `failed` / `aborted`), usage, tool-call and
   failed-tool-call counts, repeated reads, turns, and time spent waiting on
@@ -284,6 +292,52 @@ Flow directories idle past `flowRetentionDays` are pruned at session start. The
 store is best-effort: when it is unwritable, delegation works normally and only
 measurement is lost. Other tools keep their caches under their own roots; they
 may read `flow.json` as a liveness hint but must never require it.
+
+## Flow ledger
+
+The ledger is the state a flow carries from one delegation to the next: task
+identity, attempt, tier, criteria, evidence scope, and the verdicts each role
+returned. It is written by the extension, at two points per turn - a `dispatch`
+revision when the child is launched or re-prompted, and a `result` revision when
+the turn finishes, which folds the child's own ledger block and report path into
+the flow.
+
+Children get a pointer, never the body. A fresh launch receives about 50 tokens in
+its appended system prompt:
+
+```text
+## Orchestration ledger
+
+Path: ~/.pi/agent/subagent-herdr/flows/f85f194e1b61c28e3/ledger.md
+Revision: 4
+```
+
+and is told to read that file with its own `read` tool. A reuse turn, whose system
+prompt was frozen at launch, gets a one-line `ledger: <path>@<revision>` prefix on
+its task text when the revision has advanced. Injecting the body at launch would
+have been cheaper per token and wrong on reuse: a reused session would carry its
+launch-time ledger forever, and a stale ledger reads as authoritative.
+
+Rules the store enforces rather than requests:
+
+- **Only the delegating session writes.** `ledger.md` is mode `0400`, so a child
+  with the `write` or `edit` tool gets `EACCES` when it tries to record its own
+  verdict. Roles that only inspect (`scout`, `planner`, `reviewer`, `validator`)
+  additionally have no mutating tools in their allowlists.
+- **Revision numbers never repeat.** Numbering continues from
+  `lastLedgerRevision` in `flow.json`, so a truncated or rewritten ledger cannot
+  make one revision mean two things.
+- **Attempts are counted, not trusted.** `attempt` is the number of earlier
+  `dispatch` revisions carrying the same `taskId`, plus one.
+- **Values stay scalar.** Every field is flattened to one line and bounded to 200
+  characters, and only an allowlist of child verdict fields is folded in, so the
+  file a later child reads cannot grow into a report.
+- **It degrades silently.** An unwritable store means no ledger and no pointer, not
+  a failed delegation.
+
+`ledgerMaxRevisions` caps how many revisions are kept; the oldest are dropped when
+appending, and the whole file ages out with its flow directory.
+`ledgerPointers: false` turns the whole mechanism off, including the writes.
 
 ## Role report and digest
 
@@ -336,6 +390,8 @@ file is re-read on every use, so edits take effect without a restart. Running
   "perTaskOutputCap": 51200,
   "reportDigestTokens": 600,
   "reportContractPolicy": "flag",
+  "ledgerMaxRevisions": 60,
+  "ledgerPointers": true,
   "registryLockTimeoutMs": 10000,
   "registryLockStaleMs": 5000,
   "herdrCliTimeoutMs": 8000,
@@ -362,6 +418,8 @@ file is re-read on every use, so edits take effect without a restart. Running
 | `perTaskOutputCap` | 51200 | Per-task byte cap in parallel summaries (bytes) |
 | `reportDigestTokens` | 600 | Token budget for the digest a child's report is reduced to |
 | `reportContractPolicy` | `"flag"` | `"flag"` or `"reject"` a report that omits its ledger block |
+| `ledgerMaxRevisions` | 60 | Ledger revisions kept per flow before the oldest are dropped |
+| `ledgerPointers` | true | Whether children receive ledger pointers (and the ledger is written at all) |
 | `registryLockTimeoutMs` | 10000 | Max wait for the registry lock |
 | `registryLockStaleMs` | 5000 | Steal the registry lock after this age |
 | `herdrCliTimeoutMs` | 8000 | Timeout for each herdr CLI call |

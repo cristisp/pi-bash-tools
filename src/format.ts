@@ -4,6 +4,7 @@ import { getConfig } from './config.ts';
 import type {
 	DisplayItem,
 	ExecutionMetrics,
+	LedgerRunInfo,
 	RegistryEntry,
 	ReportSummary,
 	RunSummary,
@@ -281,6 +282,7 @@ export function buildRunSummary(
 	metrics: ExecutionMetrics,
 	usage: SingleResult['usage'],
 	report?: ReportSummary,
+	ledger?: LedgerRunInfo,
 	now = Date.now(),
 ): RunSummary {
 	const summary: RunSummary = {
@@ -296,6 +298,8 @@ export function buildRunSummary(
 	if (metrics.blockEvents) summary.blockEvents = metrics.blockEvents;
 	if (metrics.approvalMs) summary.approvalMs = metrics.approvalMs;
 	if (metrics.steerMs) summary.steerMs = metrics.steerMs;
+	if (ledger?.revision !== undefined) summary.ledgerRevision = ledger.revision;
+	if (ledger?.injection && ledger.injection !== 'none') summary.ledgerInjection = ledger.injection;
 	if (report) {
 		summary.reportTokens = report.tokens;
 		// The registry is read on every delegation: keep counts and provenance, never the text.
@@ -309,8 +313,6 @@ export function buildRunSummary(
 	}
 	return summary;
 }
-
-/** Absolute byte backstop applied to whatever text a delegation hands back. */
 export function applyOutputByteCap(output: string): string {
 	const cap = getConfig().perTaskOutputCap;
 	const byteLength = Buffer.byteLength(output, 'utf8');
