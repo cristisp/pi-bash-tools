@@ -45,9 +45,10 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --deny-warnings",
-    "format": "oxfmt index.ts src test vitest.config.ts",
-    "format:check": "oxfmt --check index.ts src test vitest.config.ts",
+    "format": "oxfmt index.ts src test analysis/*.ts vitest.config.ts",
+    "format:check": "oxfmt --check index.ts src test analysis/*.ts vitest.config.ts",
     "test": "vitest run",
+    "test:analyze": "node analysis/cli.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   }

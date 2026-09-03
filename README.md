@@ -404,5 +404,9 @@ load and `session_start`), a reconciliation pass runs:
   pipeline runs all of them plus `tsc` on every push
 - `npm pack` / `npm publish` to distribute; the published tarball contains
   `index.ts`, `src/`, `README.md` (see `files` in `package.json`)
+- `npm run test:analyze` measures the orchestration against the live stores in the agent
+  directory and rewrites `analysis/MEASUREMENT.md` (delivered `subagent` result sizes before
+  and after the report cutoff, digest-to-report ratio, ledger compliance, root carry). It is
+  not part of `npm test` because it reads real session history instead of fixtures
 - The package is loaded through the `pi` manifest in `package.json`
   (`"pi": { "extensions": ["./index.ts"] }`)
