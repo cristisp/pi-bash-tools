@@ -152,6 +152,33 @@ function reuseHints(entry: RegistryEntry | undefined, parsed: ParsedSession): st
 	return hints;
 }
 
+function identityLine(entry: RegistryEntry): string {
+	const parts: string[] = [];
+	if (entry.delegationId) parts.push(`delegation: ${entry.delegationId}`);
+	if (entry.flowId) parts.push(`flow: ${entry.flowId}`);
+	if (typeof entry.tier === 'number') parts.push(`tier: ${entry.tier}`);
+	if (entry.workflowMode) parts.push(`mode: ${entry.workflowMode}`);
+	if (entry.reviewMode) parts.push(`review: ${entry.reviewMode}`);
+	if (entry.acceptanceCriteria?.length)
+		parts.push(`criteria: ${entry.acceptanceCriteria.join(',')}`);
+	parts.push(`evidence: ${entry.evidenceScope ?? 'unknown'}`);
+	return parts.join('  ');
+}
+
+function lastRunLine(entry: RegistryEntry): string | null {
+	const run = entry.lastRun;
+	if (!run) return null;
+	const parts = [`tools:${run.toolCalls}`];
+	if (run.failedToolCalls) parts.push(`tool-errors:${run.failedToolCalls}`);
+	if (run.repeatedReads) parts.push(`rereads:${run.repeatedReads}`);
+	if (run.turns) parts.push(`turns:${run.turns}`);
+	if (run.cost) parts.push(`$${run.cost.toFixed(4)}`);
+	if (run.contextTokens) parts.push(`ctx:${formatTokens(run.contextTokens)}`);
+	const waiting = (run.approvalMs ?? 0) + (run.steerMs ?? 0);
+	if (waiting) parts.push(`waiting:${(waiting / 1000).toFixed(1)}s`);
+	return `last run: ${parts.join(' ')}`;
+}
+
 export async function sessionStatsText(label: string, parentSession?: string): Promise<string> {
 	const entry = findEntry(label, parentSession);
 	if (!entry) {
@@ -162,7 +189,10 @@ export async function sessionStatsText(label: string, parentSession?: string): P
 		`Session ${entry.workspace}:${entry.label} (${entry.agent}, ${entry.status})`,
 		contextLine(entry, parsed).replace(/^  /, ''),
 		`turns: ${parsed.turns}  reused: ${entry.reuseCount ?? 0}`,
+		identityLine(entry),
 	];
+	const lastRun = lastRunLine(entry);
+	if (lastRun) lines.push(lastRun);
 	const usage = usageLine(parsed);
 	if (usage) lines.push(usage);
 	lines.push('recent tasks:');

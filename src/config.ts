@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { isValidModelSpec, normalizeModelSpec } from './model-spec.ts';
+import type { EvidenceScope } from './types.ts';
 
 export type ConfigAgentScope = 'user' | 'project' | 'both';
 
@@ -22,6 +23,12 @@ export interface SubagentHerdrConfig {
 	herdrCliTimeoutMs: number;
 	defaultAgentScope: ConfigAgentScope;
 	confirmProjectAgents: boolean;
+	/** Days a flow directory survives without a delegation before pruning removes it. */
+	flowRetentionDays: number;
+	/** Widest evidence scope a delegated child may reuse by default. */
+	evidenceScopeDefault: EvidenceScope;
+	/** Per-role overrides of evidenceScopeDefault. */
+	evidenceScopeByRole: Record<string, EvidenceScope>;
 	modelPresets: Record<string, ModelPreset>;
 	defaultPreset?: string;
 }
@@ -45,8 +52,15 @@ export const DEFAULT_CONFIG: SubagentHerdrConfig = {
 	herdrCliTimeoutMs: 8000,
 	defaultAgentScope: 'user',
 	confirmProjectAgents: true,
+	flowRetentionDays: 14,
+	evidenceScopeDefault: 'flow',
+	evidenceScopeByRole: { validator: 'session' },
 	modelPresets: {},
 };
+
+const DEFAULT_EVIDENCE_SCOPE_BY_ROLE: Record<string, EvidenceScope> = { validator: 'session' };
+
+const EVIDENCE_SCOPES = new Set<EvidenceScope>(['session', 'flow']);
 
 const NUMERIC_KEYS = [
 	'maxParallelTasks',
@@ -61,7 +75,18 @@ const NUMERIC_KEYS = [
 	'registryLockTimeoutMs',
 	'registryLockStaleMs',
 	'herdrCliTimeoutMs',
+	'flowRetentionDays',
 ] as const satisfies readonly (keyof SubagentHerdrConfig)[];
+
+export function parseEvidenceScopes(raw: unknown): Record<string, EvidenceScope> {
+	const scopes: Record<string, EvidenceScope> = {};
+	if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return scopes;
+	for (const [role, value] of Object.entries(raw as Record<string, unknown>)) {
+		if (!role || role === '__proto__') continue;
+		if (EVIDENCE_SCOPES.has(value as EvidenceScope)) scopes[role] = value as EvidenceScope;
+	}
+	return scopes;
+}
 
 export function parseModelPresets(raw: unknown): Record<string, ModelPreset> {
 	const presets: Record<string, ModelPreset> = {};
@@ -106,6 +131,13 @@ export function getConfig(filePath?: string): SubagentHerdrConfig {
 	if (typeof overrides.confirmProjectAgents === 'boolean') {
 		cfg.confirmProjectAgents = overrides.confirmProjectAgents;
 	}
+	if (EVIDENCE_SCOPES.has(overrides.evidenceScopeDefault as EvidenceScope)) {
+		cfg.evidenceScopeDefault = overrides.evidenceScopeDefault as EvidenceScope;
+	}
+	cfg.evidenceScopeByRole = {
+		...DEFAULT_EVIDENCE_SCOPE_BY_ROLE,
+		...parseEvidenceScopes(overrides.evidenceScopeByRole),
+	};
 	cfg.modelPresets = parseModelPresets(overrides.modelPresets);
 	if (
 		typeof overrides.defaultPreset === 'string' &&

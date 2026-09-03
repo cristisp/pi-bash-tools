@@ -1,7 +1,13 @@
 import * as os from 'node:os';
 import type { Message } from '@earendil-works/pi-ai';
 import { getConfig } from './config.ts';
-import type { DisplayItem, ExecutionMetrics, RegistryEntry, SingleResult } from './types.ts';
+import type {
+	DisplayItem,
+	ExecutionMetrics,
+	RegistryEntry,
+	RunSummary,
+	SingleResult,
+} from './types.ts';
 
 export function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
@@ -257,6 +263,28 @@ export function completionPatch(currentResult: SingleResult): Partial<RegistryEn
 		patch.contextTokens = currentResult.usage.contextTokens;
 	}
 	return patch;
+}
+
+/** Compact spend summary kept on the registry entry for reuse decisions. */
+export function buildRunSummary(
+	metrics: ExecutionMetrics,
+	usage: SingleResult['usage'],
+	now = Date.now(),
+): RunSummary {
+	const summary: RunSummary = {
+		at: now,
+		durationMs: metrics.durationMs,
+		toolCalls: metrics.toolCalls,
+		failedToolCalls: metrics.failedToolCalls,
+		repeatedReads: metrics.repeatedReads,
+		turns: usage.turns || metrics.turns,
+		cost: usage.cost,
+		contextTokens: usage.contextTokens || metrics.maxContextTokens,
+	};
+	if (metrics.blockEvents) summary.blockEvents = metrics.blockEvents;
+	if (metrics.approvalMs) summary.approvalMs = metrics.approvalMs;
+	if (metrics.steerMs) summary.steerMs = metrics.steerMs;
+	return summary;
 }
 
 export function truncateParallelOutput(output: string): string {

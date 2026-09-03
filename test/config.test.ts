@@ -49,6 +49,9 @@ describe('getConfig - overrides', () => {
 			herdrCliTimeoutMs: 4000,
 			defaultAgentScope: 'both',
 			confirmProjectAgents: false,
+			flowRetentionDays: 7,
+			evidenceScopeDefault: 'session',
+			evidenceScopeByRole: { validator: 'session' },
 			modelPresets: { fast: { worker: 'p/m:high' } },
 			defaultPreset: 'fast',
 		};

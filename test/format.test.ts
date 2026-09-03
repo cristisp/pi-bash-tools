@@ -52,6 +52,10 @@ describe('formatExecutionMetrics', () => {
 				taskChars: 100,
 				outputChars: 2500,
 				maxContextTokens: 12000,
+				turns: 2,
+				blockEvents: 0,
+				approvalMs: 0,
+				steerMs: 0,
 			}),
 		).toBe('time:1.5s tools:3 msgs:7 io:100/2500 tool-errors:1 rereads:2 max-ctx:12k');
 	});

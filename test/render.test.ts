@@ -209,6 +209,10 @@ describe('renderSubagentResult - single collapsed', () => {
 				taskChars: 10,
 				outputChars: 20,
 				maxContextTokens: 1000,
+				turns: 1,
+				blockEvents: 0,
+				approvalMs: 0,
+				steerMs: 0,
 			},
 		});
 		const text = textOf(renderResult(singleDetails([r]), false));

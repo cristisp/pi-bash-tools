@@ -6,6 +6,7 @@ import { Type, type Static } from 'typebox';
 import { discoverAgents } from './agents.ts';
 import type { AgentConfig, AgentScope } from './agents.ts';
 import { getConfig } from './config.ts';
+import { sanitizeCriteria } from './delegation.ts';
 import {
 	getFinalOutput,
 	getResultOutput,
@@ -23,7 +24,13 @@ import {
 import { listSubagents } from './registry.ts';
 import { runReusedAgent, runSingleAgent } from './run.ts';
 import { makeEmptyUsage } from './types.ts';
-import type { BlockEventInfo, OnUpdateCallback, SingleResult, SubagentDetails } from './types.ts';
+import type {
+	BlockEventInfo,
+	OnUpdateCallback,
+	OrchestrationContext,
+	SingleResult,
+	SubagentDetails,
+} from './types.ts';
 
 const TaskItem = Type.Object({
 	agent: Type.String({ description: 'Name of the agent to invoke' }),
@@ -101,6 +108,38 @@ export const SubagentParams = Type.Object({
 				'List available agents (name, description, source) for the current agentScope; call this before picking an agent name',
 		}),
 	),
+	tier: Type.Optional(
+		Type.Integer({
+			minimum: 0,
+			maximum: 4,
+			description:
+				'Orchestration tier of this delegation (0-4). Recorded for measurement and exported to the child as PI_ORCHESTRATION_TIER; it does not change tool behaviour.',
+		}),
+	),
+	workflowMode: Type.Optional(
+		StringEnum(['initial', 'remediation'] as const, {
+			description:
+				'Whether this delegation starts work or remediates a prior attempt. Recorded and exported as PI_ORCHESTRATION_MODE; it does not change tool behaviour.',
+		}),
+	),
+	reviewMode: Type.Optional(
+		StringEnum(['primary', 'security', 'validation', 'remediation'] as const, {
+			description:
+				'Which kind of review this delegation performs. Recorded and exported as PI_ORCHESTRATION_REVIEW_MODE.',
+		}),
+	),
+	acceptanceCriteria: Type.Optional(
+		Type.Array(Type.String(), {
+			description:
+				'Acceptance-criteria ids this delegation must satisfy (for example ["F-001","F-002"]). Recorded and exported to the child as PI_ORCHESTRATION_CRITERIA.',
+		}),
+	),
+	evidenceScope: Type.Optional(
+		StringEnum(['session', 'flow'] as const, {
+			description:
+				'Widest evidence this delegation may reuse. May only narrow the scope configured for the role, never widen it.',
+		}),
+	),
 	reuseLabel: Type.Optional(
 		Type.String({
 			description: `${REUSE_WORKFLOW_DESCRIPTION} Continue the selected session in place (preserving its context); send task as the next message.`,
@@ -146,6 +185,7 @@ interface ExecuteContext {
 	signal: AbortSignal | undefined;
 	onUpdate: OnUpdateCallback | undefined;
 	onBlocked: ((info: BlockEventInfo) => void) | undefined;
+	orchestration: OrchestrationContext;
 }
 
 function makeDetailsFor(ctx: ExecuteContext) {
@@ -156,6 +196,17 @@ function makeDetailsFor(ctx: ExecuteContext) {
 			projectAgentsDir: ctx.projectAgentsDir,
 			results,
 		});
+}
+
+function orchestrationFromParams(params: SubagentParams): OrchestrationContext {
+	const orchestration: OrchestrationContext = {};
+	if (typeof params.tier === 'number') orchestration.tier = params.tier;
+	if (params.workflowMode) orchestration.workflowMode = params.workflowMode;
+	if (params.reviewMode) orchestration.reviewMode = params.reviewMode;
+	if (params.acceptanceCriteria?.length)
+		orchestration.acceptanceCriteria = sanitizeCriteria(params.acceptanceCriteria);
+	if (params.evidenceScope) orchestration.evidenceScope = params.evidenceScope;
+	return orchestration;
 }
 
 function buildExecuteContext(
@@ -184,6 +235,7 @@ function buildExecuteContext(
 		signal,
 		onUpdate,
 		onBlocked: buildOnBlocked(ctx),
+		orchestration: orchestrationFromParams(params),
 	};
 	return { executeCtx, makeDetails: makeDetailsFor(executeCtx) };
 }
@@ -249,6 +301,7 @@ async function executeChainMode(
 			ctx.sessionFile,
 			ctx.onBlocked,
 			ctx.presetModels,
+			ctx.orchestration,
 		);
 		results.push(result);
 
@@ -348,6 +401,7 @@ async function runParallelTask(
 		ctx.sessionFile,
 		ctx.onBlocked,
 		ctx.presetModels,
+		ctx.orchestration,
 	);
 	allResults[index] = result;
 	emitUpdate();
@@ -416,6 +470,7 @@ async function executeSingleMode(
 		ctx.sessionFile,
 		ctx.onBlocked,
 		ctx.presetModels,
+		ctx.orchestration,
 	);
 	const isError = isFailedResult(result);
 	if (isError) {
@@ -461,6 +516,7 @@ async function executeReuseMode(
 		ctx.onBlocked,
 		ctx.sessionFile,
 		ctx.presetModels,
+		ctx.orchestration,
 	);
 	const isError = isFailedResult(result);
 	if (isError) {

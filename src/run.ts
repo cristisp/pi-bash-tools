@@ -3,7 +3,15 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { withFileMutationQueue } from '@earendil-works/pi-coding-agent';
 import type { AgentConfig } from './agents.ts';
-import { completionPatch, getFinalOutput } from './format.ts';
+import { getConfig } from './config.ts';
+import {
+	delegationFromEntry,
+	orchestrationEnv,
+	resolveDelegation,
+	type EvidenceScopePolicy,
+} from './delegation.ts';
+import { ensureFlow, recordFlowParticipant } from './flow.ts';
+import { buildRunSummary, completionPatch, getFinalOutput, isFailedResult } from './format.ts';
 import {
 	closeTab,
 	createTaskTab,
@@ -27,10 +35,13 @@ import {
 	updateRegistryEntry,
 } from './registry.ts';
 import { sanitizeSegment } from './registry-store.ts';
+import { appendTelemetryRecord, buildTelemetryRecord } from './telemetry.ts';
 import { ABORT_ERROR, makeEmptyUsage } from './types.ts';
 import type {
 	BlockEventInfo,
+	DelegationContext,
 	OnUpdateCallback,
+	OrchestrationContext,
 	RegistryEntry,
 	SingleResult,
 	SubagentDetails,
@@ -60,8 +71,12 @@ function buildLaunchCommand(
 	sessionPath: string,
 	taskFilePath: string,
 	systemPromptPath: string | null,
+	delegation?: DelegationContext,
 ): string {
-	const parts: string[] = ['PI_SUBAGENT_NESTED=1', 'pi'];
+	const env: Record<string, string> = { PI_SUBAGENT_NESTED: '1' };
+	if (delegation) Object.assign(env, orchestrationEnv(delegation));
+	const parts: string[] = Object.entries(env).map(([key, value]) => `${key}=${shellQuote(value)}`);
+	parts.push('pi');
 	parts.push('--name', shellQuote(label));
 	parts.push('--session', shellQuote(sessionPath));
 	if (model) parts.push('--model', shellQuote(model));
@@ -122,9 +137,11 @@ function recordExecutionMetrics(result: SingleResult, startedAt: number): void {
 	let failedToolCalls = 0;
 	let repeatedReads = 0;
 	let maxContextTokens = 0;
+	let turns = 0;
 	const readCounts = new Map<string, number>();
 	for (const message of result.messages) {
 		if (message.role === 'assistant') {
+			turns++;
 			for (const part of message.content) {
 				if (part.type !== 'toolCall') continue;
 				toolCalls++;
@@ -153,7 +170,61 @@ function recordExecutionMetrics(result: SingleResult, startedAt: number): void {
 		taskChars: result.task.length,
 		outputChars: getFinalOutput(result.messages).length,
 		maxContextTokens,
+		turns,
+		blockEvents: result.blockDurations?.count ?? 0,
+		approvalMs: result.blockDurations?.approvalMs ?? 0,
+		steerMs: result.blockDurations?.steerMs ?? 0,
 	};
+}
+
+function scopePolicy(cfg = getConfig()): EvidenceScopePolicy {
+	return {
+		evidenceScopeDefault: cfg.evidenceScopeDefault,
+		evidenceScopeByRole: cfg.evidenceScopeByRole,
+	};
+}
+
+interface DelegationFinishContext {
+	label: string;
+	agent: string;
+	sessionFile?: string;
+	parentSession?: string;
+	reused: boolean;
+	reuseCount: number;
+	aborted: boolean;
+}
+
+function emitDelegationTelemetry(
+	currentResult: SingleResult,
+	delegation: DelegationContext | undefined,
+	context: DelegationFinishContext,
+): void {
+	if (!delegation) return;
+	const outcome = context.aborted
+		? 'aborted'
+		: isFailedResult(currentResult)
+			? 'failed'
+			: 'settled';
+	appendTelemetryRecord(
+		buildTelemetryRecord({
+			delegation,
+			workspace: ownWorkspaceId(),
+			label: context.label || delegation.role,
+			agent: context.agent,
+			reused: context.reused,
+			reuseCount: context.reuseCount,
+			outcome,
+			parentSession: context.parentSession,
+			sessionFile: context.sessionFile,
+			result: currentResult,
+		}),
+	);
+	if (!context.label) return;
+	recordFlowParticipant({ flowId: delegation.flowId, label: context.label, agent: context.agent });
+	if (currentResult.metrics)
+		updateRegistryEntry(context.label, {
+			lastRun: buildRunSummary(currentResult.metrics, currentResult.usage),
+		});
 }
 
 function failedResult(
@@ -201,6 +272,7 @@ async function relaunchOrPrompt(
 	label: string,
 	task: string,
 	paneId: string,
+	delegation?: DelegationContext,
 ): Promise<{
 	kind: 'relaunch' | 'prompt';
 	error: string;
@@ -217,6 +289,7 @@ async function relaunchOrPrompt(
 			entry.sessionFile,
 			taskTmp.filePath,
 			null,
+			delegation,
 		);
 		const launchError = await launchInPane(paneId, command);
 		const tmp: AgentTempFiles = {
@@ -269,10 +342,13 @@ async function createFreshSubagentTab(
 	parentSession: string | undefined,
 	currentResult: SingleResult,
 	task: string,
+	delegation: DelegationContext,
 ): Promise<{ paneId: string; tabId: string; label: string; sessionPath: string } | null> {
 	const alloc = allocateLabel(agent.name);
 	const label = alloc.label;
 	currentResult.label = label;
+	currentResult.delegationId = delegation.delegationId;
+	if (delegation.flowId) currentResult.flowId = delegation.flowId;
 	const sessionPath = alloc.sessionFile;
 
 	const workspaceId = await resolveOwnWorkspace();
@@ -305,7 +381,18 @@ async function createFreshSubagentTab(
 		contextTokens: 0,
 		tasks: [task],
 		parentSession,
+		delegationId: delegation.delegationId,
+		...(delegation.flowId ? { flowId: delegation.flowId } : {}),
+		...(typeof delegation.tier === 'number' ? { tier: delegation.tier } : {}),
+		...(delegation.workflowMode ? { workflowMode: delegation.workflowMode } : {}),
+		...(delegation.reviewMode ? { reviewMode: delegation.reviewMode } : {}),
+		...(delegation.acceptanceCriteria?.length
+			? { acceptanceCriteria: delegation.acceptanceCriteria }
+			: {}),
+		evidenceScope: delegation.evidenceScope,
 	});
+	ensureFlow({ flowId: delegation.flowId, rootSession: parentSession });
+	recordFlowParticipant({ flowId: delegation.flowId, label, agent: agent.name });
 	return { paneId: created.paneId, tabId: created.tabId, label, sessionPath };
 }
 
@@ -318,8 +405,17 @@ async function launchSubagent(
 	promptPath: string | null,
 	paneId: string,
 	currentResult: SingleResult,
+	delegation: DelegationContext,
 ): Promise<boolean> {
-	const command = buildLaunchCommand(agent, model, label, sessionPath, taskPath, promptPath);
+	const command = buildLaunchCommand(
+		agent,
+		model,
+		label,
+		sessionPath,
+		taskPath,
+		promptPath,
+		delegation,
+	);
 	const launchError = await launchInPane(paneId, command);
 	if (launchError) {
 		currentResult.exitCode = 1;
@@ -344,6 +440,7 @@ async function launchFreshAgent(
 	task: string,
 	parentSession: string | undefined,
 	currentResult: SingleResult,
+	delegation: DelegationContext,
 ): Promise<FreshAgentTab | null> {
 	const tmp = await writeAgentTempFiles(agent, task);
 	const cleanupTmp = (): void => {
@@ -358,6 +455,7 @@ async function launchFreshAgent(
 			parentSession,
 			currentResult,
 			task,
+			delegation,
 		);
 		if (!tab) {
 			cleanupTmp();
@@ -372,6 +470,7 @@ async function launchFreshAgent(
 			tmp.promptPath,
 			tab.paneId,
 			currentResult,
+			delegation,
 		);
 		if (!launched) {
 			await closeTab(tab.tabId);
@@ -526,6 +625,7 @@ export async function runSingleAgent(
 	parentSession: string | undefined,
 	onBlocked?: (info: BlockEventInfo) => void,
 	presetModels?: Record<string, string>,
+	orchestration?: OrchestrationContext,
 ): Promise<SingleResult> {
 	const startedAt = Date.now();
 	const found = findAgentOrFail(agents, agentName, task, step);
@@ -534,6 +634,12 @@ export async function runSingleAgent(
 		return found;
 	}
 	const agent = found;
+	const delegation = resolveDelegation({
+		role: agentName,
+		policy: scopePolicy(),
+		parentSession,
+		orchestration,
+	});
 	const model =
 		presetModels && Object.hasOwn(presetModels, agentName) ? presetModels[agentName] : undefined;
 
@@ -552,6 +658,8 @@ export async function runSingleAgent(
 	let tabId: string | null = null;
 	let label = '';
 	let tmpFiles: AgentTempFiles | null = null;
+	let sessionFile: string | undefined;
+	let abortedRun = false;
 
 	try {
 		const tab = await launchFreshAgent(
@@ -562,10 +670,12 @@ export async function runSingleAgent(
 			task,
 			parentSession,
 			currentResult,
+			delegation,
 		);
 		if (!tab) return currentResult;
 		tabId = tab.tabId;
 		label = tab.label;
+		sessionFile = tab.sessionPath;
 		tmpFiles = {
 			promptDir: tab.promptDir,
 			promptPath: tab.promptPath,
@@ -586,7 +696,10 @@ export async function runSingleAgent(
 		);
 		return currentResult;
 	} catch (err) {
-		if (err === ABORT_ERROR) throw err;
+		if (err === ABORT_ERROR) {
+			abortedRun = true;
+			throw err;
+		}
 		currentResult.exitCode = 1;
 		currentResult.stderr = (err as Error).message || String(err);
 		if (tabId) await closeTab(tabId);
@@ -594,6 +707,15 @@ export async function runSingleAgent(
 		return currentResult;
 	} finally {
 		recordExecutionMetrics(currentResult, startedAt);
+		emitDelegationTelemetry(currentResult, delegation, {
+			label,
+			agent: agentName,
+			sessionFile,
+			parentSession,
+			reused: false,
+			reuseCount: 0,
+			aborted: abortedRun,
+		});
 		if (tmpFiles) {
 			removeTempFiles(tmpFiles.promptDir, tmpFiles.promptPath);
 			removeTempFiles(tmpFiles.taskDir, tmpFiles.taskPath);
@@ -621,6 +743,7 @@ export async function runReusedAgent(
 	onBlocked?: (info: BlockEventInfo) => void,
 	parentSession?: string,
 	presetModels?: Record<string, string>,
+	orchestration?: OrchestrationContext,
 ): Promise<SingleResult> {
 	const startedAt = Date.now();
 	const init = initReusedSession(agents, label, task, parentSession);
@@ -629,6 +752,9 @@ export async function runReusedAgent(
 		return init;
 	}
 	const { entry, agent, currentResult } = init;
+	const delegation = delegationFromEntry(entry, { policy: scopePolicy(), orchestration });
+	currentResult.delegationId = delegation.delegationId;
+	if (delegation.flowId) currentResult.flowId = delegation.flowId;
 	const model =
 		presetModels && Object.hasOwn(presetModels, entry.agent)
 			? presetModels[entry.agent]
@@ -636,9 +762,22 @@ export async function runReusedAgent(
 	currentResult.model = model;
 
 	let relaunchTmp: AgentTempFiles | null = null;
+	let abortedRun = false;
 
 	try {
-		updateRegistryEntry(label, { status: 'running', updatedAt: Date.now() });
+		updateRegistryEntry(label, {
+			status: 'running',
+			updatedAt: Date.now(),
+			delegationId: delegation.delegationId,
+			...(delegation.flowId ? { flowId: delegation.flowId } : {}),
+			...(typeof delegation.tier === 'number' ? { tier: delegation.tier } : {}),
+			...(delegation.workflowMode ? { workflowMode: delegation.workflowMode } : {}),
+			...(delegation.reviewMode ? { reviewMode: delegation.reviewMode } : {}),
+			...(delegation.acceptanceCriteria?.length
+				? { acceptanceCriteria: delegation.acceptanceCriteria }
+				: {}),
+			evidenceScope: delegation.evidenceScope,
+		});
 		recordTask(label, entry, task);
 
 		let paneId = entry.paneId;
@@ -653,7 +792,7 @@ export async function runReusedAgent(
 			updateRegistryEntry(label, { paneId, tabId, updatedAt: Date.now() });
 		}
 
-		const relaunch = await relaunchOrPrompt(agent, model, entry, label, task, paneId);
+		const relaunch = await relaunchOrPrompt(agent, model, entry, label, task, paneId, delegation);
 		if (!relaunch) throw new Error('relaunchOrPrompt returned no outcome');
 		relaunchTmp = relaunch.tmp;
 		if (relaunch.error) {
@@ -677,12 +816,24 @@ export async function runReusedAgent(
 		if (applied === 'aborted') throw ABORT_ERROR;
 		return currentResult;
 	} catch (err) {
-		if (err === ABORT_ERROR) throw err;
+		if (err === ABORT_ERROR) {
+			abortedRun = true;
+			throw err;
+		}
 		currentResult.exitCode = 1;
 		currentResult.stderr = (err as Error).message || String(err);
 		return currentResult;
 	} finally {
 		recordExecutionMetrics(currentResult, startedAt);
+		emitDelegationTelemetry(currentResult, delegation, {
+			label,
+			agent: entry.agent,
+			sessionFile: entry.sessionFile,
+			parentSession,
+			reused: true,
+			reuseCount: entry.reuseCount ?? 0,
+			aborted: abortedRun,
+		});
 		if (relaunchTmp) {
 			removeTempFiles(relaunchTmp.promptDir, relaunchTmp.promptPath);
 			removeTempFiles(relaunchTmp.taskDir, relaunchTmp.taskPath);

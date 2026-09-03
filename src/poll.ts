@@ -181,6 +181,17 @@ function handleBlockedState(
 }
 
 function clearBlockedState(currentResult: SingleResult): void {
+	const startedAt = currentResult.blockedSince;
+	const reason = currentResult.blockReason;
+	if (startedAt !== undefined && reason !== undefined) {
+		const elapsedMs = Math.max(0, Date.now() - startedAt);
+		const totals = currentResult.blockDurations ?? { count: 0, approvalMs: 0, steerMs: 0 };
+		currentResult.blockDurations = {
+			count: totals.count + 1,
+			approvalMs: totals.approvalMs + (reason === 'approval' ? elapsedMs : 0),
+			steerMs: totals.steerMs + (reason === 'steer' ? elapsedMs : 0),
+		};
+	}
 	currentResult.blockReason = undefined;
 	currentResult.blockedSince = undefined;
 	currentResult.blockedPreview = undefined;

@@ -35,6 +35,8 @@ import { pollSubagent } from '../src/poll.ts';
 import { runReusedAgent, runSingleAgent } from '../src/run.ts';
 import { registerEntry } from '../src/registry.ts';
 import { readRegistry } from '../src/registry-store.ts';
+import { readTelemetryRecords, telemetryPath } from '../src/telemetry.ts';
+import { flowsRoot } from '../src/flow.ts';
 import type { AgentConfig } from '../src/agents.ts';
 import type { SingleResult, SubagentDetails } from '../src/types.ts';
 import { assistantMsg, makeRegistryEntry, toolResultMsg } from './helpers.ts';
@@ -53,6 +55,14 @@ const reviewerAgent: AgentConfig = {
 	systemPrompt: 'You are a reviewer.',
 	source: 'user',
 	filePath: '/tmp/reviewer.md',
+};
+
+const validatorAgent: AgentConfig = {
+	name: 'validator',
+	description: 'validator agent',
+	systemPrompt: 'You are a validator.',
+	source: 'user',
+	filePath: '/tmp/validator.md',
 };
 
 function makeDetails(results: SingleResult[]): SubagentDetails {
@@ -75,6 +85,7 @@ function singleCall(
 		parentSession?: string;
 		agents?: AgentConfig[];
 		presetModels?: Record<string, string>;
+		orchestration?: Parameters<typeof runSingleAgent>[12];
 	} = {},
 ) {
 	return runSingleAgent(
@@ -90,6 +101,7 @@ function singleCall(
 		overrides.parentSession,
 		undefined,
 		overrides.presetModels,
+		overrides.orchestration,
 	);
 }
 
@@ -121,6 +133,14 @@ beforeEach(() => {
 			fs.unlinkSync(path.join(getAgentDir(), f));
 		} catch {}
 	}
+	for (const f of [telemetryPath(), `${telemetryPath()}.lock`]) {
+		try {
+			fs.unlinkSync(f);
+		} catch {}
+	}
+	try {
+		fs.rmSync(flowsRoot(), { recursive: true, force: true });
+	} catch {}
 	vi.mocked(resolveOwnWorkspace).mockResolvedValue('ws1');
 	vi.mocked(resolveWorkspaceName).mockResolvedValue(undefined);
 	vi.mocked(createTaskTab).mockResolvedValue({ paneId: 'ws1:p9', tabId: 't9' });
@@ -430,5 +450,129 @@ describe('runReusedAgent - reuse accounting', () => {
 			reuseCount: 1,
 			tasks: ['next task'],
 		});
+	});
+});
+
+describe('delegation identity', () => {
+	it('exports the orchestration identity into the child launch command', async () => {
+		const result = await singleCall({ parentSession: '/sess/parent.jsonl' });
+		expect(result.exitCode).toBe(0);
+		const command = vi.mocked(launchInPane).mock.calls[0][1];
+		expect(command).toContain("PI_ORCHESTRATION_ROLE='worker'");
+		expect(command).toMatch(/PI_DELEGATION_ID='[0-9a-f-]{36}'/);
+		expect(command).toMatch(/PI_ORCHESTRATION_FLOW='f[0-9a-f]{16}'/);
+		expect(command).toContain("PI_ORCHESTRATION_EVIDENCE_SCOPE='flow'");
+		expect(result.delegationId).toMatch(/^[0-9a-f-]{36}$/);
+		expect(result.flowId).toMatch(/^f[0-9a-f]{16}$/);
+	});
+
+	it('omits the flow id when no parent session is known', async () => {
+		const result = await singleCall();
+		const command = vi.mocked(launchInPane).mock.calls[0][1];
+		expect(command).toContain("PI_SUBAGENT_NESTED='1'");
+		expect(command).toContain("PI_ORCHESTRATION_ROLE='worker'");
+		expect(command).toMatch(/PI_DELEGATION_ID='[0-9a-f-]{36}'/);
+		expect(command).not.toContain('PI_ORCHESTRATION_FLOW');
+		expect(result.flowId).toBeUndefined();
+	});
+
+	it('honours narrowing and refuses widening of the evidence scope', async () => {
+		await singleCall({
+			parentSession: '/sess/parent.jsonl',
+			orchestration: { evidenceScope: 'session' },
+		});
+		expect(vi.mocked(launchInPane).mock.calls[0][1]).toContain(
+			"PI_ORCHESTRATION_EVIDENCE_SCOPE='session'",
+		);
+
+		await singleCall({
+			agentName: 'validator',
+			task: 'check it',
+			parentSession: '/sess/parent.jsonl',
+			orchestration: { evidenceScope: 'flow' },
+			agents: [validatorAgent],
+		});
+		expect(vi.mocked(launchInPane).mock.calls[1][1]).toContain(
+			"PI_ORCHESTRATION_EVIDENCE_SCOPE='session'",
+		);
+	});
+
+	it('records delegation context on the registry entry and a spend summary', async () => {
+		vi.mocked(pollSubagent).mockImplementation(async (...args) => {
+			args[4].messages.push(
+				assistantMsg('done', {
+					toolCalls: [{ id: 't1', name: 'bash', args: { command: 'ls' } }],
+					usage: { totalTokens: 900 },
+				}),
+			);
+			return 'settled';
+		});
+		const result = await singleCall({
+			parentSession: '/sess/parent.jsonl',
+			orchestration: {
+				tier: 2,
+				workflowMode: 'remediation',
+				acceptanceCriteria: ['F-001', 'bad id'],
+			},
+		});
+		expect(readRegistry().tabs['ws1:worker-1']).toMatchObject({
+			delegationId: result.delegationId,
+			flowId: result.flowId,
+			tier: 2,
+			workflowMode: 'remediation',
+			acceptanceCriteria: ['F-001'],
+			evidenceScope: 'flow',
+		});
+		expect(readRegistry().tabs['ws1:worker-1'].lastRun).toMatchObject({
+			toolCalls: 1,
+			turns: 1,
+		});
+	});
+
+	it('creates the flow directory and one telemetry record per delegation turn', async () => {
+		const result = await singleCall({ parentSession: '/sess/parent.jsonl' });
+		expect(fs.existsSync(path.join(flowsRoot(), result.flowId ?? '', 'reports'))).toBe(true);
+		const records = readTelemetryRecords();
+		expect(records).toHaveLength(1);
+		expect(records[0]).toMatchObject({
+			v: 1,
+			delegationId: result.delegationId,
+			flowId: result.flowId,
+			workspace: 'ws1',
+			label: 'worker-1',
+			agent: 'worker',
+			role: 'worker',
+			evidenceScope: 'flow',
+			reused: false,
+			outcome: 'settled',
+			exitCode: 0,
+			parentSession: '/sess/parent.jsonl',
+		});
+		expect(records[0].metrics.toolCalls).toBe(0);
+		expect(records[0].metrics.turns).toBe(0);
+	});
+
+	it('keeps one delegation id across reuse turns and relaunches', async () => {
+		const fresh = await singleCall({ parentSession: '/sess/parent.jsonl' });
+		vi.mocked(herdrCli).mockResolvedValue({ error: { code: 'pane_not_found' } });
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'no-agent' });
+		const reused = await reuseCall('worker-1', 'next task', '/sess/parent.jsonl');
+		expect(reused.exitCode).toBe(0);
+		expect(reused.delegationId).toBe(fresh.delegationId);
+		expect(reused.flowId).toBe(fresh.flowId);
+		const relaunch = vi.mocked(launchInPane).mock.calls[1][1];
+		expect(relaunch).toContain(`PI_DELEGATION_ID='${fresh.delegationId}'`);
+		expect(relaunch).toContain(`PI_ORCHESTRATION_FLOW='${fresh.flowId}'`);
+		const records = readTelemetryRecords();
+		expect(records.map((r) => r.reused)).toEqual([false, true]);
+	});
+
+	it('records a failure outcome when the child never launches', async () => {
+		vi.mocked(launchInPane).mockResolvedValue('boom');
+		const result = await singleCall({ parentSession: '/sess/parent.jsonl' });
+		expect(result.exitCode).toBe(1);
+		const records = readTelemetryRecords();
+		expect(records).toHaveLength(1);
+		expect(records[0]).toMatchObject({ outcome: 'failed', exitCode: 1 });
 	});
 });

@@ -29,14 +29,21 @@ The extension registers two tools, `subagent` and `subagent_stats`. `subagent` m
   with the previous step's output
 - `subagent(reuseLabel, task)` - continue an existing session in place (same tab,
   same context, only the new turn counts as the result)
-- `subagent(listSubagents: true)` - list sessions in a compact form; use `listVerbose: true` for pane, session-file, and last-result diagnostics
+- `subagent(listSubagents: true)` - list sessions in a compact form; use `listVerbose: true` for pane, session-file, delegation identity, last-run spend, and last-result diagnostics
 - `subagent(agents: true)` - list available agents (name, description, source)
   for the current agentScope; the agent should check this before picking an
   agent name. Unknown agent names fail with the available list, a
   "did you mean" suggestion, and a pointer to this mode.
 - `subagent_stats(label)` - compact reuse-relevant stats for one session: context size,
   turns, input/output usage, cost, reuse count, recent task history, last result,
-  and relevant warnings.
+  delegation identity, the spend of the last run, and relevant warnings.
+
+Optional delegation context (recorded and exported, never behaviour-changing on
+its own): `tier` (0-4), `workflowMode` (`initial` | `remediation`), `reviewMode`
+(`primary` | `security` | `validation` | `remediation`), `acceptanceCriteria`
+(e.g. `["F-001","F-002"]`), and `evidenceScope` (`session` | `flow`). They apply
+to every delegation in the call (single, parallel, chain, reuse) and show up on
+the registry entry, in `subagent_stats`, and in the telemetry log.
 
 Reuse judgment: before `reuseLabel`, agents should check `subagent_stats` and
 judge cost/impact (context size, turn count, prior tasks, reuse history). Reuse
@@ -211,13 +218,69 @@ file, working directory, status, last result, and context size
 (`contextTokens` - the context size at the last completed turn, for reuse
 vs. new decisions). Entries also track `reuseCount` (how many times the session
 was reused) and `tasks` (the last 5 tasks it was given, for topical-fit
-judgment). It is:
+judgment), plus the delegation identity (`delegationId`, `flowId`, `tier`,
+`workflowMode`, `reviewMode`, `acceptanceCriteria`, `evidenceScope`) and
+`lastRun` (tool calls, tool errors, repeated reads, turns, cost, context, and
+wait time for the most recent completed turn). It is:
 
 - **Workspace-scoped** - entries are keyed `<workspace>:<label>`, so every herdr
   workspace has its own `worker-1`, `worker-2`, ... and its own session files
 - **Locked** - all mutations take an exclusive lock file (with stale-lock
   stealing), so multiple workspaces can spawn concurrently without clobbering
   each other
+
+## Delegation identity
+
+Every delegation gets an identity, exported into the child process as environment
+variables and recorded on its registry entry:
+
+| Variable | Meaning |
+| --- | --- |
+| `PI_DELEGATION_ID` | One id per delegation; stable across every reuse of that session |
+| `PI_ORCHESTRATION_FLOW` | Shared by every delegation spawned by one root Pi session |
+| `PI_ORCHESTRATION_ROLE` | The agent being delegated to |
+| `PI_ORCHESTRATION_TIER` | `tier` from the tool call, when supplied |
+| `PI_ORCHESTRATION_MODE` | `workflowMode`, when supplied |
+| `PI_ORCHESTRATION_REVIEW_MODE` | `reviewMode`, when supplied |
+| `PI_ORCHESTRATION_CRITERIA` | `acceptanceCriteria` ids, comma-separated |
+| `PI_ORCHESTRATION_EVIDENCE_SCOPE` | Widest evidence scope the child may reuse (`session` or `flow`) |
+
+The contract:
+
+- ids are opaque and match `[A-Za-z0-9_-]{1,64}`
+- main sessions get none of these; only spawned children do, and
+  `PI_ORCHESTRATION_FLOW` needs a delegating session with a session file (no
+  known root session, no flow id)
+- absence means unowned: a tool that sees no flow id behaves exactly as it did
+  before this contract existed
+- a caller may pass `evidenceScope: "session"` to narrow what a child may reuse.
+  Narrowing is honoured, widening past `evidenceScopeByRole` /
+  `evidenceScopeDefault` is ignored, and a reuse turn can only narrow the scope
+  already resolved for that session
+- the environment is fixed when the child process launches. A reuse turn that
+  prompts a still-live session cannot change that child's env, so `tier` and
+  `workflowMode` updates on a reuse turn land in the registry and the telemetry
+  record only. Consumers that key caches on these values should treat the
+  launch-time identity as immutable for the life of the child process
+
+## Orchestration store
+
+Alongside the registry, the extension keeps one directory per flow and an
+append-only telemetry log:
+
+- `~/.pi/agent/subagent-herdr/flows/<flowId>/flow.json` - root session, participants,
+  `createdAt` and `lastUsedAt`
+- `~/.pi/agent/subagent-herdr/flows/<flowId>/reports/` - where per-role reports land
+- `~/.pi/agent/subagent-herdr/flows/<flowId>/predigest/` - reserved for pre-digested evidence
+- `~/.pi/agent/subagent-herdr.telemetry.jsonl` - one record per delegation turn:
+  identity, outcome (`settled` / `failed` / `aborted`), usage, tool-call and
+  failed-tool-call counts, repeated reads, turns, and time spent waiting on
+  approvals or steers
+
+Flow directories idle past `flowRetentionDays` are pruned at session start. The
+store is best-effort: when it is unwritable, delegation works normally and only
+measurement is lost. Other tools keep their caches under their own roots; they
+may read `flow.json` as a liveness hint but must never require it.
 
 ## Configuration
 
@@ -243,6 +306,9 @@ file is re-read on every use, so edits take effect without a restart. Running
   "herdrCliTimeoutMs": 8000,
   "defaultAgentScope": "user",
   "confirmProjectAgents": true,
+  "flowRetentionDays": 14,
+  "evidenceScopeDefault": "flow",
+  "evidenceScopeByRole": { "validator": "session" },
   "modelPresets": {},
   "defaultPreset": "default"
 }
@@ -264,6 +330,9 @@ file is re-read on every use, so edits take effect without a restart. Running
 | `herdrCliTimeoutMs` | 8000 | Timeout for each herdr CLI call |
 | `defaultAgentScope` | `"user"` | Default `agentScope` when the tool call omits it (`"user"`, `"project"`, `"both"`) |
 | `confirmProjectAgents` | `true` | Default for the project-agent confirmation prompt |
+| `flowRetentionDays` | 14 | Days a flow directory survives without a delegation before pruning removes it |
+| `evidenceScopeDefault` | `"flow"` | Widest evidence scope a delegated child may reuse (`"session"` or `"flow"`) |
+| `evidenceScopeByRole` | `{"validator":"session"}` | Per-role overrides of `evidenceScopeDefault`; keeps validators independent of the evidence they audit |
 | `modelPresets` | `{}` | Named subagent model presets (see [Model presets](#model-presets)); entries map agent names to `provider/model(:thinking_level)` |
 | `defaultPreset` | - | Name of the preset used when the session has no `/select-subagent-preset` selection; must name a configured preset |
 

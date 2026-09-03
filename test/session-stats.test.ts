@@ -39,6 +39,51 @@ describe('sessionStatsText', () => {
 		expect(out).toContain('Session ws1:worker-1');
 	});
 
+	it('reports delegation identity and the spend of the last run', async () => {
+		const sessionFile = writeSessionFile(dir, 'sessions/subagent-ws1-worker-1.jsonl', []);
+		registerEntry(
+			makeRegistryEntry({
+				sessionFile,
+				parentSession: '/sess/current.jsonl',
+				delegationId: 'deleg-1',
+				flowId: 'f0123456789abcde',
+				tier: 2,
+				workflowMode: 'remediation',
+				acceptanceCriteria: ['F-001', 'F-002'],
+				evidenceScope: 'session',
+				lastRun: {
+					at: Date.now(),
+					durationMs: 4000,
+					toolCalls: 12,
+					failedToolCalls: 2,
+					repeatedReads: 3,
+					turns: 6,
+					cost: 0.0987,
+					contextTokens: 42000,
+					steerMs: 2500,
+				},
+			}),
+		);
+		const out = await sessionStatsText('worker-1', '/sess/current.jsonl');
+		expect(out).toContain('delegation: deleg-1');
+		expect(out).toContain('flow: f0123456789abcde');
+		expect(out).toContain('tier: 2');
+		expect(out).toContain('mode: remediation');
+		expect(out).toContain('criteria: F-001,F-002');
+		expect(out).toContain('evidence: session');
+		expect(out).toContain(
+			'last run: tools:12 tool-errors:2 rereads:3 turns:6 $0.0987 ctx:42k waiting:2.5s',
+		);
+	});
+
+	it('defaults the evidence scope to unknown for legacy entries', async () => {
+		const sessionFile = writeSessionFile(dir, 'sessions/subagent-ws1-worker-1.jsonl', []);
+		registerEntry(makeRegistryEntry({ sessionFile, parentSession: '/sess/current.jsonl' }));
+		const out = await sessionStatsText('worker-1', '/sess/current.jsonl');
+		expect(out).toContain('evidence: unknown');
+		expect(out).not.toContain('last run:');
+	});
+
 	it('reports context, turns, and lifetime usage from the session file', async () => {
 		const sessionFile = writeSessionFile(dir, 'sessions/subagent-ws1-worker-1.jsonl', [
 			userMsg('Task: first job'),

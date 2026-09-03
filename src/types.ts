@@ -15,6 +15,45 @@ export interface BlockEventInfo {
 
 export type RegistryStatus = 'running' | 'done';
 
+export type EvidenceScope = 'session' | 'flow';
+
+export type WorkflowMode = 'initial' | 'remediation';
+
+export type ReviewMode = 'primary' | 'security' | 'validation' | 'remediation';
+
+/** Orchestration context supplied by the delegating call. */
+export interface OrchestrationContext {
+	tier?: number;
+	workflowMode?: WorkflowMode;
+	reviewMode?: ReviewMode;
+	acceptanceCriteria?: string[];
+	/** Requested evidence scope; may only narrow the configured scope. */
+	evidenceScope?: EvidenceScope;
+}
+
+/** Identity resolved for one delegation, exported into the child environment. */
+export interface DelegationContext extends OrchestrationContext {
+	delegationId: string;
+	flowId?: string;
+	role: string;
+	evidenceScope: EvidenceScope;
+}
+
+/** Telemetry from one completed delegation turn, kept on the registry entry. */
+export interface RunSummary {
+	at: number;
+	durationMs: number;
+	toolCalls: number;
+	failedToolCalls: number;
+	repeatedReads: number;
+	turns: number;
+	cost: number;
+	contextTokens: number;
+	blockEvents?: number;
+	approvalMs?: number;
+	steerMs?: number;
+}
+
 export interface RegistryEntry {
 	label: string;
 	agent: string;
@@ -35,6 +74,31 @@ export interface RegistryEntry {
 	blockedSince?: number;
 	blockReason?: BlockReason;
 	blockedPreview?: string;
+	/** Stable across every turn of one delegation, including reuses. */
+	delegationId?: string;
+	/** Shared by every delegation spawned by one root session. */
+	flowId?: string;
+	tier?: number;
+	workflowMode?: WorkflowMode;
+	reviewMode?: ReviewMode;
+	acceptanceCriteria?: string[];
+	evidenceScope?: EvidenceScope;
+	lastRun?: RunSummary;
+}
+
+export interface FlowParticipant {
+	label: string;
+	agent: string;
+	firstSeenAt: number;
+}
+
+export interface FlowManifest {
+	v: 1;
+	flowId: string;
+	rootSession: string | null;
+	createdAt: number;
+	lastUsedAt: number;
+	participants: FlowParticipant[];
 }
 
 export interface Registry {
@@ -61,6 +125,36 @@ export interface ExecutionMetrics {
 	taskChars: number;
 	outputChars: number;
 	maxContextTokens: number;
+	turns: number;
+	blockEvents: number;
+	approvalMs: number;
+	steerMs: number;
+}
+
+export interface TelemetryRecord {
+	v: 1;
+	at: number;
+	flowId?: string;
+	delegationId: string;
+	workspace: string;
+	label: string;
+	agent: string;
+	role: string;
+	tier?: number;
+	workflowMode?: WorkflowMode;
+	reviewMode?: ReviewMode;
+	acceptanceCriteria?: string[];
+	evidenceScope: EvidenceScope;
+	parentSession?: string;
+	childModel?: string;
+	reused: boolean;
+	reuseCount: number;
+	outcome: 'settled' | 'failed' | 'aborted';
+	exitCode: number;
+	stopReason?: string;
+	usage: UsageStats;
+	metrics: ExecutionMetrics;
+	sessionFile?: string;
 }
 
 export interface SingleResult {
@@ -84,6 +178,11 @@ export interface SingleResult {
 	blockReason?: BlockReason;
 	blockedSince?: number;
 	blockedPreview?: string;
+	/** Delegation this turn belongs to; stable across reuses of the same session. */
+	delegationId?: string;
+	flowId?: string;
+	/** Accumulated user-interaction wait observed during this turn. */
+	blockDurations?: { count: number; approvalMs: number; steerMs: number };
 }
 
 export interface SubagentDetails {

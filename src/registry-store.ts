@@ -38,9 +38,8 @@ function writeRegistry(reg: Registry): void {
 }
 
 // fallow-ignore-next-line complexity
-function withRegistryFileLock<T>(fn: () => T): T {
+export function withFileLock<T>(lockPath: string, fn: () => T): T {
 	const cfg = getConfig();
-	const lockPath = `${REGISTRY_PATH}.lock`;
 	const deadline = Date.now() + cfg.registryLockTimeoutMs;
 	while (true) {
 		try {
@@ -70,7 +69,7 @@ function withRegistryFileLock<T>(fn: () => T): T {
 }
 
 export function mutateRegistry(mutate: (reg: Registry) => void): void {
-	withRegistryFileLock(() => {
+	withFileLock(`${REGISTRY_PATH}.lock`, () => {
 		const reg = readRegistry();
 		mutate(reg);
 		writeRegistry(reg);

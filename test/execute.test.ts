@@ -592,3 +592,78 @@ describe('executeSubagent - nested guard', () => {
 		expect(result.details).toMatchObject({ mode: 'single', results: [] });
 	});
 });
+
+type RunSpy = ReturnType<typeof vi.fn>;
+
+function mockedRuns() {
+	mockSuccessfulRuns();
+	return import('../src/run.ts') as unknown as Promise<{
+		runSingleAgent: RunSpy;
+		runReusedAgent: RunSpy;
+	}>;
+}
+
+describe('executeSubagent - delegation context', () => {
+	const context = {
+		tier: 3,
+		workflowMode: 'remediation' as const,
+		reviewMode: 'security' as const,
+		acceptanceCriteria: ['F-001', 'bad id'],
+		evidenceScope: 'session' as const,
+	};
+
+	it('passes the orchestration context to single runs', async () => {
+		const { runSingleAgent } = await mockedRuns();
+		await execSubagent({ agent: 'worker', task: 'x', ...context });
+		expect(runSingleAgent.mock.calls[0][12]).toEqual({
+			tier: 3,
+			workflowMode: 'remediation',
+			reviewMode: 'security',
+			acceptanceCriteria: ['F-001'],
+			evidenceScope: 'session',
+		});
+	});
+
+	it('passes an empty context when nothing is declared', async () => {
+		const { runSingleAgent } = await mockedRuns();
+		await execSubagent({ agent: 'worker', task: 'x' });
+		expect(runSingleAgent.mock.calls[0][12]).toEqual({});
+	});
+
+	it('applies the context to every chain delegation', async () => {
+		const { runSingleAgent } = await mockedRuns();
+		await execSubagent({
+			chain: [
+				{ agent: 'scout', task: 'a' },
+				{ agent: 'worker', task: 'b' },
+			],
+			tier: 1,
+		});
+		expect(runSingleAgent.mock.calls.map((call) => call[12])).toEqual([{ tier: 1 }, { tier: 1 }]);
+	});
+
+	it('applies the context to every parallel delegation', async () => {
+		const { runSingleAgent } = await mockedRuns();
+		await execSubagent({
+			tasks: [
+				{ agent: 'worker', task: 'a' },
+				{ agent: 'reviewer', task: 'b' },
+			],
+			tier: 2,
+			evidenceScope: 'session',
+		});
+		expect(runSingleAgent.mock.calls.map((call) => call[12])).toEqual([
+			{ tier: 2, evidenceScope: 'session' },
+			{ tier: 2, evidenceScope: 'session' },
+		]);
+	});
+
+	it('passes the context to reuse turns', async () => {
+		const { runReusedAgent } = await mockedRuns();
+		await execSubagent(
+			{ reuseLabel: 'worker-1', task: 'next task', workflowMode: 'remediation' },
+			{ sessionManager: { getSessionFile: () => '/sess/current.jsonl' } as never },
+		);
+		expect(runReusedAgent.mock.calls[0][10]).toEqual({ workflowMode: 'remediation' });
+	});
+});

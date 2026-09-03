@@ -14,6 +14,37 @@ import {
 import { mutateRegistry, readRegistry, REGISTRY_PATH, sanitizeSegment } from './registry-store.ts';
 import type { RegistryEntry } from './types.ts';
 
+function shortId(id: string | undefined): string | null {
+	if (!id) return null;
+	return id.length > 8 ? id.slice(0, 8) : id;
+}
+
+function runSummaryMeta(e: RegistryEntry): string | null {
+	const run = e.lastRun;
+	if (!run) return null;
+	const parts = [`tools:${run.toolCalls}`];
+	if (run.failedToolCalls) parts.push(`tool-errors:${run.failedToolCalls}`);
+	if (run.repeatedReads) parts.push(`rereads:${run.repeatedReads}`);
+	if (run.turns) parts.push(`turns:${run.turns}`);
+	if (run.cost) parts.push(`$${run.cost.toFixed(4)}`);
+	const blocked = (run.approvalMs ?? 0) + (run.steerMs ?? 0);
+	if (blocked) parts.push(`waiting:${(blocked / 1000).toFixed(1)}s`);
+	parts.push(`time:${(run.durationMs / 1000).toFixed(1)}s`);
+	return `lastRun{${parts.join(' ')}}`;
+}
+
+function identityMeta(e: RegistryEntry): string[] {
+	const meta: string[] = [];
+	const delegation = shortId(e.delegationId);
+	if (delegation) meta.push(`delegation:${delegation}`);
+	if (e.flowId) meta.push(`flow:${e.flowId}`);
+	if (typeof e.tier === 'number') meta.push(`tier:${e.tier}`);
+	if (e.workflowMode) meta.push(`mode:${e.workflowMode}`);
+	if (e.reviewMode) meta.push(`review:${e.reviewMode}`);
+	if (e.evidenceScope) meta.push(`evidence:${e.evidenceScope}`);
+	return meta;
+}
+
 function sanitizeName(name: string): string {
 	return name.replace(/[^\w.-]+/g, '_');
 }
@@ -202,7 +233,8 @@ export function listSubagents(filter: {
 		let line = `${displayWorkspace(e.workspace, e.workspaceName)}:${e.label}  reuseLabel: ${e.label}  ${e.status.padEnd(8)}${meta ? `  ${meta}` : ''}`;
 		if (filter.verbose) {
 			const last = e.lastResult ? e.lastResult.replace(/\s+/g, ' ').trim().slice(0, 4000) : '-';
-			line += `  pane ${e.paneId || '-'}  ${e.sessionFile}\n    last: ${last}`;
+			const identity = [...identityMeta(e), runSummaryMeta(e)].filter(Boolean).join('  ');
+			line += `  ${identity}  pane ${e.paneId || '-'}  ${e.sessionFile}\n    last: ${last}`;
 		}
 		return line;
 	});

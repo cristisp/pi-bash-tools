@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { vi } from 'vitest';
 import type { Message, Usage } from '@earendil-works/pi-ai';
-import type { RegistryEntry, SingleResult } from '../src/types.ts';
+import type { ExecutionMetrics, RegistryEntry, SingleResult } from '../src/types.ts';
 import { makeEmptyUsage } from '../src/types.ts';
 
 export function makeTempDir(): string {
@@ -79,6 +79,24 @@ export function makeSingleResult(overrides: Partial<SingleResult> = {}): SingleR
 		messages: [],
 		stderr: '',
 		usage: makeEmptyUsage(),
+		...overrides,
+	};
+}
+
+export function makeMetrics(overrides: Partial<ExecutionMetrics> = {}): ExecutionMetrics {
+	return {
+		durationMs: 0,
+		toolCalls: 0,
+		failedToolCalls: 0,
+		repeatedReads: 0,
+		messageCount: 0,
+		taskChars: 0,
+		outputChars: 0,
+		maxContextTokens: 0,
+		turns: 0,
+		blockEvents: 0,
+		approvalMs: 0,
+		steerMs: 0,
 		...overrides,
 	};
 }
