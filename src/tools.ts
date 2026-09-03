@@ -74,7 +74,7 @@ export function registerSubagentStatsTool(pi: ExtensionAPI) {
 		label: 'Subagent Session Stats',
 		description: [
 			`${REUSE_WORKFLOW_DESCRIPTION} This tool is the stats step and must run before reuse.`,
-			'Reports compact reuse-relevant stats: context size, turns, input/output usage, cost, reuse count, recent task history, last result, and only relevant warnings.',
+			'Reports compact reuse-relevant stats: context size, turns, input/output usage, cost, reuse count, recent task history, the last error or the path of the last role report, and only relevant warnings.',
 			'Context size and turns come from the session file itself, so the report is current even while the session runs.',
 			'Use this to judge cost and impact: a session with a large context, many turns, or many reuses is usually better replaced by a fresh session; a session whose task history does not match the new task topic is a poor reuse target.',
 			'Review/audit/verification tasks carry a hidden cost when reused: the session anchors on its earlier findings and may only retest those, missing newly introduced issues. For independent reviews of code that changed, prefer a fresh session or explicitly instruct the reused session to re-examine from scratch.',

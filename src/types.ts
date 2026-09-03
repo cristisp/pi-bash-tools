@@ -52,6 +52,23 @@ export interface RunSummary {
 	blockEvents?: number;
 	approvalMs?: number;
 	steerMs?: number;
+	reportTokens?: number;
+	report?: ReportSummary;
+}
+
+/** Measured size and provenance of a child report handed back to the parent. */
+export interface ReportSummary {
+	/** Estimated tokens of the full child report. */
+	tokens: number;
+	/** Estimated tokens of the digest actually delivered to the parent. */
+	digestTokens: number;
+	truncated: boolean;
+	ledgerParsed: boolean;
+	path?: string;
+}
+
+export interface RoleReport extends ReportSummary {
+	digest: string;
 }
 
 export interface RegistryEntry {
@@ -66,7 +83,8 @@ export interface RegistryEntry {
 	status: RegistryStatus;
 	createdAt: number;
 	updatedAt: number;
-	lastResult: string;
+	/** Failure text from the last turn. Successful turns store no prose; see `lastRun.report.path`. */
+	lastError?: string;
 	contextTokens?: number;
 	reuseCount?: number;
 	tasks?: string[];
@@ -155,6 +173,7 @@ export interface TelemetryRecord {
 	usage: UsageStats;
 	metrics: ExecutionMetrics;
 	sessionFile?: string;
+	report?: ReportSummary;
 }
 
 export interface SingleResult {
@@ -183,6 +202,8 @@ export interface SingleResult {
 	flowId?: string;
 	/** Accumulated user-interaction wait observed during this turn. */
 	blockDurations?: { count: number; approvalMs: number; steerMs: number };
+	/** Bounded report handed to the parent; full text persisted when a flow exists. */
+	report?: RoleReport;
 }
 
 export interface SubagentDetails {

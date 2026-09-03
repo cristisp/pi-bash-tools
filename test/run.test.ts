@@ -36,7 +36,7 @@ import { runReusedAgent, runSingleAgent } from '../src/run.ts';
 import { registerEntry } from '../src/registry.ts';
 import { readRegistry } from '../src/registry-store.ts';
 import { readTelemetryRecords, telemetryPath } from '../src/telemetry.ts';
-import { flowsRoot } from '../src/flow.ts';
+import { flowReportsDir, flowsRoot } from '../src/flow.ts';
 import type { AgentConfig } from '../src/agents.ts';
 import type { SingleResult, SubagentDetails } from '../src/types.ts';
 import { assistantMsg, makeRegistryEntry, toolResultMsg } from './helpers.ts';
@@ -584,5 +584,72 @@ describe('delegation identity', () => {
 		const records = readTelemetryRecords();
 		expect(records).toHaveLength(1);
 		expect(records[0]).toMatchObject({ outcome: 'failed', exitCode: 1 });
+	});
+});
+
+const LEDGER_REPORT = [
+	'## Completed',
+	'',
+	'Wired the digest.',
+	'',
+	'```text',
+	'workflow_version: 1',
+	'task_id: demo',
+	'delegation_status: completed',
+	'validation_verdict: PASS',
+	'budget: 4/0/1',
+	'```',
+	'',
+	'x'.repeat(6000),
+].join('\n');
+
+describe('role report digest', () => {
+	it('delivers a bounded digest, persists the full report, and records it', async () => {
+		vi.mocked(pollSubagent).mockImplementation(async (...args) => {
+			args[4].messages.push(assistantMsg(LEDGER_REPORT));
+			return 'settled';
+		});
+		const result = await singleCall({ parentSession: '/sess/parent.jsonl' });
+		const report = result.report;
+		expect(report).toMatchObject({ ledgerParsed: true, truncated: true });
+		expect(report?.tokens).toBeGreaterThan(report?.digestTokens ?? 0);
+		const reportPath = report?.path ?? 'missing';
+		const written = fs.readFileSync(reportPath, 'utf-8');
+		expect(written).toContain('# Role report: worker-1 (worker)');
+		expect(written).toContain('delegation:');
+		expect(written).toContain('x'.repeat(200));
+		expect(fs.readdirSync(flowReportsDir(result.flowId ?? 'missing'))).toHaveLength(1);
+		const [record] = readTelemetryRecords();
+		expect(record?.report).toMatchObject({
+			tokens: report?.tokens,
+			digestTokens: report?.digestTokens,
+			ledgerParsed: true,
+			path: reportPath,
+		});
+		expect(readRegistry().tabs['ws1:worker-1']?.lastRun?.reportTokens).toBe(report?.tokens);
+	});
+
+	it('flags a report that carries no ledger block', async () => {
+		vi.mocked(pollSubagent).mockImplementation(async (...args) => {
+			args[4].messages.push(assistantMsg('Validation Verdict: PASS\n\nall green'));
+			return 'settled';
+		});
+		const result = await singleCall({ parentSession: '/sess/parent.jsonl' });
+		expect(result.report?.ledgerParsed).toBe(false);
+		expect(result.report?.digest).toContain('Validation Verdict: PASS');
+		const [record] = readTelemetryRecords();
+		expect(record?.report).toMatchObject({ ledgerParsed: false });
+	});
+
+	it('attaches no report to a failed delegation', async () => {
+		vi.mocked(pollSubagent).mockImplementation(async (...args) => {
+			args[4].exitCode = 1;
+			args[4].stderr = 'child crashed';
+			return 'failed';
+		});
+		const result = await singleCall({ parentSession: '/sess/parent.jsonl' });
+		expect(result.report).toBeUndefined();
+		const [record] = readTelemetryRecords();
+		expect(record?.report).toBeUndefined();
 	});
 });

@@ -221,13 +221,43 @@ describe('listSubagents', () => {
 		expect(listSubagents({ status: 'running' })).not.toContain('reviewer-1');
 	});
 	it('keeps diagnostics out of the compact listing', () => {
-		const long = 'x'.repeat(200);
-		registerEntry(makeRegistryEntry({ lastResult: long }));
-		expect(listSubagents({})).not.toContain('last:');
+		registerEntry(makeRegistryEntry({ lastError: 'child crashed mid-write' }));
+		expect(listSubagents({})).not.toContain('error:');
 		expect(listSubagents({})).not.toContain('pane ws1:p10');
-		expect(listSubagents({ verbose: true })).toContain('x'.repeat(200));
+		expect(listSubagents({ verbose: true })).toContain('error: child crashed mid-write');
 		expect(listSubagents({ verbose: true })).toContain('pane ws1:p10');
 		expect(listSubagents({ verbose: true })).toContain('sessions/subagent-');
+	});
+
+	it('points the verbose listing at the report file instead of repeating it', () => {
+		registerEntry(
+			makeRegistryEntry({
+				lastRun: {
+					at: 1,
+					durationMs: 2000,
+					toolCalls: 1,
+					failedToolCalls: 0,
+					repeatedReads: 0,
+					turns: 1,
+					cost: 0.01,
+					contextTokens: 100,
+					reportTokens: 4000,
+					report: {
+						tokens: 4000,
+						digestTokens: 500,
+						truncated: true,
+						ledgerParsed: true,
+						path: '/tmp/reports/worker-1-1.md',
+					},
+				},
+			}),
+		);
+		expect(listSubagents({ verbose: true })).toContain('report: /tmp/reports/worker-1-1.md');
+	});
+
+	it('says when a session left no report on disk', () => {
+		registerEntry(makeRegistryEntry({}));
+		expect(listSubagents({ verbose: true })).toContain('report: none');
 	});
 });
 

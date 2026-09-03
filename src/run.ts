@@ -11,7 +11,13 @@ import {
 	type EvidenceScopePolicy,
 } from './delegation.ts';
 import { ensureFlow, recordFlowParticipant } from './flow.ts';
-import { buildRunSummary, completionPatch, getFinalOutput, isFailedResult } from './format.ts';
+import {
+	buildRunSummary,
+	completionPatch,
+	getFinalOutput,
+	getResultOutput,
+	isFailedResult,
+} from './format.ts';
 import {
 	closeTab,
 	createTaskTab,
@@ -27,6 +33,7 @@ import {
 	sleep,
 } from './herdr.ts';
 import { pollSubagent } from './poll.ts';
+import { buildReportDigest, estimateTokens, writeRoleReport } from './report.ts';
 import {
 	allocateLabel,
 	findEntry,
@@ -43,6 +50,7 @@ import type {
 	OnUpdateCallback,
 	OrchestrationContext,
 	RegistryEntry,
+	RoleReport,
 	SingleResult,
 	SubagentDetails,
 } from './types.ts';
@@ -194,6 +202,36 @@ interface DelegationFinishContext {
 	aborted: boolean;
 }
 
+/**
+ * Compresses a settled child report into the digest the parent receives and persists the
+ * full text under the flow. Never fails a delegation: the digest is skipped on IO errors.
+ */
+function attachRoleReport(
+	currentResult: SingleResult,
+	delegation: DelegationContext | undefined,
+	label: string,
+): void {
+	if (!delegation || isFailedResult(currentResult)) return;
+	const output = getResultOutput(currentResult);
+	if (!output.trim() || output === '(no output)') return;
+	const built = buildReportDigest(output, getConfig().reportDigestTokens);
+	const report: RoleReport = {
+		digest: built.digest,
+		tokens: estimateTokens(output),
+		digestTokens: built.tokens,
+		truncated: built.truncated,
+		ledgerParsed: built.ledgerParsed,
+	};
+	const reportPath = writeRoleReport({
+		flowId: delegation.flowId,
+		label: label || delegation.role,
+		delegation,
+		output,
+	});
+	if (reportPath) report.path = reportPath;
+	currentResult.report = report;
+}
+
 function emitDelegationTelemetry(
 	currentResult: SingleResult,
 	delegation: DelegationContext | undefined,
@@ -217,13 +255,14 @@ function emitDelegationTelemetry(
 			parentSession: context.parentSession,
 			sessionFile: context.sessionFile,
 			result: currentResult,
+			report: currentResult.report,
 		}),
 	);
 	if (!context.label) return;
 	recordFlowParticipant({ flowId: delegation.flowId, label: context.label, agent: context.agent });
 	if (currentResult.metrics)
 		updateRegistryEntry(context.label, {
-			lastRun: buildRunSummary(currentResult.metrics, currentResult.usage),
+			lastRun: buildRunSummary(currentResult.metrics, currentResult.usage, currentResult.report),
 		});
 }
 
@@ -377,7 +416,6 @@ async function createFreshSubagentTab(
 		status: 'running',
 		createdAt: Date.now(),
 		updatedAt: Date.now(),
-		lastResult: '',
 		contextTokens: 0,
 		tasks: [task],
 		parentSession,
@@ -707,6 +745,7 @@ export async function runSingleAgent(
 		return currentResult;
 	} finally {
 		recordExecutionMetrics(currentResult, startedAt);
+		attachRoleReport(currentResult, delegation, label);
 		emitDelegationTelemetry(currentResult, delegation, {
 			label,
 			agent: agentName,
@@ -825,6 +864,7 @@ export async function runReusedAgent(
 		return currentResult;
 	} finally {
 		recordExecutionMetrics(currentResult, startedAt);
+		attachRoleReport(currentResult, delegation, label);
 		emitDelegationTelemetry(currentResult, delegation, {
 			label,
 			agent: entry.agent,

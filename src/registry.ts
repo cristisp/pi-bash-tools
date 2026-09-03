@@ -232,9 +232,13 @@ export function listSubagents(filter: {
 		const meta = [blocked, ctx, reuse, tasks].filter(Boolean).join('  ');
 		let line = `${displayWorkspace(e.workspace, e.workspaceName)}:${e.label}  reuseLabel: ${e.label}  ${e.status.padEnd(8)}${meta ? `  ${meta}` : ''}`;
 		if (filter.verbose) {
-			const last = e.lastResult ? e.lastResult.replace(/\s+/g, ' ').trim().slice(0, 4000) : '-';
+			const tail = e.lastError
+				? `error: ${e.lastError}`
+				: e.lastRun?.report?.path
+					? `report: ${e.lastRun.report.path}`
+					: 'report: none';
 			const identity = [...identityMeta(e), runSummaryMeta(e)].filter(Boolean).join('  ');
-			line += `  ${identity}  pane ${e.paneId || '-'}  ${e.sessionFile}\n    last: ${last}`;
+			line += `  ${identity}  pane ${e.paneId || '-'}  ${e.sessionFile}\n    ${tail}`;
 		}
 		return line;
 	});

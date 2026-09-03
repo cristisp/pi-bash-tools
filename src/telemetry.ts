@@ -6,6 +6,7 @@ import { makeEmptyUsage } from './types.ts';
 import type {
 	DelegationContext,
 	ExecutionMetrics,
+	ReportSummary,
 	SingleResult,
 	TelemetryRecord,
 } from './types.ts';
@@ -25,6 +26,7 @@ export interface TelemetryInput {
 	parentSession?: string;
 	sessionFile?: string;
 	result: SingleResult;
+	report?: ReportSummary;
 }
 
 function metricsFallback(result: SingleResult): ExecutionMetrics {
@@ -72,6 +74,17 @@ export function buildTelemetryRecord(input: TelemetryInput, now = Date.now()): T
 	if (result.model) record.childModel = result.model;
 	if (result.stopReason) record.stopReason = result.stopReason;
 	if (input.sessionFile) record.sessionFile = input.sessionFile;
+	const report = input.report;
+	if (report) {
+		const summary: ReportSummary = {
+			tokens: report.tokens,
+			digestTokens: report.digestTokens,
+			truncated: report.truncated,
+			ledgerParsed: report.ledgerParsed,
+		};
+		if (report.path) summary.path = report.path;
+		record.report = summary;
+	}
 	return record;
 }
 

@@ -205,28 +205,87 @@ describe('sessionStatsText', () => {
 		expect(out).toContain('Reused 3 time(s)');
 	});
 
-	it('shows the last result preview', async () => {
+	it('shows the error of a failed turn', async () => {
 		const sessionFile = writeSessionFile(dir, 'sessions/subagent-ws1-worker-1.jsonl', []);
 		registerEntry(
-			makeRegistryEntry({ sessionFile, status: 'done', lastResult: 'All findings fixed.' }),
+			makeRegistryEntry({ sessionFile, status: 'done', lastError: 'Unknown agent: "ghost".' }),
 		);
 		const out = await sessionStatsText('worker-1');
-		expect(out).toContain('last result: All findings fixed.');
+		expect(out).toContain('last error: Unknown agent: "ghost".');
 	});
 
-	it('keeps task and result previews compact', async () => {
+	it('points at the report file of a settled turn', async () => {
+		const sessionFile = writeSessionFile(dir, 'sessions/subagent-ws1-worker-1.jsonl', []);
+		registerEntry(
+			makeRegistryEntry({
+				sessionFile,
+				status: 'done',
+				lastRun: {
+					at: 1,
+					durationMs: 10,
+					toolCalls: 1,
+					failedToolCalls: 0,
+					repeatedReads: 0,
+					turns: 1,
+					cost: 0.01,
+					contextTokens: 1000,
+					report: {
+						tokens: 3000,
+						digestTokens: 550,
+						truncated: true,
+						ledgerParsed: true,
+						path: '/tmp/reports/worker-1-1.md',
+					},
+				},
+			}),
+		);
+		const out = await sessionStatsText('worker-1');
+		expect(out).toContain('last report: /tmp/reports/worker-1-1.md');
+		expect(out).toContain('report:550/3000');
+	});
+
+	it('keeps task and error previews compact', async () => {
 		const sessionFile = writeSessionFile(dir, 'sessions/subagent-ws1-worker-1.jsonl', []);
 		registerEntry(
 			makeRegistryEntry({
 				sessionFile,
 				tasks: ['one', 'two', 'three', 'four', 'x'.repeat(200)],
-				lastResult: 'y'.repeat(200),
+				lastError: 'e'.repeat(500),
 			}),
 		);
 		const out = await sessionStatsText('worker-1');
 		expect(out).not.toContain('1. one');
 		expect(out).toContain('1. three');
 		expect(out).toContain('3. ' + 'x'.repeat(80) + '...');
-		expect(out).toContain('last result: ' + 'y'.repeat(120) + '...');
+		expect(out).toContain('last error: ' + 'e'.repeat(300) + '...');
+	});
+
+	it('shows the report digest ratio and the missing-ledger flag', async () => {
+		const sessionFile = writeSessionFile(dir, 'sessions/subagent-ws1-worker-1.jsonl', []);
+		registerEntry(
+			makeRegistryEntry({
+				sessionFile,
+				status: 'done',
+				lastRun: {
+					at: 1,
+					durationMs: 10,
+					toolCalls: 3,
+					failedToolCalls: 0,
+					repeatedReads: 0,
+					turns: 1,
+					cost: 0.01,
+					contextTokens: 1000,
+					reportTokens: 4000,
+					report: {
+						tokens: 4000,
+						digestTokens: 320,
+						truncated: true,
+						ledgerParsed: false,
+					},
+				},
+			}),
+		);
+		const out = await sessionStatsText('worker-1');
+		expect(out).toContain('report:320/4000:no-ledger');
 	});
 });

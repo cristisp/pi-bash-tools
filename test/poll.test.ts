@@ -56,7 +56,6 @@ function registerBlockedEntry(sessionFile: string, dir: string): void {
 		status: 'running',
 		createdAt: Date.now(),
 		updatedAt: Date.now(),
-		lastResult: '',
 	});
 }
 

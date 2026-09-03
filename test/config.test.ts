@@ -44,6 +44,8 @@ describe('getConfig - overrides', () => {
 			abortGraceMs: 30_000,
 			steerTimeoutMs: 30_000,
 			perTaskOutputCap: 1024,
+			reportDigestTokens: 400,
+			reportContractPolicy: 'reject',
 			registryLockTimeoutMs: 2000,
 			registryLockStaleMs: 1000,
 			herdrCliTimeoutMs: 4000,
@@ -57,6 +59,15 @@ describe('getConfig - overrides', () => {
 		};
 		writeConfigFile(overrides);
 		expect(getConfig()).toEqual(overrides);
+	});
+
+	it('falls back to defaults for invalid report contract values', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		writeConfigFile({ reportDigestTokens: 0, reportContractPolicy: 'ignore' });
+		const cfg = getConfig();
+		expect(cfg.reportDigestTokens).toBe(DEFAULT_CONFIG.reportDigestTokens);
+		expect(cfg.reportContractPolicy).toBe('flag');
 	});
 });
 

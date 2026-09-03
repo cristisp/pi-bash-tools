@@ -6,6 +6,9 @@ import type { EvidenceScope } from './types.ts';
 
 export type ConfigAgentScope = 'user' | 'project' | 'both';
 
+/** What to do when a child report carries no parseable ledger block. */
+export type ReportContractPolicy = 'flag' | 'reject';
+
 export type ModelPreset = Record<string, string>;
 
 export interface SubagentHerdrConfig {
@@ -18,6 +21,9 @@ export interface SubagentHerdrConfig {
 	abortGraceMs: number;
 	steerTimeoutMs: number;
 	perTaskOutputCap: number;
+	/** Estimated-token budget for the report digest delivered to the parent. */
+	reportDigestTokens: number;
+	reportContractPolicy: ReportContractPolicy;
 	registryLockTimeoutMs: number;
 	registryLockStaleMs: number;
 	herdrCliTimeoutMs: number;
@@ -47,6 +53,8 @@ export const DEFAULT_CONFIG: SubagentHerdrConfig = {
 	abortGraceMs: 60_000,
 	steerTimeoutMs: 60_000,
 	perTaskOutputCap: 50 * 1024,
+	reportDigestTokens: 600,
+	reportContractPolicy: 'flag',
 	registryLockTimeoutMs: 10_000,
 	registryLockStaleMs: 5000,
 	herdrCliTimeoutMs: 8000,
@@ -62,6 +70,8 @@ const DEFAULT_EVIDENCE_SCOPE_BY_ROLE: Record<string, EvidenceScope> = { validato
 
 const EVIDENCE_SCOPES = new Set<EvidenceScope>(['session', 'flow']);
 
+const REPORT_CONTRACT_POLICIES = new Set<ReportContractPolicy>(['flag', 'reject']);
+
 const NUMERIC_KEYS = [
 	'maxParallelTasks',
 	'maxConcurrency',
@@ -76,6 +86,7 @@ const NUMERIC_KEYS = [
 	'registryLockStaleMs',
 	'herdrCliTimeoutMs',
 	'flowRetentionDays',
+	'reportDigestTokens',
 ] as const satisfies readonly (keyof SubagentHerdrConfig)[];
 
 export function parseEvidenceScopes(raw: unknown): Record<string, EvidenceScope> {
@@ -133,6 +144,9 @@ export function getConfig(filePath?: string): SubagentHerdrConfig {
 	}
 	if (EVIDENCE_SCOPES.has(overrides.evidenceScopeDefault as EvidenceScope)) {
 		cfg.evidenceScopeDefault = overrides.evidenceScopeDefault as EvidenceScope;
+	}
+	if (REPORT_CONTRACT_POLICIES.has(overrides.reportContractPolicy as ReportContractPolicy)) {
+		cfg.reportContractPolicy = overrides.reportContractPolicy as ReportContractPolicy;
 	}
 	cfg.evidenceScopeByRole = {
 		...DEFAULT_EVIDENCE_SCOPE_BY_ROLE,

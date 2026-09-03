@@ -667,3 +667,108 @@ describe('executeSubagent - delegation context', () => {
 		expect(runReusedAgent.mock.calls[0][10]).toEqual({ workflowMode: 'remediation' });
 	});
 });
+
+function mockRunWithReport(report?: Record<string, unknown>) {
+	vi.doMock('../src/run.ts', () => ({
+		runSingleAgent: vi.fn().mockResolvedValue({
+			agent: 'worker',
+			agentSource: 'user',
+			task: 'x',
+			exitCode: 0,
+			messages: [],
+			stderr: '',
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: 0,
+				contextTokens: 0,
+				turns: 0,
+			},
+			label: 'worker-1',
+			...(report ? { report } : {}),
+		}),
+		runReusedAgent: vi.fn(),
+	}));
+}
+
+describe('report delivery', () => {
+	it('delivers the digest and the report path instead of the full report', async () => {
+		mockRunWithReport({
+			digest: 'digest body',
+			tokens: 4000,
+			digestTokens: 500,
+			truncated: true,
+			ledgerParsed: true,
+			path: '/tmp/flow/reports/worker-1-1.md',
+		});
+		const result = await execSubagent({ agent: 'worker', task: 'x' });
+		expect(result.content[0]).toMatchObject({
+			text: expect.stringContaining('digest body'),
+		});
+		expect(result.content[0]).toMatchObject({
+			text: expect.stringContaining('[full report: /tmp/flow/reports/worker-1-1.md]'),
+		});
+		expect(result.content[0]).toMatchObject({
+			text: expect.stringContaining('reuseLabel: worker-1'),
+		});
+		expect(result.content[0]).toMatchObject({
+			text: expect.not.stringContaining('Report contract'),
+		});
+	});
+
+	it('flags a report without a ledger block by default', async () => {
+		mockRunWithReport({
+			digest: 'status only',
+			tokens: 900,
+			digestTokens: 120,
+			truncated: false,
+			ledgerParsed: false,
+		});
+		const result = await execSubagent({ agent: 'worker', task: 'x' });
+		expect(result.content[0]).toMatchObject({
+			text: expect.stringContaining('Report contract: no ledger block parsed'),
+		});
+	});
+
+	it('names a contract failure when the policy rejects', async () => {
+		writeConfig({ reportContractPolicy: 'reject' });
+		mockRunWithReport({
+			digest: 'status only',
+			tokens: 900,
+			digestTokens: 120,
+			truncated: false,
+			ledgerParsed: false,
+		});
+		const result = await execSubagent({ agent: 'worker', task: 'x' });
+		expect(result.content[0]).toMatchObject({
+			text: expect.stringContaining('Report contract FAILED'),
+		});
+	});
+
+	it('does not police a short acknowledgement', async () => {
+		mockRunWithReport({
+			digest: 'digests verified',
+			tokens: 5,
+			digestTokens: 5,
+			truncated: false,
+			ledgerParsed: false,
+		});
+		const result = await execSubagent({ agent: 'worker', task: 'x' });
+		expect(result.content[0]).toMatchObject({
+			text: expect.stringContaining('digests verified'),
+		});
+		expect(result.content[0]).toMatchObject({
+			text: expect.not.stringContaining('Report contract'),
+		});
+	});
+
+	it('falls back to the raw output when no report was built', async () => {
+		mockRunWithReport();
+		const result = await execSubagent({ agent: 'worker', task: 'x' });
+		expect(result.content[0]).toMatchObject({
+			text: expect.stringContaining('(no output)'),
+		});
+	});
+});

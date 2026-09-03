@@ -35,8 +35,9 @@ The extension registers two tools, `subagent` and `subagent_stats`. `subagent` m
   agent name. Unknown agent names fail with the available list, a
   "did you mean" suggestion, and a pointer to this mode.
 - `subagent_stats(label)` - compact reuse-relevant stats for one session: context size,
-  turns, input/output usage, cost, reuse count, recent task history, last result,
-  delegation identity, the spend of the last run, and relevant warnings.
+  turns, input/output usage, cost, reuse count, recent task history, the last
+  error or the path of the last role report, delegation identity, the spend of
+  the last run, and relevant warnings.
 
 Optional delegation context (recorded and exported, never behaviour-changing on
 its own): `tier` (0-4), `workflowMode` (`initial` | `remediation`), `reviewMode`
@@ -214,14 +215,14 @@ While a subagent is `running` you can correct its course directly in its tab:
 ## Registry
 
 `~/.pi/agent/subagent-herdr.json` maps every session to its pane, tab, session
-file, working directory, status, last result, and context size
+file, working directory, status, last error, and context size
 (`contextTokens` - the context size at the last completed turn, for reuse
 vs. new decisions). Entries also track `reuseCount` (how many times the session
 was reused) and `tasks` (the last 5 tasks it was given, for topical-fit
 judgment), plus the delegation identity (`delegationId`, `flowId`, `tier`,
 `workflowMode`, `reviewMode`, `acceptanceCriteria`, `evidenceScope`) and
-`lastRun` (tool calls, tool errors, repeated reads, turns, cost, context, and
-wait time for the most recent completed turn). It is:
+`lastRun` (tool calls, tool errors, repeated reads, turns, cost, context, wait
+time and the report digest summary for the most recent completed turn). It is:
 
 - **Workspace-scoped** - entries are keyed `<workspace>:<label>`, so every herdr
   workspace has its own `worker-1`, `worker-2`, ... and its own session files
@@ -270,7 +271,8 @@ append-only telemetry log:
 
 - `~/.pi/agent/subagent-herdr/flows/<flowId>/flow.json` - root session, participants,
   `createdAt` and `lastUsedAt`
-- `~/.pi/agent/subagent-herdr/flows/<flowId>/reports/` - where per-role reports land
+- `~/.pi/agent/subagent-herdr/flows/<flowId>/reports/` - the full report of every
+  settled delegation, as `reports/<label>-<timestamp>.md`
 - `~/.pi/agent/subagent-herdr/flows/<flowId>/predigest/` - reserved for pre-digested evidence
 - `~/.pi/agent/subagent-herdr.telemetry.jsonl` - one record per delegation turn:
   identity, outcome (`settled` / `failed` / `aborted`), usage, tool-call and
@@ -282,6 +284,36 @@ Flow directories idle past `flowRetentionDays` are pruned at session start. The
 store is best-effort: when it is unwritable, delegation works normally and only
 measurement is lost. Other tools keep their caches under their own roots; they
 may read `flow.json` as a liveness hint but must never require it.
+
+## Role report and digest
+
+A settled delegation no longer dumps its whole final message into the parent
+context. The full report is written to the flow's `reports/` directory, and what
+the parent receives is a bounded digest plus the absolute report path:
+
+1. the child's `ledger` block verbatim (machine-parseable, small),
+2. the status lines that follow it in the report,
+3. as much leading prose as fits in `reportDigestTokens`.
+
+When the child omits the ledger block the digest degrades instead of failing: it
+carries the status lines (`delegation_status`, `validation_verdict`,
+`review_verdict`, `budget`, ...) and records `ledgerParsed: false`. With
+`reportContractPolicy: "reject"` the parent is additionally told to treat the
+delegation as unfinished rather than being handed a prose answer to re-interpret.
+
+The digest is a transport optimization, not a source of truth: cross-child
+aggregation must read the ledger blocks, not digests. Token counts are estimates
+(`chars / 4`) until anchored against real counts, and `perTaskOutputCap` remains
+an absolute backstop applied to every result path.
+
+The registry and telemetry record only the counts, the truncation flag, the
+ledger-parsed flag and the path - never the report text itself, otherwise the
+store that every delegation reads would reintroduce the re-read cost this removes.
+The registry holds no report prose at all: a settled turn is represented by its
+`lastRun.report` counts plus the report path, and only a failed turn keeps its
+error text (bounded to 500 characters), because that is the one diagnosis with no
+file behind it. Reports under 64 estimated tokens are treated as acknowledgements,
+so short reuse turns are not annotated with a contract note.
 
 ## Configuration
 
@@ -302,6 +334,8 @@ file is re-read on every use, so edits take effect without a restart. Running
   "abortGraceMs": 60000,
   "steerTimeoutMs": 60000,
   "perTaskOutputCap": 51200,
+  "reportDigestTokens": 600,
+  "reportContractPolicy": "flag",
   "registryLockTimeoutMs": 10000,
   "registryLockStaleMs": 5000,
   "herdrCliTimeoutMs": 8000,
@@ -326,6 +360,8 @@ file is re-read on every use, so edits take effect without a restart. Running
 | `abortGraceMs` | 60000 | Grace period after an abort before finishing |
 | `steerTimeoutMs` | 60000 | Wait for a steer while blocked before finishing |
 | `perTaskOutputCap` | 51200 | Per-task byte cap in parallel summaries (bytes) |
+| `reportDigestTokens` | 600 | Token budget for the digest a child's report is reduced to |
+| `reportContractPolicy` | `"flag"` | `"flag"` or `"reject"` a report that omits its ledger block |
 | `registryLockTimeoutMs` | 10000 | Max wait for the registry lock |
 | `registryLockStaleMs` | 5000 | Steal the registry lock after this age |
 | `herdrCliTimeoutMs` | 8000 | Timeout for each herdr CLI call |

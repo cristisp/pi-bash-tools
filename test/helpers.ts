@@ -114,7 +114,6 @@ export function makeRegistryEntry(overrides: Partial<RegistryEntry> = {}): Regis
 		status: 'done',
 		createdAt: now,
 		updatedAt: now,
-		lastResult: 'done',
 		...overrides,
 	};
 }

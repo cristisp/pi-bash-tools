@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+	applyOutputByteCap,
 	blockedSummaryLine,
+	buildRunSummary,
 	completionPatch,
 	formatExecutionMetrics,
 	formatBlockedPreview,
@@ -14,9 +16,8 @@ import {
 	isFailedResult,
 	registryBlockedInfo,
 	statusTag,
-	truncateParallelOutput,
 } from '../src/format.ts';
-import { assistantMsg, makeSingleResult, toolResultMsg, userMsg } from './helpers.ts';
+import { assistantMsg, makeMetrics, makeSingleResult, toolResultMsg, userMsg } from './helpers.ts';
 
 const fg = (_c: string, t: string) => `{${t}}`;
 
@@ -178,6 +179,59 @@ describe('isFailedResult', () => {
 	});
 });
 
+describe('buildRunSummary', () => {
+	const usage = {
+		input: 1,
+		output: 2,
+		cacheRead: 0,
+		cacheWrite: 0,
+		cost: 0.5,
+		contextTokens: 900,
+		turns: 4,
+	};
+
+	it('keeps report counts and provenance without the digest text', () => {
+		const report = {
+			digest: 'digest body that must never reach the registry',
+			tokens: 4000,
+			digestTokens: 500,
+			truncated: true,
+			ledgerParsed: true,
+			path: '/tmp/report.md',
+		};
+		const summary = buildRunSummary(
+			makeMetrics({ toolCalls: 2, durationMs: 1000 }),
+			usage,
+			report,
+			1234,
+		);
+		expect(summary).toEqual({
+			at: 1234,
+			durationMs: 1000,
+			toolCalls: 2,
+			failedToolCalls: 0,
+			repeatedReads: 0,
+			turns: 4,
+			cost: 0.5,
+			contextTokens: 900,
+			reportTokens: 4000,
+			report: {
+				tokens: 4000,
+				digestTokens: 500,
+				truncated: true,
+				ledgerParsed: true,
+				path: '/tmp/report.md',
+			},
+		});
+	});
+
+	it('omits the report block when no report was built', () => {
+		const summary = buildRunSummary(makeMetrics(), usage, undefined, 1234);
+		expect(summary.report).toBeUndefined();
+		expect(summary.reportTokens).toBeUndefined();
+	});
+});
+
 describe('getResultOutput', () => {
 	it('prefers errorMessage for failed results', () => {
 		const r = makeSingleResult({ exitCode: 1, errorMessage: 'boom', stderr: 'stderr text' });
@@ -281,14 +335,14 @@ describe('registryBlockedInfo', () => {
 });
 
 describe('completionPatch', () => {
-	it('marks done and captures output', () => {
+	it('marks done and holds no prose for a settled turn', () => {
 		const r = makeSingleResult({
 			messages: [assistantMsg('final')],
 			usage: { ...makeSingleResult().usage, contextTokens: 500 },
 		});
 		const patch = completionPatch(r);
 		expect(patch.status).toBe('done');
-		expect(patch.lastResult).toBe('final');
+		expect(patch.lastError).toBeUndefined();
 		expect(patch.contextTokens).toBe(500);
 		expect(patch.blockReason).toBeUndefined();
 	});
@@ -296,15 +350,45 @@ describe('completionPatch', () => {
 		const patch = completionPatch(makeSingleResult());
 		expect(patch.contextTokens).toBeUndefined();
 	});
+
+	it('stores the failure diagnosis for a child that never produced a report', () => {
+		const patch = completionPatch(
+			makeSingleResult({
+				exitCode: 1,
+				stderr: 'Unknown agent: "security-reviewer". Available agents: "reviewer".',
+			}),
+		);
+		expect(patch.lastError).toBe(
+			'Unknown agent: "security-reviewer". Available agents: "reviewer".',
+		);
+	});
+
+	it('bounds the stored error', () => {
+		const patch = completionPatch(
+			makeSingleResult({ exitCode: 1, errorMessage: `boom ${'e'.repeat(2000)}` }),
+		);
+		const stored = patch.lastError ?? '';
+		expect(stored.startsWith('boom eeee')).toBe(true);
+		expect(stored.length).toBeLessThan(520);
+		expect(stored.endsWith('...')).toBe(true);
+		expect(stored).not.toContain('e'.repeat(1000));
+	});
+
+	it('normalizes whitespace in the stored error', () => {
+		const patch = completionPatch(
+			makeSingleResult({ exitCode: 1, stderr: 'child   crashed\n\nmid-write' }),
+		);
+		expect(patch.lastError).toBe('child crashed mid-write');
+	});
 });
 
-describe('truncateParallelOutput', () => {
+describe('applyOutputByteCap', () => {
 	it('passes through small output', () => {
-		expect(truncateParallelOutput('short')).toBe('short');
+		expect(applyOutputByteCap('short')).toBe('short');
 	});
 	it('truncates large output at the byte cap', () => {
 		const big = 'x'.repeat(60 * 1024);
-		const out = truncateParallelOutput(big);
+		const out = applyOutputByteCap(big);
 		expect(out).toContain('Output truncated:');
 		expect(out.startsWith('xxxxx')).toBe(true);
 		expect(Buffer.byteLength(out)).toBeLessThan(52 * 1024);

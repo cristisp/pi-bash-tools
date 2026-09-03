@@ -9,7 +9,7 @@ const HIGH_TURNS_THRESHOLD = 8;
 const MAX_TASK_HISTORY = 5;
 const MAX_TASK_PREVIEWS = 3;
 const TASK_PREVIEW_LENGTH = 80;
-const LAST_RESULT_PREVIEW_LENGTH = 120;
+const LAST_ERROR_PREVIEW_LENGTH = 300;
 
 interface ParsedSession {
 	turns: number;
@@ -123,14 +123,18 @@ function usageLine(parsed: ParsedSession): string | null {
 	return parts.length > 0 ? `usage: ${parts.join(' ')}` : null;
 }
 
-function lastResultLine(entry: RegistryEntry): string | null {
-	if (!entry.lastResult) return null;
-	const last = entry.lastResult.replace(/\s+/g, ' ').trim();
-	const preview =
-		last.length > LAST_RESULT_PREVIEW_LENGTH
-			? `${last.slice(0, LAST_RESULT_PREVIEW_LENGTH)}...`
-			: last;
-	return `last result: ${preview}`;
+/** What the last turn left behind: its error, or where its full report lives. */
+function lastLine(entry: RegistryEntry): string | null {
+	if (entry.lastError) {
+		const one = entry.lastError.replace(/\s+/g, ' ').trim();
+		const preview =
+			one.length > LAST_ERROR_PREVIEW_LENGTH
+				? `${one.slice(0, LAST_ERROR_PREVIEW_LENGTH)}...`
+				: one;
+		return `last error: ${preview}`;
+	}
+	const path = entry.lastRun?.report?.path;
+	return path ? `last report: ${path}` : null;
 }
 
 function reuseHints(entry: RegistryEntry | undefined, parsed: ParsedSession): string[] {
@@ -176,6 +180,10 @@ function lastRunLine(entry: RegistryEntry): string | null {
 	if (run.contextTokens) parts.push(`ctx:${formatTokens(run.contextTokens)}`);
 	const waiting = (run.approvalMs ?? 0) + (run.steerMs ?? 0);
 	if (waiting) parts.push(`waiting:${(waiting / 1000).toFixed(1)}s`);
+	if (run.report) {
+		const ledger = run.report.ledgerParsed ? '' : ':no-ledger';
+		parts.push(`report:${run.report.digestTokens}/${run.report.tokens}${ledger}`);
+	}
 	return `last run: ${parts.join(' ')}`;
 }
 
@@ -197,7 +205,7 @@ export async function sessionStatsText(label: string, parentSession?: string): P
 	if (usage) lines.push(usage);
 	lines.push('recent tasks:');
 	lines.push(taskLines(entry.tasks, parsed.userTasks));
-	const last = lastResultLine(entry);
+	const last = lastLine(entry);
 	if (last) lines.push(last);
 	const hints = reuseHints(entry, parsed);
 	if (hints.length > 0) {

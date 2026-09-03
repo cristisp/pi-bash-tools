@@ -5,6 +5,7 @@ import type {
 	DisplayItem,
 	ExecutionMetrics,
 	RegistryEntry,
+	ReportSummary,
 	RunSummary,
 	SingleResult,
 } from './types.ts';
@@ -250,15 +251,25 @@ export function registryBlockedInfo(e: RegistryEntry): string | null {
 	return `blocked since ${since} (${reason})`;
 }
 
+/** Error text the registry keeps, so a child that died before its first message stays diagnosable. */
+const LAST_ERROR_STORED_CHARS = 500;
+
 export function completionPatch(currentResult: SingleResult): Partial<RegistryEntry> {
 	const patch: Partial<RegistryEntry> = {
 		status: 'done',
-		lastResult: getResultOutput(currentResult),
+		lastError: undefined,
 		updatedAt: Date.now(),
 		blockedSince: undefined,
 		blockReason: undefined,
 		blockedPreview: undefined,
 	};
+	if (isFailedResult(currentResult)) {
+		const error = getResultOutput(currentResult).replace(/\s+/g, ' ').trim();
+		patch.lastError =
+			error.length > LAST_ERROR_STORED_CHARS
+				? `${error.slice(0, LAST_ERROR_STORED_CHARS)}...`
+				: error;
+	}
 	if (currentResult.usage.contextTokens > 0) {
 		patch.contextTokens = currentResult.usage.contextTokens;
 	}
@@ -269,6 +280,7 @@ export function completionPatch(currentResult: SingleResult): Partial<RegistryEn
 export function buildRunSummary(
 	metrics: ExecutionMetrics,
 	usage: SingleResult['usage'],
+	report?: ReportSummary,
 	now = Date.now(),
 ): RunSummary {
 	const summary: RunSummary = {
@@ -284,10 +296,22 @@ export function buildRunSummary(
 	if (metrics.blockEvents) summary.blockEvents = metrics.blockEvents;
 	if (metrics.approvalMs) summary.approvalMs = metrics.approvalMs;
 	if (metrics.steerMs) summary.steerMs = metrics.steerMs;
+	if (report) {
+		summary.reportTokens = report.tokens;
+		// The registry is read on every delegation: keep counts and provenance, never the text.
+		summary.report = {
+			tokens: report.tokens,
+			digestTokens: report.digestTokens,
+			truncated: report.truncated,
+			ledgerParsed: report.ledgerParsed,
+		};
+		if (report.path) summary.report.path = report.path;
+	}
 	return summary;
 }
 
-export function truncateParallelOutput(output: string): string {
+/** Absolute byte backstop applied to whatever text a delegation hands back. */
+export function applyOutputByteCap(output: string): string {
 	const cap = getConfig().perTaskOutputCap;
 	const byteLength = Buffer.byteLength(output, 'utf8');
 	if (byteLength <= cap) return output;
@@ -296,7 +320,8 @@ export function truncateParallelOutput(output: string): string {
 	while (Buffer.byteLength(truncated, 'utf8') > cap) {
 		truncated = truncated.slice(0, -1);
 	}
-	return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, 'utf8')} bytes omitted. Full output preserved in tool details.]`;
+	const omitted = byteLength - Buffer.byteLength(truncated, 'utf8');
+	return `${truncated}\n\n[Output truncated: ${omitted} bytes omitted beyond the byte cap. Full text remains in the role report and tool details.]`;
 }
 
 export function getDisplayItems(messages: Message[]): DisplayItem[] {

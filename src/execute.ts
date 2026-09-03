@@ -7,12 +7,7 @@ import { discoverAgents } from './agents.ts';
 import type { AgentConfig, AgentScope } from './agents.ts';
 import { getConfig } from './config.ts';
 import { sanitizeCriteria } from './delegation.ts';
-import {
-	getFinalOutput,
-	getResultOutput,
-	isFailedResult,
-	truncateParallelOutput,
-} from './format.ts';
+import { applyOutputByteCap, getFinalOutput, getResultOutput, isFailedResult } from './format.ts';
 import { NESTED, ownWorkspaceId } from './herdr.ts';
 import {
 	type FindModel,
@@ -327,10 +322,7 @@ async function executeChainMode(
 		content: [
 			{
 				type: 'text',
-				text: appendChainReuseLabels(
-					getFinalOutput(results[results.length - 1].messages) || '(no output)',
-					results,
-				),
+				text: appendChainReuseLabels(deliverableText(results[results.length - 1]), results),
 			},
 		],
 		details: makeDetails('chain')(results),
@@ -408,10 +400,36 @@ async function runParallelTask(
 	return result;
 }
 
+/** Under this many estimated tokens a reply is an acknowledgement, not a report to police. */
+const CONTRACT_NOTE_MIN_TOKENS = 64;
+
+/**
+ * Text a delegation hands back to the parent: the bounded digest when one was built,
+ * otherwise the raw output, always inside the configured byte cap.
+ */
+function deliverableText(result: SingleResult, fallback?: string): string {
+	const report = result.report;
+	if (!report)
+		return applyOutputByteCap((fallback ?? getFinalOutput(result.messages)) || '(no output)');
+	const parts = [report.digest || (fallback ?? '(no output)')];
+	const notes: string[] = [];
+	if (report.path) notes.push(`full report: ${report.path}`);
+	if (notes.length > 0) parts.push(`[${notes.join('; ')}]`);
+	// A short acknowledgement has no report shape to enforce; the note would be pure noise.
+	if (!report.ledgerParsed && report.tokens >= CONTRACT_NOTE_MIN_TOKENS) {
+		parts.push(
+			getConfig().reportContractPolicy === 'reject'
+				? '[Report contract FAILED: the child returned no orchestration ledger block. Treat this delegation as unfinished: request the ledger or re-delegate.]'
+				: `[Report contract: no ledger block parsed from ~${report.tokens} tokens of report.]`,
+		);
+	}
+	return applyOutputByteCap(parts.filter((part) => part.trim()).join('\n\n'));
+}
+
 function parallelSummaryText(results: SingleResult[]): string {
 	const successCount = results.filter((r) => !isFailedResult(r)).length;
 	const summaries = results.map((r) => {
-		const output = truncateParallelOutput(getResultOutput(r));
+		const output = deliverableText(r, getResultOutput(r));
 		const status = isFailedResult(r)
 			? `failed${r.stopReason && r.stopReason !== 'end' ? ` (${r.stopReason})` : ''}`
 			: 'completed';
@@ -492,7 +510,7 @@ async function executeSingleMode(
 		content: [
 			{
 				type: 'text',
-				text: appendReuseLabel(getFinalOutput(result.messages) || '(no output)', result.label),
+				text: appendReuseLabel(deliverableText(result), result.label),
 			},
 		],
 		details: makeDetails('single')([result]),
@@ -537,10 +555,7 @@ async function executeReuseMode(
 		content: [
 			{
 				type: 'text',
-				text: appendReuseLabel(
-					getFinalOutput(result.messages) || '(no output)',
-					result.label ?? reuseLabel,
-				),
+				text: appendReuseLabel(deliverableText(result), result.label ?? reuseLabel),
 			},
 		],
 		details: makeDetails('single')([result]),
