@@ -121,7 +121,7 @@ export function validateGitRequestKeys(
   }
 }
 
-function cancellationError(executed: boolean): GitToolError {
+export function cancellationError(executed: boolean): GitToolError {
   const contract = gitContract(
     "cancelled",
     "CANCELLED",

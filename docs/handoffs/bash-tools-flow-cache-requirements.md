@@ -11,14 +11,14 @@ A measurement window over 334 pi sessions (2026-08-26 to 2026-09-02, 38 root ses
 
 Two of the largest signals are `bash-tools` signals.
 
-| Signal | Measured |
-| --- | --- |
-| `git_diff` output | 4,279,168 result tokens from 547 calls, avg 7,823 tokens, p95 49,847, max 99,330; 22.6% of all tool-result text from 3.9% of all tool calls |
-| Duplicate diff pulls | One root session fanned out ~20 children; each pulled the same working-tree diff at 51,773 to 99,330 tokens, including byte-identical repeats; ~1.42M tokens total, 20 of the 22 largest diff calls in the window |
+| Signal                  | Measured                                                                                                                                                                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `git_diff` output       | 4,279,168 result tokens from 547 calls, avg 7,823 tokens, p95 49,847, max 99,330; 22.6% of all tool-result text from 3.9% of all tool calls                                                                              |
+| Duplicate diff pulls    | One root session fanned out ~20 children; each pulled the same working-tree diff at 51,773 to 99,330 tokens, including byte-identical repeats; ~1.42M tokens total, 20 of the 22 largest diff calls in the window        |
 | `project_command` churn | 2,163 calls with 1,075 exact-duplicate excess calls, 49.7% of all calls to the tool and 69.1% of all duplicate calls in the window; one session issued 34 identical `node_lint` calls and 25 identical `node_test` calls |
-| Cache defeat | Repeated calls used `force: true` deliberately (20 `{"commandId":"node_lint","force":true}` and 19 with `force` as the string `"true"`), meaning agents worked around the result cache instead of trusting it |
-| Schema tax | 130 validation errors and 24 resolution errors on `project_command`, plus 80 validation errors on `git_diff` |
-| Mechanical dead ends | ~898 of 1,393 tool errors (6.4% of all calls) were tool-interface friction rather than real failures, each costing a wasted step plus a retry |
+| Cache defeat            | Repeated calls used `force: true` deliberately (20 `{"commandId":"node_lint","force":true}` and 19 with `force` as the string `"true"`), meaning agents worked around the result cache instead of trusting it            |
+| Schema tax              | 130 validation errors and 24 resolution errors on `project_command`, plus 80 validation errors on `git_diff`                                                                                                             |
+| Mechanical dead ends    | ~898 of 1,393 tool errors (6.4% of all calls) were tool-interface friction rather than real failures, each costing a wasted step plus a retry                                                                            |
 
 Every model step in that window re-read about 68,134 cache-read tokens, so an avoidable duplicate call costs far more than its own output.
 
@@ -30,14 +30,14 @@ We commit to this interface so you can implement against something fixed. It is 
 
 We will export orchestration identity into the environment of each subagent pi process we launch, and only into those processes:
 
-| Variable | Value | Stability |
-| --- | --- | --- |
-| `PI_ORCHESTRATION_FLOW` | Opaque flow id | Shared by every child of one root session, including later remediation attempts; the scope key for cross-child sharing |
-| `PI_DELEGATION_ID` | UUID v4 | One per delegation, carried across reuse turns of the same subagent session |
-| `PI_ORCHESTRATION_ROLE` | Agent name, e.g. `worker`, `validator` | Attribution only |
-| `PI_ORCHESTRATION_TIER` | `0`..`4` | Informational |
-| `PI_ORCHESTRATION_MODE` | `initial` or `remediation` | Informational |
-| `PI_ORCHESTRATION_EVIDENCE_SCOPE` | `session` or `flow` | The widest evidence scope this child may use. Derived from role and tier; see R1a |
+| Variable                          | Value                                  | Stability                                                                                                              |
+| --------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `PI_ORCHESTRATION_FLOW`           | Opaque flow id                         | Shared by every child of one root session, including later remediation attempts; the scope key for cross-child sharing |
+| `PI_DELEGATION_ID`                | UUID v4                                | One per delegation, carried across reuse turns of the same subagent session                                            |
+| `PI_ORCHESTRATION_ROLE`           | Agent name, e.g. `worker`, `validator` | Attribution only                                                                                                       |
+| `PI_ORCHESTRATION_TIER`           | `0`..`4`                               | Informational                                                                                                          |
+| `PI_ORCHESTRATION_MODE`           | `initial` or `remediation`             | Informational                                                                                                          |
+| `PI_ORCHESTRATION_EVIDENCE_SCOPE` | `session` or `flow`                    | The widest evidence scope this child may use. Derived from role and tier; see R1a                                      |
 
 Guarantees we give you:
 

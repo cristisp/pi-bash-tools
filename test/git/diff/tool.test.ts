@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, it } from "vitest";
 import { createGitDiffTool, DEFAULT_GIT_DIFF_MAX_BYTES } from "../../../src/tools/git/diff/tool.ts";
 import type {
@@ -130,7 +133,13 @@ it("defaults to a bounded summary with status, stat, and hunk headers but no bod
   });
   expect(JSON.stringify(response.details)).not.toContain("old body");
   expect(JSON.stringify(response.details)).not.toContain("new body");
-  expect(calls.slice(1).map((call) => call[3])).toEqual(["status", "diff", "diff"]);
+  expect(calls.slice(1).map((call) => call[3])).toEqual([
+    "status",
+    "rev-parse",
+    "diff",
+    "diff",
+    "diff",
+  ]);
   expect(calls.find((call) => call.includes("--stat"))).toEqual([
     "--no-optional-locks",
     "-c",
@@ -141,6 +150,245 @@ it("defaults to a bounded summary with status, stat, and hunk headers but no bod
     "--stat",
     "--",
   ]);
+});
+
+it("reuses an unchanged summary and misses after the working tree changes", async () => {
+  const statusOutput = " M README.md\0";
+  let diffText = "diff --git a/README.md b/README.md\n@@ -1 +1 @@\n";
+  let rawText = "raw-a";
+  let statCalls = 0;
+  let hunkCalls = 0;
+  const exec: GitExec = async (_command, args) => {
+    if (args[3] === "rev-parse") {
+      return result(args[4] === "--show-toplevel" ? `${cwd}\n` : "head-a\n");
+    }
+    if (args[3] === "status") return result(statusOutput);
+    if (args.includes("--raw")) return result(rawText);
+    if (args.includes("--stat")) {
+      statCalls += 1;
+      return result(" README.md | 1 +\n");
+    }
+    hunkCalls += 1;
+    return result(diffText);
+  };
+  const tool = createGitDiffTool(exec);
+
+  const first = await tool.execute("first", {}, undefined, undefined, context);
+  const second = await tool.execute("second", {}, undefined, undefined, context);
+  expect(second.details).toEqual(first.details);
+  expect(statCalls).toBe(1);
+  expect(hunkCalls).toBe(1);
+
+  diffText = "diff --git a/README.md b/README.md\n@@ -2 +2 @@\n";
+  rawText = "raw-b";
+  await tool.execute("changed", {}, undefined, undefined, context);
+  expect(statCalls).toBe(2);
+  expect(hunkCalls).toBe(2);
+});
+
+it("invalidates an unchanged untracked status when file content changes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bash-tools-git-diff-untracked-"));
+  try {
+    await writeFile(join(root, "new.txt"), "first");
+    let hunkCalls = 0;
+    let statCalls = 0;
+    const exec: GitExec = async (_command, args) => {
+      if (args[3] === "rev-parse") {
+        return args[4] === "--show-toplevel" ? result(`${root}\n`) : result("head-a\n");
+      }
+      if (args[3] === "status") return result("?? new.txt\0");
+      if (args.includes("--raw")) return result("");
+      if (args.includes("--unified=0")) {
+        hunkCalls += 1;
+        return result(`diff-${hunkCalls}`);
+      }
+      statCalls += 1;
+      return result(`stat-${statCalls}`);
+    };
+    const tool = createGitDiffTool(exec);
+    const localContext: GitToolContext = { cwd: root, signal: undefined };
+    await tool.execute("untracked-first", {}, undefined, undefined, localContext);
+    await writeFile(join(root, "new.txt"), "second");
+    await tool.execute("untracked-second", {}, undefined, undefined, localContext);
+
+    expect(hunkCalls).toBe(2);
+    expect(statCalls).toBe(2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("deduplicates concurrent summary execution for one cache state", async () => {
+  const statusOutput = " M README.md\0";
+  let hunkCalls = 0;
+  let statCalls = 0;
+  let statusCalls = 0;
+  let rawCalls = 0;
+  let releaseRaw: (() => void) | undefined;
+  let releaseHunk: (() => void) | undefined;
+  let signalRawStarted: (() => void) | undefined;
+  let signalHunkStarted: (() => void) | undefined;
+  let signalSecondReady: (() => void) | undefined;
+  const rawStarted = new Promise<void>((resolve) => {
+    signalRawStarted = resolve;
+  });
+  const hunkStarted = new Promise<void>((resolve) => {
+    signalHunkStarted = resolve;
+  });
+  const secondReady = new Promise<void>((resolve) => {
+    signalSecondReady = resolve;
+  });
+  const rawReleased = new Promise<void>((resolve) => {
+    releaseRaw = resolve;
+  });
+  const hunkReleased = new Promise<void>((resolve) => {
+    releaseHunk = resolve;
+  });
+  const exec: GitExec = async (_command, args) => {
+    if (args[3] === "rev-parse") {
+      if (args[4] === "HEAD") {
+        if (statusCalls === 2) signalSecondReady?.();
+        return result("head-a\n");
+      }
+      return result(`${cwd}\n`);
+    }
+    if (args[3] === "status") {
+      statusCalls += 1;
+      return result(statusOutput);
+    }
+    if (args.includes("--raw")) {
+      rawCalls += 1;
+      signalRawStarted?.();
+      await rawReleased;
+      return result("raw-state");
+    }
+    if (args.includes("--unified=0")) {
+      hunkCalls += 1;
+      signalHunkStarted?.();
+      await hunkReleased;
+      return result("diff --git a/README.md b/README.md\n@@ -1 +1 @@\n");
+    }
+    statCalls += 1;
+    return result(" README.md | 1 +\n");
+  };
+  const tool = createGitDiffTool(exec);
+  const first = tool.execute("concurrent-first", {}, undefined, undefined, context);
+  await rawStarted;
+  const second = tool.execute("concurrent-second", {}, undefined, undefined, context);
+  await secondReady;
+  releaseRaw?.();
+  await hunkStarted;
+  releaseHunk?.();
+  await Promise.all([first, second]);
+
+  expect(rawCalls).toBe(1);
+  expect(hunkCalls).toBe(1);
+  expect(statCalls).toBe(1);
+});
+
+it("does not let a cancelled raw-discovery owner cancel an active waiter", async () => {
+  let statusCalls = 0;
+  let rawCalls = 0;
+  let hunkCalls = 0;
+  let statCalls = 0;
+  let signalRawStarted: (() => void) | undefined;
+  let releaseRaw: (() => void) | undefined;
+  let signalSecondReady: (() => void) | undefined;
+  const rawStarted = new Promise<void>((resolve) => {
+    signalRawStarted = resolve;
+  });
+  const rawReleased = new Promise<void>((resolve) => {
+    releaseRaw = resolve;
+  });
+  const secondReady = new Promise<void>((resolve) => {
+    signalSecondReady = resolve;
+  });
+  const exec: GitExec = async (_command, args) => {
+    if (args[3] === "rev-parse") return result(`${cwd}\n`);
+    if (args[3] === "status") {
+      statusCalls += 1;
+      if (statusCalls === 2) signalSecondReady?.();
+      return result(" M README.md\0");
+    }
+    if (args.includes("--raw")) {
+      rawCalls += 1;
+      signalRawStarted?.();
+      await rawReleased;
+      return result("raw-state");
+    }
+    if (args.includes("--unified=0")) {
+      hunkCalls += 1;
+      return result("diff --git a/README.md b/README.md\n@@ -1 +1 @@\n");
+    }
+    statCalls += 1;
+    return result(" README.md | 1 +\n");
+  };
+  const tool = createGitDiffTool(exec);
+  const controller = new AbortController();
+  const first = tool.execute("raw-cancelled", {}, undefined, undefined, {
+    cwd,
+    signal: controller.signal,
+  });
+  await rawStarted;
+  const second = tool.execute("raw-waiter", {}, undefined, undefined, context);
+  await secondReady;
+  controller.abort();
+  releaseRaw?.();
+
+  await expect(first).rejects.toMatchObject({
+    contract: { code: "cancelled", category: "CANCELLED" },
+  });
+  await second;
+  expect(rawCalls).toBe(1);
+  expect(hunkCalls).toBe(1);
+  expect(statCalls).toBe(1);
+});
+
+it("does not let an aborted summary waiter break the active single-flight owner", async () => {
+  let hunkCalls = 0;
+  let statCalls = 0;
+  let signalHunkStarted: (() => void) | undefined;
+  let releaseHunk: (() => void) | undefined;
+  const hunkStarted = new Promise<void>((resolve) => {
+    signalHunkStarted = resolve;
+  });
+  const hunkReleased = new Promise<void>((resolve) => {
+    releaseHunk = resolve;
+  });
+  const exec: GitExec = async (_command, args) => {
+    if (args[3] === "rev-parse") return result(`${cwd}\n`);
+    if (args[3] === "status") return result(" M README.md\0");
+    if (args.includes("--raw")) return result("raw-state");
+    if (args.includes("--unified=0")) {
+      hunkCalls += 1;
+      signalHunkStarted?.();
+      if (hunkCalls === 1) await hunkReleased;
+      return result("diff --git a/README.md b/README.md\n@@ -1 +1 @@\n");
+    }
+    statCalls += 1;
+    return result(" README.md | 1 +\n");
+  };
+  const tool = createGitDiffTool(exec);
+  const first = tool.execute("single-flight-first", {}, undefined, undefined, context);
+  await hunkStarted;
+
+  const controller = new AbortController();
+  const second = tool.execute("single-flight-aborted", {}, undefined, undefined, {
+    cwd,
+    signal: controller.signal,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  controller.abort();
+  await expect(second).rejects.toMatchObject({
+    contract: { code: "cancelled", category: "CANCELLED" },
+  });
+
+  const third = tool.execute("single-flight-third", {}, undefined, undefined, context);
+  releaseHunk?.();
+  await Promise.all([first, third]);
+
+  expect(hunkCalls).toBe(1);
+  expect(statCalls).toBe(1);
 });
 
 it("filters summary status to the selected staged or worktree column", async () => {
@@ -170,8 +418,9 @@ it("filters summary status to the selected staged or worktree column", async () 
     { path: "staged-only.txt", indexStatus: "M", worktreeStatus: " " },
   ]);
   expect(staged.calls[1]).not.toContain("--cached");
-  expect(staged.calls[2]).toContain("--cached");
+  expect(staged.calls[2]).not.toContain("--cached");
   expect(staged.calls[3]).toContain("--cached");
+  expect(staged.calls[4]).toContain("--cached");
 
   const worktree = await run(false);
   expect(summaryDetails(worktree.response.details).status).toEqual([
@@ -179,8 +428,8 @@ it("filters summary status to the selected staged or worktree column", async () 
     { path: "worktree-only.txt", indexStatus: " ", worktreeStatus: "M" },
     { path: "untracked.txt", indexStatus: " ", worktreeStatus: "?" },
   ]);
-  expect(worktree.calls[2]).not.toContain("--cached");
   expect(worktree.calls[3]).not.toContain("--cached");
+  expect(worktree.calls[4]).not.toContain("--cached");
 });
 
 it("retains rename origins only for a selected rename or copy status", async () => {

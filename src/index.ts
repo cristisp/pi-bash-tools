@@ -8,6 +8,8 @@ import { createEnvironmentTool } from "./tools/environment/environment-tool.ts";
 import { createFilesystemAccessPolicyInterceptor } from "./tools/filesystem/access-policy.ts";
 import { createDeleteTool, createMoveTool } from "./tools/filesystem/mutation-tool.ts";
 import { createProjectCommandTool } from "./tools/project-command/tool.ts";
+import { createProjectCommandRepositoryStateReader } from "./tools/project-command/repository-state.ts";
+import { createVerifyTool } from "./tools/verify/tool.ts";
 import { createGitDiffTool } from "./tools/git/diff/tool.ts";
 import { createGitLogTool } from "./tools/git/log/tool.ts";
 import { createGitShowTool } from "./tools/git/show/tool.ts";
@@ -35,8 +37,10 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool(
     createProjectCommandTool({
       invocationRecorder: invocationSessionRecorder.invocationRecorder,
+      repositoryStateReader: createProjectCommandRepositoryStateReader(exec),
     }),
   );
+  pi.registerTool(createVerifyTool(exec));
   pi.registerTool(createMoveTool(exec));
   pi.registerTool(createDeleteTool(exec));
 }

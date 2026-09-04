@@ -61,8 +61,8 @@ export function projectCommandIdGuidance(
       nearestCommandId: legacy.commandId,
       canonicalCommandId: legacy.commandId,
       canonicalVariant: legacy.variant,
-      correctedExample: { commandId: legacy.commandId, variant: legacy.variant },
-      remediation: `Use { commandId: "${legacy.commandId}", variant: "${legacy.variant}" } for the ${packageScript} package script instead of embedding the variant in commandId.`,
+      correctedExample: { commandId: `${legacy.commandId}:${legacy.variant}` },
+      remediation: `Use commandId "${legacy.commandId}:${legacy.variant}" for the ${packageScript} package script instead of using the underscore alias.`,
     };
   }
 

@@ -73,7 +73,7 @@ export interface ProjectCommandDefinition<CommandId extends string = string> {
   readonly truncationDirection?: ProjectCommandTruncationDirection;
   readonly parameters?: readonly ProjectCommandParameterDeclaration[];
   readonly argvTemplate?: readonly string[];
-  readonly fixedScriptKey?: "test" | "build" | "lint" | "typecheck" | "format";
+  readonly fixedScriptKey?: string;
   readonly scriptVariantFamily?: "test" | "lint" | "format";
   /** When true, the base package script is reserved and a validated variant is required. */
   readonly requiresVariant?: boolean;

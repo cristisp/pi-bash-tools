@@ -18,6 +18,8 @@ import {
 import type { ProjectCommandOutputDetails } from "./output.ts";
 import type { ProjectCommandRelevantInputDiscovery } from "./relevant-inputs.ts";
 import type { ProjectCommandStateSnapshotter } from "./state-snapshot.ts";
+import type { ProjectCommandRepositoryStateReader } from "./repository-state.ts";
+import type { ProjectCommandResultCache } from "./cache.ts";
 import {
   createProjectCommandExecute,
   type ProjectCommandExecute,
@@ -38,6 +40,8 @@ export interface ProjectCommandToolTestOptions<
   readonly resolver?: ProjectCommandResolver;
   readonly relevantInputDiscovery?: ProjectCommandRelevantInputDiscovery;
   readonly stateSnapshotter?: ProjectCommandStateSnapshotter;
+  readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
+  readonly cache?: ProjectCommandResultCache;
   readonly definitions?: Definitions;
   readonly invocationRecorder?: ProjectCommandInvocationRecorder;
   readonly schemaHash?: string;
@@ -46,6 +50,8 @@ export interface ProjectCommandToolTestOptions<
 export interface ProjectCommandToolOptions {
   readonly invocationRecorder?: ProjectCommandInvocationRecorder;
   readonly schemaHash?: string;
+  readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
+  readonly cache?: ProjectCommandResultCache;
 }
 
 export type ProjectCommandToolDefinition<
@@ -85,6 +91,7 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
   definitions: Definitions,
   relevantInputDiscovery?: ProjectCommandRelevantInputDiscovery,
   stateSnapshotter?: ProjectCommandStateSnapshotter,
+  cache?: ProjectCommandResultCache,
   invocationOptions: ProjectCommandToolOptions = {},
 ): ProjectCommandToolDefinition<Definitions> {
   const capturedDefinitions = captureDefinitions(definitions);
@@ -131,8 +138,12 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
       byId,
       relevantInputDiscovery,
       stateSnapshotter,
-      undefined,
-      { recorder: invocationOptions.invocationRecorder, schemaHash },
+      cache,
+      {
+        recorder: invocationOptions.invocationRecorder,
+        schemaHash,
+        repositoryStateReader: invocationOptions.repositoryStateReader,
+      },
     ),
   };
 }
@@ -147,6 +158,7 @@ export function createProjectCommandTool(
     getProjectCommandDefinitions(),
     undefined,
     undefined,
+    options.cache,
     options,
   );
 }
@@ -184,9 +196,11 @@ export function createProjectCommandToolForTesting<
     definitions,
     options.relevantInputDiscovery,
     options.stateSnapshotter,
+    options.cache,
     {
       invocationRecorder: options.invocationRecorder,
       schemaHash: options.schemaHash,
+      repositoryStateReader: options.repositoryStateReader,
     },
   );
 }

@@ -50,6 +50,15 @@ it("accepts only the catalog command IDs and supported package-script options", 
     commandId: "node_format",
     variant: "check:ci",
   });
+  expect(validateProjectCommandInput({ commandId: "node_format:check" })).toEqual({
+    commandId: "node_format",
+    variant: "check",
+  });
+  expect(validateProjectCommandInput({ commandId: "node_lint:errors:ci", force: "true" })).toEqual({
+    commandId: "node_lint",
+    variant: "errors:ci",
+    force: true,
+  });
 });
 
 it("rejects arbitrary command fields and inline execution forms", () => {
@@ -119,14 +128,13 @@ it("describes valid command IDs and deterministic nearest and legacy matches", (
     throw new Error("expected legacy command ID to fail");
   } catch (error) {
     expect(error).toMatchObject({
-      message: expect.stringContaining('{ commandId: "node_format", variant: "check" }'),
       details: {
         validCommandIds: expect.arrayContaining(["node_format"]),
         nearestCommandId: "node_format",
         canonicalCommandId: "node_format",
         canonicalVariant: "check",
-        correctedExample: { commandId: "node_format", variant: "check" },
-        remediation: expect.stringContaining("instead of embedding the variant"),
+        correctedExample: { commandId: "node_format:check" },
+        remediation: expect.stringContaining("instead of using the underscore alias"),
       },
     });
   }

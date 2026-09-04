@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { isAbsolute } from "node:path";
 import type {
   AgentToolResult,
   AgentToolUpdateCallback,
@@ -21,6 +22,7 @@ import {
 import type { ProjectCommandExecutionOutcome } from "./execution.ts";
 import { definedObjectProperties } from "./defined-properties.ts";
 import {
+  createProjectCommandDiskResultCache,
   createProjectCommandResultCache,
   type ProjectCommandCacheDecision,
   type ProjectCommandResultCache,
@@ -67,6 +69,14 @@ import {
 } from "../../observability/project-command-invocation.ts";
 import { ProjectCommandResolutionError, isProjectCommandResolutionError } from "./resolution.ts";
 import type { ProjectCommandResolver, ResolvedProjectCommand } from "./resolution/types.ts";
+import type {
+  ProjectCommandRepositoryState,
+  ProjectCommandRepositoryStateReader,
+} from "./repository-state.ts";
+import {
+  readProjectCommandOrchestrationContext,
+  type ProjectCommandOrchestrationContext,
+} from "./orchestration.ts";
 import {
   cancellationError,
   invalidRequest,
@@ -92,6 +102,7 @@ export type ProjectCommandExecutor = (
 export interface ProjectCommandInvocationOptions {
   readonly recorder?: ProjectCommandInvocationRecorder;
   readonly schemaHash?: string;
+  readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
 }
 
 export type ProjectCommandExecute<Definitions extends readonly ProjectCommandDefinition[]> = (
@@ -126,6 +137,7 @@ interface InvocationMetadataOptions {
   readonly resultFingerprint?: string;
   readonly relevantInputs?: ProjectCommandRelevantInputs;
   readonly producerInvocationId?: string;
+  readonly producerScope?: "session" | "flow";
 }
 
 function invocationMetadata(
@@ -158,12 +170,23 @@ function invocationMetadata(
       ],
       ["resultFingerprint", options.resultFingerprint],
       ["producerInvocationId", options.producerInvocationId],
+      ["producerScope", options.producerScope],
     ]),
   };
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOptionalForce(
+  value: unknown,
+): value is ProjectCommandRequestParameters & { readonly force?: boolean } {
+  return (
+    isRecord(value) &&
+    typeof value.commandId === "string" &&
+    (!("force" in value) || typeof value.force === "boolean")
+  );
 }
 
 function enrichToolError(
@@ -433,6 +456,14 @@ function getContextSessionId(ctx: ProjectCommandToolContext): string | undefined
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function createDefaultProjectCommandResultCache(): ProjectCommandResultCache {
+  const orchestration = readProjectCommandOrchestrationContext();
+  if (orchestration.effectiveScope === "flow" && orchestration.flowId !== undefined) {
+    return createProjectCommandDiskResultCache({ scopeKey: orchestration.flowId });
+  }
+  return createProjectCommandResultCache();
+}
+
 function createDefaultRelevantInputDiscovery(): ProjectCommandRelevantInputDiscovery {
   const nodeDiscovery = createNodeProjectRelevantInputDiscovery();
   return Object.freeze({
@@ -490,6 +521,11 @@ async function takeStateSnapshot(
 
 interface CacheInspection {
   readonly sessionId: string | undefined;
+  readonly producerSessionId: string | undefined;
+  readonly producerRole: string | undefined;
+  readonly flowId: string | undefined;
+  readonly producerScope: "session" | "flow" | undefined;
+  readonly repositoryState: ProjectCommandRepositoryState | undefined;
   readonly logicalRequestKey: string | undefined;
   readonly eligible: boolean;
   readonly decision: ProjectCommandCacheDecision;
@@ -504,6 +540,10 @@ function cacheIsEligible(
   logicalRequestKey: string | undefined,
   beforeSnapshot: ProjectCommandStateSnapshot | undefined,
   requestSessionId: string | undefined,
+  producerScope: "session" | "flow" | undefined,
+  repositoryState: ProjectCommandRepositoryState | undefined,
+  flowId: string | undefined,
+  projectPath: string,
 ): boolean {
   return (
     resultFingerprint !== undefined &&
@@ -511,7 +551,9 @@ function cacheIsEligible(
     relevantInputs !== undefined &&
     beforeSnapshot !== undefined &&
     requestSessionId !== undefined &&
-    getProjectCommandReusePolicy(definition) !== "never"
+    getProjectCommandReusePolicy(definition) !== "never" &&
+    (producerScope !== "flow" ||
+      (repositoryState !== undefined && flowId !== undefined && isAbsolute(projectPath)))
   );
 }
 
@@ -529,12 +571,37 @@ function lookupCacheEntry(
   return entry === undefined ? { decision: "miss" } : { decision: "hit", entry };
 }
 
+function flowProvenanceMatches(
+  entry: ProjectCommandResultCacheEntry,
+  flowId: string | undefined,
+  projectPath: string,
+  repositoryState: ProjectCommandRepositoryState | undefined,
+  beforeSnapshot: ProjectCommandStateSnapshot,
+): boolean {
+  const provenance = entry.provenance;
+  return (
+    flowId !== undefined &&
+    repositoryState !== undefined &&
+    provenance !== undefined &&
+    provenance.flowId === flowId &&
+    provenance.repositoryIdentity === repositoryState.repositoryIdentity &&
+    provenance.workingDirectory === projectPath &&
+    provenance.head === repositoryState.head &&
+    provenance.dirtyFilesDigest === repositoryState.dirtyFilesDigest &&
+    provenance.snapshotDigest === projectCommandStateSnapshotDigest(beforeSnapshot)
+  );
+}
+
 function invalidateStaleEntry(
   cache: ProjectCommandResultCache,
   sessionId: string,
   logicalRequestKey: string,
   resultFingerprint: string,
   beforeSnapshot: ProjectCommandStateSnapshot,
+  producerScope: "session" | "flow" | undefined,
+  flowId: string | undefined,
+  projectPath: string,
+  repositoryState: ProjectCommandRepositoryState | undefined,
   lookup: {
     readonly decision: ProjectCommandCacheDecision;
     readonly entry?: ProjectCommandResultCacheEntry;
@@ -547,7 +614,9 @@ function invalidateStaleEntry(
   if (
     entry === undefined ||
     (entry.resultFingerprint === resultFingerprint &&
-      equalProjectCommandStateSnapshots(beforeSnapshot, entry.snapshot))
+      equalProjectCommandStateSnapshots(beforeSnapshot, entry.snapshot) &&
+      (producerScope !== "flow" ||
+        flowProvenanceMatches(entry, flowId, projectPath, repositoryState, beforeSnapshot)))
   ) {
     return lookup;
   }
@@ -562,6 +631,10 @@ function inspectCacheEntry(
   resultFingerprint: string,
   beforeSnapshot: ProjectCommandStateSnapshot,
   forced: boolean,
+  producerScope: "session" | "flow" | undefined,
+  flowId: string | undefined,
+  projectPath: string,
+  repositoryState: ProjectCommandRepositoryState | undefined,
 ): {
   readonly decision: ProjectCommandCacheDecision;
   readonly entry?: ProjectCommandResultCacheEntry;
@@ -572,6 +645,10 @@ function inspectCacheEntry(
     logicalRequestKey,
     resultFingerprint,
     beforeSnapshot,
+    producerScope,
+    flowId,
+    projectPath,
+    repositoryState,
     lookupCacheEntry(cache, sessionId, logicalRequestKey, forced),
   );
   if (!forced || inspected.decision === "invalidated") return inspected;
@@ -588,7 +665,14 @@ function inspectResultCache(
   signal: AbortSignal | undefined,
   requestSessionId: string | undefined,
   beforeSnapshot: ProjectCommandStateSnapshot | undefined,
+  producerScope: "session" | "flow" | undefined,
+  flowId: string | undefined,
+  producerRole: string | undefined,
+  projectPath: string,
+  repositoryState: ProjectCommandRepositoryState | undefined,
 ): CacheInspection {
+  const cacheSessionId =
+    producerScope === "flow" && flowId !== undefined ? flowId : requestSessionId;
   const eligible = cacheIsEligible(
     definition,
     relevantInputs,
@@ -596,18 +680,36 @@ function inspectResultCache(
     logicalRequestKey,
     beforeSnapshot,
     requestSessionId,
+    producerScope,
+    repositoryState,
+    flowId,
+    projectPath,
   );
   if (!eligible || resultFingerprint === undefined || logicalRequestKey === undefined) {
     return {
-      sessionId: requestSessionId,
+      sessionId: cacheSessionId,
+      producerSessionId: requestSessionId,
+      producerRole,
+      flowId,
+      producerScope,
+      repositoryState,
       logicalRequestKey,
       eligible: false,
       decision: forced ? "forced" : "ineligible",
     };
   }
-  if (beforeSnapshot === undefined || requestSessionId === undefined) {
+  if (
+    beforeSnapshot === undefined ||
+    requestSessionId === undefined ||
+    cacheSessionId === undefined
+  ) {
     return {
-      sessionId: requestSessionId,
+      sessionId: cacheSessionId,
+      producerSessionId: requestSessionId,
+      producerRole,
+      flowId,
+      producerScope,
+      repositoryState,
       logicalRequestKey,
       eligible: false,
       decision: "ineligible",
@@ -615,15 +717,24 @@ function inspectResultCache(
   }
   const inspected = inspectCacheEntry(
     cache,
-    requestSessionId,
+    cacheSessionId,
     logicalRequestKey,
     resultFingerprint,
     beforeSnapshot,
     forced,
+    producerScope,
+    flowId,
+    projectPath,
+    repositoryState,
   );
   throwIfRequestAborted(signal);
   return {
-    sessionId: requestSessionId,
+    sessionId: cacheSessionId,
+    producerSessionId: requestSessionId,
+    producerRole,
+    flowId,
+    producerScope,
+    repositoryState,
     logicalRequestKey,
     eligible,
     decision: inspected.decision,
@@ -712,6 +823,7 @@ function storeResult(
   resultFingerprint: string | undefined,
   executed: ExecutedWithCache,
   details: ProjectCommandOutputDetails,
+  projectPath: string,
   producerInvocationId: string,
 ): void {
   if (
@@ -723,12 +835,33 @@ function storeResult(
   ) {
     return;
   }
+  const provenance =
+    inspection.producerScope === "flow" &&
+    inspection.producerSessionId !== undefined &&
+    inspection.flowId !== undefined &&
+    inspection.repositoryState !== undefined &&
+    isAbsolute(projectPath)
+      ? {
+          producerSessionId: inspection.producerSessionId,
+          ...(inspection.producerRole === undefined
+            ? {}
+            : { producerRole: inspection.producerRole }),
+          flowId: inspection.flowId,
+          repositoryIdentity: inspection.repositoryState.repositoryIdentity,
+          workingDirectory: projectPath,
+          head: inspection.repositoryState.head,
+          dirtyFilesDigest: inspection.repositoryState.dirtyFilesDigest,
+          snapshotDigest: projectCommandStateSnapshotDigest(executed.afterSnapshot),
+          writeTimestamp: Date.now(),
+        }
+      : undefined;
   cache.set(inspection.sessionId, {
     logicalRequestKey: inspection.logicalRequestKey,
     resultFingerprint,
     details,
     snapshot: executed.afterSnapshot,
     producerInvocationId,
+    ...(provenance === undefined ? {} : { provenance }),
   });
 }
 
@@ -785,6 +918,10 @@ interface ProjectCommandInvocationState {
   relevantInputManifest: ProjectCommandRelevantInputs | undefined;
   beforeSnapshot: ProjectCommandStateSnapshot | undefined;
   producerInvocationId: string | undefined;
+  producerScope: "session" | "flow" | undefined;
+  flowId: string | undefined;
+  producerRole: string | undefined;
+  repositoryState: ProjectCommandRepositoryState | undefined;
   commandId: string | undefined;
   redactedParameters: Readonly<Record<string, unknown>> | undefined;
   resultCategory: ResultCategory | undefined;
@@ -793,7 +930,10 @@ interface ProjectCommandInvocationState {
   output: ProjectCommandInvocationOutputMetadata | undefined;
 }
 
-function createInvocationState(startedAt: number): ProjectCommandInvocationState {
+function createInvocationState(
+  startedAt: number,
+  orchestration: ProjectCommandOrchestrationContext,
+): ProjectCommandInvocationState {
   return {
     startedAt,
     executionStartedAt: undefined,
@@ -808,6 +948,10 @@ function createInvocationState(startedAt: number): ProjectCommandInvocationState
     relevantInputManifest: undefined,
     beforeSnapshot: undefined,
     producerInvocationId: undefined,
+    producerScope: orchestration.orchestrated ? orchestration.effectiveScope : undefined,
+    flowId: orchestration.flowId,
+    producerRole: orchestration.role,
+    repositoryState: undefined,
     commandId: undefined,
     redactedParameters: undefined,
     resultCategory: undefined,
@@ -909,6 +1053,7 @@ function recordInvocation(
           ? 0
           : elapsedMilliseconds(state.executionStartedAt, finishedAt),
       output: state.output,
+      producerScope: state.producerScope,
     });
   } catch {
     // Session lookup and record construction are also observational best effort.
@@ -934,6 +1079,7 @@ function invocationMetadataForState(
       resultFingerprint: state.resultFingerprint,
       relevantInputs: state.relevantInputManifest,
       producerInvocationId: state.producerInvocationId,
+      producerScope: state.producerScope,
       ...options,
     },
   );
@@ -998,12 +1144,13 @@ async function prepareProjectCommand(
   byId: ReadonlyMap<string, ProjectCommandDefinition>,
   relevantInputDiscovery: ProjectCommandRelevantInputDiscovery,
   stateSnapshotter: ProjectCommandStateSnapshotter,
+  repositoryStateReader: ProjectCommandRepositoryStateReader | undefined,
   state: ProjectCommandInvocationState,
 ): Promise<PreparedProjectCommand> {
-  const validatedParams = validateProjectCommandInput(
-    rawParams,
-    capturedDefinitions,
-  ) as ProjectCommandRequestParameters & { readonly force?: boolean };
+  const validatedParams = validateProjectCommandInput(rawParams, capturedDefinitions);
+  if (!hasOptionalForce(validatedParams)) {
+    throw invalidRequest();
+  }
   state.forced = validatedParams.force === true;
   const params = stripForce(validatedParams);
   state.commandId = params.commandId;
@@ -1048,6 +1195,9 @@ async function prepareProjectCommand(
     relevantInputs === undefined
       ? undefined
       : await takeStateSnapshot(stateSnapshotter, loaded.projectPath, relevantInputs);
+  if (state.producerScope === "flow" && repositoryStateReader !== undefined) {
+    state.repositoryState = await repositoryStateReader(loaded.projectPath, requestSignal);
+  }
   setResultFingerprints(state, definition, loaded.projectPath, resolved, relevantInputs);
   return {
     definition,
@@ -1078,6 +1228,11 @@ async function executePreparedProjectCommand(
     prepared.requestSignal,
     getContextSessionId(ctx),
     state.beforeSnapshot,
+    state.producerScope,
+    state.flowId,
+    state.producerRole,
+    prepared.projectPath,
+    state.repositoryState,
   );
   state.cacheDecision = inspection.decision;
 
@@ -1090,6 +1245,7 @@ async function executePreparedProjectCommand(
         reused: true,
         forced: false,
         producerInvocationId: inspection.entry.producerInvocationId,
+        producerScope: inspection.entry.provenance === undefined ? undefined : "flow",
       }),
     });
   }
@@ -1117,7 +1273,15 @@ async function executePreparedProjectCommand(
     executed.outcome,
     metadata,
   );
-  storeResult(cache, inspection, state.resultFingerprint, executed, details, toolCallId);
+  storeResult(
+    cache,
+    inspection,
+    state.resultFingerprint,
+    executed,
+    details,
+    prepared.projectPath,
+    toolCallId,
+  );
   if (isAbortedOutcome(executed.outcome, prepared.requestSignal)) {
     throw cancellationError(cancellationOutputDetails(details));
   }
@@ -1143,11 +1307,14 @@ export function createProjectCommandExecute<
   byId: ReadonlyMap<string, ProjectCommandDefinition>,
   relevantInputDiscovery: ProjectCommandRelevantInputDiscovery = createDefaultRelevantInputDiscovery(),
   stateSnapshotter: ProjectCommandStateSnapshotter = snapshotProjectCommandRelevantInputs,
-  cache: ProjectCommandResultCache = createProjectCommandResultCache(),
+  cache: ProjectCommandResultCache = createDefaultProjectCommandResultCache(),
   invocationOptions: ProjectCommandInvocationOptions = {},
 ): ProjectCommandExecute<Definitions> {
   return async (toolCallId, rawParams, signal, _onUpdate, ctx) => {
-    const state = createInvocationState(performance.now());
+    const state = createInvocationState(
+      performance.now(),
+      readProjectCommandOrchestrationContext(),
+    );
     try {
       const prepared = await prepareProjectCommand(
         policy,
@@ -1159,6 +1326,7 @@ export function createProjectCommandExecute<
         byId,
         relevantInputDiscovery,
         stateSnapshotter,
+        invocationOptions.repositoryStateReader,
         state,
       );
       return await executePreparedProjectCommand(

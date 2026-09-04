@@ -38,6 +38,7 @@ export interface ProjectCommandInvocationMetadata {
   readonly resultFingerprint?: string;
   readonly relevantInputs?: ProjectCommandRelevantInputs;
   readonly producerInvocationId?: string;
+  readonly producerScope?: "session" | "flow";
 }
 
 export interface ProjectCommandOutputDetails {
@@ -52,6 +53,7 @@ export interface ProjectCommandOutputDetails {
   readonly toolCallId: string;
   readonly relevantInputs?: ProjectCommandRelevantInputs;
   readonly producerInvocationId?: string;
+  readonly producerScope?: "session" | "flow";
   readonly reused: boolean;
   readonly forced: boolean;
   readonly cacheDecision: ProjectCommandCacheDecision;
@@ -109,6 +111,7 @@ function outputMetadata(
     ["reusePolicyId", metadata.reusePolicyId],
     ["relevantInputs", metadata.relevantInputs],
     ["producerInvocationId", metadata.producerInvocationId],
+    ["producerScope", metadata.producerScope],
   ]);
 }
 

@@ -98,6 +98,23 @@ function validateNodeScriptVariant(
   return value;
 }
 
+function legacyVariantForCommandId(
+  commandId: string,
+  definitions: readonly ProjectCommandDefinition[],
+): { readonly commandId: string; readonly variant: string } | undefined {
+  const match = /^(node_test|node_lint|node_format):(.+)$/u.exec(commandId);
+  const base = match?.[1];
+  const variant = match?.[2];
+  if (
+    base === undefined ||
+    variant === undefined ||
+    !definitions.some((definition) => definition.commandId === base)
+  ) {
+    return undefined;
+  }
+  return { commandId: base, variant };
+}
+
 function findDefinition(
   commandId: string,
   definitions: readonly ProjectCommandDefinition[],
@@ -194,9 +211,14 @@ export function validateProjectCommandInput(
       throw invalidRequest(undefined, projectCommandIdGuidance("", definitions));
     }
     const request = params;
-    const commandId = request.commandId;
-    if (typeof commandId !== "string") {
+    const requestedCommandId = request.commandId;
+    if (typeof requestedCommandId !== "string") {
       throw invalidRequest("commandId", projectCommandIdGuidance("", definitions));
+    }
+    const legacyVariant = legacyVariantForCommandId(requestedCommandId, definitions);
+    const commandId = legacyVariant?.commandId ?? requestedCommandId;
+    if (legacyVariant !== undefined && "variant" in request) {
+      throw invalidRequest("variant");
     }
     findDefinition(commandId, definitions);
     validateRequestKeys(Object.keys(request), commandId);
@@ -206,7 +228,10 @@ export function validateProjectCommandInput(
     } catch {
       throw invalidRequest("force");
     }
-    const normalized = normalizedRequest(request, commandId);
+    const normalized = normalizedRequest(
+      legacyVariant === undefined ? request : { ...request, variant: legacyVariant.variant },
+      commandId,
+    );
     return force === true ? { ...normalized, force: true } : normalized;
   } catch (error) {
     if (error instanceof ProjectCommandToolError) {

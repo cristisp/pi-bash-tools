@@ -105,6 +105,7 @@ export interface ProjectCommandModelContent {
   readonly reused: boolean;
   readonly forced: boolean;
   readonly cacheDecision: ProjectCommandCacheDecision;
+  readonly producerScope?: "session" | "flow";
 }
 
 function modelProjectInfo(details: ProjectCommandOutputDetails): Readonly<Record<string, unknown>> {
@@ -153,5 +154,6 @@ export function projectCommandModelContent(
     reused: details.reused,
     forced: details.forced,
     cacheDecision: details.cacheDecision,
+    ...definedObjectProperties([["producerScope", details.producerScope]]),
   };
 }

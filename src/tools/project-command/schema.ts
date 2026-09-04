@@ -61,6 +61,45 @@ export type ProjectCommandInputFor<Definitions extends readonly ProjectCommandDe
 
 type ProjectCommandRuntimeInputSchema = TUnion;
 
+function legacyVariantCommandId(commandId: string) {
+  return Type.String({
+    pattern: `^${commandId}:${PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN.slice(1)}`,
+    maxLength: PROJECT_COMMAND_MAX_SCRIPT_VARIANT_LENGTH + commandId.length + 1,
+    description: `Legacy alias for ${commandId} with the package-script variant embedded in commandId.`,
+  });
+}
+
+function legacyVariantForDefinition(definition: ProjectCommandDefinition): TObject | undefined {
+  if (
+    definition.commandId !== "node_test" &&
+    definition.commandId !== "node_lint" &&
+    definition.commandId !== "node_format"
+  ) {
+    return undefined;
+  }
+  const commandId = legacyVariantCommandId(definition.commandId);
+  const force = Type.Optional(booleanInputSchema);
+  if (definition.commandId === "node_test") {
+    return Type.Object(
+      {
+        commandId,
+        force,
+        paths: Type.Optional(
+          Type.Array(
+            Type.String({
+              pattern: NODE_TEST_PATH_PATTERN,
+              maxLength: PROJECT_COMMAND_MAX_PATH_LENGTH,
+            }),
+            { maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS },
+          ),
+        ),
+      },
+      { additionalProperties: false },
+    );
+  }
+  return Type.Object({ commandId, force }, { additionalProperties: false });
+}
+
 function variantForDefinition(definition: ProjectCommandDefinition): TObject {
   const commandId = Type.Literal(definition.commandId, { description: definition.description });
   const force = Type.Optional(booleanInputSchema);
@@ -150,7 +189,13 @@ export function createProjectCommandInputSchema(
 export function createProjectCommandInputSchema(
   definitions: readonly ProjectCommandDefinition[],
 ): ProjectCommandRuntimeInputSchema {
-  const variants = definitions.map(variantForDefinition);
+  const variants = [
+    ...definitions.map((definition) => variantForDefinition(definition)),
+    ...definitions.flatMap((definition) => {
+      const legacy = legacyVariantForDefinition(definition);
+      return legacy === undefined ? [] : [legacy];
+    }),
+  ];
   if (variants.length === 0) {
     return Type.Union([Type.Never()]);
   }

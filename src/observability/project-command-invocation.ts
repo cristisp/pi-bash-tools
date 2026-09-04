@@ -74,6 +74,7 @@ export interface ProjectCommandInvocationRecordInput {
   readonly durationMs: number;
   readonly executionDurationMs: number;
   readonly output?: ProjectCommandInvocationOutputMetadata;
+  readonly producerScope?: "session" | "flow";
 }
 
 export interface ProjectCommandInvocationRecord {
@@ -93,6 +94,7 @@ export interface ProjectCommandInvocationRecord {
   readonly durationMs: number;
   readonly executionDurationMs: number;
   readonly output: ProjectCommandInvocationOutputMetadata;
+  readonly producerScope?: "session" | "flow";
 }
 
 export type ProjectCommandInvocationRecorder = (record: ProjectCommandInvocationRecord) => void;
@@ -320,6 +322,7 @@ export function buildProjectCommandInvocationRecord(
     durationMs: boundedNumber(input.durationMs),
     executionDurationMs: boundedNumber(input.executionDurationMs),
     output: boundedOutput(input.output),
+    ...(input.producerScope === undefined ? {} : { producerScope: input.producerScope }),
   };
   return boundedRecord(record);
 }

@@ -68,6 +68,7 @@ describe("bash tools extension", () => {
       "git_show",
       "environment",
       "project_command",
+      "verify",
       "move",
       "delete",
     ]);

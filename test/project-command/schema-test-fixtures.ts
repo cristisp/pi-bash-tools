@@ -13,7 +13,7 @@ type SchemaArray = {
 export type SchemaVariant = {
   readonly additionalProperties: boolean;
   readonly properties: {
-    readonly commandId: { readonly const: string };
+    readonly commandId: { readonly const?: string; readonly pattern?: string };
     readonly paths?: SchemaArray;
     readonly grep?: SchemaString;
     readonly projects?: SchemaArray;
@@ -29,8 +29,10 @@ function isUnknownArray(value: unknown): value is readonly unknown[] {
   return Array.isArray(value);
 }
 
-function isSchemaCommandId(value: unknown): value is { readonly const: string } {
-  return isRecord(value) && typeof value.const === "string";
+function isSchemaCommandId(
+  value: unknown,
+): value is { readonly const?: string; readonly pattern?: string } {
+  return isRecord(value) && (typeof value.const === "string" || typeof value.pattern === "string");
 }
 
 function isSchemaPaths(value: unknown): value is SchemaArray | undefined {
