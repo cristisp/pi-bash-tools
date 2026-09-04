@@ -20,6 +20,7 @@ import {
 import { createVerifyToolForTesting } from "../../src/tools/verify/tool.ts";
 import { validateVerifyInput } from "../../src/tools/verify/schema.ts";
 import type { VerifyToolContext } from "../../src/tools/verify/tool.ts";
+import type { VerifyEvidenceRecord, VerifyPhase } from "../../src/tools/verify/types.ts";
 
 const fixtureDirectories: string[] = [];
 
@@ -87,6 +88,13 @@ function parameterPaths(value: unknown): readonly string[] {
   return Array.isArray(paths) && paths.every((path) => typeof path === "string") ? paths : [];
 }
 
+function stringValues(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(stringValues);
+  if (typeof value !== "object" || value === null) return [];
+  return Object.values(value).flatMap(stringValues);
+}
+
 function dependencies(failingScript?: string) {
   const order: string[] = [];
   const resolver: ProjectCommandResolver = async (definition, _projectPath, _signal, params) => {
@@ -152,10 +160,17 @@ it("runs fixed phases in order, exposes omissions, and reuses unchanged evidence
     ],
     covers: ["AC-VERIFY"],
   });
+  expect(stringValues(first.details).some((value) => value.includes("\u001b"))).toBe(false);
+  expect(first.details.perStep.every((step) => step.failureTail === undefined)).toBe(true);
+  expect(first.details.perStep.every((step) => Number.isInteger(step.durationMs))).toBe(true);
+  expect(first.details.perStep[0]).not.toHaveProperty("resolvedCommand");
+  expect(first.details.perStep[0]).not.toHaveProperty("executable");
+  expect(first.details.perStep[0]).toHaveProperty("command");
   const second = await tool.execute("verify-2", params, undefined, undefined, context(cwd));
   expect(deps.order).toEqual(["format:check", "lint", "test"]);
   expect(second.details.status).toBe("unchanged");
   expect(second.details.reused).toBe(true);
+  expect(second.details.perStep.every((step) => !step.executed)).toBe(true);
   const lookup = await tool.execute(
     "verify-ref",
     { ref: first.details.ref },
@@ -164,6 +179,15 @@ it("runs fixed phases in order, exposes omissions, and reuses unchanged evidence
     context(cwd),
   );
   expect(lookup.details.perStep[0]?.stdout.text).toBe("stdout");
+  expect(lookup.details.perStep[0]).toHaveProperty("resolvedCommand");
+  expect(lookup.details.perStep[0]).toHaveProperty("executable");
+  expect(lookup.details.perStep[0]).toHaveProperty("args");
+  await expect(
+    tool.execute("verify-missing-ref", { ref: "vr_missing" }, undefined, undefined, context(cwd)),
+  ).rejects.toMatchObject({
+    code: "not-found",
+    message: expect.stringContaining("process-local root-session cache"),
+  });
 });
 
 it("keeps every omitted phase visible while running the remaining phase", async () => {
@@ -411,6 +435,86 @@ it("rejects contradictory persisted evidence", () => {
       record.key,
     ),
   ).toBe(false);
+});
+
+it("rejects pre-remediation durable records with unsafe tails or fractional durations", async () => {
+  const cwd = await projectFixture();
+  const cacheRoot = await mkdtemp(join(tmpdir(), "bash-tools-verify-compat-"));
+  fixtureDirectories.push(cacheRoot);
+  const previousFlow = process.env.PI_ORCHESTRATION_FLOW;
+  const previousScope = process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
+  process.env.PI_ORCHESTRATION_FLOW = "verify-compat-flow";
+  process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE = "flow";
+  try {
+    const chunk = { text: "", truncated: false, totalBytes: 0, totalLines: 0 };
+    const phases: readonly VerifyPhase[] = ["format", "lint", "typecheck", "test"];
+    const steps = phases.map((phase) => ({
+      phase,
+      status: "passed" as const,
+      verdict: "passed" as const,
+      command: `pnpm run ${phase}`,
+      resolvedCommand: `pnpm run ${phase}`,
+      executable: "pnpm",
+      args: ["run", phase],
+      script: phase,
+      exitCode: 0,
+      signal: null,
+      durationMs: 1,
+      executed: true,
+      stdout: chunk,
+      stderr: chunk,
+    }));
+    const record: VerifyEvidenceRecord = {
+      cacheFormatVersion: 1,
+      key: "compatibility-key",
+      ref: "vr_compatibility-key",
+      projectPath: cwd,
+      resolvedCommands: steps.map((step) => step.command),
+      perStep: steps,
+      verdict: "passed",
+      covers: ["compatibility"],
+      createdAt: 0,
+    };
+    createVerifyEvidenceCache({ rootDirectory: cacheRoot }).set(record);
+    const ansi = `${String.fromCodePoint(0x1b)}[31m${"failure ".repeat(2_000)}${String.fromCodePoint(0x1b)}[0m`;
+    const invalidRecord: VerifyEvidenceRecord = {
+      ...record,
+      perStep: record.perStep.map((step, index) =>
+        index === 0 ? { ...step, durationMs: 1.5, failureTail: ansi } : step,
+      ),
+    };
+    const cacheDirectory = join(cacheRoot, "flows", "verify-compat-flow", "project-command");
+    const files = await readdir(cacheDirectory);
+    await Promise.all(
+      files
+        .filter((file) => file.endsWith(".json"))
+        .map(async (file) => {
+          const filePath = join(cacheDirectory, file);
+          const parsed: unknown = JSON.parse(await readFile(filePath, "utf8"));
+          if (
+            typeof parsed !== "object" ||
+            parsed === null ||
+            !("key" in parsed) ||
+            typeof parsed.key !== "string"
+          ) {
+            return;
+          }
+          if (parsed.key === record.key) {
+            await writeFile(filePath, JSON.stringify(invalidRecord));
+          } else if (parsed.key === `ref:${record.ref}`) {
+            await writeFile(filePath, JSON.stringify({ key: parsed.key, record: invalidRecord }));
+          }
+        }),
+    );
+    const reloaded = createVerifyEvidenceCache({ rootDirectory: cacheRoot });
+    expect(reloaded.get(record.key)).toBeUndefined();
+    expect(reloaded.getByRef(record.ref)).toBeUndefined();
+  } finally {
+    if (previousFlow === undefined) delete process.env.PI_ORCHESTRATION_FLOW;
+    else process.env.PI_ORCHESTRATION_FLOW = previousFlow;
+    if (previousScope === undefined) delete process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
+    else process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE = previousScope;
+  }
 });
 
 it("persists flow evidence, resolves refs, and invalidates changed repository state", async () => {
@@ -694,4 +798,75 @@ it("stops after failure by default and continues when requested", async () => {
     context(cwd),
   );
   expect(continued.order).toEqual(["format:check", "lint", "test"]);
+});
+
+it("limits failure tails to failed steps and strips ANSI escapes", async () => {
+  const cwd = await projectFixture();
+  const deps = dependencies("lint");
+  const ansiOutput = `\u001b[31m${"failure ".repeat(2_000)}\u001b[0m`;
+  const executor: ProjectCommandExecutor = vi.fn(async (resolved) => {
+    const script = resolved.scriptKey ?? "unknown";
+    const current = outcome(script === "lint" ? "nonzero" : "success");
+    return script === "lint"
+      ? {
+          ...current,
+          stderr: {
+            text: ansiOutput,
+            truncated: false,
+            totalBytes: ansiOutput.length,
+            totalLines: 1,
+          },
+        }
+      : current;
+  });
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver: deps.resolver,
+    executor,
+    repositoryStateReader: deps.repositoryStateReader,
+  });
+  const result = await tool.execute(
+    "verify-ansi-failure",
+    { omit: ["typecheck"] },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  expect(result.details.perStep[0]?.failureTail).toBeUndefined();
+  const lintStep = result.details.perStep[1];
+  expect(lintStep?.failureTail).toBeDefined();
+  expect(lintStep?.failureTail).not.toContain("\u001b");
+  expect(lintStep?.failureTail?.length).toBeLessThanOrEqual(8 * 1024);
+});
+
+it("keeps the record failure pointer without duplicating complete step tails by ref", async () => {
+  const cwd = await projectFixture();
+  const deps = dependencies("lint");
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver: deps.resolver,
+    executor: deps.executor,
+    repositoryStateReader: deps.repositoryStateReader,
+  });
+  const completed = await tool.execute(
+    "verify-failure-ref",
+    { omit: ["typecheck"] },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  const lookup = await tool.execute(
+    "verify-failure-ref-lookup",
+    { ref: completed.details.ref },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  expect(completed.details.failureTail).toBe("failure tail");
+  expect(completed.details.perStep[1]?.failureTail).toBe("failure tail");
+  expect(lookup.details.failureTail).toBe("failure tail");
+  expect(lookup.details.perStep[1]).toHaveProperty("resolvedCommand");
+  expect(lookup.details.perStep[1]).toHaveProperty("executable");
+  expect(lookup.details.perStep[1]).not.toHaveProperty("failureTail");
+  expect(lookup.details.perStep[1]?.stdout.text).toBe("stdout");
 });

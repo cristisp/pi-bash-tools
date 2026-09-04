@@ -16,6 +16,7 @@ import {
   type ProjectCommandDefinition,
 } from "../project-command/definitions.ts";
 import { createProjectCommandExecutor } from "../project-command/execution.ts";
+import { readProjectCommandOrchestrationContext } from "../project-command/orchestration.ts";
 import type { ProjectCommandExecutor } from "../project-command/runner.ts";
 import type { ProjectCommandExecutionOutcome } from "../project-command/execution.ts";
 import {
@@ -79,6 +80,7 @@ export type VerifyToolDefinition = Omit<
 const DEFAULT_AGGREGATE_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_STEP_TIMEOUT_MS = 2 * 60 * 1000;
 const MAX_FAILURE_TAIL = 8 * 1024;
+const ANSI_SGR_PATTERN = new RegExp(`${String.fromCodePoint(0x1b)}\\[[0-9;]*m`, "gu");
 const SCRIPT_BY_PHASE: Record<VerifyPhase, string> = {
   format: "format:check",
   lint: "lint",
@@ -112,7 +114,7 @@ function displayCommand(resolved: ResolvedProjectCommand): string {
 
 function durationMs(startedAt: number): number {
   const duration = performance.now() - startedAt;
-  return Number.isFinite(duration) && duration >= 0 ? duration : 0;
+  return Number.isFinite(duration) && duration >= 0 ? Math.round(duration) : 0;
 }
 
 function outputChunk(value: ProjectCommandExecutionOutcome["stdout"]): VerifyOutputChunk {
@@ -129,8 +131,9 @@ function emptyChunk(): VerifyOutputChunk {
 }
 
 function tail(value: string): string | undefined {
-  if (value.length === 0) return undefined;
-  return value.length <= MAX_FAILURE_TAIL ? value : value.slice(-MAX_FAILURE_TAIL);
+  const sanitized = value.replace(ANSI_SGR_PATTERN, "");
+  if (sanitized.length === 0) return undefined;
+  return sanitized.length <= MAX_FAILURE_TAIL ? sanitized : sanitized.slice(-MAX_FAILURE_TAIL);
 }
 
 function failureTail(step: VerifyStepResult): string | undefined {
@@ -141,12 +144,16 @@ function compactChunk(value: VerifyOutputChunk): VerifyOutputChunk {
   return { ...value, text: "" };
 }
 
-function compactStep(step: VerifyStepResult): VerifyStepResult {
-  return {
+function compactStep(step: VerifyStepResult, reused: boolean): VerifyStepResult {
+  const compact = {
     ...step,
+    executed: reused ? false : step.executed,
     stdout: compactChunk(step.stdout),
     stderr: compactChunk(step.stderr),
   };
+  delete compact.resolvedCommand;
+  delete compact.executable;
+  return compact;
 }
 
 function compactOutput(record: VerifyEvidenceRecord): VerifyOutput {
@@ -155,12 +162,21 @@ function compactOutput(record: VerifyEvidenceRecord): VerifyOutput {
     verdict: record.verdict,
     ref: record.ref,
     projectPath: record.projectPath,
-    perStep: record.perStep.map(compactStep),
+    perStep: record.perStep.map((step) => compactStep(step, true)),
     ...(record.failureTail === undefined ? {} : { failureTail: record.failureTail }),
     reused: true,
     covers: record.covers,
     ...(record.repositoryState === undefined ? {} : { repositoryState: record.repositoryState }),
   };
+}
+
+function fullStep(step: VerifyStepResult): VerifyStepResult {
+  if (step.failureTail === undefined || step.stdout.truncated || step.stderr.truncated) {
+    return step;
+  }
+  const { failureTail: stepFailureTail, ...withoutFailureTail } = step;
+  void stepFailureTail;
+  return withoutFailureTail;
 }
 
 function fullOutput(record: VerifyEvidenceRecord): VerifyOutput {
@@ -169,7 +185,7 @@ function fullOutput(record: VerifyEvidenceRecord): VerifyOutput {
     verdict: record.verdict,
     ref: record.ref,
     projectPath: record.projectPath,
-    perStep: record.perStep,
+    perStep: record.perStep.map(fullStep),
     ...(record.failureTail === undefined ? {} : { failureTail: record.failureTail }),
     reused: true,
     covers: record.covers,
@@ -397,6 +413,7 @@ function outcomeStep(
           ? { reason: "cancelled" }
           : {}),
   };
+  if (!failed) return step;
   const tailText = failureTail(step);
   return tailText === undefined ? step : { ...step, failureTail: tailText };
 }
@@ -413,7 +430,7 @@ function completedOutput(record: VerifyEvidenceRecord, reused: boolean): VerifyO
     verdict: record.verdict,
     ref: record.ref,
     projectPath: record.projectPath,
-    perStep: reused ? record.perStep.map(compactStep) : record.perStep.map(compactStep),
+    perStep: record.perStep.map((step) => compactStep(step, reused)),
     ...(record.failureTail === undefined ? {} : { failureTail: record.failureTail }),
     reused,
     covers: record.covers,
@@ -547,7 +564,7 @@ function createVerifyToolWithDependencies(
     name: "verify",
     label: "Verify",
     description:
-      "Run package-script format, lint, typecheck, and test phases in fixed order with bounded validation evidence and stable lookup references.",
+      "Run package-script format, lint, typecheck, and test phases in fixed order with bounded validation evidence and stable lookup references. Root-session refs are process-scoped; flow refs are durable only within an authorized flow.",
     promptSnippet: "Run fixed-order project verification",
     parameters: verifyInputSchema,
     executionMode: "sequential",
@@ -565,8 +582,21 @@ function createVerifyToolWithDependencies(
       const requestSignal = signal ?? ctx.signal;
       if (input.ref !== undefined) {
         const record = cache.getByRef(input.ref);
-        if (record === undefined)
-          throw new VerifyToolError("not-found", "validation ref not found");
+        if (record === undefined) {
+          const orchestration = readProjectCommandOrchestrationContext();
+          const bucket =
+            orchestration.effectiveScope === "flow" && orchestration.flowId !== undefined
+              ? "the authorized flow cache"
+              : "the process-local root-session cache";
+          const guidance =
+            bucket === "the process-local root-session cache"
+              ? "Root-session refs are process-scoped and are not durable across processes."
+              : "Only refs from the current authorized flow are searchable.";
+          throw new VerifyToolError(
+            "not-found",
+            `validation ref not found in ${bucket}. ${guidance}`,
+          );
+        }
         return result(fullOutput(record));
       }
       if (requestSignal?.aborted) throw new VerifyToolError("cancelled", "verify was cancelled");

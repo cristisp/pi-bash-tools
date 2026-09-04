@@ -13,7 +13,8 @@ import {
 } from "./types.ts";
 
 const VERIFY_CACHE_MAX_TEXT = 50 * 1024;
-const VERIFY_CACHE_MAX_TAIL = 16 * 1024;
+const VERIFY_CACHE_MAX_TAIL = 8 * 1024;
+const ANSI_ESCAPE = String.fromCodePoint(0x1b);
 const VERIFY_CACHE_MAX_STEPS = 4;
 const VERIFY_CACHE_MAX_COMMANDS = 4;
 const VERIFY_CACHE_MAX_COVERS = 64;
@@ -50,12 +51,6 @@ function isBoundedInteger(value: unknown, minimum: number, maximum: number): val
   );
 }
 
-function isBoundedNumber(value: unknown, minimum: number, maximum: number): value is number {
-  return (
-    typeof value === "number" && Number.isFinite(value) && value >= minimum && value <= maximum
-  );
-}
-
 function isNullableBoundedInteger(
   value: unknown,
   minimum: number,
@@ -84,6 +79,15 @@ function isEmptyChunk(value: unknown): boolean {
   );
 }
 
+function isSafeFailureTail(value: unknown, status: unknown): value is string | undefined {
+  return (
+    value === undefined ||
+    (status === "failed" &&
+      isBoundedString(value, VERIFY_CACHE_MAX_TAIL) &&
+      !value.includes(ANSI_ESCAPE))
+  );
+}
+
 function isStep(value: unknown): value is VerifyStepResult {
   if (!isRecord(value)) return false;
   const status = value.status;
@@ -100,12 +104,11 @@ function isStep(value: unknown): value is VerifyStepResult {
       verdict === "not-run") &&
     isNullableBoundedInteger(value.exitCode, -1, 255) &&
     (value.signal === null || isBoundedString(value.signal, 128)) &&
-    isBoundedNumber(value.durationMs, 0, VERIFY_CACHE_MAX_DURATION_MS) &&
+    isBoundedInteger(value.durationMs, 0, VERIFY_CACHE_MAX_DURATION_MS) &&
     typeof value.executed === "boolean" &&
     isOutputChunk(value.stdout) &&
     isOutputChunk(value.stderr) &&
-    (value.failureTail === undefined ||
-      isBoundedString(value.failureTail, VERIFY_CACHE_MAX_TAIL)) &&
+    isSafeFailureTail(value.failureTail, status) &&
     (value.reason === undefined || isBoundedString(value.reason, 1024));
   if (!baseValid) return false;
   if (status === "passed" || status === "failed") {
@@ -195,8 +198,7 @@ export function isVerifyEvidenceRecord(
     value.perStep.every(isStep) &&
     value.perStep.every((step, index) => isStep(step) && step.phase === VERIFY_PHASES[index]) &&
     (value.verdict === "passed" || value.verdict === "failed" || value.verdict === "incomplete") &&
-    (value.failureTail === undefined ||
-      isBoundedString(value.failureTail, VERIFY_CACHE_MAX_TAIL)) &&
+    isSafeFailureTail(value.failureTail, value.verdict) &&
     Array.isArray(value.covers) &&
     value.covers.length <= VERIFY_CACHE_MAX_COVERS &&
     value.covers.every(

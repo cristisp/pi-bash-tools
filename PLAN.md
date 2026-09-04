@@ -52,7 +52,9 @@ The next work should be selected from the remaining follow-up workstreams below 
 - [x] Added aggregate and per-step timeouts, cancellation handling, failure tails, bounded output, and timeout evidence fallback.
 - [x] Added durable refs, unchanged-result reuse, repository-state invalidation, and authorized flow persistence.
 - [x] Added explicit incomplete results when phases are omitted and rejection when all phases are omitted.
-- [x] Added fail-closed validation for persisted records, direct request keys, ref aliases, command identity, step state, and aggregate verdicts.
+- [x] Added fail-closed validation for persisted records, direct request keys, ref aliases, command identity, step state, aggregate verdicts, failure-tail safety, and integer durations.
+- [x] Kept failure tails only on failed steps, stripped ANSI SGR sequences before bounding, and removed duplicate tails from complete by-ref step output.
+- [x] Kept compact output bounded by omitting redundant command fields and marking reused step rows as not executed in the current call.
 
 ### R4: Verify evidence references
 
@@ -67,8 +69,8 @@ The standalone project-command validation-reference API is not currently impleme
 
 - [x] Formatter check passed for 216 files.
 - [x] Project lint passed with zero warnings and zero errors.
-- [x] Verify-focused tests passed with 11 tests.
-- [x] Full test suite passed with 85 test files and 350 tests.
+- [x] Verify-focused tests passed with 14 tests.
+- [x] Full test suite passed with 85 test files and 353 tests.
 - [x] Codegraph was synchronized after the final implementation changes.
 - [x] Fresh independent verify review returned `PASS`.
 
