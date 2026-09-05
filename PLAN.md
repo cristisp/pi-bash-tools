@@ -184,27 +184,29 @@ Focused tests were added and run during the batch.
 
 ### R6: Actionable edit, resolution, and policy errors
 
-- [ ] Report edit match counts and distinguish zero matches from ambiguous matches.
-- [ ] Include nearest candidates, line numbers, and whitespace-mismatch hints where useful.
-- [ ] Consider an optional edit dry-run preflight.
-- [ ] Include nearest existing paths in resolution errors.
-- [ ] Include authorized roots and stable rule kinds in policy denials.
+- [x] Report bounded edit match counts and distinguish zero matches from ambiguous matches.
+- [x] Include bounded nearest candidates, line numbers, and whitespace-mismatch hints where useful.
+- [x] Add an optional non-mutating edit preflight for the local host contract; remote or unreadable targets fall through to the host edit implementation.
+- [x] Include bounded nearest existing paths in resolution errors.
+- [x] Include bounded authorized roots and stable rule kinds in policy denials.
 
 ### R7: Orchestration join keys and output telemetry
 
 The consumer-aligned evidence handoff above owns the requested flow, delegation, role, ref, repository-state, aggregate-verify, and lookup-provenance fields.
 
 - [x] Keep all orchestration fields absent when the environment is absent.
-- [ ] Add before-and-after measurements for cache reuse, invalidation, truncation, and repeated requests.
+- [x] Add bounded before-and-after measurements for cache reuse, invalidation, truncation, and repeated requests.
 
 Some bounded output and effective producer-scope telemetry is already present.
 The remaining R7 work is limited to measurements not supplied by the current host contract, excluding the fields and concurrency telemetry completed in the validation evidence handoff above.
 
+The R7 measurements remain limited to values supplied by the current project-command invocation contract; unsupported Git-specific and host-only follow-up metrics are intentionally not synthesized.
+
 ### R8: Batch reads and read references
 
-- [ ] Add bounded batch reads with per-path ranges and per-path errors.
-- [ ] Return unchanged results and prior refs for repeated content-hash-equivalent reads.
-- [ ] Normalize reported paths to repository-relative paths.
+- [x] Add bounded batch reads with per-path ranges and per-path errors.
+- [x] Return unchanged results and prior refs for repeated content-hash-equivalent reads.
+- [x] Normalize reported paths to repository-relative paths.
 
 ### R9: Curated read-only probe surface
 
@@ -250,9 +252,7 @@ The remaining R7 work is limited to measurements not supplied by the current hos
 
 1. Commit the current validated change set before starting new implementation work.
 2. Resolve F-016 if its diagnostic drift becomes operationally significant.
-3. R6 actionable errors, if new measurement confirms remaining interface friction.
-4. R7 measurements not covered by the completed evidence handoff.
-5. R8 batch reads and read references.
-6. R9 curated read-only probes.
+3. R8 batch reads and read references.
+4. R9 curated read-only probes.
 
 Do not reopen R1, R1a, R2, R3, R4, R5, or the completed validation-evidence handoff without a new behavior requirement, regression, or security finding.

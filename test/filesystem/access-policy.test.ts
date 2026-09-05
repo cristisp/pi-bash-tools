@@ -6,6 +6,7 @@ import {
   createFilesystemAccessPolicyInterceptor,
   type FilesystemAccessPolicyContext,
 } from "../../src/tools/filesystem/access-policy.ts";
+import { diagnoseFilesystemEdits } from "../../src/tools/filesystem/edit-diagnostics.ts";
 import { createPolicyStoreForTesting } from "../../src/tools/policy/store.ts";
 import { createPolicyTestFixtures } from "../policy/test-fixtures.ts";
 
@@ -165,6 +166,8 @@ it("blocks a policy denial without terminating the agent", async () => {
   expect(result?.reason).toContain("denied by the global policy rule");
   expect(result?.reason).toContain('"code":"policy-denied"');
   expect(result?.reason).toContain('"category":"BLOCKED"');
+  expect(result?.reason).toContain('"ruleKind":"filesystem-deny-global"');
+  expect(result?.reason).toContain('"authorizedRoots":[]');
   expect(result?.terminate).toBeUndefined();
 });
 
@@ -234,6 +237,114 @@ it("implicitly allows read, write, and edit paths under the active workspace", a
   expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({ version: 1 });
 });
 
+it("reports bounded edit match diagnostics before the host mutates", async () => {
+  const directory = await fixtures.createDirectory();
+  const file = join(directory, "edit.txt");
+  await writeFile(file, "first\n  target\nlast\n");
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const intercept = createFilesystemAccessPolicyInterceptor(policy);
+
+  const missing = await intercept(
+    {
+      type: "tool_call",
+      toolCallId: "edit-missing",
+      toolName: "edit",
+      input: { path: file, edits: [{ oldText: "missing", newText: "new" }] },
+    },
+    context(directory),
+  );
+  expect(missing?.reason).toContain('"code":"edit-no-match"');
+  expect(missing?.reason).toContain('"matchCount":0');
+  expect(missing?.reason).toContain('"line":2');
+
+  const validEdit = await intercept(
+    {
+      type: "tool_call",
+      toolCallId: "edit-valid",
+      toolName: "edit",
+      input: { path: file, edits: [{ oldText: "first", newText: "new" }] },
+    },
+    context(directory),
+  );
+  expect(validEdit).toBeUndefined();
+  await writeFile(file, "same\nother\nsame\n");
+  const duplicate = await intercept(
+    {
+      type: "tool_call",
+      toolCallId: "edit-duplicate",
+      toolName: "edit",
+      input: { path: file, edits: [{ oldText: "same", newText: "new" }] },
+    },
+    context(directory),
+  );
+  expect(duplicate?.reason).toContain('"code":"edit-ambiguous"');
+  expect(duplicate?.reason).toContain('"matchCount":2');
+  expect(duplicate?.reason).toContain('"line":1');
+  expect(duplicate?.reason).toContain('"line":3');
+});
+
+it("bounds edit diagnostics before scanning large inputs", () => {
+  expect(
+    diagnoseFilesystemEdits("x".repeat(256_001), [{ oldText: "x", newText: "y" }]),
+  ).toBeUndefined();
+  expect(
+    diagnoseFilesystemEdits("same", new Array(33).fill({ oldText: "same", newText: "new" })),
+  ).toBeUndefined();
+});
+
+it("reports empty, overlapping, and capped edit diagnostics", () => {
+  expect(diagnoseFilesystemEdits("target", [{ oldText: "", newText: "new" }])).toMatchObject({
+    code: "edit-empty-old-text",
+  });
+  expect(
+    diagnoseFilesystemEdits("first target", [
+      { oldText: "first target", newText: "replacement" },
+      { oldText: "target", newText: "replacement" },
+    ]),
+  ).toMatchObject({ code: "edit-overlap" });
+  expect(
+    diagnoseFilesystemEdits(new Array(12).fill("same").join("\n"), [
+      { oldText: "same", newText: "new" },
+    ]),
+  ).toMatchObject({ code: "edit-ambiguous", matchCount: 10, matchCountCapped: true });
+});
+
+it("matches the host edit normalization for line endings and fuzzy text", () => {
+  expect(
+    diagnoseFilesystemEdits("target\r\n", [{ oldText: "target", newText: "new" }]),
+  ).toBeUndefined();
+  expect(
+    diagnoseFilesystemEdits('const value = "target";', [
+      { oldText: "const value = “target”;", newText: "replacement" },
+    ]),
+  ).toBeUndefined();
+});
+
+it("adds a whitespace mismatch hint to an edit diagnostic", async () => {
+  const directory = await fixtures.createDirectory();
+  const file = join(directory, "edit.txt");
+  await writeFile(file, "target\n");
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const intercept = createFilesystemAccessPolicyInterceptor(policy);
+
+  const result = await intercept(
+    {
+      type: "tool_call",
+      toolCallId: "edit-whitespace",
+      toolName: "edit",
+      input: { path: file, edits: [{ oldText: " target", newText: "new" }] },
+    },
+    context(directory),
+  );
+
+  expect(result?.reason).toContain('"whitespaceMismatch":true');
+  expect(result?.reason).toContain("preserve indentation");
+});
+
 it("lets explicit deny rules override implicit workspace access and cover descendants", async () => {
   const directory = await fixtures.createDirectory();
   const deniedRead = join(directory, "private");
@@ -276,6 +387,7 @@ it("lets explicit deny rules override implicit workspace access and cover descen
   expect(readResult?.block).toBe(true);
   expect(writeResult?.block).toBe(true);
   expect(readResult?.reason).toContain("denied by the project policy rule");
+  expect(readResult?.reason).toContain('"ruleKind":"filesystem-deny-project"');
   expect(writeResult?.reason).toContain("denied by the project policy rule");
 });
 

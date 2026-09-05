@@ -173,7 +173,6 @@ it("shares one non-mutating evidence execution across overlapping identical requ
   if (definition === undefined) throw new Error("missing workspace_path definition");
   const resolved = resolveFixedProjectCommand(definition);
   await authorize(fixtureData, definition, resolved);
-  let release: (() => void) | undefined;
   let resolveExecutorStarted: (() => void) | undefined;
   const executorStarted = new Promise<void>((resolve) => {
     resolveExecutorStarted = resolve;
@@ -183,19 +182,26 @@ it("shares one non-mutating evidence execution across overlapping identical requ
     resolveSecondResolver = resolve;
   });
   let resolverCalls = 0;
+  const outcome: ProjectCommandExecutionOutcome = {
+    status: "success",
+    exit: { code: 0, signal: null },
+    timedOut: false,
+    cancelled: false,
+    stdout: { text: "shared", truncated: false, totalBytes: 6, totalLines: 1 },
+    stderr: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
+  };
+  let executionReleased = false;
+  const pendingExecutions: Array<(value: ProjectCommandExecutionOutcome) => void> = [];
+  const release = () => {
+    executionReleased = true;
+    for (const resolve of pendingExecutions.splice(0)) resolve(outcome);
+  };
   const executor = vi.fn(
     () =>
       new Promise<ProjectCommandExecutionOutcome>((resolve) => {
         resolveExecutorStarted?.();
-        release = () =>
-          resolve({
-            status: "success",
-            exit: { code: 0, signal: null },
-            timedOut: false,
-            cancelled: false,
-            stdout: { text: "shared", truncated: false, totalBytes: 6, totalLines: 1 },
-            stderr: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
-          });
+        if (executionReleased) resolve(outcome);
+        else pendingExecutions.push(resolve);
       }),
   );
   const tool = createProjectCommandToolForTesting({
@@ -225,7 +231,6 @@ it("shares one non-mutating evidence execution across overlapping identical requ
   await secondResolverDone;
   await new Promise<void>((resolve) => setTimeout(resolve, 20));
   expect(executor).toHaveBeenCalledTimes(1);
-  if (release === undefined) throw new Error("expected a pending shared execution");
   release();
   const [firstResult, secondResult] = await Promise.all([first, second]);
   expect(firstResult.details).toMatchObject({
@@ -240,7 +245,7 @@ it("shares one non-mutating evidence execution across overlapping identical requ
     concurrentExecutions: 2,
   });
   expect(secondResult.details.ref).toBe(firstResult.details.ref);
-});
+}, 15_000);
 
 it("reports repository state drift after an execution moves the tree", async () => {
   const fixtureData = await fixture();

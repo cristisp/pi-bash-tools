@@ -6,6 +6,7 @@ import {
 import { createToolInventoryRecorder } from "./observability/tool-inventory.ts";
 import { createEnvironmentTool } from "./tools/environment/environment-tool.ts";
 import { createFilesystemAccessPolicyInterceptor } from "./tools/filesystem/access-policy.ts";
+import { createReadBatchTool } from "./tools/filesystem/read-batch-tool.ts";
 import { createDeleteTool, createMoveTool } from "./tools/filesystem/mutation-tool.ts";
 import { createProjectCommandTool } from "./tools/project-command/tool.ts";
 import { createProjectCommandRepositoryStateReader } from "./tools/project-command/repository-state.ts";
@@ -37,6 +38,7 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool(createGitLogTool(exec));
   pi.registerTool(createGitShowTool(exec));
   pi.registerTool(createEnvironmentTool());
+  pi.registerTool(createReadBatchTool(exec));
   pi.registerTool(
     createProjectCommandTool({
       invocationRecorder: invocationSessionRecorder.invocationRecorder,

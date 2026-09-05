@@ -1,4 +1,5 @@
 import { isAbsolute, relative, sep } from "node:path";
+import { displayPath } from "../path-display.ts";
 import {
   commandIdentityKey,
   copyEnvironmentIntoPolicyDocument,
@@ -489,6 +490,44 @@ function findFilesystemPolicyDecisionInNamespace(
     return "allow-project";
   }
   return "unknown";
+}
+
+export type FilesystemPolicyDenialMetadata = Readonly<Record<string, unknown>> & {
+  readonly ruleKind: "filesystem-deny-global" | "filesystem-deny-project";
+  readonly authorizedRoots: readonly string[];
+};
+
+const MAX_AUTHORIZED_ROOTS = 8;
+const MAX_AUTHORIZED_ROOT_LENGTH = 256;
+
+function boundedAuthorizedRoot(path: string): string {
+  const displayed = displayPath(path);
+  return displayed.length <= MAX_AUTHORIZED_ROOT_LENGTH
+    ? displayed
+    : `${displayed.slice(0, MAX_AUTHORIZED_ROOT_LENGTH - 1)}…`;
+}
+
+export function filesystemPolicyDenialMetadata(
+  loaded: LoadedPolicy,
+  access: FilesystemAccess,
+  decision: Extract<PolicyAuthorization, "deny-global" | "deny-project">,
+): FilesystemPolicyDenialMetadata {
+  if (loaded.document.version !== 4) {
+    return { ruleKind: `filesystem-${decision}`, authorizedRoots: [] };
+  }
+  const policy = loaded.document.filesystem;
+  const roots = [
+    ...(filesystemEntries(policy.global, access, "allow-global") ?? []),
+    ...(filesystemEntries(policy.projects[loaded.projectPath], access, "allow-project") ?? []),
+  ]
+    .map(boundedAuthorizedRoot)
+    .sort((left, right) => left.localeCompare(right))
+    .filter((root, index, values) => index === 0 || root !== values[index - 1])
+    .slice(0, MAX_AUTHORIZED_ROOTS);
+  return {
+    ruleKind: `filesystem-${decision}`,
+    authorizedRoots: Object.freeze(roots),
+  };
 }
 
 export function findFilesystemPolicyDecision(

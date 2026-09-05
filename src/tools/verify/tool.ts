@@ -19,6 +19,7 @@ import { createProjectCommandExecutor } from "../project-command/execution.ts";
 import { readProjectCommandOrchestrationContext } from "../project-command/orchestration.ts";
 import { projectCommandMutatesWorkspace } from "../project-command/mutability.ts";
 import {
+  createProjectCommandInvocationMeasurements,
   recordProjectCommandInvocation,
   type ProjectCommandInvocationPublicationMetadata,
   type ProjectCommandInvocationRecorder,
@@ -694,6 +695,11 @@ function recordVerifyInvocation(
     durationMs: durationMs(startedAt),
     executionDurationMs: reused ? 0 : durationMs(startedAt),
     output,
+    measurements: createProjectCommandInvocationMeasurements(
+      input.fresh ? "forced" : reused ? "hit" : "ineligible",
+      reused,
+      output,
+    ),
     ...(orchestration.orchestrated ? { producerScope: orchestration.effectiveScope } : {}),
     ...(orchestration.flowId === undefined ? {} : { flowId: orchestration.flowId }),
     ...(orchestration.delegationId === undefined

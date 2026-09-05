@@ -5,6 +5,7 @@ import type {
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { hashCanonicalJson } from "./canonical-json.ts";
+import { measurementPair, type MeasurementPair } from "./measurements.ts";
 import { RESULT_CATEGORIES, type ResultCategory } from "../tools/errors.ts";
 import { EXTENSION_VERSION } from "../version.ts";
 import type { ProjectCommandCacheDecision } from "../tools/project-command/cache.ts";
@@ -53,6 +54,20 @@ export interface ProjectCommandInvocationOutputMetadata {
   readonly stderr: ProjectCommandInvocationStreamMetadata;
 }
 
+export interface ProjectCommandInvocationMeasurementState {
+  readonly cacheReuse: number;
+  readonly cacheInvalidation: number;
+  readonly truncation: number;
+  readonly repeatedRequests: number;
+}
+
+export interface ProjectCommandInvocationMeasurements {
+  readonly cacheReuse: MeasurementPair;
+  readonly cacheInvalidation: MeasurementPair;
+  readonly truncation: MeasurementPair;
+  readonly repeatedRequests: MeasurementPair;
+}
+
 export interface ProjectCommandInvocationRepositoryStateMetadata {
   readonly repositoryIdentity: string;
   readonly head: string;
@@ -89,6 +104,7 @@ export interface ProjectCommandInvocationRecordInput {
   readonly durationMs: number;
   readonly executionDurationMs: number;
   readonly output?: ProjectCommandInvocationOutputMetadata;
+  readonly measurements?: ProjectCommandInvocationMeasurements;
   readonly producerScope?: "session" | "flow";
   readonly flowId?: string;
   readonly delegationId?: string;
@@ -122,6 +138,7 @@ export interface ProjectCommandInvocationRecord {
   readonly durationMs: number;
   readonly executionDurationMs: number;
   readonly output: ProjectCommandInvocationOutputMetadata;
+  readonly measurements?: ProjectCommandInvocationMeasurements;
   readonly producerScope?: "session" | "flow";
   readonly flowId?: string;
   readonly delegationId?: string;
@@ -173,6 +190,7 @@ export interface ProjectCommandInvocationSummary {
     readonly stdout: number;
     readonly stderr: number;
   };
+  readonly measurements: ProjectCommandInvocationMeasurements;
   /** The first distinct schema hashes observed, capped for bounded persistence. */
   readonly schemaHashes: readonly string[];
 }
@@ -223,6 +241,74 @@ function boundedOutput(
 
 function boundedOptionalIdentifier(value: string | undefined): string | undefined {
   return value === undefined ? undefined : boundedIdentifier(value);
+}
+
+const MEASUREMENT_KEYS = [
+  "cacheReuse",
+  "cacheInvalidation",
+  "truncation",
+  "repeatedRequests",
+] as const satisfies readonly (keyof ProjectCommandInvocationMeasurementState)[];
+
+type MeasurementKey = (typeof MEASUREMENT_KEYS)[number];
+type MutableMeasurementState = Record<MeasurementKey, number>;
+
+function createMeasurementState(): MutableMeasurementState {
+  return {
+    cacheReuse: 0,
+    cacheInvalidation: 0,
+    truncation: 0,
+    repeatedRequests: 0,
+  };
+}
+
+function measurementsFromStates(
+  before: ProjectCommandInvocationMeasurementState,
+  after: ProjectCommandInvocationMeasurementState,
+): ProjectCommandInvocationMeasurements {
+  return Object.freeze({
+    cacheReuse: measurementPair(before.cacheReuse, after.cacheReuse),
+    cacheInvalidation: measurementPair(before.cacheInvalidation, after.cacheInvalidation),
+    truncation: measurementPair(before.truncation, after.truncation),
+    repeatedRequests: measurementPair(before.repeatedRequests, after.repeatedRequests),
+  });
+}
+
+function boundedMeasurements(
+  value: ProjectCommandInvocationMeasurements | undefined,
+): ProjectCommandInvocationMeasurements | undefined {
+  if (value === undefined) return undefined;
+  const before = createMeasurementState();
+  const after = createMeasurementState();
+  for (const key of MEASUREMENT_KEYS) {
+    before[key] = boundedNumber(value[key].before);
+    after[key] = boundedNumber(value[key].after);
+  }
+  return measurementsFromStates(before, after);
+}
+
+export function createProjectCommandInvocationMeasurements(
+  cacheDecision: ProjectCommandCacheDecision,
+  reused: boolean,
+  output: ProjectCommandInvocationOutputMetadata | undefined,
+): ProjectCommandInvocationMeasurements {
+  const after = createMeasurementState();
+  after.cacheReuse = reused ? 1 : 0;
+  after.cacheInvalidation = cacheDecision === "invalidated" ? 1 : 0;
+  after.truncation =
+    (output?.stdout.truncated === true ? 1 : 0) + (output?.stderr.truncated === true ? 1 : 0);
+  after.repeatedRequests = cacheDecision === "hit" && reused ? 1 : 0;
+  return measurementsFromStates(createMeasurementState(), after);
+}
+
+function defaultMeasurements(
+  input: ProjectCommandInvocationRecordInput,
+): ProjectCommandInvocationMeasurements {
+  return createProjectCommandInvocationMeasurements(
+    input.cacheDecision,
+    input.reused,
+    input.output,
+  );
 }
 
 function boundedState(
@@ -374,6 +460,7 @@ function boundedRecord(record: ProjectCommandInvocationRecord): ProjectCommandIn
     durationMs: record.durationMs,
     executionDurationMs: record.executionDurationMs,
     output: record.output,
+    ...(record.measurements === undefined ? {} : { measurements: record.measurements }),
     ...(record.flowId === undefined ? {} : { flowId: record.flowId }),
     ...(record.delegationId === undefined ? {} : { delegationId: record.delegationId }),
     ...(record.role === undefined ? {} : { role: record.role }),
@@ -416,6 +503,7 @@ export function buildProjectCommandInvocationRecord(
     durationMs: boundedNumber(input.durationMs),
     executionDurationMs: boundedNumber(input.executionDurationMs),
     output: boundedOutput(input.output),
+    measurements: boundedMeasurements(input.measurements ?? defaultMeasurements(input)),
     ...(input.producerScope === undefined ? {} : { producerScope: input.producerScope }),
     ...(boundedOptionalIdentifier(input.flowId) === undefined
       ? {}
@@ -473,6 +561,8 @@ interface ProjectCommandInvocationSummaryAccumulator {
   stderrBytes: number;
   stdoutTruncations: number;
   stderrTruncations: number;
+  readonly measurementsBefore: MutableMeasurementState;
+  readonly measurementsAfter: MutableMeasurementState;
   readonly schemaHashes: Set<string>;
 }
 
@@ -517,6 +607,8 @@ function createSummaryAccumulator(sessionId: string): ProjectCommandInvocationSu
     stderrBytes: 0,
     stdoutTruncations: 0,
     stderrTruncations: 0,
+    measurementsBefore: createMeasurementState(),
+    measurementsAfter: createMeasurementState(),
     schemaHashes: new Set(),
   };
 }
@@ -582,6 +674,23 @@ function addSummaryRecord(
       accumulator.stderrTruncations + 1,
     );
   }
+
+  const measurements = record.measurements;
+  if (measurements !== undefined) {
+    for (const key of MEASUREMENT_KEYS) {
+      const pair = measurements[key];
+      if (pair === undefined) continue;
+      accumulator.measurementsBefore[key] = Math.min(
+        MAX_METADATA_NUMBER,
+        accumulator.measurementsBefore[key] + boundedNumber(pair.before),
+      );
+      accumulator.measurementsAfter[key] = Math.min(
+        MAX_METADATA_NUMBER,
+        accumulator.measurementsAfter[key] + boundedNumber(pair.after),
+      );
+    }
+  }
+
   if (
     accumulator.schemaHashes.size < PROJECT_COMMAND_SUMMARY_MAX_SCHEMA_HASHES &&
     typeof record.schemaHash === "string"
@@ -624,6 +733,10 @@ function summaryFromAccumulator(
       stdout: accumulator.stdoutTruncations,
       stderr: accumulator.stderrTruncations,
     },
+    measurements: measurementsFromStates(
+      accumulator.measurementsBefore,
+      accumulator.measurementsAfter,
+    ),
     schemaHashes: [...accumulator.schemaHashes],
   });
 

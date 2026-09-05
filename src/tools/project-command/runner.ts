@@ -61,6 +61,7 @@ import {
 import { projectCommandResultCategory } from "./categories.ts";
 import { projectCommandModelContent } from "./model-content.ts";
 import {
+  createProjectCommandInvocationMeasurements,
   recordProjectCommandInvocation,
   redactProjectCommandParameters,
   type ProjectCommandInvocationOutputMetadata,
@@ -236,6 +237,18 @@ function enrichToolError(
   return enriched;
 }
 
+function stripEvidenceParameters(
+  params: ProjectCommandRequestParameters,
+): ProjectCommandRequestParameters {
+  const {
+    covers: _covers,
+    publish: _publish,
+    coercions: _coercions,
+    ...resolutionParameters
+  } = params;
+  return resolutionParameters;
+}
+
 async function resolveCommandForTool(
   resolver: ProjectCommandResolver,
   definition: ProjectCommandDefinition,
@@ -245,7 +258,7 @@ async function resolveCommandForTool(
   definitions: readonly ProjectCommandDefinition[],
 ): Promise<ResolvedProjectCommand> {
   try {
-    return await resolver(definition, projectPath, signal, params);
+    return await resolver(definition, projectPath, signal, stripEvidenceParameters(params));
   } catch (error) {
     if (error instanceof ProjectCommandToolError && error.name === "AbortError") {
       throw error;
@@ -1264,6 +1277,11 @@ function recordInvocation(
           ? 0
           : elapsedMilliseconds(state.executionStartedAt, finishedAt),
       output: state.output,
+      measurements: createProjectCommandInvocationMeasurements(
+        state.cacheDecision,
+        state.reused,
+        state.output,
+      ),
       producerScope: state.producerScope,
       flowId: state.flowId,
       delegationId: state.delegationId,

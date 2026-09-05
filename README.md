@@ -15,6 +15,7 @@ The extension registers exactly these custom tools:
 - `git_log` reads bounded commit IDs, authors, dates, and subjects.
 - `git_show` reads bounded output from a revision, optionally filtered by a path.
 - `environment` reads only explicitly requested environment variables after policy authorization.
+- `read_batch` reads up to 32 authorized repository-relative files with optional bounded line ranges and per-path errors.
 - `project_command` runs the fixed `workspace_path` and `node_version` observations, discovers Node project state with `node_project_info`, lists top-level dependencies with `node_deps_list`, runs exact package scripts from the supported Node command families, and runs six fixed Fallow analyses after policy authorization.
 - `move` moves or renames one authorized regular file.
 - `delete` deletes one authorized regular file.
@@ -70,7 +71,11 @@ Print, JSON, and other no-UI modes reject unknown keys without modifying policy.
 The interceptor guards the built-in `read`, `write`, `edit`, `ls`, `find`, and `grep` tool calls before they execute.
 It does not intercept `bash` or `user_bash`.
 
-The extension also registers `move` and `delete` tools for authorized regular-file mutations.
+The extension also registers `read_batch`, `move`, and `delete` tools.
+`read_batch` accepts `{ paths: [{ path, range?: { offset?, limit? } }] }`, reads at most 32 paths, caps each returned file at 64 KiB of text and 2,000 requested lines, and reports a bounded result or error for every path.
+Successful entries report repository-relative paths and a stable `rr_` reference.
+A repeated path and range in the same process-local scope returns `unchanged: true` with the prior reference when the file content hash is unchanged.
+The batch cache is process-local and separates effective flow scopes without using orchestration environment variables as authorization.
 `move` authorizes both the source and destination with the move capability and rejects existing destinations.
 `delete` uses a separate delete capability and rejects directories, symlinks, and recursive deletion.
 

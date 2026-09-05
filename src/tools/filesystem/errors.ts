@@ -59,8 +59,13 @@ export function filesystemError(
   message: string,
   contract: ToolErrorContract,
   name?: string,
+  details: Readonly<Record<string, unknown>> = {},
 ): FilesystemToolError {
-  const error = new FilesystemToolError(message, withToolErrorContract({}, contract), contract);
+  const error = new FilesystemToolError(
+    message,
+    withToolErrorContract(details, contract),
+    contract,
+  );
   if (name !== undefined) {
     error.name = name;
   }
@@ -245,5 +250,24 @@ export function filesystemMutationError(message: string): FilesystemToolError {
       retryable: true,
       executed: true,
     }),
+  );
+}
+
+export function filesystemEditDiagnosticError(
+  code: "edit-empty-old-text" | "edit-no-match" | "edit-ambiguous" | "edit-overlap",
+  message: string,
+  details: Record<string, unknown>,
+): FilesystemToolError {
+  return filesystemError(
+    message,
+    filesystemContract({
+      code,
+      category: "INVALID_REQUEST",
+      explanation: "The edit could not identify one unique matching region.",
+      retryable: false,
+      executed: false,
+    }),
+    undefined,
+    details,
   );
 }

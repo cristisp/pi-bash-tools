@@ -1,6 +1,6 @@
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, describe, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { resolveProjectBinary } from "../../../src/tools/project-command/resolution.ts";
 import {
   createBinaryProject,
@@ -14,6 +14,18 @@ const scope = createResolutionTestScope();
 afterEach(scope.cleanup);
 
 describe("project binary failure handling", () => {
+  it("reports bounded nearest existing paths for missing binaries", async () => {
+    const { directory, binDirectory } = await createBinaryProject(scope);
+    const error = await resolveProjectBinary(directory, "missing").catch((value: unknown) => value);
+
+    expect(error).toMatchObject({
+      name: "ProjectCommandResolutionError",
+      stage: "binary-resolution",
+      code: "missing-binary",
+      details: { nearestExistingPaths: expect.arrayContaining([await realpath(binDirectory)]) },
+    });
+  });
+
   it("fails closed for missing, dangling, escaping, and non-file binaries", async () => {
     const { directory, binDirectory } = await createBinaryProject(scope);
     await expectResolutionError(

@@ -11,7 +11,8 @@ import { isTrackedWorkspacePath } from "./default-access.ts";
 import { displayPath } from "../path-display.ts";
 import { createNodePolicyFileSystem, type PolicyFileSystem } from "../policy/filesystem.ts";
 import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
-import type { PolicyAuthorization, PolicyStore } from "../policy/types.ts";
+import type { LoadedPolicy, PolicyAuthorization, PolicyStore } from "../policy/types.ts";
+import { filesystemPolicyDenialMetadata } from "../policy/decisions.ts";
 import type { GitExec } from "../git/execution.ts";
 import {
   authorizeAndPersistFilesystemAccesses,
@@ -145,12 +146,17 @@ function authorizationError(
   kind: AuthorizationErrorKind,
   request: FilesystemAuthorizationRequest,
   decision: PolicyAuthorization,
+  loaded?: LoadedPolicy,
 ): FilesystemToolError {
   const prefix = `Tool call blocked by access policy: ${operation} ${request.access} access to "${displayPath(request.path)}"`;
   if (kind === "denied") {
     return filesystemError(
       `${prefix} is denied by ${DENIED_POLICY_SCOPES[decision] ?? "a configured"} policy rule.`,
       filesystemAuthorizationContract(kind),
+      undefined,
+      loaded !== undefined && (decision === "deny-global" || decision === "deny-project")
+        ? filesystemPolicyDenialMetadata(loaded, request.access, decision)
+        : undefined,
     );
   }
   const suffixes: Record<string, string> = {
@@ -257,9 +263,9 @@ async function authorizeMutation(
   signal: AbortSignal | undefined,
   gitExec: GitExec | undefined,
 ): Promise<void> {
-  let loaded;
+  let loadedPolicy;
   try {
-    loaded = await loadFilesystemPolicyForRequest(policy, ctx.cwd, signal);
+    loadedPolicy = await loadFilesystemPolicyForRequest(policy, ctx.cwd, signal);
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw cancellationError();
@@ -273,23 +279,29 @@ async function authorizeMutation(
   const defaultAllow =
     gitExec === undefined || source === undefined
       ? undefined
-      : async (request: FilesystemAuthorizationRequest): Promise<boolean> => {
-          if (!isPathWithin(loaded.projectPath, request.path)) {
+      : async (accessRequest: FilesystemAuthorizationRequest): Promise<boolean> => {
+          if (!isPathWithin(loadedPolicy.projectPath, accessRequest.path)) {
             return false;
           }
-          if (operation === "move" && request.path !== source) {
-            return isTrackedWorkspacePath(source, loaded.projectPath, gitExec, signal);
+          if (operation === "move" && accessRequest.path !== source) {
+            return isTrackedWorkspacePath(source, loadedPolicy.projectPath, gitExec, signal);
           }
-          return isTrackedWorkspacePath(request.path, loaded.projectPath, gitExec, signal);
+          return isTrackedWorkspacePath(
+            accessRequest.path,
+            loadedPolicy.projectPath,
+            gitExec,
+            signal,
+          );
         };
-  await authorizeAndPersistFilesystemAccesses(requests, loaded, ctx, policy, signal, {
+  await authorizeAndPersistFilesystemAccesses(requests, loadedPolicy, ctx, policy, signal, {
     allowGlobal: operation !== "delete",
     defaultAllow,
     promptText: ({ access, path, policyPath }) =>
       policyPath === undefined
         ? `Authorize ${access} access for ${operation} to ${displayPath(path)}?`
         : `Authorize deletion of files in ${displayPath(policyPath)} and its subfolders for this project only? Requested file: ${displayPath(path)}`,
-    error: (kind, request, decision) => authorizationError(operation, kind, request, decision),
+    error: (kind, request, decision, currentLoaded) =>
+      authorizationError(operation, kind, request, decision, currentLoaded),
   });
 }
 

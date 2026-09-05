@@ -1,6 +1,7 @@
 import { readFile, realpath, stat, lstat } from "node:fs/promises";
 import { basename, isAbsolute, join, relative } from "node:path";
 import { ProjectCommandResolutionError, type ResolutionErrorDetails } from "./errors.ts";
+import { nearestExistingPaths, withNearestExistingPaths } from "./resolution-nearest-paths.ts";
 
 export interface ProjectResolutionFileSystem {
   readonly readFile: (path: string, encoding: "utf8") => Promise<string>;
@@ -16,11 +17,18 @@ const nodeProjectResolutionFileSystem: ProjectResolutionFileSystem = {
   lstat,
 };
 
-function binaryResolutionError(
+async function binaryResolutionError(
   code: string,
+  path: string,
+  fileSystem: ProjectResolutionFileSystem,
   details: ResolutionErrorDetails = {},
-): ProjectCommandResolutionError {
-  return new ProjectCommandResolutionError("binary-resolution", code, details);
+): Promise<ProjectCommandResolutionError> {
+  const nearest = await nearestExistingPaths(path, fileSystem);
+  return new ProjectCommandResolutionError(
+    "binary-resolution",
+    code,
+    withNearestExistingPaths(details, nearest),
+  );
 }
 
 function isWithinRoot(root: string, target: string): boolean {
@@ -42,14 +50,14 @@ export async function resolveProjectBinary(
   fileSystem: ProjectResolutionFileSystem = nodeProjectResolutionFileSystem,
 ): Promise<string> {
   if (!isValidBinaryName(binaryName)) {
-    throw binaryResolutionError("invalid-binary-name");
+    throw await binaryResolutionError("invalid-binary-name", projectPath, fileSystem);
   }
 
   let canonicalProjectPath: string;
   try {
     canonicalProjectPath = await fileSystem.realpath(projectPath);
   } catch {
-    throw binaryResolutionError("invalid-project-root");
+    throw await binaryResolutionError("invalid-project-root", projectPath, fileSystem);
   }
 
   const nodeModulesPath = join(canonicalProjectPath, "node_modules");
@@ -57,10 +65,14 @@ export async function resolveProjectBinary(
   try {
     canonicalNodeModulesPath = await fileSystem.realpath(nodeModulesPath);
   } catch {
-    throw binaryResolutionError("missing-node-modules-root");
+    throw await binaryResolutionError("missing-node-modules-root", nodeModulesPath, fileSystem);
   }
   if (!isWithinRoot(canonicalProjectPath, canonicalNodeModulesPath)) {
-    throw binaryResolutionError("node-modules-root-escape");
+    throw await binaryResolutionError(
+      "node-modules-root-escape",
+      canonicalNodeModulesPath,
+      fileSystem,
+    );
   }
 
   const candidate = join(canonicalNodeModulesPath, ".bin", binaryName);
@@ -73,22 +85,26 @@ export async function resolveProjectBinary(
       await fileSystem.lstat(candidate);
       candidateExists = true;
     } catch {}
-    throw binaryResolutionError(candidateExists ? "dangling-binary" : "missing-binary");
+    throw await binaryResolutionError(
+      candidateExists ? "dangling-binary" : "missing-binary",
+      candidate,
+      fileSystem,
+    );
   }
   if (!isWithinRoot(canonicalNodeModulesPath, resolvedTarget)) {
-    throw binaryResolutionError("binary-target-escape");
+    throw await binaryResolutionError("binary-target-escape", resolvedTarget, fileSystem);
   }
 
   try {
     const targetStats = await fileSystem.stat(resolvedTarget);
     if (!targetStats.isFile()) {
-      throw binaryResolutionError("binary-not-file");
+      throw await binaryResolutionError("binary-not-file", resolvedTarget, fileSystem);
     }
   } catch (error) {
     if (error instanceof ProjectCommandResolutionError) {
       throw error;
     }
-    throw binaryResolutionError("binary-stat-failed");
+    throw await binaryResolutionError("binary-stat-failed", resolvedTarget, fileSystem);
   }
   return resolvedTarget;
 }

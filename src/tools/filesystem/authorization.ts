@@ -32,6 +32,7 @@ export type FilesystemAuthorizationError = (
   kind: AuthorizationErrorKind,
   request: FilesystemAuthorizationRequest,
   decision: PolicyAuthorization,
+  loaded?: LoadedPolicy,
 ) => Error;
 
 export interface FilesystemAuthorizationOptions {
@@ -112,7 +113,7 @@ async function authorizeFilesystemAccess(
     promptText: (identity) =>
       options.promptText?.(request) ??
       `Authorize ${request.access} access to ${displayPath(identity)}?`,
-    error: (kind) => options.error(kind, request, matchedDecision),
+    error: (kind) => options.error(kind, request, matchedDecision, loaded),
   });
 }
 

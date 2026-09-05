@@ -7,7 +7,7 @@ describe("bash tools extension", () => {
     expect(extension).toBeTypeOf("function");
   });
 
-  it("registers eight distinct tools without overriding pi built-ins", () => {
+  it("registers ten distinct tools without overriding pi built-ins", () => {
     const names: string[] = [];
     const events: string[] = [];
     const entries: unknown[] = [];
@@ -67,6 +67,7 @@ describe("bash tools extension", () => {
       "git_log",
       "git_show",
       "environment",
+      "read_batch",
       "project_command",
       "verify",
       "move",

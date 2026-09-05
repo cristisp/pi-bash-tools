@@ -3,6 +3,7 @@ import {
   type ToolCallEvent,
   type ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
+import { open, type FileHandle } from "node:fs/promises";
 import { type AuthorizationErrorKind } from "../authorization.ts";
 import type { ToolErrorContract } from "../errors.ts";
 import { displayPath } from "../path-display.ts";
@@ -18,9 +19,12 @@ import {
   loadFilesystemPolicyForRequest,
   type FilesystemAuthorizationContext,
 } from "./authorization.ts";
+import { filesystemPolicyDenialMetadata } from "../policy/decisions.ts";
+import { diagnoseFilesystemEdits, type FilesystemEditInput } from "./edit-diagnostics.ts";
 import {
   filesystemAuthorizationContract,
   filesystemCancellationError,
+  filesystemEditDiagnosticError,
   filesystemError,
   filesystemPolicyEvaluationError,
   filesystemPolicyPathResolutionError,
@@ -55,6 +59,7 @@ interface FilesystemToolCall {
   readonly accesses: readonly FilesystemAccess[];
   readonly path: string | undefined;
   readonly allowMissingPath: boolean;
+  readonly edits?: readonly FilesystemEditInput[];
 }
 
 function filesystemToolCall(event: ToolCallEvent): FilesystemToolCall | undefined {
@@ -75,6 +80,7 @@ function filesystemToolCall(event: ToolCallEvent): FilesystemToolCall | undefine
       accesses: ["read", "write"],
       path: event.input.path,
       allowMissingPath: false,
+      edits: event.input.edits,
     };
   }
   if (isToolCallEventType("ls", event)) {
@@ -102,20 +108,79 @@ function blockedReason(
   path: string,
   kind: AuthorizationErrorKind,
   decision: PolicyAuthorization,
+  loaded?: LoadedPolicy,
 ): FilesystemToolError {
   const prefix = `Tool call blocked by access policy: ${tool.name} ${access} access to "${displayPath(path)}"`;
   const message = `${prefix}${blockedReasonSuffix(kind, decision)}`;
   if (kind === "cancelled") {
     return filesystemCancellationError(message);
   }
-  return filesystemError(message, filesystemAuthorizationContract(kind));
+  const denialMetadata =
+    kind === "denied" &&
+    loaded !== undefined &&
+    (decision === "deny-global" || decision === "deny-project")
+      ? filesystemPolicyDenialMetadata(loaded, access, decision)
+      : undefined;
+  return filesystemError(message, filesystemAuthorizationContract(kind), undefined, denialMetadata);
 }
 
-function blockedResult(reason: string, contract: ToolErrorContract): ToolCallEventResult {
+function blockedResult(
+  reason: string,
+  contract: ToolErrorContract,
+  details?: unknown,
+): ToolCallEventResult {
   return {
     block: true,
-    reason: `${reason} ${JSON.stringify({ error: contract })}`,
+    reason: `${reason} ${JSON.stringify({
+      error: contract,
+      ...(details === undefined ? {} : { details }),
+    })}`,
   };
+}
+
+const MAX_EDIT_PREFLIGHT_BYTES = 256_000;
+
+async function readEditPreflightContent(path: string): Promise<string | undefined> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(path, "r");
+    const stats = await handle.stat();
+    if (!stats.isFile() || stats.size > MAX_EDIT_PREFLIGHT_BYTES) return undefined;
+    const buffer = Buffer.alloc(MAX_EDIT_PREFLIGHT_BYTES + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > MAX_EDIT_PREFLIGHT_BYTES) return undefined;
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } catch {
+    return undefined;
+  } finally {
+    if (handle !== undefined) await handle.close().catch(() => undefined);
+  }
+}
+
+async function editPreflight(
+  tool: FilesystemToolCall,
+  path: string,
+  signal: AbortSignal | undefined,
+): Promise<ToolCallEventResult | undefined> {
+  if (tool.name !== "edit" || tool.edits === undefined) return undefined;
+  if (signal?.aborted) {
+    const error = filesystemCancellationError("Filesystem access policy request cancelled");
+    return blockedResult(error.message, error.contract);
+  }
+  const content = await readEditPreflightContent(path);
+  if (signal?.aborted) {
+    const error = filesystemCancellationError("Filesystem access policy request cancelled");
+    return blockedResult(error.message, error.contract);
+  }
+  if (content === undefined) return undefined;
+  const diagnostic = diagnoseFilesystemEdits(content, tool.edits);
+  if (diagnostic === undefined) return undefined;
+  const error = filesystemEditDiagnosticError(
+    diagnostic.code,
+    `Edit preflight failed for ${displayPath(path)}: ${diagnostic.hint}`,
+    { ...diagnostic },
+  );
+  return blockedResult(error.message, error.contract, error.details);
 }
 
 async function authorizeFilesystemAccesses(
@@ -134,8 +199,8 @@ async function authorizeFilesystemAccesses(
     {
       promptText: ({ access, path: identity }) =>
         `Authorize ${access} access for ${tool.name} to ${displayPath(identity)}?`,
-      error: (kind, request, decision) =>
-        blockedReason(tool, request.access, request.path, kind, decision),
+      error: (kind, request, decision, currentLoaded) =>
+        blockedReason(tool, request.access, request.path, kind, decision, currentLoaded),
     },
   );
 }
@@ -189,7 +254,7 @@ async function interceptFilesystemToolCall(
     await authorizeFilesystemAccesses(tool, path, loaded, ctx, policy);
   } catch (error) {
     if (error instanceof FilesystemToolError) {
-      return blockedResult(error.message, error.contract);
+      return blockedResult(error.message, error.contract, error.details);
     }
     const fallback = filesystemPolicyEvaluationError();
     return blockedResult(
@@ -198,6 +263,12 @@ async function interceptFilesystemToolCall(
     );
   }
 
+  const editFailure = await editPreflight(tool, path, ctx.signal);
+  if (editFailure !== undefined) return editFailure;
+  if (ctx.signal?.aborted) {
+    const error = filesystemCancellationError("Filesystem access policy request cancelled");
+    return blockedResult(error.message, error.contract);
+  }
   return undefined;
 }
 

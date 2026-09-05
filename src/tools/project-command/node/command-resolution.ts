@@ -1,5 +1,7 @@
+import { realpath } from "node:fs/promises";
 import { type ProjectCommandDefinition, type ResolvedCommandLine } from "../definitions.ts";
 import { ProjectCommandResolutionError, type ResolutionErrorDetails } from "../errors.ts";
+import { nearestExistingPaths, withNearestExistingPaths } from "../resolution-nearest-paths.ts";
 import { nodeDependencyListArgsForManager } from "../package-manager/detection.ts";
 import { normalizeNodeTestParametersInternal } from "../parameters/normalization.ts";
 import { validateNodeTestPaths } from "../parameters/validation.ts";
@@ -71,7 +73,7 @@ async function resolveNodeTestScriptParameters(
     parameters !== undefined &&
     (!isRecord(parameters) ||
       Object.keys(parameters).some(
-        (key) => key !== "commandId" && key !== "paths" && key !== "variant",
+        (key) => !["commandId", "paths", "variant", "covers", "publish", "coercions"].includes(key),
       ))
   ) {
     throw resolutionError("probe", "invalid-test-parameters");
@@ -117,12 +119,42 @@ function requireDetectedNodeProjectState(state: NodeProjectState): DetectedNodeP
   return { ...state, detected, manifest };
 }
 
+async function resolutionFailureWithNearestPath(
+  error: ProjectCommandResolutionError,
+  projectPath: string,
+  options: NodeProjectResolutionOptions,
+): Promise<ProjectCommandResolutionError> {
+  const nearest = await nearestExistingPaths(projectPath, {
+    realpath: options.fileSystem?.realpath ?? realpath,
+  });
+  return new ProjectCommandResolutionError(
+    error.stage,
+    error.code,
+    withNearestExistingPaths(error.details, nearest),
+  );
+}
+
+async function readNodeStateWithDiagnostics(
+  projectPath: string,
+  options: NodeProjectResolutionOptions,
+  stateOptions: { readonly allowMissing: boolean; readonly probeFallow: boolean },
+): Promise<NodeProjectState> {
+  try {
+    return await readNodeProjectState(projectPath, options, stateOptions);
+  } catch (error) {
+    if (error instanceof ProjectCommandResolutionError) {
+      throw await resolutionFailureWithNearestPath(error, projectPath, options);
+    }
+    throw error;
+  }
+}
+
 async function resolveNodeProjectInfoCommand(
   definition: ProjectCommandDefinition,
   projectPath: string,
   options: NodeProjectResolutionOptions,
 ): Promise<ResolvedProjectCommand> {
-  const state = await readNodeProjectState(projectPath, options, {
+  const state = await readNodeStateWithDiagnostics(projectPath, options, {
     allowMissing: true,
     probeFallow: true,
   });
@@ -207,16 +239,16 @@ async function resolveNodeScriptCommand(
   });
 }
 
-export async function resolveNodeProjectCommandInternal(
+async function resolveNodeProjectCommandWithoutDiagnostics(
   definition: ProjectCommandDefinition,
   projectPath: string,
-  parameters?: unknown,
-  options: NodeProjectResolutionOptions = {},
+  parameters: unknown,
+  options: NodeProjectResolutionOptions,
 ): Promise<ResolvedProjectCommand> {
   if (definition.commandId === "node_project_info") {
     return resolveNodeProjectInfoCommand(definition, projectPath, options);
   }
-  const state = await readNodeProjectState(projectPath, options, {
+  const state = await readNodeStateWithDiagnostics(projectPath, options, {
     allowMissing: false,
     probeFallow: false,
   });
@@ -224,4 +256,25 @@ export async function resolveNodeProjectCommandInternal(
     return resolveNodeDependencyListCommand(definition, state);
   }
   return resolveNodeScriptCommand(definition, parameters, projectPath, state);
+}
+
+export async function resolveNodeProjectCommandInternal(
+  definition: ProjectCommandDefinition,
+  projectPath: string,
+  parameters?: unknown,
+  options: NodeProjectResolutionOptions = {},
+): Promise<ResolvedProjectCommand> {
+  try {
+    return await resolveNodeProjectCommandWithoutDiagnostics(
+      definition,
+      projectPath,
+      parameters,
+      options,
+    );
+  } catch (error) {
+    if (error instanceof ProjectCommandResolutionError) {
+      throw await resolutionFailureWithNearestPath(error, projectPath, options);
+    }
+    throw error;
+  }
 }

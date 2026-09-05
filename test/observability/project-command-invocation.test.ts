@@ -232,6 +232,12 @@ describe("project command invocation metadata", () => {
       executionDurationMs: 40,
       outputBytes: { stdout: 617_280, stderr: 100 },
       truncationCounts: { stdout: 5, stderr: 0 },
+      measurements: {
+        cacheReuse: { before: 0, after: 1 },
+        cacheInvalidation: { before: 0, after: 1 },
+        truncation: { before: 0, after: 5 },
+        repeatedRequests: { before: 0, after: 1 },
+      },
       schemaHashes: ["schema-hash"],
     });
   });
