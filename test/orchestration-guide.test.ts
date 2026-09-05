@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CONFIG, DEFAULT_ROLE_BUDGETS } from '../src/config.ts';
+import { isExclusiveWriteCommandId, verifySetsScriptOverrides } from '../src/budget.ts';
+import { DEFAULT_CONFIG, DEFAULT_ROLE_BUDGETS, roleBudgetFor } from '../src/config.ts';
 import {
 	ORCHESTRATION_GUIDE_FILENAME,
 	orchestrationGuideTemplatePath,
@@ -37,6 +38,18 @@ describe('roleBudgetLines', () => {
 		);
 		expect(lines).toContain('about 4,000 output tokens');
 		expect(lines).toContain('capped at 32 calls');
+	});
+
+	it('states the limits the extension enforces for every role the config prices', () => {
+		const lines = roleBudgetLines(BUDGETS);
+		for (const [role, budget] of Object.entries(DEFAULT_ROLE_BUDGETS)) {
+			const label = role.replace(/^./, (first) => first.toUpperCase());
+			const limits = roleBudgetFor(role, DEFAULT_CONFIG);
+			expect(limits).toEqual(budget);
+			expect(lines).toContain(
+				`- ${label}: up to ${limits.toolCalls.toLocaleString('en-US')} tool calls, of which at most ${limits.discoveryCalls.toLocaleString('en-US')} may be discovery reads`,
+			);
+		}
 	});
 
 	it('follows a config override instead of the shipped defaults', () => {
@@ -80,9 +93,48 @@ describe('renderOrchestrationGuide', () => {
 		expect(guide).toContain('- Reviewer: up to 32 tool calls');
 	});
 
+	it('renders every budget number in the guide from the config it is given', () => {
+		const roles = {
+			scout: { ...DEFAULT_ROLE_BUDGETS.scout, toolCalls: 23, outputTokens: 4100 },
+			reviewer: { ...DEFAULT_ROLE_BUDGETS.reviewer, toolCalls: 37 },
+			worker: { ...DEFAULT_ROLE_BUDGETS.worker, fullValidationPasses: 4 },
+			validator: { ...DEFAULT_ROLE_BUDGETS.validator, fullValidationPasses: 6 },
+		};
+		const custom = renderOrchestrationGuide({
+			roleBudgets: roles,
+			scopeCallAllowancePerPath: 11,
+			scopeCallAllowanceMax: 40,
+		});
+		// Each number moves independently, which only holds when the render reads config.
+		expect(custom).toContain('- Scout: up to 23 tool calls');
+		expect(custom).not.toContain('- Scout: up to 20 tool calls');
+		expect(custom).toContain('about 4,100 output tokens');
+		expect(custom).toContain('- Reviewer: up to 37 tool calls');
+		expect(custom).not.toContain('- Reviewer: up to 32 tool calls');
+		expect(custom).toContain('run at most 4 full validation passes');
+		expect(custom).not.toContain('run at most 2 full validation passes');
+		expect(custom).toContain('up to 6 full validation passes');
+		expect(custom).not.toContain(
+			'Resolve the refs in the ledger before executing anything, up to 3 full validation passes',
+		);
+		expect(custom).toContain('capped at 40 calls');
+		expect(custom).not.toContain('capped at 32 calls');
+		expect(custom).not.toContain('{{role_budgets}}');
+		// The default render is untouched by the override above.
+		expect(guide).toContain('- Scout: up to 20 tool calls');
+		expect(guide).toContain('- Reviewer: up to 32 tool calls');
+	});
+
 	it('never reports report size in words', () => {
 		expect(guide).not.toMatch(/\b\d[\d,]*-word\b/);
 		expect(guide).toContain('output tokens');
+	});
+
+	it('keeps the rendered guide inside the measured token target', () => {
+		// analysis/MEASUREMENT.md prices the rendered guide at one estimated token per four
+		// chars, and the W8 target is under 6,000 estimated tokens: 24,000 rendered chars.
+		// The budgets stay in the count, so the guide has to earn its size elsewhere.
+		expect(guide.length).toBeLessThan(24000);
 	});
 
 	it('keeps the ledger contract that agent prompts depend on', () => {
@@ -106,6 +158,14 @@ describe('renderOrchestrationGuide', () => {
 		expect(guide).toContain('Call `subagent` with `listSubagents: true`.');
 	});
 
+	// F-004: the main session owns the reuse decision, so the numbers it decides against stay in
+	// the text it reads, not only in the child prompts and tool descriptions.
+	it('states the quantitative session-reuse thresholds', () => {
+		const reuse = guide.slice(guide.indexOf('## Subagent session discovery and reuse'));
+		expect(reuse).toContain('context is above 100k tokens');
+		expect(reuse).toContain('the session exceeds 8 turns');
+	});
+
 	it('owns the composite gate once per state in a parallel fan-out', () => {
 		const fanOut = guide.slice(guide.indexOf('#### Parallel fan-out and validation'));
 		expect(fanOut.length).toBeGreaterThan(0);
@@ -116,7 +176,7 @@ describe('renderOrchestrationGuide', () => {
 			'A gate executed by a sibling therefore attests to the union of the in-flight changes',
 			'One session owns the gate for the combined state',
 			'Siblings do not run the composite gate.',
-			'run in at most one sibling at a time',
+			'Write-capable commands, meaning a formatter, a lint fix, or a `verify` phase override',
 			'Being permitted to write the same file one after another is still a coordination defect',
 			'one `git worktree` per worker',
 		]) {
@@ -139,6 +199,25 @@ describe('renderOrchestrationGuide', () => {
 			'or under a parallel fan-out the single session that integrates the fan-in owns it',
 		);
 		expect(guide).toContain('you report `validation_refs: none`, the composite check as `NOT_RUN`');
+	});
+
+	it('calls write-capable exactly the commands enforcement excludes from a concurrent sibling', () => {
+		// The fan-out rule promises that write-capable commands run in at most one sibling at a time.
+		// What is promiseable in code is the classification, so it is asserted here rather than paraphrased.
+		expect(isExclusiveWriteCommandId('node_format')).toBe(true);
+		expect(isExclusiveWriteCommandId('node_lint:fix')).toBe(true);
+		expect(isExclusiveWriteCommandId('node_lint:reformat')).toBe(true);
+		expect(verifySetsScriptOverrides({ scripts: { format: 'format' } })).toBe(true);
+		// A build writes generated output, which the fan-out rule lists as shared mutable state.
+		expect(isExclusiveWriteCommandId('node_build')).toBe(true);
+		// The focused read-only checks a sibling is allowed to run are not write-capable.
+		expect(isExclusiveWriteCommandId('node_format:check')).toBe(false);
+		expect(isExclusiveWriteCommandId('node_lint:check')).toBe(false);
+		expect(isExclusiveWriteCommandId('node_test')).toBe(false);
+		expect(isExclusiveWriteCommandId('fallow_health')).toBe(false);
+		expect(verifySetsScriptOverrides({ ref: 'vr_probe' })).toBe(false);
+		expect(verifySetsScriptOverrides({ paths: ['src/guide.ts'] })).toBe(false);
+		expect(verifySetsScriptOverrides({})).toBe(false);
 	});
 
 	it('states the validation reference rules the extension enforces', () => {
@@ -173,9 +252,9 @@ describe('renderOrchestrationGuide', () => {
 		);
 		expect(guide).toContain('references travel from child to parent and never the other way round');
 		expect(guide).toContain(
-			'is intended to resolve for every sibling in that flow, because the minting session carries a flow id',
+			'resolves for every sibling in that flow, observed as a worker minting and a validator seat resolving',
 		);
-		expect(guide).toContain('that direction is designed and not yet observed');
+		expect(guide).toContain('authorized without a prompt');
 		expect(guide).toContain('a path excluded by `.gitignore` never moves it');
 		expect(guide).toContain('its references are process-local and no child can resolve them');
 		expect(guide).toContain(
@@ -247,7 +326,7 @@ describe('renderOrchestrationGuide', () => {
 		expect(guide).toContain('- The evidence scope in force');
 		expect(guide).toContain('The reviewer audits refs and never re-executes them');
 		expect(guide).toContain('The reviewer calls `verify` with `{ ref }` and nothing else');
-		expect(guide).toContain('is out of contract and is refused by enforcement');
+		expect(guide).toContain('the reviewer has no `project_command`');
 		expect(guide).toContain('Exactly one primary reviewer owns the release decision');
 	});
 });

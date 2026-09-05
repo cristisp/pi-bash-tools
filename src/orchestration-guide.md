@@ -9,52 +9,28 @@ Classify the task before delegating. Use the smallest workflow that preserves th
 
 Before the first delegation, record:
 
-- Selected workflow tier
-- Behavior risk
-- Architecture uncertainty
-- Validation complexity
-- Package, persistence, trust-boundary, or public-API crossings
-- Whether the main session already has current, sufficient repository evidence
-- A concise reason for the selected tier
-
-### Behavior risk
-
-- **Low**: Documentation, configuration, typo, or deterministic local change with no generated behavior.
-- **Medium**: Localized product behavior or multiple coordinated files.
-- **High**: Security, parsing, analysis, sandboxing, persistence, fail-closed behavior, or other release-sensitive behavior.
-
-### Architecture uncertainty
-
-- **Low**: The affected files, symbols, callers, and behavior are already known.
-- **Medium**: Some dependencies or implementation choices require investigation.
-- **High**: Unfamiliar architecture, ambiguous requirements, shared APIs, or an unknown impact radius.
-
-### Validation complexity
-
-- **Low**: A deterministic focused test, lint, typecheck, or format check is sufficient.
-- **Medium**: Coordinated tests or multiple validation commands are required.
-- **High**: Integration, E2E, flaky, environment-sensitive, security, or release-critical checks are required.
+- Selected workflow tier, and a concise reason for the selected tier
+- Behavior risk: **Low** documentation, configuration, typo, or deterministic local change; **Medium** localized product behavior or multiple coordinated files; **High** security, parsing, analysis, sandboxing, persistence, fail-closed, or other release-sensitive behavior
+- Architecture uncertainty: **Low** affected files, symbols, callers, and behavior already known; **Medium** dependencies or implementation choices need investigation; **High** unfamiliar architecture, ambiguous requirements, shared APIs, or an unknown impact radius
+- Validation complexity: **Low** one deterministic focused test, lint, typecheck, or format check; **Medium** coordinated tests or multiple validation commands; **High** integration, E2E, flaky, environment-sensitive, security, or release-critical checks
+- Package, persistence, trust-boundary, or public-API crossings, and whether the main session already has current, sufficient repository evidence
 
 ## Workflow tiers
 
 ### Tier 0 - Direct main-session work
 
-Use for non-code, documentation-only, analysis-only, configuration-only, or negligible-risk mechanical work. No subagents are required.
+Non-code, documentation-only, analysis-only, configuration-only, or negligible-risk mechanical work. No subagents are required.
 
 ### Tier 1 - Implementation with independent review
-
-Use:
 
 ```text
 worker(initial)
   -> reviewer(primary)
 ```
 
-Use for localized, low-risk implementation with simple deterministic verification. No validator. The worker `verify` ref is the validation evidence.
+Localized, low-risk implementation with simple deterministic verification. No validator. The worker `verify` ref is the validation evidence.
 
 ### Tier 2 - Planned implementation
-
-Use:
 
 ```text
 planner(initial)
@@ -62,13 +38,9 @@ planner(initial)
     -> reviewer(primary)
 ```
 
-Use when the affected code is known but the task requires careful sequencing, multiple acceptance criteria, or coordinated tests. Do not use a scout when current repository evidence is already sufficient.
-
-Add a validator only when validation complexity is Medium or High, or independence is required.
+The affected code is known but the task requires careful sequencing, multiple acceptance criteria, or coordinated tests. Do not use a scout when current repository evidence is already sufficient. Add a validator only when validation complexity is Medium or High, or independence is required.
 
 ### Tier 3 - Full investigation and assurance
-
-Use:
 
 ```text
 scout(initial)
@@ -78,29 +50,27 @@ scout(initial)
         -> reviewer(primary)
 ```
 
-Use for high-risk or high-uncertainty work, including security-sensitive behavior, parsers, analyzers, sandboxing, shared APIs, cross-package changes, or a broad unknown impact radius.
+High-risk or high-uncertainty work: security-sensitive behavior, parsers, analyzers, sandboxing, shared APIs, cross-package changes, or a broad unknown impact radius.
 
-Tier 3 keeps the validator. Pass `evidenceScope: "session"` on the validator delegation when the checks are security-sensitive, environment-sensitive, or release-critical: a `session` child cannot resolve sibling refs, so it must execute, and that is the point.
+Tier 3 keeps the validator. Pass `evidenceScope: "session"` on the validator delegation when the checks are security-sensitive, environment-sensitive, or release-critical: a `session` child cannot resolve sibling refs, so it must execute.
 
 ### Tier 4 - Focused independent review
 
-Use a primary reviewer plus focused security or validation reviewers only when a specific specialist concern warrants it. Focused reviewers report only on their assigned scope and do not own the overall release decision.
+A primary reviewer plus focused security or validation reviewers only when a specific specialist concern warrants it. Focused reviewers report only on their assigned scope and do not own the overall release decision.
 
 ## Validation ownership per tier
 
-Where a check is deterministic, the validation plan is one `verify` ref plus one review owner. Never delegate a validator to re-run a deterministic gate a ref already covers; that is a defect, not extra assurance. One `verify` execution per repository state per flow is the target, and exactly one primary reviewer owns the release decision.
+Where a check is deterministic, the validation plan is one `verify` ref plus one review owner. Never delegate a validator to re-run a deterministic gate a ref already covers; that is a defect, not extra assurance.
 
 ## Escalation triggers
 
-Escalate to the parent and select a stronger workflow when:
+Escalate to the parent and select a stronger workflow, rather than silently continuing with the original workflow, when:
 
 - A worker discovers shared behavior outside the original scope.
 - A required invariant remains ambiguous.
 - Validation reveals a different failure family than expected.
 - A reviewer finding affects a trust boundary or shared API.
 - Remediation repeatedly fails or produces no new evidence.
-
-Do not silently continue with the original workflow after an escalation trigger.
 
 ## Canonical orchestration ledger
 
@@ -153,164 +123,62 @@ finding_scope = localized | cross-cutting | ambiguous | security-sensitive
 Record why a role was skipped and why the workflow transitioned to the next role.
 Do not infer validation or review approval from delegation completion.
 
-Keep the agent identities stable.
-Use `initial` and `remediation` as workflow modes rather than creating separate remediation agent definitions.
-
-After a reviewer failure, use targeted remediation by default:
+Use `initial` and `remediation` as workflow modes rather than creating separate remediation agent definitions. After a reviewer failure, use targeted remediation by default:
 
 ```text
 worker(remediation)
   -> reviewer(remediation)
 ```
 
-Add `validator(remediation)` only when the workflow already carries a validator or a finding questions the evidence itself.
-
-Use full remediation only when findings interact, the change is cross-cutting, the acceptance criteria are ambiguous, or the remediation expands beyond the originally reviewed scope:
-
-```text
-scout(remediation)
-  -> planner(remediation)
-    -> worker(remediation)
-      -> validator(remediation)
-        -> reviewer(remediation)
-```
-
-Do not restart scout and planner for every narrow reviewer finding.
-Use the finding scope and regression requirements to choose between targeted and full remediation.
+Add `validator(remediation)` only when the workflow already carries a validator or a finding questions the evidence itself. Use full remediation only when findings interact, the change is cross-cutting, the acceptance criteria are ambiguous, or the remediation expands beyond the originally reviewed scope, and then re-run the tier's own chain in `remediation` mode rather than restarting scout and planner for every narrow reviewer finding.
 
 ## Role budgets and compaction
 
 Budgets are soft guidance for normal work and hard stop conditions when exceeded without a stated reason.
-Each handoff should report compact usage in the ledger's `budget` field, such as `tool_calls/reads/validations/output`.
-The main session should report budget pressure in the ledger rather than asking an agent to continue broad work.
+Each handoff reports compact usage in the ledger's `budget` field, such as `tool_calls/reads/validations/output`.
 
-The limits below are the values the extension enforced when this file was generated. Tool-call and discovery limits are call counts, and the output limit counts report prose in tokens, excluding reasoning and tool-call arguments.
+The limits below are the values the extension enforced when this file was generated, and the output limit counts report prose in tokens.
 
 {{role_budgets}}
 
-These are starting limits, not a reason to omit required quality work. If a limit is insufficient, stop, record the reason and remaining evidence gap, and request escalation rather than silently exceeding it.
-Rerun `/setup-subagents` after changing `roleBudgets` in the extension config, so this file keeps naming the limits that are actually enforced.
+If a limit is insufficient, stop, record the reason and remaining evidence gap, and request escalation rather than silently exceeding it.
+Rerun `/setup-subagents` after changing `roleBudgets` so this file keeps naming the enforced limits.
 
-On context pressure or a compaction request, stop broad work and emit the current ledger plus a compact role handoff, or stop if that cannot be done safely.
-After compaction, do not restart broad discovery unless the ledger names an unresolved evidence gap.
-Preserve task IDs, criterion IDs, finding IDs, validation references, and verdict states through compaction.
+On context pressure or a compaction request, stop broad work and emit the current ledger plus a compact role handoff, or stop if that cannot be done safely, preserving task, criterion, and finding IDs, validation references, and verdict states.
 
 ## Role boundaries
 
 ### Scout
 
-The scout is read-only.
-
-The scout performs reconnaissance and returns:
-
-- Relevant files and symbols
-- Current behavior
-- Relevant callers, callees, and tests
-- Risks and unknowns
-- A concise handoff for the planner
-
-The scout must not edit files, commit changes, or call `codegraph_sync`.
+The scout is read-only reconnaissance: relevant files and symbols, current behavior, callers, callees, and tests, risks and unknowns, and a concise handoff for the planner. It must not edit files, commit changes, or call `codegraph_sync`.
 
 ### Planner
 
-The planner is read-only.
-
-The planner converts the task and scout report into a precise implementation plan.
-
-The plan must include:
-
-- Goal
-- Non-goals
-- Acceptance criteria
-- Files and symbols
-- Ordered implementation steps
-- Tests
-- Validation commands and expected outcomes
-- Risks and blockers
-- For each bug or reviewer finding, the invariant, affected behavior, negative or unknown cases, regression matrix, and finding-specific validation
-
-The planner must not edit files, commit changes, invoke the `subagent` tool, or call `codegraph_sync`.
-
-For behavior changes, the plan must specify TDD or regression-first sequencing unless a justified exception applies.
+The planner is read-only. It converts the task and scout report into a plan stating the goal, non-goals, acceptance criteria, steps, tests, and validation commands its prompt formats, and for each bug or reviewer finding the invariant, negative or unknown cases, regression matrix, and finding-specific validation. For behavior changes the plan must specify TDD or regression-first sequencing unless a justified exception applies. The planner must not edit files, commit changes, invoke the `subagent` tool, or call `codegraph_sync`.
 
 ### Worker
 
-The worker implements the assigned plan.
-
-The worker may inspect files, edit files, run focused checks, and use the repository's available tools.
+The worker implements the assigned plan. It may inspect files, edit files, run focused checks, and use the repository's available tools.
 
 The worker must:
 
-- Preserve unrelated user changes.
-- Avoid unrelated cleanup and refactoring.
-- Add or update directly related tests.
-- Follow repository formatting, linting, and testing instructions.
-- Prefer TDD for behavior changes: confirm contracts, write tests that initially fail, implement the code, then rerun the tests.
-- Use regression-first for bug fixes when possible.
-- Report each supplied `AC-###` as implemented, incomplete, or blocked.
-- Report all changed files and concise implementation evidence.
-- Report every check attempted with its command, result, and exit code when available.
-- Never edit tests merely to make them pass.
-- Change tests only when they are demonstrably wrong, stale because the intended contract changed, or the task itself is test-related; explain the reason and preserve coverage.
-- Report test strategy, contract changes, test changes, red evidence when available, green evidence, and any removed, skipped, weakened, or rewritten tests.
-- Record baseline failures, environment blockers, unresolved questions, and validation references for every check that ran.
-- Mint the validation evidence: the session that modified files owns execution of the validation gate, or under a parallel fan-out the single session that integrates the fan-in owns it, so the owner runs the composite gate once with `verify` after the last implementation change, passes `covers` with the `AC-###` and `F-###` ids addressed, and reports the ref verbatim.
-- Do not run the gate twice for the same repository state in the same session. After another file change the previous ref is stale and the new run replaces it.
-- The minted `verify` ref is the validation evidence. When the workflow carries a validator, that ref is what it audits; when it does not, the ref plus one reviewer is the release gate.
-- When siblings implement in parallel you are usually not the mint owner: the session that integrates the fan-in mints the one ref for the combined state, so you report `validation_refs: none`, the composite check as `NOT_RUN`, and any sibling edit you noticed as contention.
-- Leave the final approval decision to the reviewer.
-
-The worker must not invoke the `subagent` tool to create additional workers, planners, validators, or reviewers.
+- Preserve unrelated user changes, avoid unrelated cleanup and refactoring, and follow repository formatting, linting, and testing instructions.
+- Add or update directly related tests, and never edit tests merely to make them pass; the worker prompt carries the TDD and regression-first sequencing and the grounds for a test edit.
+- Mint the validation evidence: the session that modified files owns execution of the validation gate, or under a parallel fan-out the single session that integrates the fan-in owns it, so the owner runs the composite gate once with `verify` after the last implementation change, passes `covers` with the `AC-###` and `F-###` ids addressed, and reports the ref verbatim. Do not run the gate twice for the same repository state; a later file change makes the previous ref stale.
+- Report the `AC-###` statuses, changed files, checks attempted, and test evidence its own prompt contract asks for, and treat the minted `verify` ref as the validation evidence. Leave the final approval decision to the reviewer.
+- When siblings implement in parallel you are usually not the mint owner, so you report `validation_refs: none`, the composite check as `NOT_RUN`, and any sibling edit you noticed as contention.
 
 ### Validator
 
-The validator runs approved final checks.
+The validator runs approved final checks. It is read-only with respect to source and configuration files, must not call `codegraph_sync`, and cannot mutate files or repository state, install dependencies, fix failures, or approve or reject the code; its prompt carries the full prohibition list. Its approved commands are read-only project checks, with formatter checks run as `verify`'s format phase rather than as a separate command, and never a formatter in write mode.
 
 The validator resolves before it executes:
 
-- Resolve before you execute. Call `verify` with `{ ref }` for every ref in the ledger, confirm the verdict, confirm `covers` spans every required id, and confirm the ref repository state still matches the repository under review.
 - Execute only what no live ref covers, once per command, and cite the ref you minted.
-- The remainder is what `verify` does not expose: `node_build`, the `fallow_*` analyses, and a phase the project has no script for. Run a remainder check only when the plan or an acceptance criterion requires it, because each one is a full validation pass against the ceiling this guide prints.
-- A ref that is stale, covers no required id, or was minted against a different repository state is reported `NOT_RUN` and then executed.
-- Re-running evidence a live ref already covers is a defect, not extra assurance. When the refs already cover every required check your report says so, and it cites them instead of re-running them.
-- When your delegation says `evidenceScope: session`, resolve nothing and execute the gate yourself, because independence was bought with that narrowing.
+- The remainder is what `verify` does not expose: `node_build`, the `fallow_*` analyses, and a phase the project has no script for. Run a remainder check only when the plan or an acceptance criterion requires it.
+- When your delegation says `evidenceScope: session`, resolve nothing and execute the gate yourself. When the refs already cover every required check, say so and cite them instead of re-running them.
 
-The validator is read-only with respect to source and configuration files.
-
-The validator must not:
-
-- Edit, create, delete, format, or rename files.
-- Commit, reset, stash, or discard changes.
-- Install dependencies.
-- Modify configuration.
-- Fix failures.
-- Make implementation decisions.
-- Approve or reject the code.
-
-The validator may run approved project commands, including:
-
-- Typechecks
-- Lint
-- Formatter checks as `verify`'s format phase, never as a separate command
-- Relevant unit and integration tests
-- Relevant static-analysis or security checks
-- Relevant browser tests through Playwright
-
-The validator must not run formatters in write mode.
-
-The validator must report:
-
-- Each supplied `AC-###` and required check with its status
-- Exact commands run, exit codes, and concise evidence
-- The acceptance criteria or finding IDs covered by each check
-- Whether supplied evidence is sufficient
-- Baseline or environment failures
-- Unverified checks
-- Unexpected tracked file changes
-- Validation references for every check, each with its freshness
-- A final `PASS`, `FAIL`, or `BLOCKED` validation verdict
-
-For each reported check, name how this role obtained the evidence:
+Its report follows the validator prompt and ends in one `PASS`, `FAIL`, or `BLOCKED` verdict, with a validation reference and its freshness for every check.
 
 ```text
 executed
@@ -322,38 +190,33 @@ resolved
 
 #### Validation references
 
-Validation evidence is named by a reference, and one reference per executed check is the whole point: a later role resolves the reference instead of executing the check again.
+Validation evidence is named by a reference; a later role resolves the reference instead of executing the check again.
 
-- The reference is tool-issued. When the project exposes a composite `verify` command, the session that modified files mints the reference by running the gate once, and the validator and the reviewer are its consumers. Under a parallel fan-out the owner is the single session that integrates the fan-in, because a gate run while a sibling is still editing describes no deliverable. Only the owner mints; no other role re-mints covered evidence.
-- Resolve before you execute. Call `verify` with `{ ref }` for every reference in the ledger, confirm the verdict, confirm `covers` spans every required id, and confirm the repository state the reference names still matches the repository under review. Resolving a reference is not a validation pass and must not be recorded as one.
+- The reference is tool-issued. Where the project exposes a composite `verify` command, the session that modified files mints the reference by running the gate once, and the validator and the reviewer are its consumers. Under a parallel fan-out the owner is the single session that integrates the fan-in. Only the owner mints; no other role re-mints covered evidence.
+- Resolve before you execute. Call `verify` with `{ ref }` for every reference in the ledger, confirm the verdict, confirm `covers` spans every required id, and confirm the repository state the reference names still matches the repository under review. Resolving a reference is not a validation pass.
 - References travel upward in the ledger `validation_refs` field, one entry per reference, naming the IDs it covers and the freshness of the citation: `executed`, `reused`, or `resolved`. A child writes the field into its own ledger block; the main session folds it into the next revision.
-- A reference is stale when the repository state it names is no longer the state under review, or its `covers` list omits a required id. The digest sees only what `git status` reports, so a path excluded by `.gitignore` never moves it: a change to an ignored or generated input that matters to the verdict is a reason to rerun rather than to reuse, and no reference will tell you. A stale reference is reported `NOT_RUN` and then executed by whoever is allowed to execute. A `verify` result that reports `reused: true` is stored evidence, not fresh execution.
+- A reference is stale when the repository state it names is no longer the state under review, or its `covers` list omits a required id. The digest sees only what `git status` reports, so a path excluded by `.gitignore` never moves it: a change to an ignored or generated input is a reason to rerun rather than to reuse. A stale reference is reported `NOT_RUN` and then executed by whoever is allowed to execute. A `verify` result that reports `reused: true` is stored evidence, not fresh execution.
 - A reference you cannot resolve is not evidence. Report the check it stands for as `NOT_RUN` or otherwise unverified, execute it only if your role is permitted to execute, and never assert a freshness you cannot establish.
-- A reference minted inside a delegation flow is intended to resolve for every sibling in that flow, because the minting session carries a flow id and the record is stored under it; that direction is designed and not yet observed, because no child seat has minted while `verify` authorization requires an interactive answer, so a sibling reference you cannot resolve is a capability gap to report rather than evidence to trust. A reference minted by a session with no flow id, which is what the main session is, has never resolved from a child seat, so references travel from child to parent and never the other way round. When the main session modified files, its references are process-local and no child can resolve them, so either delegate the validation of that change or expect the child to report those checks as `NOT_RUN`.
-- Only where the project has no composite `verify` gate, record a compact `V-###` reference: the exact command, the working directory, the covered `AC-###` or `F-###` IDs, the result, the exit code, and a repository-state reference such as a diff hash or focused file hashes when available. If hashes are unavailable, record exact paths plus a Git status or diff reference and mark the reference non-reusable.
+- A reference minted inside a delegation flow resolves for every sibling in that flow, observed as a worker minting and a validator seat resolving the same ref. Minting itself needs the exact `verify` call shape to be authorized without a prompt. A reference minted by a session with no flow id, which is what the main session is, has never resolved from a child seat, so references travel from child to parent and never the other way round. When the main session modified files, its references are process-local and no child can resolve them, so either delegate the validation of that change or expect the child to report those checks as `NOT_RUN`.
+- Only where the project has no composite `verify` gate, record a compact `V-###` reference: the exact command, working directory, covered `AC-###` or `F-###` IDs, result, exit code, and a repository-state reference such as a diff hash or focused file hashes when available, otherwise exact paths plus a Git status or diff reference marked non-reusable.
 
-Reuse validation evidence only when the command, working directory, covered IDs, and repository state are unchanged.
-Rerun checks after relevant changes and for environment-sensitive, flaky, time-dependent, or externally dependent checks.
+Reuse evidence only when the command, working directory, covered IDs, and repository state are unchanged, and rerun environment-sensitive, flaky, time-dependent, or externally dependent checks.
 A matching reference is evidence reuse, not code approval.
 
 #### Parallel fan-out and validation
 
-Parallel workers share one working tree, so every check one of them runs observes all siblings' edits at once.
-A gate executed by a sibling therefore attests to the union of the in-flight changes rather than to one worker's change, and that stays true when the reference it mints is internally consistent.
-
-Ownership does not become ambiguous just because several sessions modified files.
+Parallel workers share one working tree. A gate executed by a sibling therefore attests to the union of the in-flight changes rather than to one worker's change.
 One session owns the gate for the combined state, normally the main session after the fan-in, and every other role resolves that reference.
 
 - Siblings do not run the composite gate.
   Each may run a focused read-only check over its own declared paths, or none.
 - Write-capable commands, meaning a formatter, a lint fix, or a `verify` phase override, run in at most one sibling at a time.
-  The tool refuses the second caller while a sibling holds a write in flight, and that refusal is a retry instruction rather than a failure.
+  The tool refuses the second caller while a sibling holds a write in flight, and that refusal means retry.
 - Declare disjoint files.
-  Being permitted to write the same file one after another is still a coordination defect, because the second writer undoes the first.
-- A check that touches shared mutable state, meaning a fixed port, a coverage directory, a snapshot file, a build output, or a database file, belongs to the single owner that runs it alone, or it needs per-process isolation such as an ephemeral port and a pid-scoped temporary directory.
+  Being permitted to write the same file one after another is still a coordination defect.
+- A check that touches shared mutable state, meaning a fixed port, a coverage directory, a snapshot file, a build output, or a database file, belongs to the single owner that runs it alone, or it needs per-process isolation.
 - Report unexpected tracked changes made by a sibling that is still editing as contention, then re-check after the fan-in rather than failing the change under review for them.
 - When every sibling genuinely needs its own evidence, isolate the trees, for example one `git worktree` per worker.
-  The evidence key carries the working directory, so references stay disjoint and each one keeps meaning what it claims.
 
 For each check, distinguish these classifications:
 
@@ -365,288 +228,57 @@ BASELINE_FAILURE
 NOT_RUN
 ```
 
-Use `FAIL` when the command completed and the result is attributable to the change.
-Use `BLOCKED` when the command could not be meaningfully completed because of the environment.
-Use `BASELINE_FAILURE` for a known pre-existing failure that is not attributable to the change.
-Do not trigger implementation remediation solely because a check is `BLOCKED` or `BASELINE_FAILURE`.
-Pass those results to the reviewer with their evidence.
-
-The validator is an evidence collector, not a second planner or semantic reviewer.
-It must not invent acceptance criteria, make implementation decisions, or approve or reject the code.
-
-The validator must not call `codegraph_sync`.
+Use `FAIL` when the command completed and the result is attributable to the change, `BLOCKED` when the environment prevented a meaningful result, and `BASELINE_FAILURE` for a known pre-existing failure. Do not trigger implementation remediation solely because a check is `BLOCKED` or `BASELINE_FAILURE`; pass those results to the reviewer with their evidence.
 
 ### Reviewer
 
 The reviewer is read-only.
 
-The primary reviewer reviews the complete change and owns the overall release decision.
-
-The reviewer must:
-
-- Check the acceptance criteria.
-- Inspect the current diff.
-- Review the implementation and relevant tests.
-- Check that tests exercise observable behavior and would fail for a plausible broken implementation.
-- Check relevant negative and boundary cases.
-- Treat removed, skipped, weakened, broadened, or rewritten assertions as findings unless the worker provides evidence that the prior test was wrong or the contract intentionally changed.
-- Consider the planner's scope.
-- Consider the worker report.
-- Consider the validator report.
-- Distinguish confirmed findings from unverified concerns.
-- Return exactly one final `PASS` or `FAIL` verdict.
-
-The reviewer treats validator output as execution evidence, not semantic approval.
-The reviewer must inspect whether the supplied checks address the acceptance criteria without repeating command execution.
-The reviewer audits refs and never re-executes them, and a required check with no live ref is a finding.
-The reviewer calls `verify` with `{ ref }` and nothing else, because a lookup executes nothing and is not a validation pass; a `verify` call carrying any other parameter is out of contract and is refused by enforcement, and the reviewer has no `project_command`.
-Exactly one primary reviewer owns the release decision, and no role votes on it twice.
-
-Delegation success does not imply validation success.
-Validation success does not imply review approval.
-Delegation status, validation verdict, and reviewer verdict are separate values.
-
 The reviewer must not call `codegraph_sync`.
+
+The primary reviewer reviews the complete change and owns the overall release decision. It treats removed, skipped, weakened, broadened, or rewritten assertions as findings unless the worker evidences that the prior test was wrong or the contract intentionally changed; its review method and single-verdict rule are in the reviewer prompt.
+
+The reviewer treats validator output as execution evidence, not semantic approval. The reviewer audits refs and never re-executes them, and a required check with no live ref is a finding. The reviewer calls `verify` with `{ ref }` and nothing else, and the reviewer has no `project_command`. Exactly one primary reviewer owns the release decision.
 
 ## Worker modes
 
 Use the existing `worker` agent with an explicit workflow mode.
 
-Supported worker modes are:
+Use `initial` when implementing a new task from a user request and planner report: only the assigned scope, every acceptance criterion addressed, focused checks where useful, and failures, blockers, and unverified work reported.
 
-- `initial`
-- `remediation`
-
-Do not create separate worker agent definitions for these modes.
-
-### Initial worker mode
-
-Use `initial` when implementing a new task from a user request and planner report.
-
-The worker must:
-
-- Implement only the assigned scope.
-- Address every acceptance criterion.
-- Preserve unrelated user changes.
-- Avoid unrelated cleanup and refactoring.
-- Add or update directly related tests.
-- Run focused checks when useful.
-- Report checks attempted, including failures.
-- Report blockers and unverified work.
-
-### Remediation worker mode
-
-Use `remediation` after a reviewer returns `FAIL`.
-
-The worker receives a structured finding ledger with stable finding IDs.
-
-The worker must:
-
-- Address every supplied finding ID.
-- Inspect directly affected neighboring behavior.
-- Add or update the required regression tests.
-- Preserve unrelated user changes.
-- Avoid expanding the remediation scope without explaining why.
-- Report the status of every finding ID.
-- Never silently omit, merge, or close a finding.
-
-Worker remediation statuses are:
-
-```text
-FIXED
-OPEN
-BLOCKED
-NOT_REPRODUCIBLE
-```
-
-The worker must not mark a finding `DEFERRED` or `ACCEPTED_RISK` without explicit direction from the main session or user.
+Use `remediation` after a reviewer returns `FAIL`, against the structured finding ledger with stable finding IDs. The worker must address every supplied finding ID and report its status, inspect directly affected neighboring behavior, add or update the required regression tests, preserve unrelated user changes, avoid expanding the remediation scope without explaining why, and never silently omit, merge, or close a finding. It must not mark a finding `DEFERRED` or `ACCEPTED_RISK` without explicit direction from the main session or user.
 
 ## Subagent session discovery and reuse
 
-Never infer, increment, or guess a subagent session label.
+Never infer, increment, or guess a subagent session label. Labels are scoped per herdr workspace and to the current Pi session, and only the bare value shown after `reuseLabel:` is reusable: not a qualified `workspace:label` value, and not the next numeric suffix after a failed lookup.
 
-Labels are scoped per herdr workspace, and the same label may exist in another workspace or session registry.
+Call `subagent` with `listSubagents: true`. Copy the bare label from the active workspace and current Pi session, and check it with `subagent_stats` before reusing it. The main session owns the reuse decision, prefers a fresh session for planning, scouting, review, validation, security, audit, or any work needing independence, and starts fresh when context is above 100k tokens, the session exceeds 8 turns, or reuse is repeated. Record `session_strategy` as `fresh`, `reuse`, or `not_applicable`, with the decision in `session_strategy_reason` and `transition_reason`.
 
-Before calling `subagent_stats` or using `reuseLabel`:
+## What each task must carry
 
-1.  Call `subagent` with `listSubagents: true`.
-2.  Select an entry from the active workspace and current Pi session.
-3.  Copy the exact bare value shown after `reuseLabel:`.
-4.  Call `subagent_stats` with that exact label.
-5.  Reuse the session only when the stats and task history show that reuse is appropriate.
+The main session passes compact structured context between agents, never a full conversation transcript. Every task carries the original task, the acceptance criteria with stable `AC-###` IDs, the existing user-change constraints, the current orchestration ledger, and its mode: `Workflow mode: initial` or `Workflow mode: remediation` for a worker, and `Review mode: primary`, `security`, or `validation` for a reviewer.
 
-Do not use a qualified `workspace:label` value for `reuseLabel` or `subagent_stats`.
+In addition:
 
-Do not infer the next numeric suffix from prior sessions.
-
-If a delegation result does not expose the allocated label, call `listSubagents: true` before attempting stats or reuse.
-
-A failed `subagent_stats` lookup means the label is not available in the active session.
-Re-list sessions instead of trying another guessed suffix.
-
-Reuse is an explicit optimization, not the default workflow.
-Prefer reuse for same-role worker continuation or narrowly scoped remediation when prior context is directly relevant.
-Prefer fresh sessions for planning, scouting, review, validation, security, audit, changed scope, or independent reasoning.
-Start fresh when context exceeds 100k tokens, the session exceeds 8 turns, reuse is repeated, task history does not fit, repository or evidence changed materially, or independence is required.
-Record `session_strategy` as `fresh`, `reuse`, or `not_applicable`, with the decision in `session_strategy_reason` and `transition_reason`.
-The main session owns this decision; never auto-select a session by role, topic, or numeric suffix.
-
-## Initial workflow
-
-The main session must pass compact structured context between agents.
-
-The scout task must include:
-
-- Original task
-- Acceptance criteria with stable `AC-###` IDs
-- Relevant constraints
-- Requested workflow mode
-- The current orchestration ledger
-
-The planner task must include:
-
-- Original task
-- Acceptance criteria with stable `AC-###` IDs
-- Scout report
-- Existing user-change constraints
-- The current orchestration ledger
-
-The worker task must include:
-
-- Original task
-- Acceptance criteria with stable `AC-###` IDs
-- Scout report
-- Planner report
-- Existing user-change constraints
-- The current orchestration ledger
-- `Workflow mode: initial`
-
-The validator task must include:
-
-- `Workflow mode: initial`
-- Changed files
-- Acceptance criteria with stable `AC-###` IDs
-- Planner validation section
-- Worker completion report
-- Worker `verify` refs with their verdicts, `covers` lists, and repository state
-- Required `AC-###` and `F-###` ids
-- The evidence scope in force
-- The current orchestration ledger
-- Applicable project test rules
-
-The primary reviewer task must include:
-
-- `Review mode: primary`
-- Review scope
-- Out-of-scope areas
-- Acceptance criteria with stable `AC-###` IDs
-- Planner report
-- Worker completion report
-- Validator report
-- The current orchestration ledger
-
-Do not pass full conversation transcripts when a compact report is sufficient.
-
-## Validation failures
-
-If the validator returns `FAIL` because of an implementation failure, remediate the implementation before approval.
-
-Classify each failed or incomplete check as one of:
-
-- New implementation failure
-- Pre-existing baseline failure
-- Environment failure
-- Missing or incorrect validation command
-
-Do not silently treat baseline or environment failures as passes.
-Do not automatically send the worker back to remediation for a baseline or environment failure.
-
-If the validator returns `BLOCKED`, pass the blocked checks and their explanations to the reviewer.
-The reviewer decides whether the blocked check is release-critical.
-
-For a narrowly scoped implementation failure, use:
-
-```text
-worker(remediation)
-  -> reviewer(remediation)
-```
-
-For a substantial, ambiguous, security-sensitive, or multi-file implementation failure, use:
-
-```text
-scout(remediation)
-  -> planner(remediation)
-    -> worker(remediation)
-      -> validator(remediation)
-        -> reviewer(remediation)
-```
-
-The reviewer must not issue an unconditional `PASS` when a required release-critical check remains unverified.
+- The planner task carries the scout report.
+- The worker task carries the planner report.
+- The validator task carries:
+  - Changed files
+  - Planner validation section
+  - Worker completion report
+  - Worker `verify` refs with their verdicts, `covers` lists, and repository state
+  - Required `AC-###` and `F-###` ids
+  - The evidence scope in force
+  - Applicable project test rules
+- The primary reviewer task carries the review scope, out-of-scope areas, planner report, worker completion report, and validator report, and a focused reviewer task narrows the same shape to its assigned scope and prior findings.
 
 ## Remediation workflow
 
-When the primary reviewer returns `FAIL`, convert each blocking finding into a stable finding ID.
+When the primary reviewer returns `FAIL`, convert each blocking finding into a stable finding ID carrying the fields the reviewer finding format defines.
 
-Each finding must include:
+The finding scope and regression requirements select the workflow: targeted remediation is the default and full remediation applies only under the condition named with the ledger. The remediation scout investigates only the listed findings and directly affected behavior.
 
-- ID
-- Severity
-- Status
-- Location
-- Requirement
-- Evidence
-- Impact
-- Required fix
-- Regression test
-- Validation requirement
-
-Example:
-
-```markdown
-### F-001
-
-- Severity: High
-- Status: Open
-- Location: `src/example.ts:42`
-- Requirement: Unknown inputs must fail closed.
-- Evidence: An unresolved input is treated as safe.
-- Impact: The safety check can be bypassed.
-- Required fix: Preserve incomplete coverage for unresolved inputs.
-- Regression test: Add an unresolved-input case.
-- Validation requirement: Run the focused analysis tests and the relevant full suite.
-```
-
-The remediation workflow is selected from the finding scope.
-
-For localized findings with clear acceptance criteria, use:
-
-```text
-worker(remediation)
-  -> reviewer(remediation)
-```
-
-Add `validator(remediation)` only when the workflow already carries a validator or a finding questions the evidence itself.
-
-For interacting, ambiguous, security-sensitive, or cross-cutting findings, use:
-
-```text
-scout(remediation)
-  -> planner(remediation)
-    -> worker(remediation)
-      -> validator(remediation)
-        -> reviewer(remediation)
-```
-
-The remediation scout investigates only the listed findings and directly affected behavior.
-
-The remediation planner maps every finding ID to:
-
-- The invariant that must hold
-- The affected behavior and exact code location
-- Implementation steps
-- Positive and negative regression cases
-- Validation commands
-- Risks and blockers
+When a remediation carries a validator, it resolves the worker refs for every finding ID first and runs the checks no live ref covers, expanding only when the remediation changes shared or cross-cutting behavior. The remediation reviewer verifies every finding ID and checks neighboring behavior affected by the fix, and must not repeat an unrelated full review.
 
 The remediation worker reports every finding ID using one of:
 
@@ -657,30 +289,9 @@ BLOCKED
 NOT_REPRODUCIBLE
 ```
 
-When a remediation carries a validator, it resolves the worker refs for every finding ID first and runs the checks no live ref covers.
-It should run the minimum relevant checks and expand validation only when the remediation changes shared or cross-cutting behavior.
+Every remediation attempt increments the attempt count and records what changed, which new test or evidence addresses each finding, the hypothesis for any retry, new validation references, and the current finding status. Stop when the request, command, patch, or evidence is unchanged, or after two unsuccessful reviews of the same finding family, and then mark the findings `OPEN` and escalate, because the finding scope changed, evidence stopped improving, or resolution needs user risk acceptance.
 
-The remediation reviewer verifies every finding ID and checks neighboring behavior affected by the fix.
-The reviewer treats validator output as evidence, not as semantic approval.
-
-The remediation reviewer must not repeat an unrelated full review unless the remediation changes shared or cross-cutting behavior.
-
-After two unsuccessful remediation reviews for the same finding family, stop automatic retry.
-Mark the findings `OPEN`, summarize the newly discovered behavior, and escalate to a fresh scout and planner or request user clarification.
-
-Every remediation attempt must record:
-
-- What changed since the previous attempt.
-- Which new test or evidence addresses each finding.
-- An explicit hypothesis before retrying a failed command or fix strategy.
-- New validation references and the current finding status.
-
-Stop earlier when the same request, command, patch, or validation evidence is repeated without a relevant change.
-Escalate when a finding changes scope classification.
-Ask the user when resolution requires a product decision or risk acceptance.
-Preserve unresolved findings as `OPEN` rather than silently dropping them.
-
-After remediation review, the reviewer may classify the finding as:
+After remediation review, the reviewer classifies each finding as one of:
 
 ```text
 VERIFIED
@@ -693,117 +304,14 @@ NOT_REPRODUCIBLE
 
 Non-verified terminal states require an explanation.
 
-## Reviewer scope
+## Reviewer scope and verdict
 
-The primary reviewer owns the complete review and the overall release decision.
+Focused reviewers may return `PASS` or `FAIL` for their assigned scope only, and their `PASS` does not approve the complete change; the primary reviewer must receive their reports before issuing the overall verdict.
 
-Focused reviewers may be used for clearly identified security or validation concerns.
+The reviewer returns exactly one machine-readable `PASS` or `FAIL` verdict in a `## Verdict` section. `PASS` requires every in-scope acceptance criterion satisfied, no Critical or High finding, sufficient validation evidence, no release-critical check unverified, and remaining Medium or Low findings explicitly non-blocking; `FAIL` applies otherwise, including a violated fail-closed or security invariant.
 
-A focused reviewer must receive:
+## Handoff
 
-- Review mode
-- Assigned scope
-- Out-of-scope areas
-- Relevant acceptance criteria
-- Relevant changed files
-- Prior findings when applicable
+Every handoff preserves the ledger block above in full, including required regression tests and compact budget usage.
 
-A focused reviewer reports only on its assigned scope.
-
-A focused reviewer may return `PASS` or `FAIL` for its scope.
-A focused reviewer `PASS` does not approve the complete change.
-
-The primary reviewer must receive focused reviewer reports before issuing the overall verdict.
-
-## Reviewer verdict
-
-The reviewer must return exactly one machine-readable verdict.
-
-Use:
-
-```markdown
-## Verdict
-
-PASS
-```
-
-or:
-
-```markdown
-## Verdict
-
-FAIL
-```
-
-The reviewer may return `PASS` only when:
-
-- All in-scope acceptance criteria are satisfied.
-- No Critical or High findings remain.
-- Required validation evidence is sufficient.
-- No release-critical check remains unverified.
-- Any remaining Medium or Low findings are explicitly non-blocking.
-
-The reviewer must return `FAIL` when:
-
-- A Critical or High finding remains.
-- An acceptance criterion is incomplete.
-- Required validation is missing or cannot be established.
-- A remediation finding remains unresolved.
-- A release-critical check is blocked or unverified.
-- The implementation violates a required fail-closed or security invariant.
-
-## Handoff requirements
-
-Every agent task must state the workflow mode when applicable.
-
-Use:
-
-```text
-Workflow mode: initial
-```
-
-or:
-
-```text
-Workflow mode: remediation
-```
-
-Use:
-
-```text
-Review mode: primary
-```
-
-for the overall review.
-
-Use:
-
-```text
-Review mode: security
-```
-
-or:
-
-```text
-Review mode: validation
-```
-
-for focused reviews.
-
-The main session must preserve these values separately:
-
-```text
-delegation_status = success | error | blocked | unknown
-validation_verdict = PASS | FAIL | BLOCKED | NOT_RUN
-review_verdict = PASS | FAIL | NOT_RUN
-workflow_mode = initial | remediation
-review_mode = primary | security | validation | remediation
-finding_scope = localized | cross-cutting | ambiguous | security-sensitive
-```
-
-Every handoff should preserve the complete orchestration ledger, including the workflow version, task ID, attempt number, workflow tier, workflow mode, review mode, acceptance criteria IDs, scope, evidence references, changed files, finding IDs, required regression tests, validation references, known baseline failures, environment blockers, unresolved questions, transition reason, recommended next action, and compact budget usage.
-Do not pass the full conversation transcript when a compact structured report is sufficient.
-
-Do not infer approval from delegation status.
-Do not infer approval from validator status.
 Only the primary reviewer owns the final release decision.

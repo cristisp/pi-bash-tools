@@ -502,12 +502,14 @@ A single `verify` call is one full validation pass, because it runs the format, 
 gate in order. A `verify` call that supplies a `ref` resolves stored evidence instead of running the gate,
 so it is not charged against `fullValidationPasses` and stays available as the cheap alternative to a
 rerun. Minted and resolved refs are recorded per delegation as `metrics.validationRefs` with the verdict
-and whether the call reused or executed, which is what makes reuse auditable. A ref minted inside a flow is
-intended to resolve for every sibling in that flow, and a ref minted by a root session lives only in that
-process, so refs travel from child to parent and never the other way round. The sibling direction is designed
-and not yet observed: no child seat has minted while `verify` authorization requires an interactive answer
-(`F9` in `analysis/BASH_TOOLS_FOLLOWUPS.md`), so
-a sibling ref you cannot resolve is a capability gap to report, not evidence to trust.
+and whether the call reused or executed, which is what makes reuse auditable. A ref minted by a child seat
+inside a flow resolves for every sibling in that flow, observed: a worker minted refs and a validator seat
+resolved both by bare `{ ref }` lookup without executing anything. A ref minted by a root session lives only
+in that process, so refs travel from child to parent and never the other way round. Two caveats stay true.
+Minting depends on the exact `verify` call shape being authorized without a prompt, because a child cannot
+answer one (`F9` in `analysis/BASH_TOOLS_FOLLOWUPS.md`), and a lookup does not re-report the current tree, so
+staleness has to be judged from the state the ref carries rather than assumed (`F5`). A sibling ref you cannot
+resolve is still a capability gap to report, not evidence to trust.
 For workers, `implementationDiscoveryCalls` limits discovery before the first implementation tool call.
 After that allowance, the runtime blocks further non-report tools until the worker attempts an implementation tool call.
 

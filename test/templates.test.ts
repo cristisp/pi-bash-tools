@@ -1,8 +1,11 @@
 import * as fs from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { configPath } from '../src/config.ts';
+import { configPath, getConfig } from '../src/config.ts';
+import { registerBudgetEnforcement } from '../src/budget.ts';
+import { registerEntry } from '../src/registry.ts';
 import { AGENT_TEMPLATES, renderAgentFile } from '../src/templates.ts';
-import { makeTempDir, stubEnv } from './helpers.ts';
+import { makeRegistryEntry, makeTempDir, stubEnv } from './helpers.ts';
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 function section(body: string, heading: string): string {
 	const start = body.indexOf(`${heading}\n\n`);
@@ -357,6 +360,9 @@ describe('renderAgentFile', () => {
 			'The reviewer audits refs and never re-executes them',
 		);
 		expect(section(reviewer.body, '## Validation Evidence')).toContain(
+			'a lookup executes nothing and is not a validation pass',
+		);
+		expect(section(reviewer.body, '## Validation Evidence')).toContain(
 			'A required check with no live ref is a finding',
 		);
 		expect(section(reviewer.body, '## Validation Evidence')).toContain(
@@ -365,7 +371,8 @@ describe('renderAgentFile', () => {
 		expect(section(reviewer.body, '## Validation Evidence')).toContain(
 			'`verify` with `{ ref }` and nothing else',
 		);
-		expect(reviewer.body).toContain('refused by enforcement');
+		// The enforcement notice is the only signal that the lookup-only guard is still there.
+		expect(section(reviewer.body, '## Validation Evidence')).toContain('refused by enforcement');
 		const reviewerToolNames = (reviewer.tools ?? '').split(',').map((tool) => tool.trim());
 		expect(reviewerToolNames, 'the reviewer must resolve refs').toContain('verify');
 		expect(reviewerToolNames, 'the reviewer must not run project commands').not.toContain(
@@ -390,5 +397,196 @@ describe('renderAgentFile', () => {
 			expect(out).toContain(`description: ${t.description}`);
 			expect(out).not.toMatch(/model:/);
 		}
+	});
+});
+
+type ToolCallHandler = (event: any, ctx: any) => unknown;
+
+type CallResult = { block?: boolean; reason?: string } | undefined;
+
+interface RoleEnforcement {
+	/** One `tool_call` result: undefined means enforcement permitted the call. */
+	call: (toolName: string, input: Record<string, unknown>) => CallResult;
+	/** Roles the loaded config may execute the `verify` gate. */
+	executors: ReadonlySet<string>;
+	/** Roles the loaded config may reach a repository-writing command form. */
+	writers: ReadonlySet<string>;
+	close: () => void;
+}
+
+/**
+ * Live enforcement for one shipped role, with every budget ceiling raised and the repository write
+ * lock off, so the only refusals left are the `validationExecutionRoles` and `mutatingCommandRoles`
+ * grants themselves. Budget ceilings are covered by test/budget.test.ts and lock contention by
+ * test/repo-lock.test.ts; this suite owns the surface the shipped roles actually get.
+ */
+function enforcementFor(role: string): RoleEnforcement {
+	stubEnv(makeTempDir());
+	fs.writeFileSync(
+		configPath(),
+		JSON.stringify({
+			repositoryWriteLock: false,
+			roleBudgets: {
+				[role]: {
+					toolCalls: 60,
+					discoveryCalls: 60,
+					implementationDiscoveryCalls: 60,
+					fullValidationPasses: 20,
+					failedToolCalls: 20,
+					repeatedReads: 20,
+					outputTokens: 400_000,
+					wallTimeMs: 600_000,
+				},
+			},
+		}),
+	);
+	vi.stubEnv('PI_SUBAGENT_NESTED', '1');
+	vi.stubEnv('PI_ORCHESTRATION_ROLE', role);
+	vi.stubEnv('PI_SUBAGENT_LABEL', `${role}-grant-probe`);
+	registerEntry(makeRegistryEntry({ label: `${role}-grant-probe`, agent: role }));
+	const handlers: Record<string, ToolCallHandler> = {};
+	registerBudgetEnforcement({
+		on: (event: string, handler: ToolCallHandler) => {
+			handlers[event] = handler;
+		},
+		sendUserMessage: vi.fn(),
+	} as unknown as ExtensionAPI);
+	const ctx = { abort: vi.fn() };
+	handlers.before_agent_start?.({ prompt: 'task' }, ctx);
+	const cfg = getConfig();
+	return {
+		call: (toolName, input) => handlers.tool_call?.({ toolName, input }, ctx) as CallResult,
+		executors: new Set(cfg.validationExecutionRoles),
+		writers: new Set(cfg.mutatingCommandRoles),
+		close: () => handlers.agent_end?.({}, ctx),
+	};
+}
+
+describe('shipped role grants are enforced rather than stated', () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	const VERIFY_EXECUTION_FORMS: ReadonlyArray<Record<string, unknown>> = [
+		{},
+		{ covers: ['AC-001'] },
+		{ omit: ['format'] },
+		{ paths: ['src/guide.ts'] },
+		{ continueOnFailure: true },
+		{ ref: 'vr_probe', paths: ['src/guide.ts'] },
+		{ ref: 'vr_probe', omit: ['format'] },
+	];
+
+	it('confines every shipped role outside validationExecutionRoles to bare ref lookups', () => {
+		const refused: Record<string, boolean> = {};
+		const mayRefuse: Record<string, boolean> = {};
+		const reasons: Record<string, string> = {};
+		const lookupRefused: string[] = [];
+		for (const template of AGENT_TEMPLATES) {
+			const enforcement = enforcementFor(template.name);
+			const mayExecute = enforcement.executors.has(template.name);
+			if (enforcement.call('verify', { ref: 'vr_probe' })) lookupRefused.push(template.name);
+			for (const input of VERIFY_EXECUTION_FORMS) {
+				const result = enforcement.call('verify', input);
+				const key = `${template.name} verify ${JSON.stringify(input)}`;
+				refused[key] = Boolean(result?.block);
+				mayRefuse[key] = !mayExecute;
+				reasons[key] = result?.reason ?? '';
+			}
+			enforcement.close();
+		}
+		// Resolving stored evidence is open to every role, including the ones that cannot execute.
+		expect(lookupRefused).toEqual([]);
+		expect(refused).toEqual(mayRefuse);
+		// Both halves of the rule are exercised by the shipped roles, so the sweep cannot go vacuous.
+		expect(Object.values(refused).some((blocked) => blocked)).toBe(true);
+		expect(Object.values(refused).some((blocked) => !blocked)).toBe(true);
+		const refusalReasons = Object.keys(reasons)
+			.filter((key) => mayRefuse[key])
+			.map((key) => reasons[key] as string);
+		expect(refusalReasons.every((reason) => reason.includes('validationExecutionRoles'))).toBe(
+			true,
+		);
+	});
+
+	const WRITING_FORMS: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+		['project_command', { commandId: 'node_format' }],
+		['project_command', { commandId: 'node_format:write' }],
+		['project_command', { commandId: 'node_lint:fix' }],
+		// An unknown variant of a family that has a writing form fails closed.
+		['project_command', { commandId: 'node_lint:reformat' }],
+		['verify', { scripts: { format: 'format' } }],
+		['verify', { scripts: { test: 'test:snapshots' } }],
+		['verify', { scripts: ['format'] }],
+		['verify', { ref: 'vr_probe', scripts: { lint: 'lint:fix' } }],
+	];
+
+	const READ_ONLY_FORMS: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+		['project_command', { commandId: 'node_format:check' }],
+		['project_command', { commandId: 'node_lint:check' }],
+		['project_command', { commandId: 'node_test' }],
+		['verify', { ref: 'vr_probe' }],
+	];
+
+	it('keeps every shipped role outside mutatingCommandRoles away from every writing command form', () => {
+		const refused: Record<string, boolean> = {};
+		const mayRefuse: Record<string, boolean> = {};
+		const reasons: Record<string, string> = {};
+		const rules: Record<string, string> = {};
+		const readOnlyRefused: Record<string, string> = {};
+		for (const template of AGENT_TEMPLATES) {
+			const enforcement = enforcementFor(template.name);
+			const mayWrite = enforcement.writers.has(template.name);
+			const mayExecute = enforcement.executors.has(template.name);
+			for (const [toolName, input] of WRITING_FORMS) {
+				const result = enforcement.call(toolName, input);
+				const key = `${template.name} ${toolName} ${JSON.stringify(input)}`;
+				refused[key] = Boolean(result?.block);
+				mayRefuse[key] = !mayWrite;
+				reasons[key] = result?.reason ?? '';
+				// A verify phase override on a role that may execute reaches the mutating guard;
+				// on a role that may not execute it, the lookup-only guard fires first.
+				rules[key] = toolName === 'project_command' || mayExecute ? 'mutating' : 'lookupOnly';
+			}
+			for (const [toolName, input] of READ_ONLY_FORMS) {
+				const result = enforcement.call(toolName, input);
+				if (result?.block) readOnlyRefused[`${template.name} ${toolName}`] = result.reason ?? '';
+			}
+			enforcement.close();
+		}
+		expect(refused).toEqual(mayRefuse);
+		expect(Object.values(refused).some((blocked) => blocked)).toBe(true);
+		expect(Object.values(refused).some((blocked) => !blocked)).toBe(true);
+		// The grant is not a blanket ban: the read-only forms stay reachable for every role.
+		expect(readOnlyRefused).toEqual({});
+		const reasonGroup = (wanted: string) =>
+			Object.keys(reasons)
+				.filter((key) => mayRefuse[key] && rules[key] === wanted)
+				.map((key) => reasons[key] as string);
+		const mutatingReasons = reasonGroup('mutating');
+		const lookupReasons = reasonGroup('lookupOnly');
+		expect(mutatingReasons.length).toBeGreaterThan(0);
+		expect(mutatingReasons.every((reason) => reason.includes('mutatingCommandRoles'))).toBe(true);
+		expect(lookupReasons.length).toBeGreaterThan(0);
+		expect(lookupReasons.every((reason) => reason.includes('validationExecutionRoles'))).toBe(true);
+	});
+
+	it('ships the verify tool only to roles whose grant enforcement honours', () => {
+		const shippingVerify: string[] = [];
+		const executing: string[] = [];
+		const lookupRefused: string[] = [];
+		for (const template of AGENT_TEMPLATES) {
+			const enforcement = enforcementFor(template.name);
+			const tools = (template.tools ?? '').split(',').map((tool) => tool.trim());
+			if (tools.includes('verify')) shippingVerify.push(template.name);
+			if (enforcement.executors.has(template.name)) executing.push(template.name);
+			if (enforcement.call('verify', { ref: 'vr_probe' })) lookupRefused.push(template.name);
+			// Roles whose bare gate call enforcement lets through are exactly the granted executors.
+			if (!enforcement.call('verify', {})) executing.push(`ran:${template.name}`);
+			enforcement.close();
+		}
+		expect(lookupRefused).toEqual([]);
+		expect(shippingVerify).toEqual(['reviewer', 'worker', 'validator']);
+		expect(executing).toEqual(['worker', 'ran:worker', 'validator', 'ran:validator']);
 	});
 });

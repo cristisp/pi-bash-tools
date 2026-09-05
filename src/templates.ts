@@ -4,6 +4,65 @@ import { ledgerShapeBlock } from './ledger.ts';
 export const REUSE_WORKFLOW_GUIDANCE =
 	'For safe reuse, first call subagent with listSubagents: true, select an exact active-session entry, copy its bare reuseLabel, call subagent_stats with that label, and reuse only when the stats and task history show it is appropriate. Reuse is for same-role worker continuation and narrowly scoped remediation; prefer fresh sessions for planning, scouting, review, validation, security, audit, changed scope, or independent reasoning. Start fresh for high context, many turns, repeated reuse, mismatched task history, changed evidence, or when independence is required. Never infer or increment labels, use labels from another workspace, or pass workspace:label to reuseLabel or subagent_stats.';
 
+/**
+ * Description prose for the tools registered from src/tools.ts. The sentences were moved here
+ * verbatim: src/tools.ts composes these strings instead of authoring them, so tool text lives in
+ * one place and a wording change is covered by test/tools.test.ts. Values that depend on runtime
+ * paths or config are passed in by the caller so this module stays free of path lookups.
+ */
+export interface SubagentToolDescriptionValues {
+	/** Absolute path of the session registry the child is told to read. */
+	registryPath: string;
+	/** Directory holding user-scoped agent files, e.g. ~/.pi/agents. */
+	agentsDir: string;
+	/** Project config directory name, e.g. ".pi". */
+	configDirName: string;
+}
+
+export function subagentToolDescription(values: SubagentToolDescriptionValues): string {
+	return [
+		'Delegate tasks to specialized subagents with isolated context.',
+		'Each subagent runs as a live pi session in its own herdr tab, labeled <agent>-<n> (e.g. worker-1, reviewer-2); the numbering is persistent.',
+		'Tabs stay open after finishing until closed manually; sessions can be reused (preserving context).',
+		`Registry of all subagent sessions: ${values.registryPath} (read it to find reusable sessions and their session files).`,
+		'Registry entries include ctx:<tokens> - the context size at the last completed turn; use it to decide between reuseLabel and a fresh session.',
+		REUSE_WORKFLOW_GUIDANCE,
+		'Before reusing a session, call subagent_stats with the bare label from the active Pi session list (e.g. worker-1) to check its context size, turn count, prior tasks, and reuse history, and judge whether reuse is actually cheaper than a fresh session.',
+		'Reusing a review/audit/verification session anchors it on its earlier findings - it will tend to re-check the issues it already found and miss newly introduced ones. For a fresh review of code that changed since the session last ran, prefer a new session, or explicitly instruct the reused session to re-examine from scratch.',
+		'Labels are scoped per herdr workspace: each workspace has its own worker-1, worker-2, ... numbering and session files; visibility and reuse are scoped to the active Pi session.',
+		'reuseLabel and subagent_stats accept the bare label shown by the active Pi session list (e.g. worker-1); qualified workspace:label values and sessions from other Pi sessions are not reusable from the current session.',
+		'Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder), agents (list available agents).',
+		'Before choosing an agent name, call subagent with agents: true to see the available agents (name, description, source); pick the exact name that fits the task - never invent or modify agent names, unknown names fail.',
+		'A session becomes read-only once its result is delivered to the main agent; reuseLabel + task makes it interactive again for a new task.',
+		"Steers typed into a running subagent's tab are folded into its final outcome and marked [steered] in the result.",
+		'listSubagents: true lists sessions linked to the active Pi session in a compact form and shows the workspace identity plus the exact bare label to reuse; listLabel/listStatus filter that listing, and listVerbose adds pane, session-file, and last-result diagnostics.',
+		`Default agent scope is "user" (from ${values.agentsDir}).`,
+		`To enable project-local agents in ${values.configDirName}/agents, set agentScope: "both" (or "project").`,
+	].join(' ');
+}
+
+export const SUBAGENT_STATS_TOOL_DESCRIPTION = [
+	`${REUSE_WORKFLOW_GUIDANCE} This tool is the stats step and must run before reuse.`,
+	'Reports compact reuse-relevant stats: context size, turns, input/output usage, cost, reuse count, recent task history, the last error or the path of the last role report, and only relevant warnings.',
+	'Context size and turns come from the session file itself, so the report is current even while the session runs.',
+	'Use this to judge cost and impact: a session with a large context, many turns, or many reuses is usually better replaced by a fresh session; a session whose task history does not match the new task topic is a poor reuse target.',
+	'Review/audit/verification tasks carry a hidden cost when reused: the session anchors on its earlier findings and may only retest those, missing newly introduced issues. For independent reviews of code that changed, prefer a fresh session or explicitly instruct the reused session to re-examine from scratch.',
+	'reuseLabel and this tool accept only the bare label from the active Pi session list; qualified workspace:label values and sessions from other Pi sessions are not reusable from the current session. Never infer or increment a label after a failed lookup; call listSubagents again.',
+].join(' ');
+
+export const SUBAGENT_STATS_LABEL_PARAM_DESCRIPTION =
+	'Exact bare reuseLabel copied from an active-session entry after calling listSubagents; pass the same label to subagent_stats before reuse. Never infer or increment labels, use labels from another workspace, or pass workspace:label.';
+
+export const SUBAGENT_CLOSE_TOOL_DESCRIPTION = [
+	'Close subagents linked to the current session: closes their herdr tabs and removes them from the registry (session files are preserved).',
+	'May only be used when the user explicitly asks to close subagents - never autonomously.',
+	'Without a label, closes all subagents linked to this session.',
+	'With a label, closes only that session-linked subagent (e.g. to retire a broken session the user wants stopped).',
+].join(' ');
+
+export const SUBAGENT_CLOSE_LABEL_PARAM_DESCRIPTION =
+	'Label of a session-linked subagent to close (e.g. worker-1). Omit to close all session-linked subagents.';
+
 export interface AgentTemplate {
 	filename: string;
 	name: string;

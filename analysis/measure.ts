@@ -62,9 +62,17 @@ export interface SessionScan {
 	/** Root-session read requests targeting a flow report file. */
 	reportReads: number;
 	reportReadTimestamps: number[];
+	/** Root-session read requests targeting the orchestration guide. */
+	guideReads: number;
+	guideReadTimestamps: number[];
 }
 
 const REPORT_PATH_RE = /\[full report: ([^\]\s]+)\]/;
+
+/** The guide the tool description and child prompts replaced, and the name it was retired from. */
+const GUIDE_FILENAME = 'subagent_orchestration.md';
+const RETIRED_GUIDE_FILENAME = 'SUBAGENTS_GUIDE.md';
+const GUIDE_FILENAMES = new Set([GUIDE_FILENAME, RETIRED_GUIDE_FILENAME]);
 
 function contentChars(message: { content?: unknown }): number {
 	if (typeof message.content === 'string') return message.content.length;
@@ -133,7 +141,16 @@ function isFlowReportPath(value: unknown): value is string {
 	);
 }
 
-function reportReadTimestamps(entry: SessionMessage): number[] {
+function isGuidePath(value: unknown): value is string {
+	if (typeof value !== 'string') return false;
+	const segments = value.replaceAll('\\', '/').split('/').filter(Boolean);
+	return GUIDE_FILENAMES.has(segments[segments.length - 1] ?? '');
+}
+
+type PathMatch = (path: unknown) => boolean;
+
+/** Timestamps of the `read` tool calls in one assistant turn whose path satisfies `isMatch`. */
+function readCallTimes(entry: SessionMessage, isMatch: PathMatch): number[] {
 	if (entry.message?.role !== 'assistant') return [];
 	const at = Date.parse(String(entry.timestamp ?? '')) || 0;
 	return contentBlocks(entry.message)
@@ -142,9 +159,17 @@ function reportReadTimestamps(entry: SessionMessage): number[] {
 			const name = block.name ?? block.toolName;
 			if (type !== 'toolCall' && type !== 'tool_use') return false;
 			if (name !== 'read') return false;
-			return isFlowReportPath(toolArguments(block)?.path);
+			return isMatch(toolArguments(block)?.path);
 		})
 		.map(() => at);
+}
+
+function reportReadTimestamps(entry: SessionMessage): number[] {
+	return readCallTimes(entry, isFlowReportPath);
+}
+
+function guideReadTimestamps(entry: SessionMessage): number[] {
+	return readCallTimes(entry, isGuidePath);
 }
 
 export function scanSession(filePath: string, child: boolean): SessionScan {
@@ -166,13 +191,16 @@ export function scanSession(filePath: string, child: boolean): SessionScan {
 		receivedTokens: 0,
 		reportReads: 0,
 		reportReadTimestamps: [],
+		guideReads: 0,
+		guideReadTimestamps: [],
 	};
 	if (!child) {
 		for (const entry of parsed) {
-			const timestamps = reportReadTimestamps(entry);
-			scan.reportReadTimestamps.push(...timestamps);
+			scan.reportReadTimestamps.push(...reportReadTimestamps(entry));
+			scan.guideReadTimestamps.push(...guideReadTimestamps(entry));
 		}
 		scan.reportReads = scan.reportReadTimestamps.length;
+		scan.guideReads = scan.guideReadTimestamps.length;
 	}
 	const assistantAt: number[] = [];
 	parsed.forEach((entry, index) => {
@@ -246,6 +274,37 @@ export function firstTelemetryAt(records: TelemetryRecord[]): number {
 	return records.length ? Math.min(...records.map((r) => r.at)) : Number.POSITIVE_INFINITY;
 }
 
+/** Root-session guide reads plus the size of the guide the tool description replaced. */
+export interface GuideMeasurement {
+	reads: number;
+	readsBefore: number;
+	readsAfter: number;
+	readsPerRoot: number;
+	readsPerRootBefore: number;
+	readsPerRootAfter: number;
+	renderedChars: number;
+	/** Estimated tokens of `agents/subagent_orchestration.md`; null when that file is absent. */
+	renderedTokens: number | null;
+}
+
+/** Validation evidence carried by telemetry, aggregated over one scope: overall, or a single role. */
+export interface ValidationEvidence {
+	scope: string;
+	delegations: number;
+	delegationsWithRefs: number;
+	refsMinted: number;
+	/** Minted refs whose run executed the gate rather than reusing stored evidence. */
+	refsExecuted: number;
+	refsReused: number;
+	/** Calls that resolved an existing ref instead of running the gate. */
+	refsResolvedByLookup: number;
+	fullValidationPasses: number;
+	/** Distinct `stateDigest` values across minted refs, counted inside one flow then summed. */
+	distinctStateDigests: number;
+	/** Executed mints per distinct digest; null when no flow minted a digest-bearing ref. */
+	executionsPerDigest: number | null;
+}
+
 export interface Measurement {
 	agentDir: string;
 	windowFrom: number;
@@ -272,6 +331,8 @@ export interface Measurement {
 	rootReportReads: number;
 	rootReportReadsBefore: number;
 	rootReportReadsAfter: number;
+	guide: GuideMeasurement;
+	validation: { overall: ValidationEvidence; byRole: ValidationEvidence[] };
 	telemetryFrom: number;
 	childrenInTelemetryWindow: number;
 	byRole: {
@@ -299,6 +360,78 @@ function perRoot(tokens: number, roots: number): number {
 	return roots ? Math.round(tokens / roots) : 0;
 }
 
+function perRootReads(reads: number, roots: number): number {
+	return roots ? Number((reads / roots).toFixed(2)) : 0;
+}
+
+/** Size of the rendered guide under the same chars / 4 estimator; absent means null, not zero. */
+function guideRenderSize(agentDir: string): { chars: number; tokens: number | null } {
+	const file = join(agentDir, 'agents', GUIDE_FILENAME);
+	if (!existsSync(file)) return { chars: 0, tokens: null };
+	const chars = readFileSync(file, 'utf8').length;
+	return { chars, tokens: estimateTokens(chars) };
+}
+
+/**
+ * Tally the `verify` refs one set of delegations carries. Deduplication happens inside one flow: refs
+ * are grouped by `flowId`, the distinct `stateDigest` values of the refs minted there are counted, and
+ * executed mints are divided by that count, so a ratio above 1 is a gate executed again over state that
+ * was already validated. A mint without a `stateDigest` cannot be deduplicated at all, so flows whose
+ * refs carry no digest stay out of the ratio instead of contributing a guessed denominator.
+ */
+function tallyValidation(records: TelemetryRecord[], scope: string): ValidationEvidence {
+	const digests = new Map<string, Set<string>>();
+	const executedInFlow = new Map<string, number>();
+	let delegations = 0;
+	let delegationsWithRefs = 0;
+	let refsMinted = 0;
+	let refsExecuted = 0;
+	let refsReused = 0;
+	let refsResolvedByLookup = 0;
+	let fullValidationPasses = 0;
+	for (const record of records) {
+		delegations++;
+		fullValidationPasses += record.metrics?.fullValidationPasses ?? 0;
+		const refs = record.metrics?.validationRefs ?? [];
+		if (refs.length) delegationsWithRefs++;
+		const flow = record.flowId ?? '-';
+		for (const ref of refs) {
+			if (ref.lookup) {
+				refsResolvedByLookup++;
+				continue;
+			}
+			refsMinted++;
+			if (ref.reused) refsReused++;
+			else refsExecuted++;
+			const digestsHere = digests.get(flow) ?? new Set<string>();
+			digests.set(flow, digestsHere);
+			executedInFlow.set(flow, (executedInFlow.get(flow) ?? 0) + (ref.reused ? 0 : 1));
+			if (ref.stateDigest) digestsHere.add(ref.stateDigest);
+		}
+	}
+	let distinctStateDigests = 0;
+	let digestibleExecutions = 0;
+	for (const [flow, set] of digests) {
+		if (!set.size) continue;
+		distinctStateDigests += set.size;
+		digestibleExecutions += executedInFlow.get(flow) ?? 0;
+	}
+	return {
+		scope,
+		delegations,
+		delegationsWithRefs,
+		refsMinted,
+		refsExecuted,
+		refsReused,
+		refsResolvedByLookup,
+		fullValidationPasses,
+		distinctStateDigests,
+		executionsPerDigest: distinctStateDigests
+			? Number((digestibleExecutions / distinctStateDigests).toFixed(2))
+			: null,
+	};
+}
+
 export function measure(
 	agentDir: string,
 	cutoff = defaultCutoff(readTelemetry(agentDir)),
@@ -319,6 +452,9 @@ export function measure(
 	let rootReportReads = 0;
 	let rootReportReadsBefore = 0;
 	let rootReportReadsAfter = 0;
+	let rootGuideReads = 0;
+	let rootGuideReadsBefore = 0;
+	let rootGuideReadsAfter = 0;
 	const telemetryChildFiles = new Set(
 		records.map((r) => r.sessionFile).filter((f): f is string => Boolean(f)),
 	);
@@ -339,6 +475,9 @@ export function measure(
 		rootReportReads += scan.reportReads;
 		rootReportReadsBefore += scan.reportReadTimestamps.filter((at) => at > 0 && at < cutoff).length;
 		rootReportReadsAfter += scan.reportReadTimestamps.filter((at) => at >= cutoff).length;
+		rootGuideReads += scan.guideReads;
+		rootGuideReadsBefore += scan.guideReadTimestamps.filter((at) => at > 0 && at < cutoff).length;
+		rootGuideReadsAfter += scan.guideReadTimestamps.filter((at) => at >= cutoff).length;
 		if (!scan.results.length) continue;
 		delegatingRoots++;
 		if (scan.results.some((r) => r.at < cutoff)) delegatingRootsBefore++;
@@ -375,6 +514,13 @@ export function measure(
 		}))
 		.toSorted((a, b) => b.turns - a.turns);
 
+	const validationRoles = new Map<string, TelemetryRecord[]>();
+	for (const record of records) {
+		const list = validationRoles.get(record.role) ?? [];
+		list.push(record);
+		validationRoles.set(record.role, list);
+	}
+	const guideSize = guideRenderSize(agentDir);
 	const beforeCarryTokens = carryOf(beforeResults);
 	const afterCarryTokens = carryOf(afterResults);
 
@@ -410,6 +556,22 @@ export function measure(
 		rootReportReads,
 		rootReportReadsBefore,
 		rootReportReadsAfter,
+		guide: {
+			reads: rootGuideReads,
+			readsBefore: rootGuideReadsBefore,
+			readsAfter: rootGuideReadsAfter,
+			readsPerRoot: perRootReads(rootGuideReads, delegatingRoots),
+			readsPerRootBefore: perRootReads(rootGuideReadsBefore, delegatingRootsBefore),
+			readsPerRootAfter: perRootReads(rootGuideReadsAfter, delegatingRootsAfter),
+			renderedChars: guideSize.chars,
+			renderedTokens: guideSize.tokens,
+		},
+		validation: {
+			overall: tallyValidation(records, 'overall'),
+			byRole: [...validationRoles.entries()]
+				.map(([role, list]) => tallyValidation(list, role))
+				.toSorted((a, b) => b.delegations - a.delegations || a.scope.localeCompare(b.scope)),
+		},
 		byRole,
 		childrenInTelemetryWindow: childrenInWindow,
 		unattributedChildren,
@@ -421,8 +583,40 @@ function row(cells: (string | number)[]): string {
 	return `| ${cells.join(' | ')} |`;
 }
 
+/** Duplicate execution measured before this workstream existed, quoted from the plan it came from. */
+const VALIDATION_BASELINE_LABEL =
+	'baseline 2026-09-05 plan: 1,075 duplicate project_command calls, 49.7% of them';
+
+const validationColumns = [
+	'scope',
+	'delegations',
+	'delegations with refs',
+	'refs minted',
+	'refs executed',
+	'refs reused',
+	'refs by lookup',
+	'full validation passes',
+	'distinct state digests',
+	'executions per digest',
+];
+
+function validationCells(v: ValidationEvidence): (string | number)[] {
+	return [
+		v.scope,
+		v.delegations,
+		v.delegationsWithRefs,
+		v.refsMinted,
+		v.refsExecuted,
+		v.refsReused,
+		v.refsResolvedByLookup,
+		v.fullValidationPasses,
+		v.distinctStateDigests,
+		v.executionsPerDigest === null ? '-' : v.executionsPerDigest.toFixed(2),
+	];
+}
+
 function date(t: number): string {
-	return t ? new Date(t).toISOString().slice(0, 16) : '-';
+	return Number.isFinite(t) && t > 0 ? new Date(t).toISOString().slice(0, 16) : '-';
 }
 
 export function renderMarkdown(m: Measurement): string {
@@ -536,6 +730,57 @@ export function renderMarkdown(m: Measurement): string {
 	lines.push('');
 	lines.push(
 		`Child spend recorded in telemetry: $${m.childrenCost.toFixed(4)} across ${m.telemetryRecords} turns.`,
+	);
+	lines.push('');
+	lines.push('## Validation evidence (the W7 target)');
+	lines.push('');
+	lines.push(
+		'Per role and overall: delegations carrying a `verify` ref, refs minted, refs ' +
+			'executed rather than reused, refs resolved by lookup, full validation passes ' +
+			'charged, and executions per distinct repository-state digest. Deduplication means ' +
+			'grouping records by `flowId`, counting the distinct `stateDigest` values across the ' +
+			'refs minted in that flow, and dividing executed mints by that count, because a ratio ' +
+			'above 1 is the duplicate execution this workstream exists to remove.',
+	);
+	lines.push('');
+	lines.push(row(validationColumns));
+	lines.push(row(['---', '---:', '---:', '---:', '---:', '---:', '---:', '---:', '---:', '---:']));
+	lines.push(row(validationCells(m.validation.overall)));
+	for (const v of m.validation.byRole) {
+		lines.push(row(validationCells(v)));
+	}
+	lines.push(row([VALIDATION_BASELINE_LABEL, ...validationColumns.slice(1).map(() => '-')]));
+	lines.push('');
+	lines.push(
+		'Every ref counted here was minted by a delegated child seat, because root ' +
+			'spend is not in telemetry. Minting works and is authorized per `verify` call shape, so a zero ' +
+			'here after children ran the gate means the shape was refused (`F9` in ' +
+			'`analysis/BASH_TOOLS_FOLLOWUPS.md`) rather than that validation was deduplicated.',
+	);
+	lines.push('');
+	lines.push('## Guide reads and rendered size (the W8 target)');
+	lines.push('');
+	lines.push(
+		'The `subagent` tool description and the child prompts now carry what used to ' +
+			'require a guide read, so this counts root-session `read` requests whose path ends in ' +
+			'`subagent_orchestration.md` or the retired `SUBAGENTS_GUIDE.md`, and prices the rendered ' +
+			'guide itself with the same chars / 4 estimator. Child-session reads are excluded, just ' +
+			'as flow-report reads are above.',
+	);
+	lines.push('');
+	lines.push(row(['window', 'guide reads', 'reads per delegating root']));
+	lines.push(row(['---', '---:', '---:']));
+	const guideRow = (label: string, reads: number, mean: number) =>
+		row([label, reads, mean.toFixed(2)]);
+	lines.push(guideRow('before cutoff', m.guide.readsBefore, m.guide.readsPerRootBefore));
+	lines.push(guideRow('at or after cutoff', m.guide.readsAfter, m.guide.readsPerRootAfter));
+	lines.push(guideRow('all', m.guide.reads, m.guide.readsPerRoot));
+	lines.push(row(['rendered guide (est. tokens)', m.guide.renderedTokens ?? '-', '-']));
+	lines.push('');
+	lines.push(
+		`Rendered guide source \`agents/${GUIDE_FILENAME}\` at ${m.guide.renderedChars} chars; ` +
+			'the size reads `-` when that file is absent from the agent dir, which is a missing ' +
+			'artifact rather than a cost of zero.',
 	);
 	return `${lines.join('\n')}\n`;
 }

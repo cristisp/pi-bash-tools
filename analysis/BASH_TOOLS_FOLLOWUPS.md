@@ -105,6 +105,7 @@ Two additions would let an agent decide what to do without re-reading prose:
 
 - [ ] Echo the effective evidence scope and whether a flow id was present on a lookup failure, so the child learns whether to re-execute or to hand the ref back to its parent.
 - [ ] Include `producerScope` and the producing role in a successful lookup, so a validator can see whose execution it is citing.
+- [ ] Recompute and return the current repository state on a lookup, or state plainly that the returned `repositoryState` is the minted state and that no comparison was made. Observed from a validator seat: a successful lookup returns `status`, `verdict`, `ref`, `projectPath`, `perStep`, `failureTail`, `reused`, `covers` and `repositoryState`, and the digest in it is the one recorded at mint time, so staleness after a post-mint edit cannot be decided from the payload. A seat must then re-execute to learn what a lookup should have told it, which is the exact cost this tool exists to remove.
 
 ## F6 (P1) Say whether a command writes to the repository
 
@@ -238,40 +239,31 @@ treats a `verify` ref as attesting to a command set at a moment, not as a conten
 after the last edit, a role that edits again mints a new ref rather than reusing the old one, and the fan-out
 rule is ownership rather than hashing. None of that depends on how this issue resolves.
 
-## F9 (P0) `verify` cannot be authorized in a seat that cannot answer a prompt
+## F9 (P1) An unauthorized `verify` shape reports only that it failed
 
-Problem: a delegated child seat cannot mint a `verify` ref at all, which makes the sibling-reference half of
-the flow cache untestable and silently unusable. Four child seats in one flow each died the same way, before
-any phase ran, with `verify authorization failed: timeout`.
+This was filed as P0, "a delegated seat cannot mint a ref at all", and that framing is withdrawn on evidence.
+A worker seat in one flow minted `vr_4f23b613381ea8dab8d05f7a` and `vr_34505fee17381e81e833d435`, and a
+validator seat in the same flow resolved both by bare `{ ref }` lookup and executed nothing. Child minting and
+sibling resolution both work, so the flow cache contract is now observed rather than designed.
 
-Mechanism, from your own source: `authorizeVerify` calls `authorizeOrPrompt` with `globalSafe: false`,
-`allowGlobal: false` and `deferAllowPersistence: false`, so an unrecognized call shape falls through to an
-interactive prompt and, with nobody to answer in a background pane, fails at `confirmationTimeoutMs` (120s in
-this install). The decision identity is `{ commandId, fingerprint }`, so authorization is granted per call
-*shape* rather than per tool. The project entry in `~/.pi/agent/bash-tools.json` now carries seven allowed
-`verify` shapes and two denied ones, accumulated from an interactive seat.
+What is real is narrower and still costs attempts. `authorizeVerify` decides per call *shape*, an identity of
+`{ commandId, fingerprint }`, with `globalSafe: false`, `allowGlobal: false` and `deferAllowPersistence: false`,
+so a shape with no recorded decision falls through to an interactive prompt. A delegated seat has nobody to
+answer it and fails at `confirmationTimeoutMs` (120s in this install) as `verify authorization failed: timeout`,
+while a shape matching one of the two `deny` entries recorded for this project fails as
+`verify authorization failed: denied`. Six child attempts across two rounds produced four timeouts and two
+denials before an already-allowed shape was reached, and not one of those refusals was actionable.
 
-What we observed and what that leaves open: a shape authorized from the interactive root seat still timed out
-when the same call was attempted from a child seat in the same project, so either the fingerprint is not
-reproducible across seats or the decision is not shared across them. We cannot tell which from outside, and
-both produce the same message.
+The shape-scoped decision itself is right and stays: it is what stops a role that may run the default gate from
+running an arbitrary package script through a `scripts` override. The complaint is about the failure, not the
+policy.
 
-Requested, in preference order:
+- [ ] On a refusal, name the fingerprint sought, the scope searched, and whether a prompt was attempted and timed out, so an operator can pre-authorize the one shape a role needs instead of guessing shapes.
+- [ ] Name the matched rule on a deny. A child cannot ask the operator what was denied in an unrelated earlier session, and `denied` and `timeout` reach the caller as one undifferentiated failure.
+- [ ] Consider letting one project-scope `verify` grant cover the phase-default shapes, since the shapes a legitimate role needs are the defaults, and today every new combination wants its own recorded decision.
 
-- [ ] Make the `verify` authorization decision reproducible across seats of one project: same call shape, same
-      persisted decision, no prompt in the second seat. If the fingerprint intentionally includes per-session
-      state, document it, because then no configuration can pre-authorize a child and the tool is unusable in
-      any unattended process.
-- [ ] Honor a project-scope `verify` grant without prompting when the caller is flow-scoped, so an operator can
-      pre-authorize delegated execution once instead of per shape per session.
-- [ ] On refusal, name the shape that was not recognized, the scope searched, and what would authorize it. The
-      current message distinguishes nothing: `timeout`, `policy-deny` and `policy-load-failure` all arrive at the
-      caller as one unexplained failure, and a child cannot ask the operator a follow-up question.
-
-Acceptance: a worker seat in a flow mints a ref with a project-scope grant already in place and no prompt
-appears; a seat that is not granted reports which shape it needed. Until this lands, every claim in
-`subagent-herdr` about a child-minted ref resolving for a sibling is design rather than observation, and the
-README and guide now say so.
+Acceptance: a delegated seat that cannot execute `verify` learns from its first refusal what to ask for, rather
+than discovering it by exhausting its call budget on shapes.
 
 ## Verification we would run on our side once F1 to F3 land
 

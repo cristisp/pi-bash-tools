@@ -129,6 +129,106 @@ function fixture(): string {
 	return dir;
 }
 
+function guideFixture(renderedGuide?: string): string {
+	const dir = mkdtempSync(join(tmpdir(), 'orchestration-measure-guide-'));
+	const sessions = join(dir, 'sessions');
+	mkdirSync(join(sessions, '--cwd--'), { recursive: true });
+	const guidePath = join(dir, 'agents', 'subagent_orchestration.md');
+	writeFileSync(
+		join(sessions, '--cwd--', 'root.jsonl'),
+		[
+			JSON.stringify({ type: 'session', version: 3 }),
+			subagentResult('2026-09-01T10:00:00.000Z', 400),
+			readCall('2026-09-01T10:00:05.000Z', guidePath),
+			readCall('2026-09-01T10:00:06.000Z', join(dir, 'SUBAGENTS_GUIDE.md')),
+			readCall('2026-09-01T10:00:07.000Z', join(dir, 'src', 'orchestration-guide.md')),
+			subagentResult('2026-09-03T10:00:40.000Z', 400),
+		].join('\n'),
+	);
+	writeFileSync(
+		join(sessions, 'subagent-wQ-worker-1.jsonl'),
+		[
+			msg('assistant', '2026-09-01T10:00:05.000Z'),
+			readCall('2026-09-01T10:00:06.000Z', guidePath),
+		].join('\n'),
+	);
+	if (renderedGuide !== undefined) {
+		mkdirSync(join(dir, 'agents'), { recursive: true });
+		writeFileSync(guidePath, renderedGuide);
+	}
+	return dir;
+}
+
+/** One `validationRefs` entry, defaulted to a mint whose run executed the gate. */
+function validationRef(overrides: Record<string, unknown>): Record<string, unknown> {
+	return { ref: 'vr_seed', reused: false, lookup: false, ...overrides };
+}
+
+/** Telemetry `metrics` carrying refs, defaulting to one executed full validation pass. */
+function refMetrics(refs: Record<string, unknown>[], passes = 1): Record<string, unknown> {
+	return { durationMs: 1, toolCalls: 1, fullValidationPasses: passes, validationRefs: refs };
+}
+
+/**
+ * Six delegations over two flows: two worker mints of one state digest in a single flow (the
+ * duplicate execution W7 exists to remove), a mint of a second digest in that flow, a lookup of a
+ * digest, a delegation with no ref at all, and a reused mint carrying the second digest again in a
+ * different flow, which must not dedup against the first flow.
+ */
+function validationFixture(): string {
+	const dir = mkdtempSync(join(tmpdir(), 'orchestration-measure-refs-'));
+	const digestA = 'aaaa11112222';
+	const digestB = 'bbbb11112222';
+	writeFileSync(
+		join(dir, 'subagent-herdr.telemetry.jsonl'),
+		[
+			telemetryRecord({
+				label: 'worker-1',
+				role: 'worker',
+				flowId: 'f1',
+				metrics: refMetrics([validationRef({ ref: 'vr_a', stateDigest: digestA })]),
+			}),
+			telemetryRecord({
+				label: 'worker-2',
+				role: 'worker',
+				flowId: 'f1',
+				metrics: refMetrics([validationRef({ ref: 'vr_b', stateDigest: digestA })]),
+			}),
+			telemetryRecord({
+				label: 'reviewer-1',
+				role: 'reviewer',
+				flowId: 'f1',
+				metrics: refMetrics([validationRef({ ref: 'vr_c', stateDigest: digestB })]),
+			}),
+			telemetryRecord({
+				label: 'reviewer-2',
+				role: 'reviewer',
+				flowId: 'f1',
+				metrics: refMetrics(
+					[validationRef({ ref: 'vr_c', lookup: true, stateDigest: digestB })],
+					0,
+				),
+			}),
+			telemetryRecord({
+				label: 'validator-1',
+				role: 'validator',
+				flowId: 'f1',
+				metrics: { durationMs: 1, toolCalls: 1 },
+			}),
+			telemetryRecord({
+				label: 'validator-2',
+				role: 'validator',
+				flowId: 'f2',
+				metrics: refMetrics(
+					[validationRef({ ref: 'vr_c', reused: true, stateDigest: digestB })],
+					0,
+				),
+			}),
+		].join('\n'),
+	);
+	return dir;
+}
+
 describe('estimateTokens and quantiles', () => {
 	it('uses the chars / 4 estimator', () => {
 		expect(estimateTokens(800)).toBe(200);
@@ -233,6 +333,80 @@ describe('measure', () => {
 		expect(m.unattributedChildren).toBe(1);
 	});
 
+	it('charges refs, passes and per-flow digests to each role', () => {
+		const m = measure(validationFixture());
+		expect(m.validation.overall).toMatchObject({
+			scope: 'overall',
+			delegations: 6,
+			delegationsWithRefs: 5,
+			refsMinted: 4,
+			refsExecuted: 3,
+			refsReused: 1,
+			refsResolvedByLookup: 1,
+			fullValidationPasses: 3,
+			// f1 carries aaaa and bbbb, f2 carries bbbb again: deduplication is scoped to one flow.
+			distinctStateDigests: 3,
+			executionsPerDigest: 1,
+		});
+	});
+
+	it('dedupes two mints of one digest in one flow to two executions over one digest', () => {
+		const worker = measure(validationFixture()).validation.byRole.find((r) => r.scope === 'worker');
+		expect(worker).toMatchObject({
+			delegations: 2,
+			delegationsWithRefs: 2,
+			refsMinted: 2,
+			refsExecuted: 2,
+			refsReused: 0,
+			fullValidationPasses: 2,
+			distinctStateDigests: 1,
+			executionsPerDigest: 2,
+		});
+	});
+
+	it('counts a ref resolved by lookup as a resolution, never as an execution', () => {
+		const reviewer = measure(validationFixture()).validation.byRole.find(
+			(r) => r.scope === 'reviewer',
+		);
+		expect(reviewer).toMatchObject({
+			delegations: 2,
+			refsMinted: 1,
+			refsExecuted: 1,
+			refsResolvedByLookup: 1,
+			distinctStateDigests: 1,
+			executionsPerDigest: 1,
+		});
+	});
+
+	it('credits a reused mint with no execution against its digest', () => {
+		const validator = measure(validationFixture()).validation.byRole.find(
+			(r) => r.scope === 'validator',
+		);
+		expect(validator).toMatchObject({
+			delegations: 2,
+			delegationsWithRefs: 1,
+			refsMinted: 1,
+			refsExecuted: 0,
+			refsReused: 1,
+			fullValidationPasses: 0,
+			distinctStateDigests: 1,
+			executionsPerDigest: 0,
+		});
+	});
+
+	it('reads carry no validation refs at all until child seats may mint them', () => {
+		const m = measure(fixture());
+		expect(m.validation.overall).toMatchObject({
+			delegations: 2,
+			delegationsWithRefs: 0,
+			refsMinted: 0,
+			refsResolvedByLookup: 0,
+			fullValidationPasses: 0,
+			distinctStateDigests: 0,
+			executionsPerDigest: null,
+		});
+	});
+
 	it('renders the tables a human reads', () => {
 		const m = measure(fixture());
 		const md = renderMarkdown(m);
@@ -255,5 +429,55 @@ describe('measure', () => {
 		expect(m.carry.meanCarryPerDelegatingRootAfter).toBe(0);
 		expect(m.childrenInTelemetryWindow).toBe(1);
 		expect(m.unattributedChildren).toBe(1);
+	});
+});
+
+describe('guide reads (the W8 target)', () => {
+	it('counts guide reads from root sessions only', () => {
+		const dir = guideFixture();
+		const root = scanSession(join(dir, 'sessions', '--cwd--', 'root.jsonl'), false);
+		const child = scanSession(join(dir, 'sessions', 'subagent-wQ-worker-1.jsonl'), true);
+		// The rendered guide plus the retired name count; the guide template in src does not.
+		expect(root.guideReads).toBe(2);
+		expect(root.guideReadTimestamps).toHaveLength(2);
+		expect(child.guideReads).toBe(0);
+	});
+
+	it('splits guide reads at the cutoff and prices them per delegating root', () => {
+		const cutoff = Date.parse('2026-09-01T10:00:05.500Z');
+		const m = measure(guideFixture(), cutoff);
+		expect(m.guide.reads).toBe(2);
+		expect(m.guide.readsBefore).toBe(1);
+		expect(m.guide.readsAfter).toBe(1);
+		expect(m.guide.readsPerRoot).toBe(2);
+		expect(m.guide.readsPerRootBefore).toBe(1);
+		expect(m.guide.readsPerRootAfter).toBe(1);
+	});
+
+	it('sizes the rendered guide with the chars / 4 estimator', () => {
+		const m = measure(guideFixture('x'.repeat(2000)));
+		expect(m.guide.renderedChars).toBe(2000);
+		expect(m.guide.renderedTokens).toBe(500);
+		expect(renderMarkdown(m)).toContain('| rendered guide (est. tokens) | 500 | - |');
+	});
+
+	it('renders a dash, not a crash, when the rendered guide is absent', () => {
+		const m = measure(guideFixture());
+		expect(m.guide.renderedTokens).toBeNull();
+		expect(m.guide.renderedChars).toBe(0);
+		const md = renderMarkdown(m);
+		expect(md).toContain('## Guide reads and rendered size (the W8 target)');
+		expect(md).toContain('| rendered guide (est. tokens) | - | - |');
+		expect(md).toContain('reads `-` when that file is absent');
+	});
+
+	it('states the mint-authorization caveat and the duplicate-call baseline in the W7 section', () => {
+		const md = renderMarkdown(measure(validationFixture()));
+		expect(md).toContain('## Validation evidence (the W7 target)');
+		expect(md).toContain('| overall | 6 | 5 | 4 | 3 | 1 | 1 | 3 | 3 | 1.00 |');
+		expect(md).toContain('| worker | 2 | 2 | 2 | 2 | 0 | 0 | 2 | 1 | 2.00 |');
+		expect(md).toContain('1,075 duplicate project_command calls, 49.7%');
+		expect(md).toContain('`F9` in `analysis/BASH_TOOLS_FOLLOWUPS.md`');
+		expect(md).toContain('rather than that validation was deduplicated');
 	});
 });
