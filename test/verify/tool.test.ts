@@ -95,6 +95,10 @@ function stringValues(value: unknown): string[] {
   return Object.values(value).flatMap(stringValues);
 }
 
+function expectNoAnsi(value: unknown): void {
+  expect(stringValues(value).some((entry) => entry.includes("\u001b"))).toBe(false);
+}
+
 function dependencies(failingScript?: string) {
   const order: string[] = [];
   const resolver: ProjectCommandResolver = async (definition, _projectPath, _signal, params) => {
@@ -160,7 +164,7 @@ it("runs fixed phases in order, exposes omissions, and reuses unchanged evidence
     ],
     covers: ["AC-VERIFY"],
   });
-  expect(stringValues(first.details).some((value) => value.includes("\u001b"))).toBe(false);
+  expectNoAnsi(first.details);
   expect(first.details.perStep.every((step) => step.failureTail === undefined)).toBe(true);
   expect(first.details.perStep.every((step) => Number.isInteger(step.durationMs))).toBe(true);
   expect(first.details.perStep[0]).not.toHaveProperty("resolvedCommand");
@@ -178,7 +182,11 @@ it("runs fixed phases in order, exposes omissions, and reuses unchanged evidence
     undefined,
     context(cwd),
   );
+  expect(lookup.details.status).toBe("unchanged");
+  expect(lookup.details.reused).toBe(true);
+  expect(lookup.details.perStep.every((step) => !step.executed)).toBe(true);
   expect(lookup.details.perStep[0]?.stdout.text).toBe("stdout");
+  expectNoAnsi(lookup.details);
   expect(lookup.details.perStep[0]).toHaveProperty("resolvedCommand");
   expect(lookup.details.perStep[0]).toHaveProperty("executable");
   expect(lookup.details.perStep[0]).toHaveProperty("args");
@@ -782,6 +790,7 @@ it("stops after failure by default and continues when requested", async () => {
       { phase: "test", status: "not-run" },
     ],
   });
+  expect(first.details.failureTail).toBeUndefined();
 
   const continued = dependencies("lint");
   const continuedTool = createVerifyToolForTesting({
@@ -790,7 +799,7 @@ it("stops after failure by default and continues when requested", async () => {
     executor: continued.executor,
     repositoryStateReader: continued.repositoryStateReader,
   });
-  await continuedTool.execute(
+  const continuedResult = await continuedTool.execute(
     "verify-2",
     { omit: ["typecheck"], continueOnFailure: true },
     undefined,
@@ -798,6 +807,10 @@ it("stops after failure by default and continues when requested", async () => {
     context(cwd),
   );
   expect(continued.order).toEqual(["format:check", "lint", "test"]);
+  expect(continuedResult.details.failureTail).toBeUndefined();
+  expect(
+    continuedResult.details.perStep.filter((step) => step.failureTail !== undefined),
+  ).toHaveLength(1);
 });
 
 it("limits failure tails to failed steps and strips ANSI escapes", async () => {
@@ -833,10 +846,21 @@ it("limits failure tails to failed steps and strips ANSI escapes", async () => {
     context(cwd),
   );
   expect(result.details.perStep[0]?.failureTail).toBeUndefined();
+  expectNoAnsi(result.details);
   const lintStep = result.details.perStep[1];
   expect(lintStep?.failureTail).toBeDefined();
   expect(lintStep?.failureTail).not.toContain("\u001b");
   expect(lintStep?.failureTail?.length).toBeLessThanOrEqual(8 * 1024);
+  const lookup = await tool.execute(
+    "verify-ansi-failure-ref",
+    { ref: result.details.ref },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  expectNoAnsi(lookup.details);
+  expect(lookup.details.perStep[1]?.stderr.text).not.toContain("\u001b");
+  expect(lookup.details.perStep[1]?.stderr.totalBytes).toBe(ansiOutput.length);
 });
 
 it("keeps the record failure pointer without duplicating complete step tails by ref", async () => {
@@ -862,9 +886,10 @@ it("keeps the record failure pointer without duplicating complete step tails by 
     undefined,
     context(cwd),
   );
-  expect(completed.details.failureTail).toBe("failure tail");
+  expect(completed.details.failureTail).toBeUndefined();
   expect(completed.details.perStep[1]?.failureTail).toBe("failure tail");
   expect(lookup.details.failureTail).toBe("failure tail");
+  expectNoAnsi(lookup.details);
   expect(lookup.details.perStep[1]).toHaveProperty("resolvedCommand");
   expect(lookup.details.perStep[1]).toHaveProperty("executable");
   expect(lookup.details.perStep[1]).not.toHaveProperty("failureTail");

@@ -55,6 +55,7 @@ The next work should be selected from the remaining follow-up workstreams below 
 - [x] Added fail-closed validation for persisted records, direct request keys, ref aliases, command identity, step state, aggregate verdicts, failure-tail safety, and integer durations.
 - [x] Kept failure tails only on failed steps, stripped ANSI SGR sequences before bounding, and removed duplicate tails from complete by-ref step output.
 - [x] Kept compact output bounded by omitting redundant command fields and marking reused step rows as not executed in the current call.
+- [x] Deduplicated top-level and step-level failure tails per response and stripped ANSI SGR sequences from full by-ref output while preserving raw byte totals.
 
 ### R4: Verify evidence references
 

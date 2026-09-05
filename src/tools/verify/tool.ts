@@ -156,37 +156,60 @@ function compactStep(step: VerifyStepResult, reused: boolean): VerifyStepResult 
   return compact;
 }
 
+function uniqueFailureTail(
+  steps: readonly VerifyStepResult[],
+  candidate: string | undefined,
+): string | undefined {
+  return candidate !== undefined && steps.some((step) => step.failureTail === candidate)
+    ? undefined
+    : candidate;
+}
+
 function compactOutput(record: VerifyEvidenceRecord): VerifyOutput {
+  const perStep = record.perStep.map((step) => compactStep(step, true));
+  const topLevelFailureTail = uniqueFailureTail(perStep, record.failureTail);
   return {
     status: "unchanged",
     verdict: record.verdict,
     ref: record.ref,
     projectPath: record.projectPath,
-    perStep: record.perStep.map((step) => compactStep(step, true)),
-    ...(record.failureTail === undefined ? {} : { failureTail: record.failureTail }),
+    perStep,
+    ...(topLevelFailureTail === undefined ? {} : { failureTail: topLevelFailureTail }),
     reused: true,
     covers: record.covers,
     ...(record.repositoryState === undefined ? {} : { repositoryState: record.repositoryState }),
   };
 }
 
+function fullChunk(value: VerifyOutputChunk): VerifyOutputChunk {
+  return { ...value, text: value.text.replace(ANSI_SGR_PATTERN, "") };
+}
+
 function fullStep(step: VerifyStepResult): VerifyStepResult {
-  if (step.failureTail === undefined || step.stdout.truncated || step.stderr.truncated) {
-    return step;
+  const full = {
+    ...step,
+    executed: false,
+    stdout: fullChunk(step.stdout),
+    stderr: fullChunk(step.stderr),
+  };
+  if (full.failureTail === undefined || full.stdout.truncated || full.stderr.truncated) {
+    return full;
   }
-  const { failureTail: stepFailureTail, ...withoutFailureTail } = step;
+  const { failureTail: stepFailureTail, ...withoutFailureTail } = full;
   void stepFailureTail;
   return withoutFailureTail;
 }
 
 function fullOutput(record: VerifyEvidenceRecord): VerifyOutput {
+  const perStep = record.perStep.map(fullStep);
+  const topLevelFailureTail = uniqueFailureTail(perStep, record.failureTail);
   return {
     status: "unchanged",
     verdict: record.verdict,
     ref: record.ref,
     projectPath: record.projectPath,
-    perStep: record.perStep.map(fullStep),
-    ...(record.failureTail === undefined ? {} : { failureTail: record.failureTail }),
+    perStep,
+    ...(topLevelFailureTail === undefined ? {} : { failureTail: topLevelFailureTail }),
     reused: true,
     covers: record.covers,
     ...(record.repositoryState === undefined ? {} : { repositoryState: record.repositoryState }),
@@ -425,13 +448,15 @@ function aggregateVerdict(steps: readonly VerifyStepResult[]): "passed" | "faile
 }
 
 function completedOutput(record: VerifyEvidenceRecord, reused: boolean): VerifyOutput {
+  const perStep = record.perStep.map((step) => compactStep(step, reused));
+  const topLevelFailureTail = uniqueFailureTail(perStep, record.failureTail);
   return {
     status: reused ? "unchanged" : "completed",
     verdict: record.verdict,
     ref: record.ref,
     projectPath: record.projectPath,
-    perStep: record.perStep.map((step) => compactStep(step, reused)),
-    ...(record.failureTail === undefined ? {} : { failureTail: record.failureTail }),
+    perStep,
+    ...(topLevelFailureTail === undefined ? {} : { failureTail: topLevelFailureTail }),
     reused,
     covers: record.covers,
     ...(record.repositoryState === undefined ? {} : { repositoryState: record.repositoryState }),
