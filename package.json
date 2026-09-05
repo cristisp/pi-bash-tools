@@ -1,6 +1,6 @@
 {
   "name": "@ztc/bash-tools",
-  "version": "0.11.3",
+  "version": "0.11.4",
   "description": "Safe bash tools for pi agents",
   "keywords": [
     "bash",
