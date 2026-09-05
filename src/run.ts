@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { withFileMutationQueue } from '@earendil-works/pi-coding-agent';
 import type { AgentConfig } from './agents.ts';
-import { getConfig, roleBudgetFor } from './config.ts';
+import { getConfig } from './config.ts';
 import {
 	delegationFromEntry,
 	ENV_FLOW,
@@ -45,7 +45,7 @@ import {
 } from './herdr.ts';
 import { pollSubagent } from './poll.ts';
 import { buildReportDigest, estimateTokens, writeRoleReport } from './report.ts';
-import { budgetSummaryFromMetrics } from './budget.ts';
+import { budgetSummaryFromMetrics, scopedRoleBudget } from './budget.ts';
 import { measureExecutionMetrics } from './metrics.ts';
 import {
 	allocateLabel,
@@ -91,7 +91,13 @@ function scopeGuidance(delegation: DelegationContext): string {
 	const lines = ['## Assigned review scope'];
 	if (delegation.reviewSurfacePath)
 		lines.push(`Shared review surface snapshot: ${delegation.reviewSurfacePath}`);
-	if (scope?.paths?.length) lines.push(`In-scope paths: ${scope.paths.join(', ')}`);
+	if (scope?.paths?.length) {
+		lines.push(`In-scope paths: ${scope.paths.join(', ')}`);
+		const budget = scopedRoleBudget(delegation.role, scope.paths.length);
+		lines.push(
+			`Inspection budget for this scope: ${budget.toolCalls} tool calls and ${budget.discoveryCalls} discovery calls, grown from the ${delegation.role} base for ${scope.paths.length} in-scope paths.`,
+		);
+	}
 	if (scope?.hunks?.length) lines.push(`Assigned hunks: ${scope.hunks.join(', ')}`);
 	if (scope?.outOfScope?.length) lines.push(`Out of scope: ${scope.outOfScope.join(', ')}`);
 	if (!delegation.reviewSurfacePath && !scope) return '';
@@ -205,11 +211,15 @@ async function applyOutcome(
 	return 'done';
 }
 
-function recordExecutionMetrics(result: SingleResult, startedAt: number): void {
+function recordExecutionMetrics(
+	result: SingleResult,
+	startedAt: number,
+	delegation?: DelegationContext,
+): void {
 	const metrics = measureExecutionMetrics(result, startedAt);
 	result.metrics = metrics;
 	const cfg = getConfig();
-	const limits = roleBudgetFor(result.agent, cfg);
+	const limits = scopedRoleBudget(result.agent, delegation?.scope?.paths?.length ?? 0, cfg);
 	const existing = result.budget;
 	result.budget = budgetSummaryFromMetrics(
 		result.agent,
@@ -220,7 +230,9 @@ function recordExecutionMetrics(result: SingleResult, startedAt: number): void {
 			fullValidationPasses: metrics.fullValidationPasses ?? 0,
 			failedToolCalls: metrics.failedToolCalls,
 			repeatedReads: metrics.repeatedReads,
-			outputTokens: metrics.outputTokens ?? 0,
+			outputTokens: metrics.reportOutputTokens ?? 0,
+			toolArgumentTokens: metrics.toolArgumentOutputTokens ?? 0,
+			reasoningTokens: metrics.reasoningTokens ?? existing?.usage.reasoningTokens,
 			wallTimeMs: Math.max(metrics.durationMs, existing?.usage.wallTimeMs ?? 0),
 		},
 		existing,
@@ -964,7 +976,7 @@ export async function runSingleAgent(
 		if (label) removeRegistryEntry(label);
 		return currentResult;
 	} finally {
-		recordExecutionMetrics(currentResult, startedAt);
+		recordExecutionMetrics(currentResult, startedAt, delegation);
 		attachRoleReport(currentResult, delegation, label);
 		emitDelegationTelemetry(currentResult, delegation, {
 			label,
@@ -1128,7 +1140,7 @@ export async function runReusedAgent(
 		currentResult.stderr = (err as Error).message || String(err);
 		return currentResult;
 	} finally {
-		recordExecutionMetrics(currentResult, startedAt);
+		recordExecutionMetrics(currentResult, startedAt, delegation);
 		if (!abortedRun && currentResult.exitCode !== 0 && label)
 			updateRegistryEntry(label, completionPatch(currentResult));
 		attachRoleReport(currentResult, delegation, label);

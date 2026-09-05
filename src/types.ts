@@ -31,6 +31,8 @@ export type BudgetOutcome = 'within' | 'steered' | 'report_only' | 'aborted';
 export interface RoleBudget {
 	toolCalls: number;
 	discoveryCalls: number;
+	/** Worker-only discovery allowance before the first implementation tool call. */
+	implementationDiscoveryCalls?: number;
 	fullValidationPasses: number;
 	failedToolCalls: number;
 	repeatedReads: number;
@@ -45,7 +47,18 @@ export interface BudgetUsage {
 	fullValidationPasses: number;
 	failedToolCalls: number;
 	repeatedReads: number;
+	/**
+	 * Output tokens produced by turns that issued no tool call, i.e. the report prose the
+	 * `outputTokens` limit governs. Tool-call arguments are bounded by the call budgets instead.
+	 */
 	outputTokens: number;
+	/** Output tokens produced by turns that issued at least one tool call. Not limited. */
+	toolArgumentTokens?: number;
+	/**
+	 * Reasoning/thinking output on report turns. Reported separately because a reasoning-heavy model
+	 * must not spend the report contract on thinking; not limited.
+	 */
+	reasoningTokens?: number;
 	wallTimeMs: number;
 }
 
@@ -66,6 +79,10 @@ export interface BudgetSummary {
 	reportOnly: boolean;
 	/** Opaque provenance token for the automatic steer message emitted in this turn. */
 	automaticSteerId?: string;
+	/** Whether this child has attempted an implementation tool call. */
+	implementationStarted?: boolean;
+	/** Whether the worker-only pre-implementation discovery gate has blocked a call. */
+	implementationGateReached?: boolean;
 }
 
 export type EvidenceScope = 'session' | 'flow';
@@ -274,6 +291,35 @@ export interface ExecutionMetrics {
 	discoveryCalls?: number;
 	fullValidationPasses?: number;
 	outputTokens?: number;
+	/** Subset of `outputTokens` emitted on turns without tool calls; compared to the report budget. */
+	reportOutputTokens?: number;
+	/** Output emitted on turns that issued tool calls, bounded by the call budgets instead. */
+	toolArgumentOutputTokens?: number;
+	/** Reasoning/thinking tokens reported by the provider; excluded from the report budget. */
+	reasoningTokens?: number;
+	/**
+	 * Tool-issued `verify` refs this child minted or resolved, in call order. Refs are resolvable inside
+	 * the flow that minted them; refs minted by a root session are process-local and never reach a child.
+	 */
+	validationRefs?: ValidationReference[];
+}
+
+export interface ValidationReference {
+	/** Opaque ref issued by the `verify` tool. */
+	ref: string;
+	/** Aggregate verdict of the run the ref points at. */
+	verdict?: 'passed' | 'failed' | 'incomplete';
+	/** The run reused evidence for unchanged repository state instead of executing the gate. */
+	reused: boolean;
+	/** The call resolved this ref instead of running the gate. */
+	lookup: boolean;
+	/** First 12 chars of HEAD the evidence was minted against. */
+	head?: string;
+	/**
+	 * First 12 chars of the dirty-state digest reported with the run. A ref carries the state it was
+	 * minted against, so comparing refs inside one flow exposes evidence reused across differing states.
+	 */
+	stateDigest?: string;
 }
 
 export interface TelemetryRecord {

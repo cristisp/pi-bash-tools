@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { getConfig } from './config.ts';
 import type { Registry } from './types.ts';
@@ -30,11 +31,18 @@ export function readRegistry(): Registry {
 }
 
 function writeRegistry(reg: Registry): void {
-	const tmp = `${REGISTRY_PATH}.tmp`;
+	// Unique per write: with a shared temp name, two writers can each overwrite the other's temp
+	// file, so one rename publishes stale content and the other fails on a missing file - a whole
+	// registry update is lost with no error.
+	const tmp = `${REGISTRY_PATH}.${process.pid}.${randomUUID()}.tmp`;
 	try {
 		fs.writeFileSync(tmp, JSON.stringify(reg, null, 2), { mode: 0o600 });
 		fs.renameSync(tmp, REGISTRY_PATH);
-	} catch {}
+	} catch {
+		try {
+			fs.unlinkSync(tmp);
+		} catch {}
+	}
 }
 
 // fallow-ignore-next-line complexity

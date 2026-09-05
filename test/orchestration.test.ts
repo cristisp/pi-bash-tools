@@ -12,6 +12,7 @@ import {
 	ENV_MODE,
 	ENV_ROLE,
 	ENV_REVIEW_MODE,
+	ENV_SCOPE_PATHS,
 	ENV_TIER,
 	evidenceScopeForRole,
 	isOpaqueId,
@@ -97,8 +98,22 @@ describe('narrowEvidenceScope', () => {
 
 describe('evidenceScopeForRole', () => {
 	it('applies per-role overrides from config', () => {
-		expect(evidenceScopeForRole('validator', DEFAULT_CONFIG)).toBe('session');
+		expect(evidenceScopeForRole('validator', DEFAULT_CONFIG)).toBe('flow');
 		expect(evidenceScopeForRole('worker', DEFAULT_CONFIG)).toBe('flow');
+		expect(
+			evidenceScopeForRole('validator', {
+				evidenceScopeByRole: { validator: 'session' },
+			}),
+		).toBe('session');
+	});
+
+	it('narrows a validator to session scope so it cannot resolve sibling refs', () => {
+		expect(narrowEvidenceScope(evidenceScopeForRole('validator', DEFAULT_CONFIG), 'session')).toBe(
+			'session',
+		);
+		expect(narrowEvidenceScope(evidenceScopeForRole('validator', DEFAULT_CONFIG), 'flow')).toBe(
+			'flow',
+		);
 	});
 
 	it('ignores inherited object properties', () => {
@@ -165,7 +180,7 @@ describe('resolveDelegation', () => {
 	it('refuses to widen past the configured role scope', () => {
 		const delegation = resolveDelegation({
 			role: 'validator',
-			policy: DEFAULT_CONFIG,
+			policy: { evidenceScopeDefault: 'session', evidenceScopeByRole: {} },
 			orchestration: { evidenceScope: 'flow' },
 		});
 		expect(delegation.evidenceScope).toBe('session');
@@ -207,6 +222,16 @@ describe('orchestrationEnv', () => {
 			[ENV_CRITERIA]: 'F-001,F-002',
 			[ENV_EVIDENCE_SCOPE]: 'flow',
 		});
+	});
+
+	it('exports the declared scope size so the child can size its inspection budget', () => {
+		const env = orchestrationEnv({
+			delegationId: 'd-1',
+			role: 'reviewer',
+			evidenceScope: 'flow',
+			scope: { paths: ['src/a.ts', 'src/b.ts', 'src/c.ts'] },
+		});
+		expect(env[ENV_SCOPE_PATHS]).toBe('3');
 	});
 
 	it('omits unset fields so absence stays meaningful', () => {

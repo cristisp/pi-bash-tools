@@ -35,6 +35,10 @@ export function formatExecutionMetrics(metrics: ExecutionMetrics): string {
 	if (metrics.discoveryCalls !== undefined) parts.push(`discovery:${metrics.discoveryCalls}`);
 	if (metrics.fullValidationPasses !== undefined)
 		parts.push(`validation:${metrics.fullValidationPasses}`);
+	if (metrics.validationRefs?.length) {
+		const executed = metrics.validationRefs.filter((reference) => !reference.lookup).length;
+		parts.push(`verify:${metrics.validationRefs.length} ran:${executed}`);
+	}
 	if (metrics.outputTokens !== undefined)
 		parts.push(`output:${formatTokens(metrics.outputTokens)}`);
 	if (metrics.maxContextTokens) parts.push(`max-ctx:${formatTokens(metrics.maxContextTokens)}`);

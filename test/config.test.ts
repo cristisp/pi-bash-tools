@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	configPath,
 	DEFAULT_CONFIG,
+	DEFAULT_MUTATING_COMMAND_ROLES,
 	DEFAULT_ROLE_BUDGETS,
+	DEFAULT_VALIDATION_EXECUTION_ROLES,
 	getConfig,
 	parseModelPresets,
 	parseRoleBudgets,
@@ -53,6 +55,8 @@ describe('getConfig - overrides', () => {
 			steerTimeoutMs: 30_000,
 			perTaskOutputCap: 1024,
 			reportDigestTokens: 400,
+			scopeCallAllowancePerPath: 3,
+			scopeCallAllowanceMax: 64,
 			reportContractPolicy: 'reject',
 			ledgerMaxRevisions: 25,
 			ledgerPointers: false,
@@ -64,6 +68,9 @@ describe('getConfig - overrides', () => {
 			flowRetentionDays: 7,
 			evidenceScopeDefault: 'session',
 			evidenceScopeByRole: { validator: 'session' },
+			mutatingCommandRoles: ['worker', 'implementer'],
+			validationExecutionRoles: ['worker'],
+			repositoryWriteLock: false,
 			roleBudgets: DEFAULT_ROLE_BUDGETS,
 			modelPresets: { fast: { worker: 'p/m:high' } },
 			defaultPreset: 'fast',
@@ -79,6 +86,49 @@ describe('getConfig - overrides', () => {
 		const cfg = getConfig();
 		expect(cfg.reportDigestTokens).toBe(DEFAULT_CONFIG.reportDigestTokens);
 		expect(cfg.reportContractPolicy).toBe('flag');
+	});
+
+	it('keeps every role on the default evidence scope and honours explicit narrowing', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		expect(getConfig().evidenceScopeByRole).toEqual({});
+		writeConfigFile({ evidenceScopeByRole: { validator: 'session' } });
+		expect(getConfig().evidenceScopeByRole).toEqual({ validator: 'session' });
+	});
+
+	it('drops invalid mutating command role names and keeps an explicit empty list', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		writeConfigFile({ mutatingCommandRoles: ['worker', '', 7, ' worker '] });
+		expect(getConfig().mutatingCommandRoles).toEqual(['worker']);
+		writeConfigFile({ mutatingCommandRoles: [] });
+		expect(getConfig().mutatingCommandRoles).toEqual([]);
+		writeConfigFile({ mutatingCommandRoles: 'worker' });
+		expect(getConfig().mutatingCommandRoles).toEqual([...DEFAULT_MUTATING_COMMAND_ROLES]);
+	});
+
+	it('defaults validation execution to worker and validator and lets a config list narrow it', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		expect(DEFAULT_VALIDATION_EXECUTION_ROLES).toEqual(['worker', 'validator']);
+		expect(getConfig().validationExecutionRoles).toEqual(['worker', 'validator']);
+		writeConfigFile({ validationExecutionRoles: [' validator ', '', 7, 'validator'] });
+		expect(getConfig().validationExecutionRoles).toEqual(['validator']);
+		writeConfigFile({ validationExecutionRoles: [] });
+		expect(getConfig().validationExecutionRoles).toEqual([]);
+		writeConfigFile({ validationExecutionRoles: 'worker' });
+		const fallback = [...DEFAULT_VALIDATION_EXECUTION_ROLES];
+		expect(getConfig().validationExecutionRoles).toEqual(fallback);
+	});
+
+	it('defaults the sibling write exclusion on and lets a config disable it', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		expect(getConfig().repositoryWriteLock).toBe(true);
+		writeConfigFile({ repositoryWriteLock: false });
+		expect(getConfig().repositoryWriteLock).toBe(false);
+		writeConfigFile({ repositoryWriteLock: 'no' });
+		expect(getConfig().repositoryWriteLock).toBe(true);
 	});
 });
 
@@ -162,11 +212,38 @@ describe('getConfig - model presets', () => {
 	});
 });
 
+describe('DEFAULT_ROLE_BUDGETS', () => {
+	it('covers the fixed inspection cost of a scoped review before any finding is written', () => {
+		const reviewer = DEFAULT_ROLE_BUDGETS.reviewer;
+		// Flow ledger, read manifest, full diff, then one read per in-scope path.
+		const fixedInspections = 3;
+		const scopePaths = 10;
+		expect(reviewer.toolCalls).toBeGreaterThan(fixedInspections + scopePaths);
+		expect(reviewer.discoveryCalls).toBeGreaterThan(fixedInspections + scopePaths);
+		expect(reviewer.discoveryCalls).toBeLessThan(reviewer.toolCalls);
+	});
+
+	it('budgets more report output than a reviewer report contract needs', () => {
+		expect(DEFAULT_ROLE_BUDGETS.reviewer.outputTokens).toBeGreaterThanOrEqual(4000);
+	});
+
+	it('grants scope-scaled inspections on top of every role budget', () => {
+		expect(DEFAULT_CONFIG.scopeCallAllowancePerPath).toBeGreaterThan(0);
+		expect(DEFAULT_CONFIG.scopeCallAllowanceMax).toBeGreaterThanOrEqual(16);
+	});
+});
+
 describe('parseRoleBudgets', () => {
 	it('merges valid role limits with role defaults and ignores invalid values', () => {
 		expect(
 			parseRoleBudgets({
-				worker: { toolCalls: 40, outputTokens: 1200, budgetPolicy: 'abort', failedToolCalls: -1 },
+				worker: {
+					toolCalls: 40,
+					implementationDiscoveryCalls: 5,
+					outputTokens: 1200,
+					budgetPolicy: 'abort',
+					failedToolCalls: -1,
+				},
 				bad: 'nope',
 				__proto__: { toolCalls: 1 },
 			}),
@@ -175,6 +252,7 @@ describe('parseRoleBudgets', () => {
 				...DEFAULT_ROLE_BUDGETS.worker,
 				toolCalls: 40,
 				outputTokens: 1200,
+				implementationDiscoveryCalls: 5,
 				budgetPolicy: 'abort',
 			},
 		});

@@ -9,6 +9,7 @@ import {
 import { Container, type SelectItem, SelectList, Text } from '@earendil-works/pi-tui';
 import { discoverAgents } from './agents.ts';
 import { configPath, DEFAULT_CONFIG, getConfig } from './config.ts';
+import { ORCHESTRATION_GUIDE_FILENAME, renderOrchestrationGuide } from './guide.ts';
 import {
 	hasThinkingLevel,
 	isValidModelSpec,
@@ -148,7 +149,7 @@ function setPresetEntries(
 export function registerSetupCommand(pi: ExtensionAPI) {
 	pi.registerCommand('setup-subagents', {
 		description:
-			'Create or update the planner, reviewer, scout, worker, and validator agent files in ~/.pi/agent/agents, prompting for a model (provider/model:thinking_level) per agent; writes the models into the "default" subagent preset in the subagent-herdr config file (asks before overriding existing presets)',
+			'Create or update the planner, reviewer, scout, worker, and validator agent files in ~/.pi/agent/agents, prompting for a model (provider/model:thinking_level) per agent; writes the models into the "default" subagent preset in the subagent-herdr config file (asks before overriding existing presets) and writes the orchestration guide next to the agent files',
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) {
 				ctx.ui.notify('/setup-subagents needs an interactive session', 'warning');
@@ -180,13 +181,17 @@ export function registerSetupCommand(pi: ExtensionAPI) {
 			}
 
 			const agentsDir = path.join(getAgentDir(), 'agents');
-			const existing = AGENT_TEMPLATES.filter((t) =>
-				fs.existsSync(path.join(agentsDir, t.filename)),
-			);
+			const guideFile = path.join(agentsDir, ORCHESTRATION_GUIDE_FILENAME);
+			const existing = [
+				...AGENT_TEMPLATES.filter((t) => fs.existsSync(path.join(agentsDir, t.filename))).map(
+					(t) => t.filename,
+				),
+				...(fs.existsSync(guideFile) ? [ORCHESTRATION_GUIDE_FILENAME] : []),
+			];
 			if (existing.length > 0) {
 				const ok = await ctx.ui.confirm(
 					'Overwrite existing agent files?',
-					`These files already exist and would be overwritten:\n${existing.map((t) => `- ${t.filename}`).join('\n')}\n\nContinue?`,
+					`These files already exist and would be overwritten:\n${existing.map((name) => `- ${name}`).join('\n')}\n\nContinue?`,
 				);
 				if (!ok) {
 					ctx.ui.notify('/setup-subagents canceled - no files changed', 'info');
@@ -202,6 +207,20 @@ export function registerSetupCommand(pi: ExtensionAPI) {
 				fs.writeFileSync(file, renderAgentFile(t));
 				if (existed) updated++;
 				else created++;
+			}
+			let guideMessage: string;
+			try {
+				const rendered = renderOrchestrationGuide(getConfig());
+				fs.writeFileSync(guideFile, rendered);
+				guideMessage = `orchestration guide written to ${guideFile}`;
+				const legacyGuide = path.join(path.dirname(agentsDir), 'SUBAGENTS_GUIDE.md');
+				if (fs.existsSync(legacyGuide) && fs.readFileSync(legacyGuide, 'utf-8') !== rendered) {
+					guideMessage += ` - ${legacyGuide} is hand-maintained guidance; point the system prompt at ${guideFile} and delete it`;
+				}
+			} catch (error) {
+				const reason = error instanceof Error ? error.message : String(error);
+				guideMessage = `orchestration guide NOT written (${reason})`;
+				ctx.ui.notify(guideMessage, 'warning');
 			}
 
 			let configMessage: string;
@@ -226,7 +245,7 @@ export function registerSetupCommand(pi: ExtensionAPI) {
 				configMessage = `Config file seeded with default preset at ${configFile}`;
 			}
 			ctx.ui.notify(
-				`Subagents ready - ${created} created, ${updated} updated. ${configMessage}`,
+				`Subagents ready - ${created} created, ${updated} updated. ${configMessage}. ${guideMessage}`,
 				'info',
 			);
 			setPresetStatus(

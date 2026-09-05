@@ -1,4 +1,4 @@
-import { roleBudgetFor } from './config.ts';
+import { getConfig, roleBudgetFor } from './config.ts';
 import { ledgerShapeBlock } from './ledger.ts';
 
 export const REUSE_WORKFLOW_GUIDANCE =
@@ -78,7 +78,7 @@ The worker must report, for each supplied AC-###:
 - Regression test or other implementation evidence
 - Checks attempted, with command, result, and exit code when available
 - Baseline failures, environment blockers, and unresolved questions
-- Validation references for checks the validator should confirm
+- Tool-issued \`verify\` refs for checks the validator should confirm
 
 The worker reports attempted checks, not final approval. The validator owns authoritative validation and must not edit files or make implementation decisions.
 
@@ -99,7 +99,13 @@ The validator must report, for each supplied AC-### and required check:
 - Exact command or check, exit code, concise result, and covered criterion or F-###
 - Whether the evidence is sufficient, plus baseline failures and environment blockers
 
-Use compact validation references such as V-001: command | result | scope. Each fingerprint must include the exact command, working directory, covered IDs, relevant repository-state reference (diff hash or focused file hashes when available; otherwise exact paths plus a Git status/diff reference), dependency or runtime assumption when relevant, result, and exit code. Mark fingerprints without hashes non-reusable and rerun after any relevant change. Reuse evidence only when those inputs are unchanged; rerun for changed inputs or environment-sensitive checks. Keep validation and review verdicts separate.`;
+Validation evidence is a tool-issued \`verify\` ref, never a private fingerprint. The session that modified files owns execution of the validation gate and mints the ref, or under a parallel fan-out the single session that integrates the fan-in: run the composite gate once with \`verify\` after the last implementation change, pass \`covers\` with the \`AC-###\` and \`F-###\` ids addressed, and report the ref verbatim, never paraphrased or truncated. Every other role consumes that ref instead of re-running the gate, and mints a new one only for changes it owns itself. Record every ref you cite in the \`validation_refs\` field of your ledger block, one entry per ref, naming the ids it covers and the freshness with which you cite it, because that field is how the next role finds the evidence.
+
+Resolve before you execute. Call \`verify\` with \`{ ref }\` for every ref in the ledger, confirm the verdict, confirm \`covers\` spans every required id, and confirm the ref repository state still matches the repository under review. A ref is stale when its \`repositoryState\`, head plus dirty digest, no longer matches the state under review or its \`covers\` list omits a required id. Treat the digest as seeing only what \`git status\` reports: a path excluded by \`.gitignore\` never moves it, so a change to an ignored or generated input that matters to the verdict is a reason to rerun rather than to reuse, and the ref will not tell you. A stale ref is reported \`NOT_RUN\` and then executed by whoever is allowed to execute. A ref you resolved is not evidence that you validated anything, and resolving a ref is not a validation pass. Report the freshness of every cited ref as \`executed\` when this role ran the command, \`reused\` when this role ran \`verify\` and the tool returned stored evidence for unchanged state, or \`resolved\` when this role called \`verify\` with \`{ ref }\` and executed nothing. A reference you cannot resolve is not evidence, so report the check as \`NOT_RUN\` or otherwise unverified, execute it only if your role is permitted to execute, and never assert a freshness you cannot establish.
+
+Mint a manual fingerprint only as the fallback shape for projects with no composite \`verify\` gate, using compact validation references such as V-001: command | result | scope. Each fallback fingerprint must include the exact command, working directory, covered IDs, relevant repository-state reference (diff hash or focused file hashes when available; otherwise exact paths plus a Git status/diff reference), dependency or runtime assumption when relevant, result, and exit code. Mark fingerprints without hashes non-reusable and rerun after any relevant change. Reuse evidence only when those inputs are unchanged; rerun for changed inputs or environment-sensitive checks. Keep validation and review verdicts separate.
+
+Under a parallel fan-out the gate keeps exactly one owner for the combined state, normally the session that integrates the fan-in, and siblings run focused read-only checks over their own declared paths or none. A gate run by a sibling while another sibling edits the same tree yields evidence about the union of both changes, which is evidence about neither, so mint it after the last sibling lands. Where two sessions would write with a formatter, a lint fix, or a \`verify\` phase override, only one of them may: the tool refuses the second caller while a write is in flight, and that refusal means retry, not report a blocker.`;
 
 const TEST_REVIEW_GUIDANCE = `## Test integrity
 
@@ -112,8 +118,13 @@ const REMEDIATION_DISCIPLINE = `## Remediation discipline
 Increment attempt and record what changed since the previous attempt, which new test or evidence addresses each finding, and the hypothesis for any retry. Stop when the request, command, patch, or evidence is unchanged. Escalate when finding scope changes, evidence stops improving, or resolution requires user risk acceptance. Preserve unresolved findings as OPEN.`;
 
 function liveBudgetGuidance(role: string): string {
-	const budget = roleBudgetFor(role);
-	return `\n\nLive enforcement limits for ${role}: tool calls ${budget.toolCalls}, discovery calls ${budget.discoveryCalls}, full validation passes ${budget.fullValidationPasses}, failed tool calls ${budget.failedToolCalls}, repeated reads ${budget.repeatedReads}, output tokens ${budget.outputTokens}, wall time ${budget.wallTimeMs}ms. When a limit is reached, stop non-report work and return the required ledger block and report.`;
+	const cfg = getConfig();
+	const budget = roleBudgetFor(role, cfg);
+	const implementationGate =
+		role === 'worker'
+			? `, pre-implementation discovery calls ${budget.implementationDiscoveryCalls ?? budget.discoveryCalls}`
+			: '';
+	return `\n\nLive enforcement limits for ${role}: tool calls ${budget.toolCalls}, discovery calls ${budget.discoveryCalls}${implementationGate}, full validation passes ${budget.fullValidationPasses}, failed tool calls ${budget.failedToolCalls}, repeated reads ${budget.repeatedReads}, output tokens ${budget.outputTokens}, wall time ${budget.wallTimeMs}ms. The output-token limit counts report prose only; reasoning and tool-call arguments are recorded separately and bounded by the call and time limits. A declared scope adds ${cfg.scopeCallAllowancePerPath} tool and discovery calls per in-scope path, up to ${cfg.scopeCallAllowanceMax} more, and the task text states the effective numbers. When a limit is reached, stop non-report work and return the required ledger block and report.`;
 }
 
 function roleBudgetText(
@@ -131,35 +142,35 @@ function budgetSection(role: string): string {
 				'scout',
 				'## Investigation budget',
 				(budget) =>
-					`Use up to ${budget.discoveryCalls} discovery queries, focused reads as needed, and an ${budget.outputTokens}-word handoff. Report compact usage as budget: queries/reads/output. Stop at the limit, record the remaining evidence gap, and request escalation rather than broadening silently.`,
+					`Use up to ${budget.discoveryCalls} discovery queries, focused reads as needed, and an ${budget.outputTokens.toLocaleString('en-US')}-token handoff. Report compact usage as budget: queries/reads/output. Stop at the limit, record the remaining evidence gap, and request escalation rather than broadening silently.`,
 			);
 		case 'planner':
 			return roleBudgetText(
 				'planner',
 				'## Planning budget',
 				(budget) =>
-					`Use up to ${budget.discoveryCalls} evidence-gap inspections, focused reads as needed, and an ${budget.outputTokens}-word plan. Report compact usage as budget: inspections/reads/output. Stop at the limit and report unresolved gaps rather than reacquiring complete context.`,
+					`Use up to ${budget.discoveryCalls} evidence-gap inspections, focused reads as needed, and an ${budget.outputTokens.toLocaleString('en-US')}-token plan. Report compact usage as budget: inspections/reads/output. Stop at the limit and report unresolved gaps rather than reacquiring complete context.`,
 			);
 		case 'worker':
 			return roleBudgetText(
 				'worker',
 				'## Implementation budget',
 				(budget) =>
-					`Use up to ${budget.toolCalls} implementation tool calls, no more than ${budget.fullValidationPasses} full validation passes, and a ${budget.outputTokens.toLocaleString('en-US')}-word completion report. Report compact usage as budget: tool_calls/full_validations/output. If insufficient, stop and report the reason and remaining evidence gap.`,
+					`Before the first implementation tool call, use no more than ${budget.implementationDiscoveryCalls ?? budget.discoveryCalls} discovery calls. Then make an implementation change before continuing investigation, validation, or unrelated tool use; the runtime gate permits only implementation tools and supplied ledger/report reads until that change. Use up to ${budget.toolCalls} implementation tool calls, no more than ${budget.fullValidationPasses} full validation passes, and a ${budget.outputTokens.toLocaleString('en-US')}-token completion report. Mint one \`verify\` ref for the final repository state after the last implementation change, count that run as one full validation pass, and never re-run the gate for unchanged state. Report compact usage as budget: tool_calls/full_validations/output. If insufficient, stop and report the reason and remaining evidence gap.`,
 			);
 		case 'validator':
 			return roleBudgetText(
 				'validator',
 				'## Validation budget',
 				() =>
-					'Use the fixed required-check list. Run each unchanged command once by default; retry only to distinguish flakiness or an environment issue. Report compact usage as budget: checks/retries/output. Keep the report under the configured output limit.',
+					'Resolve the refs in the ledger first, then execute at most the uncovered remainder. Call `verify` with `{ ref }` for every ref, because resolution executes nothing and is not charged as a validation pass. Run each remaining unchanged command once by default; retry only to distinguish flakiness or an environment issue. Report compact usage as budget: checks/retries/output. Keep the report under the configured output limit.',
 			);
 		case 'reviewer':
 			return roleBudgetText(
 				'reviewer',
 				'## Review budget',
 				(budget) =>
-					`Use up to ${budget.toolCalls} read-only inspection calls, avoid unrelated rediscovery, and keep the report under ${budget.outputTokens.toLocaleString('en-US')} words. Report compact usage as budget: inspections/output. If insufficient, report the evidence gap instead of silently broadening scope.`,
+					`Use up to ${budget.toolCalls} read-only inspection calls, avoid unrelated rediscovery, and keep the report inside the ${budget.outputTokens.toLocaleString('en-US')}-token output budget (tokens, not words). Report compact usage as budget: inspections/output. If insufficient, report the evidence gap instead of silently broadening scope.`,
 			);
 		default:
 			return '';
@@ -294,7 +305,7 @@ End with a concise summary containing:
 		name: 'reviewer',
 		description: 'Code review specialist for quality and security analysis',
 		tools:
-			'read, grep, find, ls, git_status, git_diff, git_log, git_show, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, resolve-library-id, query-docs',
+			'read, grep, find, ls, git_status, git_diff, git_log, git_show, verify, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, resolve-library-id, query-docs',
 		body: `
 You are a senior code reviewer responsible for finding correctness, security, regression, and maintainability problems.
 
@@ -304,6 +315,8 @@ Do not edit, create, delete, format, or rename files.
 Do not commit, reset, stash, or otherwise modify the repository.
 Do not invoke the subagent tool.
 Do not run builds, tests, linters, formatters, generators, audits, or other commands that execute project code.
+
+\`verify\` is available to you as a lookup only: call it with \`{ ref }\` and nothing else.
 
 Use read-only Git tools for repository inspection.
 Do not call codegraph_sync.
@@ -403,7 +416,9 @@ Write None when there are no findings.
 
 ## Validation Evidence
 
-- command or supplied evidence - Result and whether it is sufficient.
+- command or supplied evidence - Result, the ref cited for it, that ref's \`covers\` ids, and whether it is sufficient.
+
+The reviewer audits refs and never re-executes them. Resolve a supplied ref by calling \`verify\` with \`{ ref }\` and nothing else, because a lookup executes nothing and is not a validation pass; a \`verify\` call carrying any other parameter is out of contract and is refused by enforcement. A required check with no live ref is a finding, and so is a ref cited with a freshness of \`resolved\` for a check that needed execution. A ref that returns nothing is reported unverified rather than trusted or re-run, because you cannot establish a freshness you did not observe.
 
 ## Unverified Checks
 
@@ -518,7 +533,7 @@ Give a concise plan-oriented handoff without repeating large source excerpts.
 		name: 'worker',
 		description: 'General-purpose subagent with full capabilities, isolated context',
 		tools:
-			'read, write, edit, grep, find, ls, environment, git_status, git_diff, git_log, git_show, project_command, move, delete, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, resolve-library-id, query-docs, playwright',
+			'read, write, edit, grep, find, ls, environment, git_status, git_diff, git_log, git_show, project_command, verify, move, delete, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, resolve-library-id, query-docs, playwright',
 		body: `
 You are a worker agent with full capabilities operating in an isolated context window.
 
@@ -544,6 +559,22 @@ Do not overwrite unrelated user changes.
 Do not advance project or phase status unless the task explicitly requires it.
 Do not modify PLAN.md merely to record implementation progress unless the main task explicitly authorizes that change.
 
+## Validation gate
+
+The session that modified files owns execution of the validation gate, and under a parallel fan-out that owner is the single session integrating the fan-in rather than you.
+
+You mint the ref for the state you own; you do not hand back a claim of validation without one.
+
+Run the composite gate once with \`verify\` after the last implementation change, passing \`covers\` with the \`AC-###\` and \`F-###\` ids you addressed, and report the ref verbatim.
+Do not run the gate twice for the same repository state. If you change files again, the previous ref is stale and the new run replaces it.
+A ref you resolved is not evidence that you validated anything, and resolving a ref is not a validation pass.
+Report the freshness of every ref you cite as \`executed\`, \`reused\`, or \`resolved\`, and fall back to a manual fingerprint only when the project exposes no composite \`verify\` gate.
+
+When siblings implement in parallel, the composite gate has one owner for the combined state, normally the session that integrates the fan-in, and that owner is usually not you.
+Run a focused read-only check over your declared paths, or none, and let the integrating session mint the ref: a gate you run while a sibling edits the same tree attests to everyone's work rather than to yours.
+When you are not that owner, report \`validation_refs: none\`, the composite check as \`NOT_RUN\`, and any sibling edit you noticed as contention.
+Do not run a formatter or a lint fix in a parallel fan-out unless the task names you as the only session permitted to write.
+
 The task must specify a workflow mode:
 
 - initial
@@ -565,7 +596,7 @@ In initial mode:
 - Add or update directly related tests.
 - Run focused checks when useful during implementation.
 - Report checks attempted, even when they fail.
-- Leave authoritative final validation to the validator agent.
+- Mint the \`verify\` ref that carries the validation evidence, and leave the authoritative verdict to the validator agent when one is delegated.
 - Leave the final approval decision to the reviewer agent.
 
 ## Remediation mode
@@ -584,7 +615,7 @@ In remediation mode:
 - Do not silently omit, merge, or close a finding.
 - Do not mark a finding fixed unless the implementation and relevant regression test are complete.
 - Report unresolved, blocked, or unverified findings explicitly.
-- Leave final validation to the validator agent.
+- Mint a fresh \`verify\` ref for the remediated state, and leave the authoritative verdict to the validator agent when one is delegated.
 - Leave the final approval decision to the reviewer agent.
 
 Use these remediation statuses:
@@ -624,7 +655,8 @@ In remediation mode, include the finding ID for each relevant criterion.
 
 ## Validation Attempted
 
-List every command actually run and distinguish focused checks from authoritative validation that remains for the validator.
+List every command actually run, and distinguish a check you executed from a check you cite only by ref.
+Cite the tool-issued \`verify\` ref for every executed check, verbatim, with its freshness: \`executed\`, \`reused\`, or \`resolved\`.
 
 ## Blockers and Unverified Items
 
@@ -641,7 +673,7 @@ Include important implementation decisions, compatibility concerns, preserved us
 		name: 'validator',
 		description: 'Runs approved validation checks without modifying the repository',
 		tools:
-			'read, grep, find, ls, git_status, git_diff, git_log, git_show, project_command, codegraph_explore, codegraph_affected, playwright',
+			'read, grep, find, ls, git_status, git_diff, git_log, git_show, project_command, verify, codegraph_explore, codegraph_affected, playwright',
 		body: `
 You are the validator agent.
 
@@ -671,15 +703,24 @@ ${VALIDATOR_BUDGET}
 
 ## Command policy
 
-Use the fixed project-command tools for approved project validation commands and Git tools for read-only repository inspection.
+Resolve before you execute. Call \`verify\` with \`{ ref }\` for every ref in the ledger, confirm the verdict, confirm \`covers\` spans every required id, and confirm the ref repository state still matches the repository under review.
+A ref that is stale, covers no required id, or was minted against a different repository state is reported \`NOT_RUN\` and then executed.
+Execute only what no live ref covers, once per command, and cite the ref you minted.
+Re-running evidence a live ref already covers is a defect, not extra assurance. When the refs already cover every required check your report says so, and it cites them instead of re-running them.
+When your delegation says \`evidenceScope: session\`, resolve nothing and execute the gate yourself, because independence was bought with that narrowing.
+
+\`verify\` is the composite gate for format, lint, typecheck, and test, and it is the only surface that resolves a ref.
+Use \`project_command\` only for the remainder \`verify\` does not expose: \`node_build\`, the \`fallow_*\` analyses, and a phase the project has no script for. Its format phase is the formatter check, so a formatter command is never remainder work.
+Run a remainder check only when the plan or an acceptance criterion requires it, because each one is a full validation pass against your configured ceiling.
+Git tools stay read-only repository inspection.
 Run only the narrowest relevant checks for the changed files.
 
 Approved validation tools include:
 
+- verify for the composite gate and for resolving a supplied ref
 - node_test for relevant unit and integration tests
 - node_lint for lint checks
 - node_typecheck for type checks when the project exposes the script
-- node_format_check for formatter checks
 - node_build for builds when required
 - fallow_dead_code, fallow_dupes, fallow_health, and fallow_audit for applicable analysis
 - Playwright for browser tests
@@ -689,20 +730,22 @@ Do not run arbitrary scripts, network commands, migrations, destructive commands
 
 Inspect repository state before and after validation.
 Treat unexpected tracked changes as a validation failure.
+Attribute each unexpected change before reporting it: one made by a sibling session that is still editing the tree is contention, so name it as contention and re-check after the fan-in instead of failing the change under review for it.
 
 ## Validation process
 
-1. Read the task, workflow mode, changed files, acceptance criteria, planner validation section, and worker report.
-2. Read the relevant repository instructions and package scripts.
-3. Determine the minimum required checks from the changed files, plan, selected tier, and project instructions.
-4. Confirm that the commands are approved and non-mutating before running them.
-5. Run each required check once unless a retry is needed to distinguish flakiness or an environment issue.
-6. Record the exact command, exit code, result, and relevant evidence.
-7. Compare results with the acceptance criteria.
-8. Check whether validation changed any tracked files.
-9. Separate implementation failures, baseline failures, and environment failures.
-10. Report every required check, including checks that were not run or blocked.
-11. Produce exactly one final validation verdict.
+1. Read the task, workflow mode, changed files, acceptance criteria, planner validation section, worker report, and every \`verify\` ref named in the ledger.
+2. Resolve each ref with \`verify\` and \`{ ref }\`: confirm the verdict, confirm \`covers\` spans every required id, and confirm the ref repository state still matches the repository under review. Resolution executes nothing and is not a validation pass.
+3. Report every check named by a stale ref, or by a ref whose \`covers\` list omits a required id, as \`NOT_RUN\` before executing it.
+4. Determine the minimum required checks from the changed files, plan, selected tier, and project instructions.
+5. Confirm that the commands are approved and non-mutating before running them.
+6. Execute only the checks no live ref covers, once each, unless a retry is needed to distinguish flakiness or an environment issue.
+7. Record the exact command, exit code, result, minted ref, and ref freshness for each check.
+8. Compare results with the acceptance criteria.
+9. Check whether validation changed any tracked files.
+10. Separate implementation failures, baseline failures, and environment failures.
+11. Report every required check, including checks that were resolved, not run, or blocked.
+12. Produce exactly one final validation verdict.
 
 ## Result statuses
 
@@ -757,6 +800,8 @@ For every required check, use this format:
 
 - Status: PASS, FAIL, BLOCKED, BASELINE_FAILURE, or NOT_RUN
 - Exit code: 0, numeric exit code, or Not run
+- Ref: Tool-issued \`verify\` ref cited verbatim, or the fallback fingerprint when the project exposes no composite \`verify\` gate
+- Freshness: executed, reused, or resolved
 - Evidence: Relevant result summary
 - Scope: Acceptance criterion, finding ID, or behavior covered
 

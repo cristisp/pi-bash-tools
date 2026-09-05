@@ -167,7 +167,7 @@ export const SubagentParams = Type.Object({
 	evidenceScope: Type.Optional(
 		StringEnum(['session', 'flow'] as const, {
 			description:
-				'Widest evidence this delegation may reuse. May only narrow the scope configured for the role, never widen it.',
+				'How independence is requested for this delegation. The default scope is flow for every role, so a child resolves sibling refs; narrowing to session stops the child resolving sibling refs, so it must execute its own checks. May only narrow the scope configured for the role, never widen it.',
 		}),
 	),
 	reuseLabel: Type.Optional(

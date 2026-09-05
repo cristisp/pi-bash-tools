@@ -23,6 +23,10 @@ export interface SubagentHerdrConfig {
 	perTaskOutputCap: number;
 	/** Estimated-token budget for the report digest delivered to the parent. */
 	reportDigestTokens: number;
+	/** Extra tool and discovery calls granted per path declared in a child's assigned scope. */
+	scopeCallAllowancePerPath: number;
+	/** Ceiling on the scope-derived allowance added to the tool and discovery budgets. */
+	scopeCallAllowanceMax: number;
 	reportContractPolicy: ReportContractPolicy;
 	/** Ledger revisions kept per flow; the oldest are dropped when appending past this count. */
 	ledgerMaxRevisions: number;
@@ -37,8 +41,23 @@ export interface SubagentHerdrConfig {
 	flowRetentionDays: number;
 	/** Widest evidence scope a delegated child may reuse by default. */
 	evidenceScopeDefault: EvidenceScope;
-	/** Per-role overrides of evidenceScopeDefault. */
+	/** Per-role overrides of evidenceScopeDefault. Empty means every role inherits the default. */
 	evidenceScopeByRole: Record<string, EvidenceScope>;
+	/** Roles whose children may run project commands that write to the repository. */
+	mutatingCommandRoles: string[];
+	/**
+	 * Roles permitted to execute validation. Every other role may only resolve a tool-issued `verify`
+	 * reference, so a `verify` call that is not a pure `{ ref }` lookup is refused for them. This is the
+	 * knob that makes 'every other role may only resolve a reference' enforced rather than requested.
+	 */
+	validationExecutionRoles: string[];
+	/**
+	 * Serialize repository-writing project commands across delegated child sessions, and refuse a
+	 * validation gate that would run while a sibling session holds a write in flight. Keyed by
+	 * repository root, so it also covers two flows sharing one checkout. Exclusion fails open when the
+	 * lock store is unusable, because a broken lock must not wedge every write in a flow.
+	 */
+	repositoryWriteLock: boolean;
 	/** Per-agent live budgets. Unlisted roles use the default budget. */
 	roleBudgets: Record<string, RoleBudget>;
 	modelPresets: Record<string, ModelPreset>;
@@ -52,6 +71,7 @@ export function configPath(): string {
 const DEFAULT_ROLE_BUDGET: RoleBudget = {
 	toolCalls: 24,
 	discoveryCalls: 24,
+	implementationDiscoveryCalls: 12,
 	fullValidationPasses: 2,
 	failedToolCalls: 3,
 	repeatedReads: 3,
@@ -64,15 +84,36 @@ export const DEFAULT_ROLE_BUDGETS: Record<string, RoleBudget> = {
 	scout: { ...DEFAULT_ROLE_BUDGET, toolCalls: 20, discoveryCalls: 8, outputTokens: 800 },
 	planner: { ...DEFAULT_ROLE_BUDGET, toolCalls: 20, discoveryCalls: 6, outputTokens: 800 },
 	worker: { ...DEFAULT_ROLE_BUDGET, outputTokens: 1000 },
+	// A validator resolves the worker's `verify` ref first, so it executes at most what the ref does not
+	// cover. The limit is three passes: the uncovered remainder, plus retries for flakiness and an
+	// environment split. A validator that needs more is re-running evidence that already exists.
 	validator: {
 		...DEFAULT_ROLE_BUDGET,
 		toolCalls: 20,
 		discoveryCalls: 12,
-		fullValidationPasses: 8,
+		fullValidationPasses: 3,
 		outputTokens: 800,
 	},
-	reviewer: { ...DEFAULT_ROLE_BUDGET, toolCalls: 12, discoveryCalls: 12, outputTokens: 1000 },
+	// A primary review pays for the flow ledger, the read manifest, the full diff, and one read per
+	// in-scope path before it can write a finding, then still has to pay for the report. The call
+	// budgets stay above that fixed cost and the report budget stays above the reviewer report
+	// contract; scopeCallAllowancePerPath grows the call budgets with the declared scope size.
+	reviewer: {
+		...DEFAULT_ROLE_BUDGET,
+		toolCalls: 32,
+		discoveryCalls: 28,
+		outputTokens: 4000,
+	},
 };
+
+export const DEFAULT_MUTATING_COMMAND_ROLES: readonly string[] = ['worker'];
+
+/**
+ * Validation execution is owned by the session that changed files (`worker`) and, when the spawner
+ * asks for independent execution, by `validator`. Declared before `DEFAULT_CONFIG` so the default is
+ * initialized before the config object that references it is built.
+ */
+export const DEFAULT_VALIDATION_EXECUTION_ROLES: readonly string[] = ['worker', 'validator'];
 
 export const DEFAULT_CONFIG: SubagentHerdrConfig = {
 	maxParallelTasks: 8,
@@ -85,6 +126,8 @@ export const DEFAULT_CONFIG: SubagentHerdrConfig = {
 	steerTimeoutMs: 60_000,
 	perTaskOutputCap: 50 * 1024,
 	reportDigestTokens: 250,
+	scopeCallAllowancePerPath: 2,
+	scopeCallAllowanceMax: 32,
 	reportContractPolicy: 'flag',
 	ledgerMaxRevisions: 60,
 	ledgerPointers: true,
@@ -95,12 +138,17 @@ export const DEFAULT_CONFIG: SubagentHerdrConfig = {
 	confirmProjectAgents: true,
 	flowRetentionDays: 14,
 	evidenceScopeDefault: 'flow',
-	evidenceScopeByRole: { validator: 'session' },
+	evidenceScopeByRole: {},
+	mutatingCommandRoles: [...DEFAULT_MUTATING_COMMAND_ROLES],
+	validationExecutionRoles: [...DEFAULT_VALIDATION_EXECUTION_ROLES],
+	repositoryWriteLock: true,
 	roleBudgets: DEFAULT_ROLE_BUDGETS,
 	modelPresets: {},
 };
 
-const DEFAULT_EVIDENCE_SCOPE_BY_ROLE: Record<string, EvidenceScope> = { validator: 'session' };
+// Every role inherits `flow` so validation evidence minted by the session that changed files resolves
+// for its siblings. Independence is requested per delegation by narrowing to `session`, not owned here.
+const DEFAULT_EVIDENCE_SCOPE_BY_ROLE: Record<string, EvidenceScope> = {};
 
 const EVIDENCE_SCOPES = new Set<EvidenceScope>(['session', 'flow']);
 
@@ -109,6 +157,7 @@ const BUDGET_POLICIES = new Set<BudgetPolicy>(['steer', 'abort']);
 const BUDGET_KEYS = [
 	'toolCalls',
 	'discoveryCalls',
+	'implementationDiscoveryCalls',
 	'fullValidationPasses',
 	'failedToolCalls',
 	'repeatedReads',
@@ -131,6 +180,8 @@ const NUMERIC_KEYS = [
 	'herdrCliTimeoutMs',
 	'flowRetentionDays',
 	'reportDigestTokens',
+	'scopeCallAllowancePerPath',
+	'scopeCallAllowanceMax',
 	'ledgerMaxRevisions',
 ] as const satisfies readonly (keyof SubagentHerdrConfig)[];
 
@@ -142,6 +193,18 @@ export function parseEvidenceScopes(raw: unknown): Record<string, EvidenceScope>
 		if (EVIDENCE_SCOPES.has(value as EvidenceScope)) scopes[role] = value as EvidenceScope;
 	}
 	return scopes;
+}
+
+export function parseRoleNames(raw: unknown): string[] {
+	if (!Array.isArray(raw)) return [];
+	const names: string[] = [];
+	for (const value of raw) {
+		if (typeof value !== 'string') continue;
+		const name = value.trim();
+		if (!name || name === '__proto__' || names.includes(name)) continue;
+		names.push(name);
+	}
+	return names;
 }
 
 export function parseRoleBudgets(raw: unknown): Record<string, RoleBudget> {
@@ -221,6 +284,9 @@ export function getConfig(filePath?: string): SubagentHerdrConfig {
 	if (typeof overrides.ledgerPointers === 'boolean') {
 		cfg.ledgerPointers = overrides.ledgerPointers;
 	}
+	if (typeof overrides.repositoryWriteLock === 'boolean') {
+		cfg.repositoryWriteLock = overrides.repositoryWriteLock;
+	}
 	if (EVIDENCE_SCOPES.has(overrides.evidenceScopeDefault as EvidenceScope)) {
 		cfg.evidenceScopeDefault = overrides.evidenceScopeDefault as EvidenceScope;
 	}
@@ -231,6 +297,12 @@ export function getConfig(filePath?: string): SubagentHerdrConfig {
 		...DEFAULT_EVIDENCE_SCOPE_BY_ROLE,
 		...parseEvidenceScopes(overrides.evidenceScopeByRole),
 	};
+	cfg.mutatingCommandRoles = Array.isArray(overrides.mutatingCommandRoles)
+		? parseRoleNames(overrides.mutatingCommandRoles)
+		: [...DEFAULT_MUTATING_COMMAND_ROLES];
+	cfg.validationExecutionRoles = Array.isArray(overrides.validationExecutionRoles)
+		? parseRoleNames(overrides.validationExecutionRoles)
+		: [...DEFAULT_VALIDATION_EXECUTION_ROLES];
 	cfg.roleBudgets = {
 		...DEFAULT_ROLE_BUDGETS,
 		...parseRoleBudgets(overrides.roleBudgets),

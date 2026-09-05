@@ -77,13 +77,29 @@ function makeDetails(results: SingleResult[]): SubagentDetails {
 	return { mode: 'single', agentScope: 'user', projectAgentsDir: null, results };
 }
 
-function countTempDirs(): number {
+function tempDirs(): string[] {
 	try {
-		return fs.readdirSync(os.tmpdir()).filter((d) => d.startsWith('pi-subagent-')).length;
+		return fs.readdirSync(os.tmpdir()).filter((d) => d.startsWith('pi-subagent-'));
 	} catch {
-		return 0;
+		return [];
 	}
 }
+
+/**
+ * Directories created after the snapshot. `test/setup.ts` points TMPDIR at a per-file private root, so
+ * this scan sees only this file's prompt dirs: sibling test files run in their own workers with their
+ * own roots, and real subagent launches from other pi sessions use the real TMPDIR.
+ */
+function tempDirsSince(baseline: Set<string>): string[] {
+	return tempDirs().filter((dir) => !baseline.has(dir));
+}
+
+describe('test harness isolation', () => {
+	it('scans a per-file temp root so prompt dirs from sibling files cannot leak in', () => {
+		expect(path.basename(fs.realpathSync(os.tmpdir()))).toMatch(/^subagent-herdr-tmp-/);
+		expect(fs.realpathSync(process.env.TMPDIR as string)).toBe(fs.realpathSync(os.tmpdir()));
+	});
+});
 
 function singleCall(
 	overrides: {
@@ -178,7 +194,7 @@ describe('runSingleAgent - launch', () => {
 			args[4].messages.push(toolResultMsg('t2'));
 			return 'settled';
 		});
-		const before = countTempDirs();
+		const baseline = new Set(tempDirs());
 		const result = await singleCall({ step: 1, parentSession: '/sess/parent.jsonl' });
 		expect(result.exitCode).toBe(0);
 		expect(result.label).toBe('worker-1');
@@ -217,7 +233,7 @@ describe('runSingleAgent - launch', () => {
 			parentSession: '/sess/parent.jsonl',
 			tasks: ['do it'],
 		});
-		expect(countTempDirs()).toBe(before);
+		expect(tempDirsSince(baseline)).toEqual([]);
 	});
 
 	it('persists the workspace display name on a fresh entry', async () => {
@@ -230,7 +246,7 @@ describe('runSingleAgent - launch', () => {
 	});
 
 	it('keeps temp files alive until the run completes', async () => {
-		const before = countTempDirs();
+		const baseline = new Set(tempDirs());
 		let resolvePoll!: (value: 'aborted' | 'gone' | 'settled' | 'failed') => void;
 		vi.mocked(pollSubagent).mockReturnValue(
 			new Promise<'aborted' | 'gone' | 'settled' | 'failed'>((resolve) => {
@@ -239,12 +255,12 @@ describe('runSingleAgent - launch', () => {
 		);
 		const promise = singleCall({ step: 1 });
 		await vi.waitFor(() => {
-			expect(countTempDirs()).toBeGreaterThan(before);
+			expect(tempDirsSince(baseline).length).toBeGreaterThan(0);
 		});
 		resolvePoll('settled');
 		const result = await promise;
 		expect(result.exitCode).toBe(0);
-		expect(countTempDirs()).toBe(before);
+		expect(tempDirsSince(baseline)).toEqual([]);
 	});
 });
 
@@ -339,13 +355,13 @@ describe('runSingleAgent - failures', () => {
 
 	it('cleans up and unregisters on launch failure', async () => {
 		vi.mocked(launchInPane).mockResolvedValue('boom');
-		const before = countTempDirs();
+		const baseline = new Set(tempDirs());
 		const result = await singleCall();
 		expect(result.exitCode).toBe(1);
 		expect(result.stderr).toContain('Could not launch subagent in pane ws1:p9 (boom)');
 		expect(closeTab).toHaveBeenCalledWith('t9');
 		expect(readRegistry().tabs).toEqual({});
-		expect(countTempDirs()).toBe(before);
+		expect(tempDirsSince(baseline)).toEqual([]);
 	});
 
 	it('fails fast for unknown agents without touching herdr', async () => {
@@ -427,7 +443,7 @@ describe('runReusedAgent - prompting', () => {
 		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'working' });
 		vi.mocked(writeReadManifest).mockRejectedValueOnce(new Error('manifest unavailable'));
 		registerEntry(makeRegistryEntry({ status: 'running', parentSession: '/sess/parent.jsonl' }));
-		const before = countTempDirs();
+		const baseline = new Set(tempDirs());
 		const result = await runReusedAgent(
 			'/tmp',
 			[agent],
@@ -448,13 +464,13 @@ describe('runReusedAgent - prompting', () => {
 			.find((args) => args[0] === 'agent' && args[1] === 'prompt');
 		expect(prompt?.[3]).toContain('next task');
 		expect(prompt?.[3]).not.toContain('Read the bounded manifest');
-		expect(countTempDirs()).toBe(before);
+		expect(tempDirsSince(baseline)).toEqual([]);
 	});
 
 	it('retains manifest metadata and cleans up after a scoped reused prompt', async () => {
 		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'working' });
 		registerEntry(makeRegistryEntry({ status: 'running', parentSession: '/sess/parent.jsonl' }));
-		const before = countTempDirs();
+		const baseline = new Set(tempDirs());
 		const result = await runReusedAgent(
 			'/tmp',
 			[agent],
@@ -471,7 +487,7 @@ describe('runReusedAgent - prompting', () => {
 		expect(result.exitCode).toBe(0);
 		expect(result.readManifest?.persistedPath).toContain('predigest/manifests/');
 		expect(fs.existsSync(result.readManifest?.persistedPath as string)).toBe(true);
-		expect(countTempDirs()).toBe(before);
+		expect(tempDirsSince(baseline)).toEqual([]);
 		expect(readRegistry().tabs['ws1:worker-1']?.readManifest?.persistedPath).toBe(
 			result.readManifest?.persistedPath,
 		);
@@ -673,10 +689,13 @@ describe('delegation identity', () => {
 		expect(result.flowId).toBeUndefined();
 	});
 
-	it('honours narrowing and refuses widening of the evidence scope', async () => {
+	it('honours narrowing of the evidence scope and exports the inherited default', async () => {
 		await singleCall({
+			agentName: 'validator',
+			task: 'check it',
 			parentSession: '/sess/parent.jsonl',
 			orchestration: { evidenceScope: 'session' },
+			agents: [validatorAgent],
 		});
 		expect(vi.mocked(launchInPane).mock.calls[0][1]).toContain(
 			"PI_ORCHESTRATION_EVIDENCE_SCOPE='session'",
@@ -686,11 +705,10 @@ describe('delegation identity', () => {
 			agentName: 'validator',
 			task: 'check it',
 			parentSession: '/sess/parent.jsonl',
-			orchestration: { evidenceScope: 'flow' },
 			agents: [validatorAgent],
 		});
 		expect(vi.mocked(launchInPane).mock.calls[1][1]).toContain(
-			"PI_ORCHESTRATION_EVIDENCE_SCOPE='session'",
+			"PI_ORCHESTRATION_EVIDENCE_SCOPE='flow'",
 		);
 	});
 

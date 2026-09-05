@@ -59,12 +59,12 @@ export function userMsg(text: string): Message {
 	return { role: 'user', content: [{ type: 'text' as const, text }], timestamp: Date.now() };
 }
 
-export function toolResultMsg(toolCallId: string): Message {
+export function toolResultMsg(toolCallId: string, text = 'ok', toolName = 'bash'): Message {
 	return {
 		role: 'toolResult',
 		toolCallId,
-		toolName: 'bash',
-		content: [{ type: 'text' as const, text: 'ok' }],
+		toolName,
+		content: [{ type: 'text' as const, text }],
 		isError: false,
 		timestamp: Date.now(),
 	};

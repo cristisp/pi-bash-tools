@@ -49,3 +49,4 @@ Analyzer guidance:
 - Compare `reviewSurfacePath` within a `flowId` to verify that siblings share one review acquisition.
 - Use `readManifest.persistedPath` to inspect the manifest after temporary prompt files have been removed.
 - Treat `metrics.manifestRereads` as a warning signal for subsequent reads of manifest-protected paths and inspect the corresponding evidence gap before reusing the session.
+- Read `metrics.validationRefs` for the tool-issued `verify` refs a child minted or resolved. `lookup: true` means the child resolved existing evidence instead of running the gate, and a ref only resolves inside the flow that minted it. `head` and `stateDigest` record the repository state the evidence was minted against; refs inside one flow that carry different digests are evidence that crossed a repository state, and `verify:N ran:M` in the spend line counts references against executions.

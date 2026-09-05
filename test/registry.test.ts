@@ -366,3 +366,23 @@ describe('reconcileRegistry', () => {
 		expect(readRegistry().tabs['ws1:worker-1']).toBeDefined();
 	});
 });
+
+describe('registry write atomicity', () => {
+	it('never publishes through a shared temp file', () => {
+		// A second writer using one shared temp name could overwrite the first writer's temp file,
+		// so one rename published stale content and the other silently failed: the completed-run
+		// patch disappeared and the entry stayed 'running' with pre-steer budget usage forever.
+		const stray = path.join(dir, 'subagent-herdr.json.tmp');
+		const foreign = '{ "counters": {}, "tabs": {} }';
+		fs.writeFileSync(stray, foreign);
+
+		registerEntry(makeRegistryEntry({ status: 'running' }));
+		updateRegistryEntry('worker-1', { status: 'done' });
+
+		expect(readRegistry().tabs['ws1:worker-1']).toMatchObject({ status: 'done' });
+		expect(fs.readFileSync(stray, 'utf-8')).toBe(foreign);
+		expect(fs.readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([
+			'subagent-herdr.json.tmp',
+		]);
+	});
+});

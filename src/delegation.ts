@@ -20,6 +20,8 @@ export const ENV_CRITERIA = 'PI_ORCHESTRATION_CRITERIA';
 export const ENV_EVIDENCE_SCOPE = 'PI_ORCHESTRATION_EVIDENCE_SCOPE';
 export const ENV_ROOT_SESSION = 'PI_ORCHESTRATION_ROOT_SESSION';
 export const ENV_PARENT_PANE = 'PI_ORCHESTRATION_PARENT_PANE';
+/** Number of paths declared in the delegation scope; sizes the inspection budget of the child. */
+export const ENV_SCOPE_PATHS = 'PI_ORCHESTRATION_SCOPE_PATHS';
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const CRITERION_PATTERN = /^[A-Za-z0-9._:-]{1,32}$/;
@@ -226,6 +228,7 @@ export function orchestrationEnv(delegation: DelegationContext): Record<string, 
 	if (delegation.acceptanceCriteria?.length)
 		env[ENV_CRITERIA] = delegation.acceptanceCriteria.join(',');
 	if (delegation.taskId) env[ENV_TASK] = delegation.taskId;
+	if (delegation.scope?.paths?.length) env[ENV_SCOPE_PATHS] = String(delegation.scope.paths.length);
 	if (delegation.rootSession) env[ENV_ROOT_SESSION] = delegation.rootSession;
 	if (delegation.parentPaneId) env[ENV_PARENT_PANE] = delegation.parentPaneId;
 	return env;

@@ -8,7 +8,14 @@ import type {
 	TurnEndEvent,
 } from '@earendil-works/pi-coding-agent';
 import { getConfig, roleBudgetFor } from './config.ts';
-import { ENV_FLOW } from './delegation.ts';
+import type { SubagentHerdrConfig } from './config.ts';
+import { ENV_FLOW, ENV_SCOPE_PATHS } from './delegation.ts';
+import {
+	acquireRepositoryWriteLock,
+	probeRepositoryWriteLock,
+	releaseRepositoryWriteLock,
+} from './repo-lock.ts';
+import type { RepositoryWriteContention, RepositoryWriteLockHandle } from './repo-lock.ts';
 import { updateRegistryEntry } from './registry.ts';
 import type {
 	BudgetBreach,
@@ -17,6 +24,8 @@ import type {
 	BudgetUsage,
 	RoleBudget,
 } from './types.ts';
+
+const IMPLEMENTATION_TOOLS = new Set(['edit', 'write', 'move', 'delete']);
 
 const DISCOVERY_TOOLS = new Set([
 	'grep',
@@ -34,6 +43,8 @@ const DISCOVERY_TOOLS = new Set([
 	'codegraph_affected',
 	'resolve-library-id',
 	'query-docs',
+	'environment',
+	'playwright',
 ]);
 
 const VALIDATION_COMMANDS = new Set([
@@ -57,6 +68,71 @@ const DISCOVERY_COMMANDS = new Set([
 	'fallow_list_boundaries',
 ]);
 
+/**
+ * `project_command` ids whose base form writes to the repository. `node_format` runs the package `format`
+ * script, which rewrites files in the common case; its read-only form is a variant such as
+ * `node_format:check`.
+ */
+const MUTATING_COMMAND_IDS = new Set(['node_format']);
+/**
+ * Families that expose at least one repository-writing package script, e.g. `node_lint:fix`. Variants are
+ * arbitrary package-script names, so the writing forms cannot be enumerated: every variant of one of these
+ * families counts as mutating unless it is a documented read-only form, i.e. an unknown variant fails
+ * closed. Base ids keep their own classification above.
+ */
+const MUTATING_COMMAND_FAMILIES = new Set(['node_format', 'node_lint']);
+const MUTATING_COMMAND_VARIANTS = new Set(['fix', 'fixall', 'autofix', 'write', 'apply']);
+/** Variants of a mutating family that are known to leave the repository untouched. */
+const READ_ONLY_COMMAND_VARIANTS = new Set(['check', 'verify', 'ci']);
+/**
+ * Commands that write generated output rather than tracked sources: a build writes `dist`, tsbuildinfo,
+ * and caches that a sibling's check then reads, so it needs the repository write exclusion without
+ * being a source-writing command that the `mutatingCommandRoles` grant refuses.
+ */
+const ARTIFACT_WRITING_COMMAND_IDS = new Set(['node_build']);
+/** Script-name shapes that write generated output, e.g. `node_test:coverage` or `node_test:update-snapshots`. */
+const ARTIFACT_WRITING_VARIANT_PATTERNS = [
+	/^u$/,
+	/^update/,
+	/coverage/,
+	/snapshot/,
+	/codegen/,
+	/generate/,
+	/write/,
+];
+
+export function commandIdOf(input: Record<string, unknown> | undefined): string {
+	return typeof input?.commandId === 'string' ? input.commandId : '';
+}
+
+export function isMutatingCommandId(commandId: string): boolean {
+	if (MUTATING_COMMAND_IDS.has(commandId)) return true;
+	const [family, ...variants] = commandId.split(':');
+	const segments = variants.map((segment) => segment.toLowerCase());
+	if (segments.length === 0) return MUTATING_COMMAND_IDS.has(family);
+	if (MUTATING_COMMAND_FAMILIES.has(family))
+		return !segments.every((segment) => READ_ONLY_COMMAND_VARIANTS.has(segment));
+	return segments.some((segment) => MUTATING_COMMAND_VARIANTS.has(segment));
+}
+
+/**
+ * Whether a command needs exclusive ownership of the repository for its duration. This is wider than
+ * {@link isMutatingCommandId}, which decides who is *allowed* to write tracked sources: a build writes
+ * generated output a concurrent check would read, and a role may legitimately run it without being a
+ * writer. Classification is name-shaped in the same way, so it is a best-effort backstop for the guide
+ * rule that generated output belongs to one owner at a time, not a complete account of what a script
+ * writes; a project's own test script can write anything at all.
+ */
+export function isExclusiveWriteCommandId(commandId: string): boolean {
+	if (isMutatingCommandId(commandId)) return true;
+	const [family, ...variants] = commandId.split(':');
+	if (ARTIFACT_WRITING_COMMAND_IDS.has(family)) return true;
+	return variants.some((segment) => {
+		const variant = segment.toLowerCase();
+		return ARTIFACT_WRITING_VARIANT_PATTERNS.some((pattern) => pattern.test(variant));
+	});
+}
+
 export const BUDGET_STEER_PREFIX = '[herdr budget enforcement]';
 export const BUDGET_STEER_MESSAGE = `${BUDGET_STEER_PREFIX} A per-role budget was exhausted. Stop all implementation and validation work. Read the supplied flow ledger or report only if needed, then return the required compact ledger contribution and final report.`;
 
@@ -74,14 +150,101 @@ export function emptyBudgetUsage(): BudgetUsage {
 	};
 }
 
+export function isImplementationTool(name: string): boolean {
+	return IMPLEMENTATION_TOOLS.has(name);
+}
+
+/** Paths declared in the delegation scope; 0 when the child was launched without one. */
+export function declaredScopePathCount(env: NodeJS.ProcessEnv = process.env): number {
+	const raw = Number(env[ENV_SCOPE_PATHS]);
+	return Number.isInteger(raw) && raw > 0 ? raw : 0;
+}
+
+/** Extra inspection calls a declared scope buys on top of the role budget, within the cap. */
+export function scopeCallAllowance(
+	scopePathCount: number,
+	cfg: SubagentHerdrConfig = getConfig(),
+): number {
+	if (!Number.isFinite(scopePathCount) || scopePathCount <= 0) return 0;
+	return Math.min(
+		Math.max(0, Math.trunc(cfg.scopeCallAllowancePerPath)) * Math.trunc(scopePathCount),
+		Math.max(0, Math.trunc(cfg.scopeCallAllowanceMax)),
+	);
+}
+
+/**
+ * Role limits grown by the allowance for the paths declared in the child's scope. Reviewing N
+ * paths costs roughly N inspections, so a flat per-role budget silently caps how large a
+ * delegation may be; the allowance keeps the budget proportional without removing the ceiling.
+ */
+export function scopedRoleBudget(
+	role: string,
+	scopePathCount: number,
+	cfg: SubagentHerdrConfig = getConfig(),
+): RoleBudget {
+	const limits = roleBudgetFor(role, cfg);
+	const allowance = scopeCallAllowance(scopePathCount, cfg);
+	if (allowance <= 0) return limits;
+	return {
+		...limits,
+		toolCalls: limits.toolCalls + allowance,
+		discoveryCalls: limits.discoveryCalls + allowance,
+	};
+}
+
+/**
+ * A `verify` call that passes a `ref` resolves stored evidence without executing anything, so it is not
+ * a validation pass. Every other `verify` call runs the package-script gate, including calls that omit
+ * phases.
+ */
+export function verifyResolvesRef(input: Record<string, unknown> | undefined): boolean {
+	return typeof input?.ref === 'string' && input.ref.trim().length > 0;
+}
+
+/** `verify` parameters that select what executes or what the minted ref claims; a lookup sets none. */
+const VERIFY_EXECUTION_PARAMS: readonly string[] = [
+	'paths',
+	'omit',
+	'scripts',
+	'covers',
+	'continueOnFailure',
+];
+
+/**
+ * A pure reference lookup: a non-empty `ref` and nothing that could change what the gate executes.
+ * Anything else makes `verify` run package scripts, which is validation execution rather than evidence
+ * resolution, so it belongs to the roles named in `validationExecutionRoles`.
+ */
+export function verifyIsRefLookupOnly(input: Record<string, unknown> | undefined): boolean {
+	if (!verifyResolvesRef(input)) return false;
+	return VERIFY_EXECUTION_PARAMS.every((key) => input?.[key] === undefined);
+}
+
+/**
+ * Every `verify` phase accepts an arbitrary package-script name through `scripts`, so an override can point
+ * any phase at a repository-writing script: `scripts.format` at the writing formatter, `scripts.lint` at a
+ * lint fix, `scripts.test` at a snapshot writer. Which script a phase would run is not knowable from the
+ * identifier, so for a role that may not write, the presence of any override is enough to fail closed.
+ * The test is deliberately shape-insensitive: a `scripts` value that is not an object is still an override
+ * attempt, and a fail-closed rule must not be escapable by argument shape.
+ */
+export function verifySetsScriptOverrides(input: Record<string, unknown> | undefined): boolean {
+	return input?.scripts !== undefined;
+}
+
 export function classifyToolCall(
 	name: string,
 	input: Record<string, unknown> | undefined,
 ): 'discovery' | 'validation' | undefined {
+	if (name === 'verify') return verifyResolvesRef(input) ? undefined : 'validation';
 	if (name === 'project_command') {
-		const commandId = typeof input?.commandId === 'string' ? input.commandId : '';
-		if (VALIDATION_COMMANDS.has(commandId)) return 'validation';
-		if (DISCOVERY_COMMANDS.has(commandId)) return 'discovery';
+		const commandId = commandIdOf(input);
+		// Variant identifiers such as node_test:coverage or node_format:check run the same family of work
+		// as their base command, so they are charged the same way. Keying on the full identifier left a
+		// budget escape hatch for every colon-suffixed script.
+		const family = commandId.split(':', 1)[0];
+		if (VALIDATION_COMMANDS.has(commandId) || VALIDATION_COMMANDS.has(family)) return 'validation';
+		if (DISCOVERY_COMMANDS.has(commandId) || DISCOVERY_COMMANDS.has(family)) return 'discovery';
 		return undefined;
 	}
 	return DISCOVERY_TOOLS.has(name) ? 'discovery' : undefined;
@@ -120,7 +283,10 @@ export function isReportRead(
 	});
 }
 
-const USAGE_TO_LIMIT: ReadonlyArray<[BudgetMetric, keyof BudgetUsage]> = [
+/** Usage keys a role budget can limit; `toolArgumentTokens` is recorded but never enforced. */
+type LimitedUsageKey = Extract<keyof BudgetUsage, keyof RoleBudget>;
+
+const USAGE_TO_LIMIT: ReadonlyArray<[BudgetMetric, LimitedUsageKey]> = [
 	['toolCalls', 'toolCalls'],
 	['discoveryCalls', 'discoveryCalls'],
 	['fullValidationPasses', 'fullValidationPasses'],
@@ -139,6 +305,8 @@ function budgetSummary(
 	steerIssued: boolean,
 	reportOnly: boolean,
 	automaticSteerId?: string,
+	implementationStarted = false,
+	implementationGateReached = false,
 ): BudgetSummary {
 	return {
 		role,
@@ -149,6 +317,8 @@ function budgetSummary(
 		steerIssued,
 		reportOnly,
 		automaticSteerId,
+		implementationStarted,
+		implementationGateReached,
 	};
 }
 
@@ -177,6 +347,8 @@ export function budgetSummaryFromMetrics(
 		existing?.steerIssued ?? false,
 		existing?.reportOnly ?? false,
 		existing?.automaticSteerId,
+		existing?.implementationStarted ?? false,
+		existing?.implementationGateReached ?? false,
 	);
 }
 
@@ -190,6 +362,8 @@ interface MutableBudgetState {
 	reportOnly: boolean;
 	automaticSteerPending: boolean;
 	automaticSteerId?: string;
+	implementationStarted: boolean;
+	implementationGateReached: boolean;
 }
 
 function currentBreach(state: MutableBudgetState): BudgetBreach | undefined {
@@ -213,6 +387,8 @@ function summaryOf(state: MutableBudgetState): BudgetSummary {
 		state.steerIssued,
 		state.reportOnly,
 		state.automaticSteerId,
+		state.implementationStarted,
+		state.implementationGateReached,
 	);
 }
 
@@ -236,6 +412,8 @@ function resetTurn(state: MutableBudgetState): void {
 	state.reportOnly = false;
 	state.automaticSteerPending = false;
 	state.automaticSteerId = undefined;
+	state.implementationStarted = false;
+	state.implementationGateReached = false;
 }
 
 function abortForBudget(ctx: { abort(): void }, state: MutableBudgetState): void {
@@ -273,13 +451,82 @@ function enforceNewBreach(
 	return true;
 }
 
+/**
+ * Records a breach first observed on the turn that delivered the report. A turn without tool calls ends
+ * the child run, so there is no work left to stop: steering there cannot help and only buys a second,
+ * shorter report that replaces the one already written. The breach is kept for telemetry.
+ */
+function noteReportBreach(state: MutableBudgetState): boolean {
+	const breach = addCurrentBreach(state);
+	if (!breach) return false;
+	if (state.outcome !== 'aborted') {
+		state.outcome = 'report_only';
+		state.reportOnly = true;
+	}
+	return true;
+}
+
+/**
+ * Splits one assistant turn's output into report prose and reasoning. Providers fold reasoning tokens
+ * into `usage.output`, so a thinking-heavy model would otherwise spend the report contract on thinking;
+ * when a provider does not report the split, the whole turn counts as report prose.
+ */
+export function splitReportOutput(usage: { output?: number; reasoning?: number } | undefined): {
+	report: number;
+	reasoning: number;
+} {
+	const output = Number.isFinite(usage?.output) ? usage!.output! : 0;
+	const reasoning =
+		Number.isFinite(usage?.reasoning) && usage!.reasoning! > 0
+			? Math.min(output, usage!.reasoning!)
+			: 0;
+	return { report: Math.max(0, output - reasoning), reasoning };
+}
+
+function implementationDiscoveryLimit(limits: RoleBudget): number {
+	return limits.implementationDiscoveryCalls ?? limits.discoveryCalls;
+}
+
+function blocksBeforeImplementation(
+	state: MutableBudgetState,
+	toolName: string,
+	input: Record<string, unknown> | undefined,
+	flowId: string | undefined,
+): boolean {
+	if (state.role !== 'worker' || state.implementationStarted) return false;
+	if (state.usage.discoveryCalls <= implementationDiscoveryLimit(state.limits)) return false;
+	state.implementationGateReached = true;
+	return !isImplementationTool(toolName) && !isReportRead(toolName, input, flowId);
+}
+
+/**
+ * Names the competing write. An entry that exists but cannot be read is a reason to wait without being
+ * a name to quote, so it is reported as an unreadable entry rather than as an unnamed session.
+ */
+function contentionNote(contention: RepositoryWriteContention, consequence: string): string {
+	const holder = contention.holder;
+	const since = holder?.acquiredAt ?? contention.observedAt;
+	const seconds = Math.max(0, Math.round((Date.now() - since) / 1000));
+	const who = holder
+		? `Session ${holder.label} is writing this repository with ${holder.commandId}`
+		: 'A repository lock entry this session cannot identify is holding this repository';
+	return `${who} (${seconds}s in flight), so ${consequence}`;
+}
+
 export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 	if (process.env.PI_SUBAGENT_NESTED !== '1') return;
 	const role = process.env.PI_ORCHESTRATION_ROLE;
 	if (!role) return;
 	const label = process.env.PI_SUBAGENT_LABEL;
 	const flowId = process.env[ENV_FLOW];
-	const limits = roleBudgetFor(role, getConfig());
+	const limits = scopedRoleBudget(role, declaredScopePathCount(), getConfig());
+	const mutatingRoles = new Set(getConfig().mutatingCommandRoles);
+	const validationExecutionRoles = new Set(getConfig().validationExecutionRoles);
+	const validationOwners = [...validationExecutionRoles].join(', ') || 'no configured role';
+	const writeLockEnabled = getConfig().repositoryWriteLock;
+	const lockLabel = label ?? 'unlabeled-session';
+	/** Write holds keyed by tool call id, released by the matching tool_result. */
+	const heldWrites = new Map<string, RepositoryWriteLockHandle>();
 	const state: MutableBudgetState = {
 		role,
 		limits,
@@ -289,6 +536,8 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		steerIssued: false,
 		reportOnly: false,
 		automaticSteerPending: false,
+		implementationStarted: false,
+		implementationGateReached: false,
 	};
 	let turnStartedAt = Date.now();
 	let wallTimer: ReturnType<typeof setTimeout> | undefined;
@@ -317,6 +566,107 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		}, delay);
 	};
 
+	/** A call that writes the repository, either by command id or by overriding a `verify` phase. */
+	function isWriteCapableCall(
+		toolName: string,
+		input: Record<string, unknown> | undefined,
+		commandId: string,
+	): boolean {
+		return (
+			(commandId !== '' && isExclusiveWriteCommandId(commandId)) ||
+			(toolName === 'verify' && verifySetsScriptOverrides(input))
+		);
+	}
+
+	/**
+	 * Repository contention between sibling sessions, in two halves.
+	 *
+	 * {@link repositoryReadGuard} runs before anything is charged: a check that would read the
+	 * repository refuses to start while another session holds it, because evidence gathered over a
+	 * half-written tree attests to neither sibling.
+	 *
+	 * {@link repositoryWriteGuard} runs after every other refusal: a command that writes takes the
+	 * repository exclusion for the lifetime of that call, and a call that is about to be refused for a
+	 * budget reason must not leave a hold behind, because a refused call never produces the
+	 * `tool_result` that releases it.
+	 *
+	 * A session never blocks on its own hold, identified by label and flow together.
+	 */
+	function repositoryWriteGuard(
+		toolCallId: string | undefined,
+		input: Record<string, unknown> | undefined,
+		toolName: string,
+		commandId: string,
+		category: 'discovery' | 'validation' | undefined,
+	): ToolCallEventResult | undefined {
+		// Release is keyed by tool call id, so a call without one cannot be tracked and must not hold.
+		if (!toolCallId) return undefined;
+		if (!isWriteCapableCall(toolName, input, commandId)) return undefined;
+		// A repeated id means the previous hold was never released; free it before overwriting it.
+		releaseWriteHold(toolCallId);
+		const acquisition = acquireRepositoryWriteLock({
+			label: lockLabel,
+			...(flowId ? { flowId } : {}),
+			commandId: commandId || 'verify',
+		});
+		if (acquisition.acquired) {
+			heldWrites.set(toolCallId, acquisition.handle);
+			return undefined;
+		}
+		// The command did not run, so it bought no validation pass. The tool call stays charged, which is
+		// what bounds the retries the refusal asks for.
+		if (category === 'discovery')
+			state.usage.discoveryCalls = Math.max(0, state.usage.discoveryCalls - 1);
+		if (category === 'validation')
+			state.usage.fullValidationPasses = Math.max(0, state.usage.fullValidationPasses - 1);
+		return {
+			block: true,
+			reason: contentionNote(
+				acquisition.contention,
+				'a second concurrent write would corrupt the tree. Retry after that command finishes; this refusal costs a tool call, so report the contention if it persists for three attempts.',
+			),
+		};
+	}
+
+	/** Early, side-effect-free half of the contention guard: a check never reads a foreign write. */
+	function repositoryReadGuard(
+		toolName: string,
+		input: Record<string, unknown> | undefined,
+		commandId: string,
+		category: 'discovery' | 'validation' | undefined,
+	): ToolCallEventResult | undefined {
+		// A writing command is not a reader with a stale-evidence problem; the write exclusion refuses it.
+		if (isWriteCapableCall(toolName, input, commandId)) return undefined;
+		const readsRepository =
+			toolName === 'verify' ? !verifyResolvesRef(input) : category === 'validation';
+		if (!readsRepository) return undefined;
+		const contention = probeRepositoryWriteLock({
+			label: lockLabel,
+			...(flowId ? { flowId } : {}),
+		});
+		if (!contention) return undefined;
+		return {
+			block: true,
+			reason: contentionNote(
+				contention,
+				'this check would validate a half-written tree. Resolve stored refs instead; if no ref covers the check, retry after that command finishes and report the contention if it persists for three attempts.',
+			),
+		};
+	}
+
+	function releaseWriteHold(toolCallId: string | undefined): void {
+		if (!toolCallId) return;
+		const handle = heldWrites.get(toolCallId);
+		if (!handle) return;
+		heldWrites.delete(toolCallId);
+		releaseRepositoryWriteLock(handle);
+	}
+
+	function releaseAllWriteHolds(): void {
+		for (const handle of heldWrites.values()) releaseRepositoryWriteLock(handle);
+		heldWrites.clear();
+	}
+
 	pi.on('before_agent_start', (event: BeforeAgentStartEvent, ctx) => {
 		abortCurrent = ctx.abort;
 		if (state.automaticSteerPending && event.prompt.startsWith(BUDGET_STEER_PREFIX)) {
@@ -338,7 +688,38 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		abortCurrent = ctx.abort;
 		state.usage.wallTimeMs = Math.max(state.usage.wallTimeMs, Date.now() - turnStartedAt);
 		state.usage.toolCalls++;
+		const commandId = event.toolName === 'project_command' ? commandIdOf(event.input) : '';
+		if (commandId && isMutatingCommandId(commandId) && !mutatingRoles.has(role)) {
+			persist(label, state);
+			return {
+				block: true,
+				reason: `Role ${role} may not run the mutating project command ${commandId}. Use its check form (for example node_format:check), the verify gate, or delegate to a role listed in mutatingCommandRoles.`,
+			};
+		}
+		if (event.toolName === 'verify') {
+			if (!validationExecutionRoles.has(role) && !verifyIsRefLookupOnly(event.input)) {
+				persist(label, state);
+				return {
+					block: true,
+					reason: `Role ${role} may only resolve validation evidence, not execute it: call verify with a bare { ref: 'vr_…' } lookup, or delegate execution to a role listed in validationExecutionRoles (${validationOwners}).`,
+				};
+			}
+			if (!mutatingRoles.has(role) && verifySetsScriptOverrides(event.input)) {
+				persist(label, state);
+				return {
+					block: true,
+					reason: `Role ${role} may not override verify phases: each scripts entry accepts any package script, so an override can reach a writing formatter, a lint fix, or a snapshot writer, and the default phases are the read-only checks. Omit scripts, use the read-only project_command check forms, or delegate to a role listed in mutatingCommandRoles.`,
+				};
+			}
+		}
 		const category = classifyToolCall(event.toolName, event.input);
+		if (writeLockEnabled) {
+			const contended = repositoryReadGuard(event.toolName, event.input, commandId, category);
+			if (contended) {
+				persist(label, state);
+				return contended;
+			}
+		}
 		if (category === 'discovery') state.usage.discoveryCalls++;
 		if (category === 'validation') state.usage.fullValidationPasses++;
 		if (event.toolName === 'read') {
@@ -349,6 +730,7 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 				readKeys.set(key, prior + 1);
 			}
 		}
+		const reportRead = isReportRead(event.toolName, event.input, flowId);
 		const breached = enforceNewBreach(pi, ctx, state, () => persist(label, state));
 		persist(label, state);
 		if (state.outcome === 'aborted')
@@ -356,7 +738,7 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 				block: true,
 				reason: `Budget exhausted for role ${role}: ${state.breaches.at(-1)?.metric}`,
 			};
-		if (state.reportOnly && !isReportRead(event.toolName, event.input, flowId)) {
+		if (state.reportOnly && !reportRead) {
 			state.outcome = breached ? 'steered' : 'report_only';
 			persist(label, state);
 			return {
@@ -364,17 +746,42 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 				reason: `Budget exhausted for role ${role}; only ledger/report reads are allowed`,
 			};
 		}
-		if (breached && !isReportRead(event.toolName, event.input, flowId)) {
+		if (breached && !reportRead) {
 			return {
 				block: true,
 				reason: `Budget exhausted for role ${role}: ${state.breaches.at(-1)?.metric}`,
 			};
+		}
+		if (isImplementationTool(event.toolName)) {
+			state.implementationStarted = true;
+			persist(label, state);
+		}
+		if (blocksBeforeImplementation(state, event.toolName, event.input, flowId)) {
+			persist(label, state);
+			return {
+				block: true,
+				reason: `Worker must make an implementation change before more discovery; only implementation tools and ledger/report reads are allowed`,
+			};
+		}
+		if (writeLockEnabled) {
+			const contended = repositoryWriteGuard(
+				event.toolCallId,
+				event.input,
+				event.toolName,
+				commandId,
+				category,
+			);
+			if (contended) {
+				persist(label, state);
+				return contended;
+			}
 		}
 		return undefined;
 	});
 
 	pi.on('tool_result', (event: ToolResultEvent, ctx) => {
 		abortCurrent = ctx.abort;
+		if (writeLockEnabled) releaseWriteHold(event.toolCallId);
 		if (event.isError) state.usage.failedToolCalls++;
 		enforceNewBreach(pi, ctx, state, () => persist(label, state));
 		persist(label, state);
@@ -382,15 +789,38 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 
 	pi.on('turn_end', (event: TurnEndEvent, ctx) => {
 		abortCurrent = ctx.abort;
-		if (event.message.role === 'assistant')
-			state.usage.outputTokens += event.message.usage?.output ?? 0;
+		let deliveredReport = false;
+		if (event.message.role === 'assistant') {
+			deliveredReport = !event.message.content.some((part) => part.type === 'toolCall');
+			if (deliveredReport) {
+				// This turn is the report itself, so only its prose is charged against the output budget.
+				const share = splitReportOutput(event.message.usage);
+				state.usage.outputTokens += share.report;
+				if (share.reasoning > 0)
+					state.usage.reasoningTokens = (state.usage.reasoningTokens ?? 0) + share.reasoning;
+			} else {
+				// Turns that issue tool calls spend their output on arguments, which the call budgets
+				// already bound.
+				state.usage.toolArgumentTokens =
+					(state.usage.toolArgumentTokens ?? 0) + (event.message.usage?.output ?? 0);
+			}
+		}
 		state.usage.wallTimeMs = Math.max(state.usage.wallTimeMs, Date.now() - turnStartedAt);
+		if (deliveredReport) {
+			noteReportBreach(state);
+			persist(label, state);
+			return;
+		}
 		enforceNewBreach(pi, ctx, state, () => persist(label, state));
 		persist(label, state);
 	});
 
-	pi.on('agent_end', () => clearWallTimer());
+	pi.on('agent_end', () => {
+		releaseAllWriteHolds();
+		clearWallTimer();
+	});
 	pi.on('agent_settled', () => {
+		releaseAllWriteHolds();
 		clearWallTimer();
 		persist(label, state);
 	});

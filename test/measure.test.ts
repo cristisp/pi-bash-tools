@@ -156,8 +156,13 @@ describe('session scanning', () => {
 		const dir = fixture();
 		const root = join(dir, 'sessions', '--cwd--', 'root.jsonl');
 		const scan = scanSession(root, false);
-		expect(scan.results.map((r) => r.tokens)).toEqual([200, 120]);
-		expect(scan.receivedTokens).toBe(320);
+		// The second result carries the report pointer line, so its size depends on the fixture path
+		// length. Deriving it keeps the assertion stable across tmp roots (TMPDIR length varies by OS,
+		// and test/setup.ts isolates it per file); the chars / 4 estimator itself is covered above.
+		const reportPointer = `\n[full report: ${join(dir, 'flows', 'f1', 'reports', 'worker-1-1.md')}]`;
+		const reportTokens = Math.ceil((400 + reportPointer.length) / 4);
+		expect(scan.results.map((r) => r.tokens)).toEqual([200, reportTokens]);
+		expect(scan.receivedTokens).toBe(200 + reportTokens);
 		// 200 tokens stayed in context across two later assistant turns; the last result had none.
 		expect(scan.carryTokens).toBe(400);
 	});

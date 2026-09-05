@@ -60,6 +60,29 @@ describe('formatExecutionMetrics', () => {
 			}),
 		).toBe('time:1.5s tools:3 msgs:7 io:100/2500 tool-errors:1 rereads:2 max-ctx:12k');
 	});
+
+	it('shows which validation refs were minted and which were resolved', () => {
+		expect(
+			formatExecutionMetrics({
+				durationMs: 900,
+				toolCalls: 4,
+				failedToolCalls: 0,
+				repeatedReads: 0,
+				messageCount: 5,
+				taskChars: 10,
+				outputChars: 20,
+				maxContextTokens: 0,
+				turns: 1,
+				blockEvents: 0,
+				approvalMs: 0,
+				steerMs: 0,
+				validationRefs: [
+					{ ref: 'vr_aaa', verdict: 'passed', reused: false, lookup: false },
+					{ ref: 'vr_aaa', verdict: 'passed', reused: true, lookup: true },
+				],
+			}),
+		).toBe('time:900ms tools:4 msgs:5 io:10/20 verify:2 ran:1');
+	});
 });
 
 describe('formatUsageStats', () => {

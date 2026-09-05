@@ -79,6 +79,15 @@ Setting up the standard agents:
   preset and `defaultPreset: "default"`. Existing agent files are only
   overwritten after confirmation.
 
+`/setup-subagents` also writes the orchestration guide to
+`~/.pi/agent/agents/subagent_orchestration.md`, beside the agent files. The guide is the workflow
+contract for the main session: workflow tiers, the canonical ledger, role boundaries, budgets, session
+reuse, and handoff requirements. Its source is `src/orchestration-guide.md`, and the role budget lines
+are generated from the budgets in effect (see `roleBudgets`), so changing a budget and rerunning the
+command keeps the guidance and the enforcement stating the same numbers. Point the system prompt at the
+generated path. When an older hand-maintained copy such as `~/.pi/agent/SUBAGENTS_GUIDE.md` still
+exists, the command reports it as superseded - delete it, because two copies of one contract drift.
+
 ## Model presets
 
 Subagent models are configured as named presets in
@@ -267,6 +276,12 @@ The contract:
   Narrowing is honoured, widening past `evidenceScopeByRole` /
   `evidenceScopeDefault` is ignored, and a reuse turn can only narrow the scope
   already resolved for that session
+- independence is requested per delegation, not owned by config: every role
+  inherits `flow` by default, so a validator resolves the worker `verify` ref
+  instead of re-running the gate. Pass `evidenceScope: "session"` on a validator
+  delegation whose checks are security-sensitive, environment-sensitive, or
+  release-critical; a `session` child cannot resolve sibling refs, so it must
+  execute them itself
 - the environment is fixed when the child process launches. A reuse turn that
   prompts a still-live session cannot change that child's env, so `tier` and
   `workflowMode` updates on a reuse turn land in the registry and the telemetry
@@ -274,6 +289,15 @@ The contract:
   launch-time identity as immutable for the life of the child process
 - the same immutability applies to the appended system prompt, which is why the
   flow ledger reaches a child as a pointer (see below) instead of as its body
+
+Refs minted by `verify` inherit the scope of the process that minted them, which
+has one consequence worth knowing before you plan a validation handoff: a ref the
+main session mints is process-local and no child can resolve it, because a main
+session carries no flow id. When the main session modifies files, it either owns
+the validation of that change outright or delegates the remaining work and expects
+the child to report the already-run checks as `NOT_RUN` rather than trust a
+reference it cannot resolve. Refs travel child to parent as text, and resolution
+travels the other way only inside one flow.
 
 ## Orchestration store
 
@@ -400,6 +424,8 @@ file is re-read on every use, so edits take effect without a restart. Running
   "steerTimeoutMs": 60000,
   "perTaskOutputCap": 51200,
   "reportDigestTokens": 250,
+  "scopeCallAllowancePerPath": 2,
+  "scopeCallAllowanceMax": 32,
   "reportContractPolicy": "flag",
   "ledgerMaxRevisions": 60,
   "ledgerPointers": true,
@@ -410,13 +436,16 @@ file is re-read on every use, so edits take effect without a restart. Running
   "confirmProjectAgents": true,
   "flowRetentionDays": 14,
   "evidenceScopeDefault": "flow",
-  "evidenceScopeByRole": { "validator": "session" },
+  "evidenceScopeByRole": {},
+  "mutatingCommandRoles": ["worker"],
+  "validationExecutionRoles": ["worker", "validator"],
+  "repositoryWriteLock": true,
   "roleBudgets": {
     "scout": { "toolCalls": 20, "discoveryCalls": 8, "fullValidationPasses": 2, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 800, "wallTimeMs": 600000, "budgetPolicy": "steer" },
     "planner": { "toolCalls": 20, "discoveryCalls": 6, "fullValidationPasses": 2, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 800, "wallTimeMs": 600000, "budgetPolicy": "steer" },
-    "worker": { "toolCalls": 24, "discoveryCalls": 24, "fullValidationPasses": 2, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 1000, "wallTimeMs": 600000, "budgetPolicy": "steer" },
-    "validator": { "toolCalls": 20, "discoveryCalls": 12, "fullValidationPasses": 8, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 800, "wallTimeMs": 600000, "budgetPolicy": "steer" },
-    "reviewer": { "toolCalls": 12, "discoveryCalls": 12, "fullValidationPasses": 2, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 1000, "wallTimeMs": 600000, "budgetPolicy": "steer" }
+    "worker": { "toolCalls": 24, "discoveryCalls": 24, "implementationDiscoveryCalls": 12, "fullValidationPasses": 2, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 1000, "wallTimeMs": 600000, "budgetPolicy": "steer" },
+    "validator": { "toolCalls": 20, "discoveryCalls": 12, "fullValidationPasses": 3, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 800, "wallTimeMs": 600000, "budgetPolicy": "steer" },
+    "reviewer": { "toolCalls": 32, "discoveryCalls": 28, "fullValidationPasses": 2, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 4000, "wallTimeMs": 600000, "budgetPolicy": "steer" }
   },
   "modelPresets": {},
   "defaultPreset": "default"
@@ -445,8 +474,13 @@ file is re-read on every use, so edits take effect without a restart. Running
 | `confirmProjectAgents` | `true` | Default for the project-agent confirmation prompt |
 | `flowRetentionDays` | 14 | Days a flow directory survives without a delegation before pruning removes it |
 | `evidenceScopeDefault` | `"flow"` | Widest evidence scope a delegated child may reuse (`"session"` or `"flow"`) |
-| `evidenceScopeByRole` | `{"validator":"session"}` | Per-role overrides of `evidenceScopeDefault`; keeps validators independent of the evidence they audit |
-| `roleBudgets` | role defaults | Live limits for tool calls, discovery, validation, failed calls, repeated reads, output tokens, wall time, and enforcement policy |
+| `evidenceScopeByRole` | `{}` | Per-role overrides of `evidenceScopeDefault`; empty means every role, the validator included, inherits `flow` and can resolve a sibling ref |
+| `mutatingCommandRoles` | `["worker"]` | Roles whose children may run commands that write to the repository. Enforcement covers `project_command` ids that write, where a variant of a family that has a writing form is refused unless it names a `check`, `verify`, or `ci` form, and any `verify` call that overrides a phase through `scripts`, because each phase accepts an arbitrary package script and its defaults are the read-only checks. The rule is shaped by command names, so a write-capable script in a family with no known writing form is not recognised as a write |
+| `validationExecutionRoles` | `["worker","validator"]` | Roles permitted to execute validation. Every other role, the reviewer included, may call `verify` only as a bare `{ ref }` lookup; any other parameter is refused, so evidence handoff is enforced rather than requested |
+| `repositoryWriteLock` | `true` | Serialize repository-writing `project_command` calls across child sessions and refuse a validation check that would run while a sibling holds a write in flight. The lock is keyed by repository root, so it also covers two flows sharing one checkout, and an abandoned hold is dropped after 5 minutes. Exclusion fails open: an unusable lock store allows the call rather than wedging every write in a flow |
+| `roleBudgets` | role defaults | Live limits for tool calls, discovery, worker pre-implementation discovery, validation, failed calls, repeated reads, output tokens, wall time, and enforcement policy |
+| `scopeCallAllowancePerPath` | 2 | Extra tool and discovery calls granted per path declared in a child's assigned scope |
+| `scopeCallAllowanceMax` | 32 | Ceiling on the extra calls the scope allowance can add to a role budget |
 | `modelPresets` | `{}` | Named subagent model presets (see [Model presets](#model-presets)); entries map agent names to `provider/model(:thinking_level)` |
 | `defaultPreset` | - | Name of the preset used when the session has no `/select-subagent-preset` selection; must name a configured preset |
 
@@ -455,6 +489,53 @@ Invalid per-role values are ignored and fall back to the role defaults.
 A `steer` breach sends one automatic budget message, then permits only reads of the active flow ledger or persisted reports.
 An `abort` breach stops the child turn.
 Live usage and breach state are shown in registry status, child results, and telemetry.
+`outputTokens` bounds report prose: output emitted on a turn that issued a tool call is recorded as
+`budget.usage.toolArgumentTokens`, and the reasoning share reported by the provider is recorded as
+`budget.usage.reasoningTokens`, because both are already bounded by the call and wall-time limits.
+The last turn of a child run is the report itself, so a breach first seen there is recorded and marked
+`report_only` without steering or aborting; an intervention at that point would only produce a second,
+shorter report to replace the one already delivered.
+A delegation that declares `scope.paths` gets `scopeCallAllowancePerPath` more tool and discovery
+calls per in-scope path, up to `scopeCallAllowanceMax` in total, so a review of ten paths is not cut
+off while acquiring the ten reads it was asked to inspect; the child prompt states the effective numbers.
+A single `verify` call is one full validation pass, because it runs the format, lint, typecheck, and test
+gate in order. A `verify` call that supplies a `ref` resolves stored evidence instead of running the gate,
+so it is not charged against `fullValidationPasses` and stays available as the cheap alternative to a
+rerun. Minted and resolved refs are recorded per delegation as `metrics.validationRefs` with the verdict
+and whether the call reused or executed, which is what makes reuse auditable. A ref minted inside a flow is
+intended to resolve for every sibling in that flow, and a ref minted by a root session lives only in that
+process, so refs travel from child to parent and never the other way round. The sibling direction is designed
+and not yet observed: no child seat has minted while `verify` authorization requires an interactive answer
+(`F9` in `analysis/BASH_TOOLS_FOLLOWUPS.md`), so
+a sibling ref you cannot resolve is a capability gap to report, not evidence to trust.
+For workers, `implementationDiscoveryCalls` limits discovery before the first implementation tool call.
+After that allowance, the runtime blocks further non-report tools until the worker attempts an implementation tool call.
+
+### Parallel workers and the shared tree
+
+Every child of a fan-out works in the same working tree, so a check one sibling runs observes all siblings' edits.
+A `verify` ref minted in that moment describes the union of the in-flight changes rather than the change that worker was asked to make, and no amount of hashing fixes that.
+The rule is therefore about ownership rather than caching: the composite gate runs once per state with one owner, normally the session that integrates the fan-in, and siblings run focused read-only checks over their declared paths or none.
+The guide states this in `Parallel fan-out and validation`.
+
+Two mechanical guards back the prose while `repositoryWriteLock` is on. A command that writes the repository takes an exclusive per-repository hold for the duration of that call, so a second sibling attempting one is refused with the holder's label, command, and age whenever the entry can be parsed; when it cannot, the refusal says so instead of naming a session it did not read: that class is a formatter, a lint fix, a `verify` call carrying a `scripts` override, and also a command that writes generated output rather than tracked sources, such as `node_build` or a coverage or snapshot-updating test variant. Exclusion is deliberately wider than permission here, because a validator may legitimately run a build without being allowed to rewrite sources. A check that reads the tree, meaning a `verify` execution or a validation `project_command`, refuses to start while another session holds that write, because its result would be evidence about a half-written tree.
+
+The details that decide whether this helps or wedges the work: a session is identified by label *and* flow, so two flows sharing one checkout contend even when both allocate a `worker-1`, and a session never blocks on its own hold. A `{ ref }` lookup is never blocked. A refusal costs a tool call and no validation pass, because the command did not run, and the block reason says to report the contention after three retries. The hold is taken only once the call has cleared every other refusal, so a budget-refused command cannot exclude its siblings for a write that never happened. The key is the nearest ancestor holding `.git`, or the working directory itself outside any checkout, so unrelated directories never contend, and each key is the first 32 hex characters of the SHA-256 of that path stored as `<agent directory>/subagent-herdr/repo-locks/<hash>.lock`, which is the file to inspect or delete when a hold looks stuck. A hold left behind by a killed child expires after 5 minutes, an entry that cannot be decoded stops excluding anyone after 2 seconds, and an unusable lock store allows the call rather than blocking every write in the flow. An entry this session cannot *read* is the one case it will not clear on your behalf: it is held until it is older than the TTL plus a minute of clock headroom, and only then removed by whoever finds it, because a reader that cannot inspect a hold is not entitled to free it. A hold that is genuinely stuck is the operator's to delete, and the refusal names the holder, the command and the age, so nobody has to guess which session to interrupt.
+
+Classification is by command family and script-name shape, because the producer does not yet report whether an executed script writes (`F6` in `analysis/BASH_TOOLS_FOLLOWUPS.md`). A project script that writes through an unrecognised name is therefore not excluded, and an unrecognised variant of a family that has a writing form is excluded conservatively; the guide rule about who owns the gate is what covers the remainder.
+
+### Upgrading from an earlier configuration
+
+`evidenceScopeByRole` no longer ships a `validator: "session"` entry, because that entry is what forced a
+validator to re-execute evidence the worker had already minted. A config file written from an older sample
+overrides the new default, so delete that line to let validators resolve refs; independence is now requested
+per delegation with `evidenceScope: "session"`. The validator's `fullValidationPasses` default dropped from
+8 to 3 for the same reason: a validator that resolves refs executes at most the uncovered remainder, and a
+validator that needs eight passes is re-running evidence that exists.
+
+Both `verify` and the ref-first prompts live in the installed agent definitions, so after updating the
+extension run `/setup-subagents` to regenerate them. Until you do, delegated children keep the previous
+tool allowlists and cannot mint or resolve refs.
 
 ## Lifecycle of the main session
 
