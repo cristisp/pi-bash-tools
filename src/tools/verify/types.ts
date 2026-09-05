@@ -1,4 +1,5 @@
 export const VERIFY_PHASES = ["format", "lint", "typecheck", "test"] as const;
+export const VERIFY_CACHE_FORMAT_VERSION = 2 as const;
 
 export type VerifyPhase = (typeof VERIFY_PHASES)[number];
 export type VerifyStepStatus = "passed" | "failed" | "omitted" | "not-run";
@@ -38,7 +39,7 @@ export interface VerifyRepositoryState {
 }
 
 export interface VerifyEvidenceRecord {
-  readonly cacheFormatVersion: 1;
+  readonly cacheFormatVersion: typeof VERIFY_CACHE_FORMAT_VERSION;
   readonly key: string;
   readonly ref: string;
   readonly projectPath: string;
@@ -54,7 +55,7 @@ export interface VerifyEvidenceRecord {
 export interface VerifyOutput {
   readonly status: "completed" | "unchanged";
   readonly verdict: VerifyVerdict;
-  readonly ref: string;
+  readonly ref?: string;
   readonly projectPath: string;
   readonly perStep: readonly VerifyStepResult[];
   readonly failureTail?: string;

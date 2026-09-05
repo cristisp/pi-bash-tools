@@ -14,10 +14,13 @@ import { createGitDiffTool } from "./tools/git/diff/tool.ts";
 import { createGitLogTool } from "./tools/git/log/tool.ts";
 import { createGitShowTool } from "./tools/git/show/tool.ts";
 import { createGitStatusTool } from "./tools/git/status/tool.ts";
-import type { GitExec } from "./tools/git/execution.ts";
+import { boundedGitExec, type GitExec } from "./tools/git/execution.ts";
 
 export default function (pi: ExtensionAPI): void {
-  const exec: GitExec = (command, args, options) => pi.exec(command, [...args], options);
+  const exec: GitExec = (command, args, options) =>
+    options?.maxOutputBytes === undefined
+      ? pi.exec(command, [...args], options)
+      : boundedGitExec(command, args, options, options.maxOutputBytes);
   const toolInventoryRecorder = createToolInventoryRecorder(pi);
   const invocationSessionRecorder = createProjectCommandInvocationSessionRecorder(pi);
   pi.on("session_start", (event, context) => {

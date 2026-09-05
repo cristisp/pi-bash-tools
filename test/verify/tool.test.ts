@@ -190,12 +190,148 @@ it("runs fixed phases in order, exposes omissions, and reuses unchanged evidence
   expect(lookup.details.perStep[0]).toHaveProperty("resolvedCommand");
   expect(lookup.details.perStep[0]).toHaveProperty("executable");
   expect(lookup.details.perStep[0]).toHaveProperty("args");
+  const aborted = new AbortController();
+  aborted.abort();
+  await expect(
+    tool.execute(
+      "verify-aborted-valid-ref",
+      { ref: first.details.ref },
+      aborted.signal,
+      undefined,
+      context(cwd),
+    ),
+  ).rejects.toMatchObject({ code: "cancelled" });
+  await expect(
+    tool.execute(
+      "verify-aborted-missing-ref",
+      { ref: "vr_missing" },
+      aborted.signal,
+      undefined,
+      context(cwd),
+    ),
+  ).rejects.toMatchObject({ code: "cancelled" });
   await expect(
     tool.execute("verify-missing-ref", { ref: "vr_missing" }, undefined, undefined, context(cwd)),
   ).rejects.toMatchObject({
     code: "not-found",
     message: expect.stringContaining("process-local root-session cache"),
   });
+});
+
+it("does not reuse evidence when repository state changes during authorization", async () => {
+  const cwd = await projectFixture();
+  const deps = dependencies();
+  let dirtyFilesDigest = "initial";
+  const repositoryStateReader: ProjectCommandRepositoryStateReader = async () => ({
+    repositoryIdentity: "/repo",
+    head: "HEAD",
+    dirtyFilesDigest,
+  });
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver: deps.resolver,
+    executor: deps.executor,
+    repositoryStateReader,
+  });
+  const input = { omit: ["typecheck"] as const };
+  await tool.execute("verify-race-1", input, undefined, undefined, context(cwd));
+  expect(deps.executor).toHaveBeenCalledTimes(3);
+
+  let releaseAuthorization: () => void = () => undefined;
+  const authorizationPaused = new Promise<void>((resolve) => {
+    releaseAuthorization = resolve;
+  });
+  let authorizationStarted: () => void = () => undefined;
+  const authorizationStartedPromise = new Promise<void>((resolve) => {
+    authorizationStarted = resolve;
+  });
+  const pending = tool.execute("verify-race-2", input, undefined, undefined, {
+    ...context(cwd),
+    ui: {
+      select: async () => {
+        authorizationStarted();
+        await authorizationPaused;
+        return "Allow once";
+      },
+    },
+  });
+  await authorizationStartedPromise;
+  dirtyFilesDigest = "changed-during-authorization";
+  releaseAuthorization();
+  const second = await pending;
+  expect(second.details.status).toBe("completed");
+  expect(second.details.reused).toBe(false);
+  expect(deps.executor).toHaveBeenCalledTimes(6);
+});
+
+it("does not persist evidence when configured repository state becomes unavailable", async () => {
+  const cwd = await projectFixture();
+  const deps = dependencies();
+  let reads = 0;
+  const cache = {
+    get: vi.fn(() => undefined),
+    getByRef: vi.fn(() => undefined),
+    set: vi.fn(),
+  };
+  const repositoryStateReader: ProjectCommandRepositoryStateReader = async () => {
+    reads += 1;
+    return reads === 1
+      ? { repositoryIdentity: "/repo", head: "HEAD", dirtyFilesDigest: "initial" }
+      : undefined;
+  };
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver: deps.resolver,
+    executor: deps.executor,
+    repositoryStateReader,
+    cache,
+  });
+  const result = await tool.execute(
+    "verify-state-unavailable",
+    { omit: ["typecheck"] },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  expect(result.details.status).toBe("completed");
+  expect(result.details.reused).toBe(false);
+  expect(deps.executor).toHaveBeenCalledTimes(3);
+  expect(cache.set).not.toHaveBeenCalled();
+});
+
+it("does not persist evidence when final repository-state validation fails", async () => {
+  const cwd = await projectFixture();
+  const deps = dependencies();
+  let reads = 0;
+  const cache = {
+    get: vi.fn(() => undefined),
+    getByRef: vi.fn(() => undefined),
+    set: vi.fn(),
+  };
+  const repositoryStateReader: ProjectCommandRepositoryStateReader = async () => {
+    reads += 1;
+    if (reads > 2) throw new Error("state unavailable");
+    return { repositoryIdentity: "/repo", head: "HEAD", dirtyFilesDigest: "stable" };
+  };
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver: deps.resolver,
+    executor: deps.executor,
+    repositoryStateReader,
+    cache,
+  });
+  const result = await tool.execute(
+    "verify-final-state-failure",
+    { omit: ["typecheck"] },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  expect(result.details.status).toBe("completed");
+  expect(result.details.ref).toBeUndefined();
+  expect(result.details.reused).toBe(false);
+  expect(deps.executor).toHaveBeenCalledTimes(3);
+  expect(cache.set).not.toHaveBeenCalled();
 });
 
 it("keeps every omitted phase visible while running the remaining phase", async () => {
@@ -355,7 +491,7 @@ it("rejects contradictory persisted evidence", () => {
     stderr: chunk,
   });
   const record = {
-    cacheFormatVersion: 1 as const,
+    cacheFormatVersion: 2 as const,
     key: "request-key",
     ref: "vr_request-key",
     projectPath: "/tmp/verify-project",
@@ -372,6 +508,7 @@ it("rejects contradictory persisted evidence", () => {
     createdAt: 0,
   };
   expect(isVerifyEvidenceRecord(record, record.key)).toBe(true);
+  expect(isVerifyEvidenceRecord({ ...record, cacheFormatVersion: 1 }, record.key)).toBe(false);
   const alias = { key: `ref:${record.ref}`, record };
   expect(isVerifyEvidenceCacheRecord(alias, `ref:${record.ref}`)).toBe(true);
   expect(isVerifyEvidenceCacheRecord(record, `ref:${record.ref}`)).toBe(false);
@@ -473,7 +610,7 @@ it("rejects pre-remediation durable records with unsafe tails or fractional dura
       stderr: chunk,
     }));
     const record: VerifyEvidenceRecord = {
-      cacheFormatVersion: 1,
+      cacheFormatVersion: 2,
       key: "compatibility-key",
       ref: "vr_compatibility-key",
       projectPath: cwd,

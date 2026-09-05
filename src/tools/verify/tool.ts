@@ -36,6 +36,7 @@ import {
   type VerifyInput,
 } from "./schema.ts";
 import {
+  VERIFY_CACHE_FORMAT_VERSION,
   VERIFY_PHASES,
   type VerifyEvidenceRecord,
   type VerifyOutput,
@@ -328,6 +329,25 @@ function repositoryState(
   };
 }
 
+async function readVerifyRepositoryState(
+  repositoryStateReader: ProjectCommandRepositoryStateReader,
+  projectPath: string,
+  signal: AbortSignal | undefined,
+): Promise<VerifyRepositoryState | undefined> {
+  let observedState: Awaited<ReturnType<ProjectCommandRepositoryStateReader>>;
+  try {
+    observedState = await repositoryStateReader(projectPath, signal);
+  } catch {
+    if (signal?.aborted) throw new VerifyToolError("cancelled", "verify was cancelled");
+    throw new VerifyToolError(
+      "repository-state-failure",
+      "verify could not determine repository state",
+    );
+  }
+  if (signal?.aborted) throw new VerifyToolError("cancelled", "verify was cancelled");
+  return repositoryState(projectPath, observedState);
+}
+
 function cacheKey(
   projectPath: string,
   state: VerifyRepositoryState | undefined,
@@ -447,13 +467,17 @@ function aggregateVerdict(steps: readonly VerifyStepResult[]): "passed" | "faile
   return "passed";
 }
 
-function completedOutput(record: VerifyEvidenceRecord, reused: boolean): VerifyOutput {
+function completedOutput(
+  record: VerifyEvidenceRecord,
+  reused: boolean,
+  ref: string | undefined,
+): VerifyOutput {
   const perStep = record.perStep.map((step) => compactStep(step, reused));
   const topLevelFailureTail = uniqueFailureTail(perStep, record.failureTail);
   return {
     status: reused ? "unchanged" : "completed",
     verdict: record.verdict,
-    ref: record.ref,
+    ...(ref === undefined ? {} : { ref }),
     projectPath: record.projectPath,
     perStep,
     ...(topLevelFailureTail === undefined ? {} : { failureTail: topLevelFailureTail }),
@@ -605,6 +629,7 @@ function createVerifyToolWithDependencies(
     ) {
       const input = validateVerifyInput(rawParams);
       const requestSignal = signal ?? ctx.signal;
+      if (requestSignal?.aborted) throw new VerifyToolError("cancelled", "verify was cancelled");
       if (input.ref !== undefined) {
         const record = cache.getByRef(input.ref);
         if (record === undefined) {
@@ -632,21 +657,14 @@ function createVerifyToolWithDependencies(
         throw new VerifyToolError("policy-load-failure", "verify policy could not be loaded");
       }
       const prepared = await resolveSteps(input, loadedPolicy.projectPath, resolver, requestSignal);
-      let observedState: Awaited<ReturnType<ProjectCommandRepositoryStateReader>>;
-      try {
-        observedState =
-          repositoryStateReader === undefined
-            ? undefined
-            : await repositoryStateReader(loadedPolicy.projectPath, requestSignal);
-      } catch {
-        if (requestSignal?.aborted) throw new VerifyToolError("cancelled", "verify was cancelled");
-        throw new VerifyToolError(
-          "repository-state-failure",
-          "verify could not determine repository state",
-        );
-      }
-      if (requestSignal?.aborted) throw new VerifyToolError("cancelled", "verify was cancelled");
-      const state = repositoryState(loadedPolicy.projectPath, observedState);
+      const stateBeforeAuthorization =
+        repositoryStateReader === undefined
+          ? undefined
+          : await readVerifyRepositoryState(
+              repositoryStateReader,
+              loadedPolicy.projectPath,
+              requestSignal,
+            );
       const resolvedCommands = prepared.map(({ resolved }) => displayCommand(resolved));
       const authorizationCommands = prepared.map(
         ({ phase, resolved }) =>
@@ -655,12 +673,46 @@ function createVerifyToolWithDependencies(
       const identity = verificationIdentity(prepared, input);
       await authorizeVerify(policy, ctx, requestSignal, identity, authorizationCommands);
       if (requestSignal?.aborted) throw new VerifyToolError("cancelled", "verify was cancelled");
-      const key = cacheKey(loadedPolicy.projectPath, state, prepared, input);
-      const ref = `vr_${key.slice(0, 24)}`;
-      if (state !== undefined) {
-        const cached = cache.get(key);
-        if (cached !== undefined) return result(compactOutput(cached));
+      let state = stateBeforeAuthorization;
+      let repositoryStateReliable = repositoryStateReader === undefined;
+      if (repositoryStateReader !== undefined) {
+        try {
+          state = await readVerifyRepositoryState(
+            repositoryStateReader,
+            loadedPolicy.projectPath,
+            requestSignal,
+          );
+          repositoryStateReliable = state !== undefined;
+        } catch (error) {
+          if (error instanceof VerifyToolError && error.code === "cancelled") throw error;
+          state = undefined;
+          repositoryStateReliable = false;
+        }
       }
+      let key = cacheKey(loadedPolicy.projectPath, state, prepared, input);
+      if (state !== undefined && repositoryStateReader !== undefined) {
+        const cached = cache.get(key);
+        if (cached !== undefined) {
+          let stableState: VerifyRepositoryState | undefined;
+          try {
+            stableState = await readVerifyRepositoryState(
+              repositoryStateReader,
+              loadedPolicy.projectPath,
+              requestSignal,
+            );
+          } catch (error) {
+            if (error instanceof VerifyToolError && error.code === "cancelled") throw error;
+          }
+          const stableKey = cacheKey(loadedPolicy.projectPath, stableState, prepared, input);
+          if (stableState !== undefined && stableKey === key) {
+            return result(compactOutput(cached));
+          }
+          state = stableState;
+          key = stableKey;
+          repositoryStateReliable = stableState !== undefined;
+        }
+      }
+      const ref = `vr_${key.slice(0, 24)}`;
 
       const aggregateController = new AbortController();
       const abortAggregate = () => aggregateController.abort();
@@ -696,7 +748,7 @@ function createVerifyToolWithDependencies(
       const verdict = aggregateVerdict(steps);
       const firstFailure = steps.find((step) => step.status === "failed");
       const record: VerifyEvidenceRecord = {
-        cacheFormatVersion: 1,
+        cacheFormatVersion: VERIFY_CACHE_FORMAT_VERSION,
         key,
         ref,
         projectPath: loadedPolicy.projectPath,
@@ -710,8 +762,24 @@ function createVerifyToolWithDependencies(
         covers: input.covers,
         createdAt: Date.now(),
       };
-      cache.set(record);
-      return result(completedOutput(record, false));
+      let stableForCache = repositoryStateReliable;
+      if (state !== undefined && repositoryStateReader !== undefined) {
+        try {
+          const finalState = await readVerifyRepositoryState(
+            repositoryStateReader,
+            loadedPolicy.projectPath,
+            requestSignal,
+          );
+          stableForCache =
+            finalState !== undefined &&
+            cacheKey(loadedPolicy.projectPath, finalState, prepared, input) === key;
+        } catch (error) {
+          if (error instanceof VerifyToolError && error.code === "cancelled") throw error;
+          stableForCache = false;
+        }
+      }
+      if (stableForCache) cache.set(record);
+      return result(completedOutput(record, false, stableForCache ? record.ref : undefined));
     },
   };
 }

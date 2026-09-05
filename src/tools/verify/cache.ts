@@ -5,6 +5,7 @@ import {
 } from "../project-command/cache.ts";
 import { readProjectCommandOrchestrationContext } from "../project-command/orchestration.ts";
 import {
+  VERIFY_CACHE_FORMAT_VERSION,
   VERIFY_PHASES,
   type VerifyEvidenceRecord,
   type VerifyOutputChunk,
@@ -179,7 +180,7 @@ export function isVerifyEvidenceRecord(
 ): value is VerifyEvidenceRecord {
   if (!isRecord(value)) return false;
   return (
-    value.cacheFormatVersion === 1 &&
+    value.cacheFormatVersion === VERIFY_CACHE_FORMAT_VERSION &&
     isBoundedString(value.key, 256) &&
     (logicalRequestKey === undefined || value.key === logicalRequestKey) &&
     isBoundedString(value.ref, 128) &&

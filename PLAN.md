@@ -4,13 +4,28 @@
 
 The R1, R1a, R2, R3, and R5 implementation batches are complete.
 
-The verify evidence portion of R4 is complete.
+The verify evidence portion of R4 is implemented and independently approved.
 
-The implementation has passed a fresh independent review with all in-scope findings closed.
+The latest fresh primary review returned `PASS` with no Critical, High, or Medium finding, and closed F-008, F-009, F-011, and F-012.
 
-There is no active implementation batch from the previous roadmap.
+A follow-up batch closed F-013, F-014, and F-015, leaving only F-016 as an open non-blocking Low item. That follow-up batch changed production code in `src/tools/git/execution.ts` after the primary `PASS` and was closed by a fresh validator plus a fresh scoped remediation review, not by a new full primary review.
 
-The next work should be selected from the remaining follow-up workstreams below rather than reopening completed cache, schema, Git diff, or verify work without new requirements.
+No implementation batch is currently running. The uncommitted change set is releasable and should be committed before new work starts in this area.
+
+The next work should not reopen completed cache, schema, Git diff, or verify behavior except to address a new requirement, regression, or security finding, or one of the non-blocking follow-ups below.
+
+### Closed continuation blockers
+
+- **F-008 - bounded Git cleanup ordering:** closed. `test/git/execution.test.ts` gates on a child-recorded `SIGTERM`, asserts the promise is still pending before a `SIGUSR1` release, and asserts the child exited from that release before rejecting, on both the bounded-output overflow and the cancellation path. The review confirmed the gate fails an implementation that settles at termination-request time.
+- **F-009 - shared-cache invalidation coverage:** closed. `test/verify/tool.integration.test.ts` shares one cache across three verify calls and asserts a cold miss, then `unchanged` with `reused: true`, an identical ref, and no executor re-invocation, then `completed` with `reused: false` and a new ref after both tracked and untracked content changes.
+- **F-011 - review-status documentation:** closed by the fresh primary review `PASS` recorded under validation evidence.
+
+### Follow-up items
+
+- **F-013 - Low, closed:** an output-limit breach now surfaces as contract code `git-output-limit-exceeded` with category `IMPLEMENTATION_FAILURE`, `retryable: false`, and `executed: true` from both detection layers, instead of `SPAWN_FAILURE`. Cancellation precedence and the genuine spawn-failure path are unchanged.
+- **F-014 - Low, closed:** the gated ordering tests now pre-check the child and fail with an explicit exhausted-grace-window message instead of an opaque `ESRCH` or missing marker. The production `CHILD_TERMINATION_GRACE_MS` value was deliberately left at 100 ms and no test-only knob was added, so a stall longer than the grace window still fails these tests, now loudly and with the correct cause.
+- **F-015 - Low, closed with accepted risk:** no-op `error` listeners are attached to both child streams immediately after spawn, so a stream-level `error` cannot escape as an uncaught exception. No dedicated regression test exists, because a real one would need either a production seam or a harness approach with no precedent in this repository. `src/tools/project-command/execution/monitor.ts` has the same shape and was left untouched.
+- **F-016 - Low, open, non-blocking:** the new release diagnostic hardcodes the 100 ms grace value in its message instead of deriving it from the production constant, so the two can drift.
 
 ## Completed workstreams
 
@@ -31,7 +46,7 @@ The next work should be selected from the remaining follow-up workstreams below 
 - [x] Added UTF-8-safe output bounds and model-facing truncation guidance.
 - [x] Added deterministic summary keys using repository identity, absolute working directory, HEAD, dirty state, staged state, path filters, and output-shaping inputs.
 - [x] Added authorized flow persistence through the R1 store.
-- [x] Added raw Git state invalidation, including status, diff, and untracked-file content changes.
+- [x] Added raw Git state invalidation using bounded status metadata and per-path content hashes for tracked and untracked changes.
 - [x] Added same-tool single-flight coordination, opaque claim handles, stale-claim recovery, and cancellation-safe release.
 
 ### R5: Project-command schemas and interface friction
@@ -56,6 +71,9 @@ The next work should be selected from the remaining follow-up workstreams below 
 - [x] Kept failure tails only on failed steps, stripped ANSI SGR sequences before bounding, and removed duplicate tails from complete by-ref step output.
 - [x] Kept compact output bounded by omitting redundant command fields and marking reused step rows as not executed in the current call.
 - [x] Deduplicated top-level and step-level failure tails per response and stripped ANSI SGR sequences from full by-ref output while preserving raw byte totals.
+- [x] Made repository-state digests content-aware for tracked and untracked changes, fail closed when bounded state capture is incomplete, added regression coverage for already-dirty tracked files, nested project paths, state races, and non-persisted refs, and bumped the verify cache format version.
+- [x] Added production bounded Git capture for repository-state status and content hashes, file identity checks across hashing, and cancellation-safe subprocess termination with escalation.
+- [x] Classified bounded-output-limit breaches with a dedicated `git-output-limit-exceeded` contract on both detection layers instead of reporting them as spawn failures, and attached error-suppressing listeners to the bounded child streams.
 
 ### R4: Verify evidence references
 
@@ -68,12 +86,18 @@ The standalone project-command validation-reference API is not currently impleme
 
 ## Validation evidence
 
-- [x] Formatter check passed for 216 files.
-- [x] Project lint passed with zero warnings and zero errors.
-- [x] Verify-focused tests passed with 14 tests.
-- [x] Full test suite passed with 85 test files and 353 tests.
+- [x] `npm run format:check` passed after the latest batch.
+- [x] `npm run lint` passed with zero warnings and zero errors, which includes the TypeScript check.
+- [x] `npm run test` passed twice in a row with 87 test files and 365 tests after the F-008 and F-009 batch, and twice more with 368 tests after the F-013 to F-015 batch, including 9 tests in `test/git/execution.test.ts`.
+- [x] Path filters cannot be forwarded by the available test command in this environment, so focused per-file runs were not executed. `test/git/execution.test.ts` (9 tests) and `test/verify/tool.integration.test.ts` (2 tests) ran as part of the full-suite runs above, alongside `test/project-command/repository-state.test.ts`, `test/verify/tool.test.ts`, and `test/index.test.ts`.
+- [x] An earlier session recorded a focused run of `test/git/execution.test.ts test/project-command/repository-state.test.ts test/verify/tool.integration.test.ts test/verify/tool.test.ts test/index.test.ts` passing 31 tests. That exact command could not be repeated here and is not treated as current evidence; the full-suite runs above supersede it.
+- [x] The F-008 and F-009 batch added the child-close ordering regressions for the bounded-output overflow and cancellation paths, each gating on a child-recorded `SIGTERM`, asserting the promise is still pending before a `SIGUSR1` release, and asserting the child exited from that release, plus the shared-cache regression covering unchanged reuse with no executor re-invocation and tracked-plus-untracked invalidation. Red evidence came from two temporary mutations, both reverted.
 - [x] Codegraph was synchronized after the final implementation changes.
-- [x] Fresh independent verify review returned `PASS`.
+- [x] The composite `verify` gate ran fresh, reporting `reused: false` with `format`, `lint`, and `test` passed and `typecheck` explicitly omitted, giving aggregate verdict `incomplete` by design. Ref `vr_df7609f7ebb3348d2172a1d7`, recorded as historical because plan prose edits changed the repository state afterwards.
+- [x] An earlier fresh independent review returned `FAIL` with F-008 and F-009 open; that finding set was remediated and re-reviewed as recorded in the next two bullets.
+- [x] A remediation review returned `PASS` on F-008 and F-009 with validation references V-001 through V-005, and a separate fresh primary review of the whole change set returned `PASS` on the acceptance criteria and on every non-negotiable constraint. That review opened F-013, F-014, and F-015 as non-blocking Low follow-ups and left `npm run format:check` re-verified after the plan prose edits.
+- [x] The F-013 to F-015 batch was validated by a fresh validator (`PASS` on two full-suite runs, `format:check`, and `lint`) and closed by a fresh remediation reviewer with a `PASS` verdict. Discrimination was proven by two temporary mutations that were fully reverted and fingerprint-compared: restoring the old spawn-failure mapping turned exactly the 3 new output-limit tests red, and settling at termination-request time turned exactly the 2 gated ordering tests red while the escalation test stayed green.
+- [x] The first validator delegation of that batch failed to start and was retried in a fresh session; the main session independently reproduced the full-suite result at 87 files and 368 tests.
 
 The repository has no separate `typecheck` package script.
 
