@@ -15,6 +15,8 @@ export interface SubagentToolDescriptionValues {
 	registryPath: string;
 	/** Directory holding user-scoped agent files, e.g. ~/.pi/agents. */
 	agentsDir: string;
+	/** Absolute path of the installed orchestration guide, the workflow contract for this tool. */
+	guidePath: string;
 	/** Project config directory name, e.g. ".pi". */
 	configDirName: string;
 }
@@ -22,6 +24,7 @@ export interface SubagentToolDescriptionValues {
 export function subagentToolDescription(values: SubagentToolDescriptionValues): string {
 	return [
 		'Delegate tasks to specialized subagents with isolated context.',
+		`Workflow contract: ${values.guidePath} carries workflow tier selection, role boundaries, escalation, the stop after two unsuccessful reviews, fan-out gate ownership, and validation evidence reuse. Read it before a multi-worker fan-out, a remediation round, or any task the guide classifies above a single reviewed worker; a lone worker delegation is steered by this description and the role prompts.`,
 		'Each subagent runs as a live pi session in its own herdr tab, labeled <agent>-<n> (e.g. worker-1, reviewer-2); the numbering is persistent.',
 		'Tabs stay open after finishing until closed manually; sessions can be reused (preserving context).',
 		`Registry of all subagent sessions: ${values.registryPath} (read it to find reusable sessions and their session files).`,

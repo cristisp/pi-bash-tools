@@ -72,6 +72,8 @@ function count(value: number): string {
  * extension does not enforce.
  */
 export function roleBudgetLines(budgets: OrchestrationGuideBudgets): string {
+	const freshness =
+		'These budgets are the ones in effect when this guide was installed, so a config change made afterwards is enforced live and stale on this page; `subagent_stats` reports what a session actually spent.';
 	const lines = GUIDE_ROLES.map((entry) => {
 		const budget = budgets.roleBudgets[entry.role] ?? DEFAULT_ROLE_BUDGETS[entry.role];
 		if (!budget) return undefined;
@@ -91,7 +93,7 @@ export function roleBudgetLines(budgets: OrchestrationGuideBudgets): string {
 				budgets.scopeCallAllowanceMax,
 			)} calls.`,
 	);
-	return lines.join('\n');
+	return [freshness, ...lines].join('\n');
 }
 
 /** Path of the guide template shipped inside the package. */

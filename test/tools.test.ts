@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { DEFAULT_ROLE_BUDGETS } from '../src/config.ts';
 import { SubagentParams } from '../src/execute.ts';
+import { ORCHESTRATION_GUIDE_FILENAME } from '../src/guide.ts';
 import { REGISTRY_PATH } from '../src/registry-store.ts';
 import {
 	REUSE_WORKFLOW_GUIDANCE,
@@ -124,6 +125,7 @@ function configuredBudgetValues(): Set<string> {
 const DYNAMIC_VALUES = {
 	registryPath: REGISTRY_PATH,
 	agentsDir: path.join(getAgentDir(), 'agents'),
+	guidePath: path.join(getAgentDir(), 'agents', ORCHESTRATION_GUIDE_FILENAME),
 	configDirName: CONFIG_DIR_NAME,
 };
 
@@ -369,6 +371,24 @@ describe('registered description text is composed, not paraphrased', () => {
 		expect(description).toContain(
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
 		);
+	});
+
+	it('points at the orchestration guide and states when reading it is required', () => {
+		const description = toolByName('subagent').description;
+		// Nothing outside the package tells a session the guide exists, so this pointer is the only
+		// route left after the system-prompt mandate was removed. It must name the installed path and
+		// the triggers, and keep the tier 1 path cheap rather than reinstate a flat mandate.
+		expect(description).toContain(
+			`Workflow contract: ${path.join(getAgentDir(), 'agents', ORCHESTRATION_GUIDE_FILENAME)}`,
+		);
+		expect(description).toContain(
+			'Read it before a multi-worker fan-out, a remediation round, or any task the guide classifies above a single reviewed worker',
+		);
+		expect(description).toContain(
+			'a lone worker delegation is steered by this description and the role prompts',
+		);
+		expect(description).toContain('workflow tier selection');
+		expect(description).toContain('validation evidence reuse');
 	});
 
 	it('states the rules for the stats and close tools', () => {

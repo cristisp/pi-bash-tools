@@ -84,8 +84,12 @@ Setting up the standard agents:
 contract for the main session: workflow tiers, the canonical ledger, role boundaries, budgets, session
 reuse, and handoff requirements. Its source is `src/orchestration-guide.md`, and the role budget lines
 are generated from the budgets in effect (see `roleBudgets`), so changing a budget and rerunning the
-command keeps the guidance and the enforcement stating the same numbers. Point the system prompt at the
-generated path. When an older hand-maintained copy such as `~/.pi/agent/SUBAGENTS_GUIDE.md` still
+command keeps the guidance and the enforcement stating the same numbers. Those lines are a snapshot of
+the config at install time, so rerun the command after changing a budget; `subagent_stats` is the live
+source for what a session actually spent. Nothing needs to be added to the system prompt: the `subagent`
+tool description carries the pointer to the generated path and the triggers for reading it, which are a
+multi-worker fan-out, a remediation round, or any task the guide classifies above a single reviewed
+worker. An unconditional system-prompt read costs the whole guide before the first delegation. When an older hand-maintained copy such as `~/.pi/agent/SUBAGENTS_GUIDE.md` still
 exists, the command reports it as superseded - delete it, because two copies of one contract drift.
 
 ## Model presets

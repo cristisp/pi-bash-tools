@@ -9,6 +9,7 @@ import {
 	type Theme,
 } from '@earendil-works/pi-coding-agent';
 import { executeSubagent, SubagentParams } from './execute.ts';
+import { ORCHESTRATION_GUIDE_FILENAME } from './guide.ts';
 import { closeSubagentFlow, sessionLinkedEntries } from './registry.ts';
 import { REGISTRY_PATH } from './registry-store.ts';
 import { renderSubagentCall, renderSubagentResult } from './render.ts';
@@ -23,12 +24,14 @@ import { sessionStatsText } from './session-stats.ts';
 import type { SubagentDetails } from './types.ts';
 
 export function registerSubagentTool(pi: ExtensionAPI) {
+	const agentsDir = path.join(getAgentDir(), 'agents');
 	pi.registerTool({
 		name: 'subagent',
 		label: 'Subagent',
 		description: subagentToolDescription({
 			registryPath: REGISTRY_PATH,
-			agentsDir: path.join(getAgentDir(), 'agents'),
+			agentsDir,
+			guidePath: path.join(agentsDir, ORCHESTRATION_GUIDE_FILENAME),
 			configDirName: CONFIG_DIR_NAME,
 		}),
 		parameters: SubagentParams,

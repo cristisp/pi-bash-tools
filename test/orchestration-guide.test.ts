@@ -74,6 +74,14 @@ describe('roleBudgetLines', () => {
 		expect(lines).not.toContain('up to 3 full validation passes');
 	});
 
+	it('marks the budget block as config at install time rather than live truth', () => {
+		const lines = roleBudgetLines(BUDGETS);
+		// The installed guide is a snapshot, so the block has to say which clock it runs on.
+		expect(lines).toContain('when this guide was installed');
+		expect(lines).toContain('stale on this page');
+		expect(lines).toContain('`subagent_stats` reports what a session actually spent');
+	});
+
 	it('keeps the validation discipline notes attached to the roles that own them', () => {
 		const lines = roleBudgetLines(BUDGETS);
 		expect(lines).toContain('at most 12 discovery reads before the first implementation change');
@@ -87,6 +95,14 @@ describe('roleBudgetLines', () => {
 
 describe('renderOrchestrationGuide', () => {
 	const guide = renderOrchestrationGuide(BUDGETS);
+
+	it('states that the guide is read on demand and names the triggers', () => {
+		// The system-prompt mandate is gone, so the guide itself has to carry when it applies.
+		expect(guide).toContain('read on demand rather than before every delegation');
+		expect(guide).toContain(
+			'a tier 2 or higher workflow, a parallel fan-out, or a remediation round',
+		);
+	});
 
 	it('substitutes the budgets and leaves no placeholder behind', () => {
 		expect(guide).not.toContain('{{role_budgets}}');
