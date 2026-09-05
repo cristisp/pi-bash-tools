@@ -201,23 +201,31 @@ export function verifyResolvesRef(input: Record<string, unknown> | undefined): b
 	return typeof input?.ref === 'string' && input.ref.trim().length > 0;
 }
 
-/** `verify` parameters that select what executes or what the minted ref claims; a lookup sets none. */
-const VERIFY_EXECUTION_PARAMS: readonly string[] = [
-	'paths',
-	'omit',
-	'scripts',
-	'covers',
-	'continueOnFailure',
-];
+/**
+ * `verify` parameters a pure lookup may carry. Anything else is treated as changing what executes, what the
+ * ref claims, or where evidence is written, so a lookup carrying it counts as execution.
+ *
+ * This is deliberately an allowlist rather than the blocklist it started as. `verify` gains parameters on the
+ * producer's release schedule - a `ref` lookup that names a flow, a `fresh` re-run, a publish target - and a
+ * blocklist misclassified each new one as a harmless lookup the moment it shipped, in the one place where a
+ * wrong guess lets a read-only seat reach an execution path.
+ * `flowId` is admitted because a lookup that names a store reads no working tree; the publish side effect is
+ * not admitted, because writing evidence somewhere is not the same act as reading it.
+ */
+const VERIFY_LOOKUP_PARAMS: ReadonlySet<string> = new Set(['ref', 'flowId']);
 
 /**
  * A pure reference lookup: a non-empty `ref` and nothing that could change what the gate executes.
  * Anything else makes `verify` run package scripts, which is validation execution rather than evidence
  * resolution, so it belongs to the roles named in `validationExecutionRoles`.
+ * Keys whose value is `undefined` or `null` are ignored, because a serialized call may carry the whole
+ * parameter list; a value that is actually present is what makes a call something other than a lookup.
  */
 export function verifyIsRefLookupOnly(input: Record<string, unknown> | undefined): boolean {
 	if (!verifyResolvesRef(input)) return false;
-	return VERIFY_EXECUTION_PARAMS.every((key) => input?.[key] === undefined);
+	return Object.entries(input ?? {}).every(
+		([key, value]) => value === undefined || value === null || VERIFY_LOOKUP_PARAMS.has(key),
+	);
 }
 
 /**

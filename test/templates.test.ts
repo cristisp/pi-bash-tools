@@ -475,6 +475,9 @@ describe('shipped role grants are enforced rather than stated', () => {
 		{ continueOnFailure: true },
 		{ ref: 'vr_probe', paths: ['src/guide.ts'] },
 		{ ref: 'vr_probe', omit: ['format'] },
+		// Publishing evidence is not reading it, and a forced re-run is not a lookup.
+		{ ref: 'vr_probe', publish: { flowId: 'flow-1' } },
+		{ ref: 'vr_probe', fresh: true },
 	];
 
 	it('confines every shipped role outside validationExecutionRoles to bare ref lookups', () => {
@@ -526,6 +529,8 @@ describe('shipped role grants are enforced rather than stated', () => {
 		['project_command', { commandId: 'node_lint:check' }],
 		['project_command', { commandId: 'node_test' }],
 		['verify', { ref: 'vr_probe' }],
+		// A lookup that names the store it reads still reads nothing from the working tree.
+		['verify', { ref: 'vr_probe', flowId: 'flow-1' }],
 	];
 
 	it('keeps every shipped role outside mutatingCommandRoles away from every writing command form', () => {

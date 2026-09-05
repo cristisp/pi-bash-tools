@@ -321,6 +321,30 @@ describe('live budget enforcement', () => {
 		handlers.agent_end?.({}, { abort: vi.fn() });
 	});
 
+	it('treats any parameter outside the lookup allowlist as execution, including unknown ones', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
+		vi.stubEnv('PI_ORCHESTRATION_ROLE', 'reviewer');
+		vi.stubEnv('PI_SUBAGENT_LABEL', 'reviewer-1');
+		registerEntry(makeRegistryEntry({ label: 'reviewer-1' }));
+		const { pi, handlers } = fakePi();
+		registerBudgetEnforcement(pi);
+		const ctx = { abort: vi.fn() };
+		handlers.before_agent_start?.({ prompt: 'review this' }, ctx);
+		const verifyCall = (input: Record<string, unknown>) =>
+			handlers.tool_call?.({ toolName: 'verify', input }, ctx);
+
+		expect(verifyCall({ ref: 'vr_x', flowId: 'flow-1' })).toBeUndefined();
+		expect(verifyCall({ ref: 'vr_x', omit: undefined })).toBeUndefined();
+		expect(verifyCall({ ref: 'vr_x', publish: { flowId: 'flow-1' } })).toMatchObject({
+			block: true,
+		});
+		expect(verifyCall({ ref: 'vr_x', fresh: true })).toMatchObject({ block: true });
+		expect(verifyCall({ ref: 'vr_x', someFutureParameter: true })).toMatchObject({ block: true });
+		handlers.agent_end?.({}, { abort: vi.fn() });
+	});
+
 	it('blocks verify script-phase overrides for roles outside mutatingCommandRoles', () => {
 		const dir = makeTempDir();
 		stubEnv(dir);

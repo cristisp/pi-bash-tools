@@ -57,15 +57,20 @@ Ask, in the order we would take it:
 - [ ] Confirm that nothing in the flow path assumes the flow env implies a child process.
       Per-invocation records must tolerate `flowId` present with `delegationId` and `role` absent.
 - [ ] Confirm the zero-change rule still reads as: no flow env means session scope and the process-local store.
-      We propose to amend our side of the contract by exporting `PI_ORCHESTRATION_FLOW` and `PI_ORCHESTRATION_EVIDENCE_SCOPE=flow` into the root process lazily, at the first delegation of that session, so a session that never delegates keeps today's byte-identical behaviour.
-      Say so in your docs, or push back before we implement it.
-- [ ] If you would rather not widen membership, expose an explicit lookup that names the flow instead of inheriting membership, for example `verify { ref, flowId }` validated against a store the caller may read.
+      Our earlier proposal to export `PI_ORCHESTRATION_FLOW` and `PI_ORCHESTRATION_EVIDENCE_SCOPE=flow` into the root process lazily is **withdrawn** on their pushback, which is correct: it promotes every root-session `verify` and `project_command` into the durable store to fix one lookup direction, and their reading of the laziness flaw is right, since the first delegation would silently change persistence for the rest of a human session.
+- [x] Decided: expose `verify { ref, flowId }`, an explicit lookup naming a store the caller is entitled to read. We prefer it to membership widening because the store becomes an argument, which means a refusal payload can name it and a ledger line can quote it.
+      Entitlement is what makes it safe, and it answers both directions at once: the delegating session may read the flow store because it owns that flow id, and a child may read it because it carries that flow id.
+- [x] Decided: publish as `verify({ ..., publish: { flowId } })`, nested rather than a flat `flowId`, because the consumer classifies `verify` calls by argument shape and a flat name would mean "read from that store" on a lookup and "write to that store" on a mint. Root default behaviour stays byte-identical, one call publishes one ref, and it composes with `{ ref, flowId }`: publish at mint, name the store at read.
+      Conditions attached in `analysis/BASH_TOOLS_DECISIONS.md` D5: reject `publish` together with `ref`; keep `publish` out of the authorization fingerprint and record it instead, refusing with a payload that distinguishes a missing composite grant from a missing publish entitlement; treat a publish to a caller's own flow as an accepted no-op; and check repository identity on the way in and stamp `producerScope`, `delegationId` and `role` on the published record, because knowing a flow id is not entitlement to write evidence into it.
 
 Acceptance:
 
 - A ref minted by a child resolves in the delegating session, and the record names the producing role and `producerScope`.
+- A ref minted by the main session with an explicit publish resolves from a child seat in that flow, which is the hop no current mechanism can close (F2, D3 route 1).
 - A ref from another flow, another repository identity, or another working directory still cannot be read.
 - A session that never delegated sees no change in tool surface, output, or timings.
+- When `{ ref, flowId }` and `publish` ship, the consumer guidance that currently tells seats to call a bare `{ ref }` widens in the same release, together with its test pins. Enforcement already accepts `{ ref, flowId }` and refuses `{ ref, publish }`, so the only outstanding work is prompt text. This is listed rather than left to memory because the failure is silent in both directions: guidance advertising an unavailable parameter costs every seat a rejected call, and guidance never mentioning an available one leaves a shipped feature unused.
+- A parameter that does not change execution is marked read-only in the tool schema or docs, so the consumer's lookup allowlist has a source of truth other than reading diffs.
 
 ## F3 (P1) Refs and lookup for `project_command` results, not only for `verify`
 
@@ -73,16 +78,18 @@ Problem: `verify` covers format, lint, typecheck, and test.
 A validator still runs `node_build`, the `fallow_*` analyses, and check variants through `project_command`, and those results carry a `resultFingerprint` that nothing can resolve.
 So the remainder of a validation plan is precisely the part that cannot be handed over, and the next role re-executes it.
 
-Ask:
+Ask (answered and narrowed by `analysis/BASH_TOOLS_DECISIONS.md` D1: we want addressability, not replay):
 
-- [ ] Return a ref for every cache-eligible `project_command` execution, alongside `resultFingerprint`.
+- [ ] Return a ref for every `project_command` execution, alongside `resultFingerprint`, storing and resolving evidence without ever returning it as a cache hit that skips execution. Per your observation 2 none of these ids is cache-eligible (`reusePolicy: "never"` plus `uncontrolledExternalState: true`), and that is the shape we want kept: the cost we drive down is a model turn and a role-budget charge, and an internally short-circuited call still spends both.
+- [ ] Give `project_command` refs a prefix distinct from `vr_`, so the record type is identifiable from the identifier alone. Nothing in our code branches on `vr_`; refs are opaque end to end, and we will update the one refusal sentence and its pins when the prefix is chosen. Prefix agreed as `pc_` with content-addressed behaviour unchanged; the consumer-side strings move when the build ships, not before, because a refusal quoting a prefix the installed build never emits is worse than one quoting a prefix it does.
 - [ ] Accept a lookup that resolves a ref to its stored record without executing: a `ref` parameter on `project_command`, or one small dedicated command id if you prefer to keep execution and resolution apart.
-- [ ] Accept the same opaque `covers` parameter on `project_command`, stored and echoed verbatim, so the two ref surfaces behave alike.
+- [ ] Accept the same opaque `covers` parameter on `project_command`, stored and echoed verbatim and part of the key, so the two ref surfaces behave alike. Our read-only roles are refused any parameter co-supplied with a `ref`, so a lookup that accepted execution options would be an execution path wearing a lookup's identity.
 - [ ] Mark records non-reusable when no reliable state digest exists, as you already do for `verify`.
 
 Acceptance:
 
-- A worker mints a `node_build` ref, a validator resolves it in one call, and neither the resolved command nor an equivalent one runs again in that flow.
+- A worker mints a `node_build` ref, a validator resolves it in one call, and the validator's own ledger records `resolved` rather than `executed`. Whether an equivalent command runs again is the consumer's choice and our contract's problem, not a cache short-circuit: that is the honest form of the line we previously wrote as "neither the resolved command nor an equivalent one runs again in that flow".
+- A lookup of a `project_command` ref reports the recorded state and the current state, or a `stateMatchesCurrent` flag, so a consumer can decide staleness without re-executing (`F-033`; the same requirement applies to `verify` refs).
 - A ref cannot claim coverage it was not given, and no caller can forge one.
 
 ## F4 (P2) Argument-shape errors that name the shape
@@ -258,9 +265,21 @@ The shape-scoped decision itself is right and stays: it is what stops a role tha
 running an arbitrary package script through a `scripts` override. The complaint is about the failure, not the
 policy.
 
+**Root cause, from the producer's source, replaces our causal claim.** Their `verificationIdentity`
+(`src/tools/verify/tool.ts:380-395`) folds `displayCommand(resolved)` for every phase into the fingerprint, and
+`resolveSteps` (`:300-303`) forwards `input.paths` into the test-phase resolution whose `displayCommand` is
+`executable + args`. So `verify` with `paths` and `verify` without them are different authorization identities,
+as are two different `paths` sets, and `scriptFingerprint` means an edited package script re-prompts. Our line
+above that a child's fingerprint "evidently does not match the parent's even for an identical call" was an
+inference from refusals we could not see inside, and it is withdrawn. Our data is consistent with
+paths-in-identity (the child mints that succeeded carried no `paths`) without proving it, since we never minted
+one shape and then re-minted it with only `paths` added; their source reading is the proof and ours is
+corroboration.
+
 - [ ] On a refusal, name the fingerprint sought, the scope searched, and whether a prompt was attempted and timed out, so an operator can pre-authorize the one shape a role needs instead of guessing shapes.
 - [ ] Name the matched rule on a deny. A child cannot ask the operator what was denied in an unrelated earlier session, and `denied` and `timeout` reach the caller as one undifferentiated failure.
 - [ ] Consider letting one project-scope `verify` grant cover the phase-default shapes, since the shapes a legitimate role needs are the defaults, and today every new combination wants its own recorded decision.
+- [x] Decided in `BASH_TOOLS_DECISIONS.md` D2: take `paths` out of the authorization identity and keep it in the cache key. Per-path-set granularity is dead weight for us, because our minting seats mint the composite over a whole-tree digest and our consumers call with a bare `ref`. We ask for this loosening knowingly: write authority in our model is decided by the role gate and the repository write lock, not by which paths one call named. Keep `scriptFingerprint` in the identity, so an edited package script always forces a fresh grant.
 
 Acceptance: a delegated seat that cannot execute `verify` learns from its first refusal what to ask for, rather
 than discovering it by exhausting its call budget on shapes.
@@ -276,6 +295,10 @@ than discovering it by exhausting its call budget on shapes.
 - Join: your invocation records join to `subagent-herdr` telemetry on `delegationId` or `flowId` without transcript parsing, and root-session records join on `flowId` alone (F2).
 
 ## Baseline for measuring F1 to F3
+
+`npm run test:analyze` is a script in **this** repository (`analysis/cli.ts`), not one for `bash-tools` to
+invent a proxy for. We re-run it here over the union of our telemetry and your invocation records once your
+`verify` recorder lands, and we hand you the numbers.
 
 From the same measurement window that produced the original handoff, to be re-measured with
 `npm run test:analyze` in this repo after the follow-ups land:
