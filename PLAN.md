@@ -2,17 +2,26 @@
 
 ## Status
 
-The R1, R1a, R2, R3, and R5 implementation batches are complete.
+The R1, R1a, R2, R3, R4, R5, and consumer-aligned validation evidence implementation batches are complete.
 
-The verify evidence portion of R4 is implemented and independently approved.
+The consumer handoff recorded in `docs/handoffs/BASH_TOOLS_DECISIONS.md` is implemented across project-command evidence, verify evidence, authorization scope, publication, repository-state freshness, mutability, single-flight coordination, bounded observability, documentation, and regression coverage.
 
-The latest fresh primary review returned `PASS` with no Critical, High, or Medium finding, and closed F-008, F-009, F-011, and F-012.
+The latest validation run passed lint and the full test suite: 87 test files and 379 tests.
+The current validation reference is `vr_3a117ca82e8da911ff7c34aa`; its lint and test phases passed, while format and the unavailable standalone typecheck phase were omitted.
+The repository has no separate `typecheck` package script, and TypeScript checking is included through the Oxlint TypeScript plugin invoked by the lint script.
 
-A follow-up batch closed F-013, F-014, and F-015, leaving only F-016 as an open non-blocking Low item. That follow-up batch changed production code in `src/tools/git/execution.ts` after the primary `PASS` and was closed by a fresh validator plus a fresh scoped remediation review, not by a new full primary review.
+The implementation surfaces are formatted.
+`npm run format:check` reports only the four protected, untracked handoff files under `docs/handoffs/`, which were not edited.
 
-No implementation batch is currently running. The uncommitted change set is releasable and should be committed before new work starts in this area.
+A fresh independent review of the combined tree was budget-blocked before validation and returned no final approval.
+Its findings were dispositioned as follows: durable publication metadata, state-aware single-flight keys, shared-consumer cancellation, and persisted-record validation were remediated; stable content-derived `pc_` refs remain intentional because they do not enable replay; and explicit root-to-flow publication follows the agreed D5 contract, requiring an explicit publish request, effective-flow checks, repository provenance, and confirmed durable writes.
 
-The next work should not reopen completed cache, schema, Git diff, or verify behavior except to address a new requirement, regression, or security finding, or one of the non-blocking follow-ups below.
+F-016 remains an open, non-blocking Low follow-up concerning the hardcoded grace-window value in a Git diagnostic.
+
+No implementation batch is currently running.
+The current change set remains uncommitted and must be committed before new work starts in this area.
+
+Future work should not reopen completed R1, R1a, R2, R3, R4, R5, or validation-evidence behavior except for a new behavior requirement, regression, security finding, or the follow-up items below.
 
 ### Closed continuation blockers
 
@@ -82,28 +91,96 @@ The next work should not reopen completed cache, schema, Git diff, or verify beh
 - [x] Ref aliases are bound to both the requested ref key and the derived record ref.
 - [x] Persisted records are validated before direct-key and ref-based reuse.
 
-The standalone project-command validation-reference API is not currently implemented and remains a possible future extension if a new requirement needs it.
+The standalone project-command validation-reference API is part of the next consumer-aligned evidence handoff below.
+Its refs are addressable evidence only and must not make any currently non-reusable command replayable.
 
 ## Validation evidence
 
-- [x] `npm run format:check` passed after the latest batch.
-- [x] `npm run lint` passed with zero warnings and zero errors, which includes the TypeScript check.
-- [x] `npm run test` passed twice in a row with 87 test files and 365 tests after the F-008 and F-009 batch, and twice more with 368 tests after the F-013 to F-015 batch, including 9 tests in `test/git/execution.test.ts`.
-- [x] Path filters cannot be forwarded by the available test command in this environment, so focused per-file runs were not executed. `test/git/execution.test.ts` (9 tests) and `test/verify/tool.integration.test.ts` (2 tests) ran as part of the full-suite runs above, alongside `test/project-command/repository-state.test.ts`, `test/verify/tool.test.ts`, and `test/index.test.ts`.
-- [x] An earlier session recorded a focused run of `test/git/execution.test.ts test/project-command/repository-state.test.ts test/verify/tool.integration.test.ts test/verify/tool.test.ts test/index.test.ts` passing 31 tests. That exact command could not be repeated here and is not treated as current evidence; the full-suite runs above supersede it.
-- [x] The F-008 and F-009 batch added the child-close ordering regressions for the bounded-output overflow and cancellation paths, each gating on a child-recorded `SIGTERM`, asserting the promise is still pending before a `SIGUSR1` release, and asserting the child exited from that release, plus the shared-cache regression covering unchanged reuse with no executor re-invocation and tracked-plus-untracked invalidation. Red evidence came from two temporary mutations, both reverted.
+- [x] `npm run lint` passed with zero warnings and zero errors.
+- [x] `npm run test` passed with 87 test files and 379 tests.
+- [x] Focused project-command, verify, and observability suites passed during the final remediation.
+- [x] `npm run format` completed successfully for the implementation and test surfaces.
+- [ ] `npm run format:check` is not clean because the four protected, untracked files under `docs/handoffs/` are not formatted; those files were intentionally left unchanged.
+- [x] The final composite validation reference is `vr_3a117ca82e8da911ff7c34aa`, with lint and test phases passed and format and the unavailable standalone typecheck phase omitted.
 - [x] Codegraph was synchronized after the final implementation changes.
-- [x] The composite `verify` gate ran fresh, reporting `reused: false` with `format`, `lint`, and `test` passed and `typecheck` explicitly omitted, giving aggregate verdict `incomplete` by design. Ref `vr_df7609f7ebb3348d2172a1d7`, recorded as historical because plan prose edits changed the repository state afterwards.
-- [x] An earlier fresh independent review returned `FAIL` with F-008 and F-009 open; that finding set was remediated and re-reviewed as recorded in the next two bullets.
-- [x] A remediation review returned `PASS` on F-008 and F-009 with validation references V-001 through V-005, and a separate fresh primary review of the whole change set returned `PASS` on the acceptance criteria and on every non-negotiable constraint. That review opened F-013, F-014, and F-015 as non-blocking Low follow-ups and left `npm run format:check` re-verified after the plan prose edits.
-- [x] The F-013 to F-015 batch was validated by a fresh validator (`PASS` on two full-suite runs, `format:check`, and `lint`) and closed by a fresh remediation reviewer with a `PASS` verdict. Discrimination was proven by two temporary mutations that were fully reverted and fingerprint-compared: restoring the old spawn-failure mapping turned exactly the 3 new output-limit tests red, and settling at termination-request time turned exactly the 2 gated ordering tests red while the escalation test stayed green.
-- [x] The first validator delegation of that batch failed to start and was retried in a fresh session; the main session independently reproduced the full-suite result at 87 files and 368 tests.
+- [x] The full test run included the project-command evidence, flow-cache, state-drift, single-flight, verify lookup, publication, observability, authorization, and integration regressions.
+- [ ] A fresh independent primary review with a final approval verdict remains outstanding because the latest review was budget-blocked before validation.
 
 The repository has no separate `typecheck` package script.
 
 TypeScript checking is included through the Oxlint TypeScript plugin invoked by the lint script.
 
 ## Remaining roadmap
+
+### Completed batch: Consumer-aligned validation evidence handoff
+
+This batch implemented the contract in `docs/handoffs/BASH_TOOLS_DECISIONS.md` as an ordered dependency sequence.
+The implementation preserved completed R1, R1a, R2, R3, R4, and R5 behavior except where the handoff added evidence, authorization, publication, or telemetry requirements.
+Focused tests were added and run during the batch.
+
+#### Step 1: Shared bounded records and observability foundations
+
+- [x] Extend bounded invocation metadata with optional `flowId`, `delegationId`, `role`, `ref`, recorded repository state, `verdict`, `mutating`, publication metadata, and coercion metadata.
+- [x] Keep orchestration fields absent when their environment values are absent, and keep the existing invocation and summary format versions unless an external parser proves incompatible.
+- [x] Preserve the existing project-command cache-decision vocabulary and the existing bounded summary count without adding per-request-key repetition data.
+- [x] Register the existing invocation recorder with `verify` and emit one aggregate invocation record per `verify` tool call, never one record per phase.
+- [x] Keep process `status` separate from the aggregate verify `verdict`, preserving `passed`, `failed`, and `incomplete` rather than mapping `incomplete` to success.
+- [x] Preserve default tool outputs and process-local evidence behavior when the new request options and orchestration variables are absent.
+
+#### Step 2: Request shapes, lookup modes, and normalization
+
+- [x] Add `fresh` to `verify`, add `covers` and lookup support to `project_command`, and add the explicit `{ ref, flowId }` lookup shape.
+- [x] Make `{ ref }`, `{ ref, flowId }`, and those forms with opaque `covers` lookup-only shapes, reject `ref` with execution options other than `covers` and `flowId`, and keep unknown parameters fail-closed as execution-capable.
+- [x] Add nested `publish: { flowId }` only to executing evidence requests, reject `publish` with `ref`, and keep publication metadata out of execution identities.
+- [x] Coerce an unambiguous JSON-encoded `paths` array supplied as a string, retain the existing boolean coercions, and record every coercion in bounded invocation metadata.
+- [x] Make validation errors name the field, expected shape, and a literal accepted example.
+- [x] Mark lookup-only parameters as such in the tool schemas and descriptions so the consumer's allowlist has a source of truth other than a diff.
+
+#### Step 3: Authorization and mutability contracts
+
+- [x] Remove `paths` from the verify authorization identity while retaining it in the evidence key and retaining the script fingerprint in the authorization identity.
+- [x] Add one operator-approved composite flow grant bound to the resolved script set and usable only when the effective evidence scope is `flow`.
+- [x] Keep session-scoped and unset-scope calls prompting, and never auto-authorize based only on orchestration environment variables.
+- [x] Add actionable authorization failures that identify the rejected command shape, project path, searched scope, effective evidence scope, and whether the missing permission concerns execution or publication.
+- [x] Report variant-derived `mutating` values on every relevant `project_command` and `verify` result, invocation record, and decision record: `node_format` mutating, `node_format:check` non-mutating, `node_lint:fix` mutating, and `node_lint` plus `node_lint:check` non-mutating.
+- [x] Treat unknown variants in a family with any writing form as mutating, and document that package-script bodies remain outside the guarantee.
+- [x] Keep role, delegation, and workflow values as provenance and join metadata only; do not add role-based policy to `bash-tools`.
+
+#### Step 4: Verify freshness, lookup, and publication
+
+- [x] Add `fresh: true` to `verify`, reject it with `ref`, exclude it from the content-addressed cache key, and record the forced decision independently of evidence scope.
+- [x] Make a fresh execution return the same ref for identical evidence with `reused: false`, while an ordinary unchanged request continues to return the compact reused result.
+- [x] Return recorded state, current state, and `stateMatchesCurrent` from evidence lookups, keeping an unreadable current state distinct from a confirmed mismatch.
+- [x] Include effective evidence scope and flow-id presence in lookup failures, and include `producerScope`, producing role, and producing delegation id in successful lookups when available.
+- [x] Add `publish: { flowId }` to executing `verify` requests rather than using a flat execution-time flow id.
+- [x] Treat publication into the caller's own effective flow as an accepted no-op while preserving normal flow persistence.
+- [x] Require repository identity compatibility for root publication and stamp `producerScope`, `delegationId`, and `role` on published records when available.
+- [x] Keep root evidence process-local unless it was deliberately published, and keep publication out of authorization and content-addressed execution identities.
+
+#### Step 5: Addressable project-command evidence
+
+- [x] Add addressable, non-replayable project-command evidence refs with a distinct `pc_` prefix.
+- [x] Preserve `reusePolicy: "never"` for script and Fallow commands, and do not use project-command refs as cache hits or execution short-circuits.
+- [x] Store and resolve project-command evidence without requiring a command execution on lookup, including executions that are intentionally non-reusable.
+- [x] Add `covers` to project-command execution and lookup shapes with the same opaque, verbatim, key-participating behavior as `verify`.
+- [x] Add `publish: { flowId }` to project-command evidence requests using the same restrictions and provenance checks as `verify`.
+- [x] Return the same self-describing lookup metadata as `verify`, including effective scope on failures and producer scope, role, and delegation id on successful lookups when available.
+- [x] Return recorded state, current state, and `stateMatchesCurrent` for project-command lookups.
+- [x] Keep current-state read failure distinct from a confirmed state mismatch.
+
+#### Step 6: Concurrent execution and moving-tree telemetry
+
+- [x] Add single-flight coordination for identical in-flight evidence requests and distinguish a shared execution from an ordinary cache hit.
+- [x] Record `concurrentExecutions` for the repository identity observed by the request.
+- [x] Compare repository state at completion with state at start and report `stateDrift` when the tree moved during execution.
+- [x] Keep the consumer-owned repository write lock as the authority for writer-versus-reader coordination, and do not add a competing role or workflow policy in this batch.
+
+#### Step 7: Documentation and verification
+
+- [x] Document `verify`, `fresh`, project-command refs, lookup-only parameter shapes, publication, and repository-state freshness fields in the README and tool descriptions.
+- [x] Document that `dirtyFilesDigest` fingerprints the paths reported by Git, including their content, mode, size, and status, and excludes ignored paths.
+- [x] Add focused regression coverage for fresh reruns, stable refs, lookup isolation, root publication, flow lookup, current-state mismatch, unreadable current state, authorization scope, coercion metadata, mutability variants, aggregate invocation records, single-flight sharing, concurrency counts, and state drift.
+- [x] Verify the consumer allowlist remains fail-closed for `{ ref }` and `{ ref, flowId }`, rejects `{ ref, publish }` and `{ ref, fresh }`, and treats newly added unknown parameters as execution-capable.
 
 ### R6: Actionable edit, resolution, and policy errors
 
@@ -115,14 +192,13 @@ TypeScript checking is included through the Oxlint TypeScript plugin invoked by 
 
 ### R7: Orchestration join keys and output telemetry
 
-- [ ] Add flow, delegation, and role identifiers to invocation records when present.
-- [ ] Persist bounded repeated-request context and any host-provided batch markers.
-- [ ] Keep all orchestration fields absent when the environment is absent.
+The consumer-aligned evidence handoff above owns the requested flow, delegation, role, ref, repository-state, aggregate-verify, and lookup-provenance fields.
+
+- [x] Keep all orchestration fields absent when the environment is absent.
 - [ ] Add before-and-after measurements for cache reuse, invalidation, truncation, and repeated requests.
 
 Some bounded output and effective producer-scope telemetry is already present.
-
-The remaining R7 work is limited to fields and measurements not supplied by the current host contract.
+The remaining R7 work is limited to measurements not supplied by the current host contract, excluding the fields and concurrency telemetry completed in the validation evidence handoff above.
 
 ### R8: Batch reads and read references
 
@@ -159,8 +235,8 @@ The remaining R7 work is limited to fields and measurements not supplied by the 
 
 ## Design decisions to preserve
 
-- Flow persistence is allowed only with an authorized flow scope and valid repository provenance.
-- Unset orchestration variables retain process-local, session-scoped behavior.
+- Flow persistence is allowed with an authorized effective flow scope and valid repository provenance, or through an explicitly authorized `publish: { flowId }` request with valid repository provenance.
+- Unrequested root evidence remains process-local, and unset orchestration variables retain process-local, session-scoped behavior.
 - Cache keys include repository identity, absolute working directory, HEAD, dirty state, relevant inputs, path filters, staged state, and output-shaping inputs where applicable.
 - Persisted JSON is strictly validated, bounded, atomically replaced, and protected by the shared mutation-lock protocol.
 - Verify uses one authorization decision for the complete resolved command list.
@@ -172,10 +248,11 @@ The remaining R7 work is limited to fields and measurements not supplied by the 
 
 ## Priority for the next batch
 
-1. R6 actionable errors, if new measurement confirms remaining interface friction.
-2. R7 host-supported join keys and durable telemetry.
-3. R8 batch reads and read references.
-4. R9 curated read-only probes.
-5. Standalone project-command validation refs only if a consumer requires them.
+1. Commit the current validated change set before starting new implementation work.
+2. Resolve F-016 if its diagnostic drift becomes operationally significant.
+3. R6 actionable errors, if new measurement confirms remaining interface friction.
+4. R7 measurements not covered by the completed evidence handoff.
+5. R8 batch reads and read references.
+6. R9 curated read-only probes.
 
-Do not reopen R1, R1a, R2, R3, or R5 without a new behavior requirement, regression, or security finding.
+Do not reopen R1, R1a, R2, R3, R4, R5, or the completed validation-evidence handoff without a new behavior requirement, regression, or security finding.

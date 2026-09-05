@@ -1,5 +1,5 @@
 import { realpath, writeFile } from "node:fs/promises";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { ProjectCommandInvocationRecord } from "../../src/observability/project-command-invocation.ts";
 import {
   getProjectCommandDefinition,
@@ -13,6 +13,7 @@ import type { ProjectCommandExecutionOutcome } from "../../src/tools/project-com
 import { ProjectCommandToolError } from "../../src/tools/project-command/schema.ts";
 import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
 import { displayPath } from "../../src/tools/path-display.ts";
+import type { ProjectCommandRepositoryState } from "../../src/tools/project-command/repository-state.ts";
 
 afterEach(cleanupProjectCommandFixtures);
 
@@ -164,6 +165,124 @@ it("adds invocation metadata to an invalid request without resolved scope or out
   expect(error.details).not.toHaveProperty("scope");
   expect(error.details).not.toHaveProperty("output");
   expectInvocationMetadata(error.details, "invalid-request");
+});
+
+it("shares one non-mutating evidence execution across overlapping identical requests", async () => {
+  const fixtureData = await fixture();
+  const definition = getProjectCommandDefinition("workspace_path");
+  if (definition === undefined) throw new Error("missing workspace_path definition");
+  const resolved = resolveFixedProjectCommand(definition);
+  await authorize(fixtureData, definition, resolved);
+  let release: (() => void) | undefined;
+  let resolveExecutorStarted: (() => void) | undefined;
+  const executorStarted = new Promise<void>((resolve) => {
+    resolveExecutorStarted = resolve;
+  });
+  let resolveSecondResolver: (() => void) | undefined;
+  const secondResolverDone = new Promise<void>((resolve) => {
+    resolveSecondResolver = resolve;
+  });
+  let resolverCalls = 0;
+  const executor = vi.fn(
+    () =>
+      new Promise<ProjectCommandExecutionOutcome>((resolve) => {
+        resolveExecutorStarted?.();
+        release = () =>
+          resolve({
+            status: "success",
+            exit: { code: 0, signal: null },
+            timedOut: false,
+            cancelled: false,
+            stdout: { text: "shared", truncated: false, totalBytes: 6, totalLines: 1 },
+            stderr: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
+          });
+      }),
+  );
+  const tool = createProjectCommandToolForTesting({
+    configPath: fixtureData.configPath,
+    executor,
+    resolver: async (commandDefinition) => {
+      resolverCalls += 1;
+      if (resolverCalls === 2) resolveSecondResolver?.();
+      return resolveFixedProjectCommand(commandDefinition);
+    },
+  });
+  const first = tool.execute(
+    "single-flight-1",
+    { commandId: "workspace_path" },
+    undefined,
+    undefined,
+    context(fixtureData.directory),
+  );
+  await executorStarted;
+  const second = tool.execute(
+    "single-flight-2",
+    { commandId: "workspace_path" },
+    undefined,
+    undefined,
+    context(fixtureData.directory),
+  );
+  await secondResolverDone;
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  expect(executor).toHaveBeenCalledTimes(1);
+  if (release === undefined) throw new Error("expected a pending shared execution");
+  release();
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  expect(firstResult.details).toMatchObject({
+    executed: true,
+    sharedExecution: false,
+    concurrentExecutions: 1,
+  });
+  expect(secondResult.details).toMatchObject({
+    executed: false,
+    reused: false,
+    sharedExecution: true,
+    concurrentExecutions: 2,
+  });
+  expect(secondResult.details.ref).toBe(firstResult.details.ref);
+});
+
+it("reports repository state drift after an execution moves the tree", async () => {
+  const fixtureData = await fixture();
+  const definition = getProjectCommandDefinition("workspace_path");
+  if (definition === undefined) throw new Error("missing workspace_path definition");
+  const resolved = resolveFixedProjectCommand(definition);
+  await authorize(fixtureData, definition, resolved);
+  const before: ProjectCommandRepositoryState = {
+    repositoryIdentity: "/repo",
+    head: "head-a",
+    dirtyFilesDigest: "dirty-a",
+  };
+  const after: ProjectCommandRepositoryState = {
+    ...before,
+    dirtyFilesDigest: "dirty-b",
+  };
+  let reads = 0;
+  const tool = createProjectCommandToolForTesting({
+    configPath: fixtureData.configPath,
+    repositoryStateReader: async () => (reads++ === 0 ? before : after),
+    executor: async () => ({
+      status: "success" as const,
+      exit: { code: 0, signal: null },
+      timedOut: false,
+      cancelled: false,
+      stdout: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
+      stderr: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
+    }),
+  });
+  const response = await tool.execute(
+    "state-drift",
+    { commandId: "workspace_path" },
+    undefined,
+    undefined,
+    context(fixtureData.directory),
+  );
+  expect(response.details).toMatchObject({
+    repositoryStateStatus: "mismatch",
+    stateDrift: true,
+    recordedRepositoryState: before,
+    currentRepositoryState: after,
+  });
 });
 
 it("reports invocation identity, normalized scope, bounded output metadata, and durations", async () => {

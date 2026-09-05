@@ -61,6 +61,8 @@ export type ProjectCommandDiskCacheRecordValidator = (
 export interface ProjectCommandDiskJsonCache {
   get(scopeKey: string, logicalRequestKey: string): unknown;
   set(scopeKey: string, logicalRequestKey: string, record: unknown): void;
+  /** Write an explicitly authorized publication without deriving scope from the environment. */
+  publish(scopeKey: string, logicalRequestKey: string, record: unknown): boolean;
   delete(scopeKey: string, logicalRequestKey: string): void;
   clear(): void;
   tryClaim(scopeKey: string, logicalRequestKey: string): ProjectCommandDiskCacheClaim | undefined;
@@ -661,6 +663,35 @@ function createProjectCommandDiskJsonCacheInternal(
           removeFile(temporaryPath);
         }
       });
+    },
+    publish(scopeKey, logicalRequestKey, record) {
+      if (!CACHE_SCOPE_PATTERN.test(scopeKey) || logicalRequestKey.length === 0) return false;
+      const directory = createDiskCachePath(rootDirectory, scopeKey);
+      if (directory === undefined) return false;
+      const filePath = join(directory, `${cacheFileKey(scopeKey, logicalRequestKey)}.json`);
+      const timestamp = now();
+      let serialized: string;
+      try {
+        serialized = JSON.stringify(record);
+      } catch {
+        return false;
+      }
+      if (Buffer.byteLength(serialized, "utf8") > CACHE_ENTRY_MAX_BYTES) return false;
+      let wrote = false;
+      const locked = runMutation(() => {
+        const temporaryPath = `${filePath}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+        try {
+          mkdirSync(directory, { recursive: true });
+          writeFileSync(temporaryPath, serialized, { encoding: "utf8", mode: 0o600 });
+          options.beforeRename?.(temporaryPath, filePath);
+          renameSync(temporaryPath, filePath);
+          wrote = true;
+          evictDirectory(directory, timestamp, maxAgeMs, maxBytes);
+        } catch {
+          removeFile(temporaryPath);
+        }
+      });
+      return locked && wrote;
     },
     delete(scopeKey, logicalRequestKey) {
       const filePath = fileFor(scopeKey, logicalRequestKey);

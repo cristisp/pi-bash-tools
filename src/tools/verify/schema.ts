@@ -20,13 +20,18 @@ const packageScriptSchema = Type.String({
 export const verifyInputSchema = Type.Object(
   {
     paths: Type.Optional(
-      Type.Array(
+      Type.Union([
+        Type.Array(
+          Type.String({
+            pattern: NODE_TEST_PATH_PATTERN,
+            maxLength: PROJECT_COMMAND_MAX_PATH_LENGTH,
+          }),
+          { maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS, description: "Optional test paths." },
+        ),
         Type.String({
-          pattern: NODE_TEST_PATH_PATTERN,
-          maxLength: PROJECT_COMMAND_MAX_PATH_LENGTH,
+          description: 'JSON array of workspace-relative test paths, for example ["src/index.ts"].',
         }),
-        { maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS, description: "Optional test paths." },
-      ),
+      ]),
     ),
     omit: Type.Optional(
       Type.Array(verifyPhaseSchema, {
@@ -52,8 +57,29 @@ export const verifyInputSchema = Type.Object(
     ref: Type.Optional(
       Type.String({
         pattern: "^[A-Za-z0-9_-]{8,128}$",
-        description: "Return stored validation evidence without executing commands.",
+        description:
+          "Lookup-only stored validation evidence; use with optional flowId and no execution options.",
       }),
+    ),
+    flowId: Type.Optional(
+      Type.String({
+        pattern: "^[A-Za-z0-9_-]{1,64}$",
+        description: "Lookup-only evidence flow scope; requires ref.",
+      }),
+    ),
+    fresh: Type.Optional(
+      Type.Boolean({ description: "Force fresh execution; cannot be combined with ref." }),
+    ),
+    publish: Type.Optional(
+      Type.Object(
+        {
+          flowId: Type.String({ pattern: "^[A-Za-z0-9_-]{1,64}$" }),
+        },
+        {
+          additionalProperties: false,
+          description: "Publish execution evidence to this flow after successful authorization.",
+        },
+      ),
     ),
     covers: Type.Optional(
       Type.Array(Type.String({ minLength: 1, maxLength: 512 }), {
@@ -66,11 +92,14 @@ export const verifyInputSchema = Type.Object(
 );
 
 export interface VerifyInput {
-  readonly paths?: readonly string[];
+  readonly paths?: readonly string[] | string;
   readonly omit?: readonly VerifyPhase[];
   readonly scripts?: Partial<Record<VerifyPhase, string>>;
   readonly continueOnFailure?: boolean;
   readonly ref?: string;
+  readonly flowId?: string;
+  readonly fresh?: boolean;
+  readonly publish?: { readonly flowId: string };
   readonly covers?: readonly string[];
 }
 
@@ -80,7 +109,11 @@ export interface NormalizedVerifyInput {
   readonly scripts: Readonly<Partial<Record<VerifyPhase, string>>>;
   readonly continueOnFailure: boolean;
   readonly ref?: string;
+  readonly flowId?: string;
+  readonly fresh: boolean;
+  readonly publish?: { readonly flowId: string };
   readonly covers: readonly string[];
+  readonly coercions: readonly string[];
 }
 
 export class VerifyToolError extends Error {
@@ -110,14 +143,44 @@ function isSafeScriptName(value: unknown): value is string {
   );
 }
 
+function jsonStringArray(value: unknown, field: string): readonly string[] | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
+      return parsed;
+    }
+  } catch {
+    // Fall through to the actionable validation error below.
+  }
+  throw new VerifyToolError(
+    "invalid-request",
+    `verify field ${field} must be an array or a JSON array string; expected string[], for example ["src/index.ts"]`,
+  );
+}
+
 export function validateVerifyInput(value: unknown): NormalizedVerifyInput {
   if (!isRecord(value))
     throw new VerifyToolError("invalid-request", "verify input must be an object");
-  const allowedKeys = new Set(["paths", "omit", "scripts", "continueOnFailure", "ref", "covers"]);
+  const allowedKeys = new Set([
+    "paths",
+    "omit",
+    "scripts",
+    "continueOnFailure",
+    "ref",
+    "flowId",
+    "fresh",
+    "publish",
+    "covers",
+  ]);
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
     throw new VerifyToolError("invalid-request", "verify input contains an unsupported field");
   }
-  const paths = value.paths;
+  const coercions: string[] = [];
+  const rawPaths = value.paths;
+  const coercedPaths = jsonStringArray(rawPaths, "paths");
+  if (coercedPaths !== undefined) coercions.push("paths:string-json-array");
+  const paths = coercedPaths ?? rawPaths;
   if (
     paths !== undefined &&
     (!Array.isArray(paths) ||
@@ -132,7 +195,7 @@ export function validateVerifyInput(value: unknown): NormalizedVerifyInput {
   ) {
     throw new VerifyToolError(
       "invalid-request",
-      "verify paths must be safe workspace-relative paths",
+      'verify field paths must be safe workspace-relative paths; expected string[], for example ["src/index.ts"]',
     );
   }
   const omit = value.omit;
@@ -170,7 +233,43 @@ export function validateVerifyInput(value: unknown): NormalizedVerifyInput {
   }
   const ref = value.ref;
   if (ref !== undefined && (typeof ref !== "string" || !/^[A-Za-z0-9_-]{8,128}$/u.test(ref))) {
-    throw new VerifyToolError("invalid-request", "verify ref is invalid");
+    throw new VerifyToolError(
+      "invalid-request",
+      'verify field ref must be a bounded reference string; expected string, for example "vr_example"',
+    );
+  }
+  const flowId = value.flowId;
+  if (
+    flowId !== undefined &&
+    (typeof flowId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/u.test(flowId))
+  ) {
+    throw new VerifyToolError(
+      "invalid-request",
+      'verify field flowId must be a bounded lookup scope and requires ref; expected string, for example "flow-1"',
+    );
+  }
+  const fresh = value.fresh;
+  if (fresh !== undefined && typeof fresh !== "boolean") {
+    throw new VerifyToolError(
+      "invalid-request",
+      "verify field fresh must be boolean; expected boolean, for example true",
+    );
+  }
+  const publishValue = value.publish;
+  let publish: { readonly flowId: string } | undefined;
+  if (publishValue !== undefined) {
+    if (
+      !isRecord(publishValue) ||
+      typeof publishValue.flowId !== "string" ||
+      !/^[A-Za-z0-9_-]{1,64}$/u.test(publishValue.flowId) ||
+      Object.keys(publishValue).some((key) => key !== "flowId")
+    ) {
+      throw new VerifyToolError(
+        "invalid-request",
+        'verify field publish must be {flowId: string}; expected object, for example {flowId: "flow-1"}',
+      );
+    }
+    publish = { flowId: publishValue.flowId };
   }
   const covers = value.covers;
   if (
@@ -179,12 +278,26 @@ export function validateVerifyInput(value: unknown): NormalizedVerifyInput {
       covers.length > 64 ||
       covers.some((cover) => typeof cover !== "string" || cover.length === 0 || cover.length > 512))
   ) {
-    throw new VerifyToolError("invalid-request", "verify covers must be bounded strings");
-  }
-  if (ref !== undefined && Object.keys(value).some((key) => key !== "ref" && key !== "covers")) {
     throw new VerifyToolError(
       "invalid-request",
-      "verify ref lookup cannot include execution options",
+      'verify field covers must be bounded strings; expected string[], for example ["AC-001"]',
+    );
+  }
+  if (
+    ref !== undefined &&
+    (fresh === true ||
+      publish !== undefined ||
+      Object.keys(value).some((key) => !["ref", "flowId", "covers"].includes(key)))
+  ) {
+    throw new VerifyToolError(
+      "invalid-request",
+      'verify ref lookup cannot include execution options; expected {ref} or {ref,flowId}, for example {ref: "vr_example", flowId: "flow-1"}',
+    );
+  }
+  if (flowId !== undefined && ref === undefined) {
+    throw new VerifyToolError(
+      "invalid-request",
+      'verify field flowId is lookup-only and requires ref; expected {ref,flowId}, for example {ref: "vr_example", flowId: "flow-1"}',
     );
   }
   if (ref === undefined && normalizedOmit.length === VERIFY_PHASES.length) {
@@ -196,6 +309,10 @@ export function validateVerifyInput(value: unknown): NormalizedVerifyInput {
     scripts,
     continueOnFailure: value.continueOnFailure === true,
     ...(ref === undefined ? {} : { ref }),
+    ...(flowId === undefined ? {} : { flowId }),
+    fresh: fresh === true,
+    ...(publish === undefined ? {} : { publish }),
     covers: (covers ?? []) as readonly string[],
+    coercions,
   };
 }

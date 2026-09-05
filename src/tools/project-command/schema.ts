@@ -26,6 +26,17 @@ export type ProjectCommandInputSchema<
     readonly ProjectCommandDefinition<ProjectCommandId>[],
 > = Definitions extends readonly ProjectCommandDefinition[] ? TUnion : never;
 
+export type ProjectCommandEvidenceLookup = {
+  readonly ref: string;
+  readonly flowId?: string;
+  readonly covers?: readonly string[];
+};
+
+type EvidenceExecutionOptions = {
+  readonly publish?: { readonly flowId: string };
+  readonly covers?: readonly string[];
+};
+
 type InputForDefinition<Definition extends ProjectCommandDefinition> =
   Definition extends ProjectCommandDefinition
     ? Definition["commandId"] extends "node_test"
@@ -34,32 +45,70 @@ type InputForDefinition<Definition extends ProjectCommandDefinition> =
           readonly force?: BooleanInput;
           readonly paths?: readonly string[];
           readonly variant?: string;
-        }
+        } & EvidenceExecutionOptions
       : Definition["commandId"] extends "node_lint"
         ? {
             readonly commandId: Definition["commandId"];
             readonly force?: BooleanInput;
             readonly variant?: string;
-          }
+          } & EvidenceExecutionOptions
         : Definition["commandId"] extends "node_format"
           ? {
               readonly commandId: Definition["commandId"];
               readonly force?: BooleanInput;
               readonly variant?: string;
-            }
+            } & EvidenceExecutionOptions
           : Definition["commandId"] extends "fallow_audit"
             ? {
                 readonly commandId: Definition["commandId"];
                 readonly force?: BooleanInput;
                 readonly base: string;
-              }
-            : { readonly commandId: Definition["commandId"]; readonly force?: BooleanInput }
+              } & EvidenceExecutionOptions
+            : {
+                readonly commandId: Definition["commandId"];
+                readonly force?: BooleanInput;
+              } & EvidenceExecutionOptions
     : never;
 
 export type ProjectCommandInputFor<Definitions extends readonly ProjectCommandDefinition[]> =
-  InputForDefinition<Definitions[number]>;
+  | InputForDefinition<Definitions[number]>
+  | ProjectCommandEvidenceLookup;
 
 type ProjectCommandRuntimeInputSchema = TUnion;
+
+const evidenceProperties = () => ({
+  publish: Type.Optional(
+    Type.Object(
+      { flowId: Type.String({ pattern: "^[A-Za-z0-9_-]{1,64}$" }) },
+      { additionalProperties: false, description: "Publish evidence to an authorized flow." },
+    ),
+  ),
+  covers: Type.Optional(
+    Type.Array(Type.String({ minLength: 1, maxLength: 512 }), {
+      maxItems: 64,
+      description: "Opaque acceptance-criteria identifiers to preserve in evidence.",
+    }),
+  ),
+});
+
+function lookupEvidenceSchema(): TObject {
+  return Type.Object(
+    {
+      ref: Type.String({
+        pattern: "^[A-Za-z0-9_-]{8,128}$",
+        description: "Lookup-only evidence reference.",
+      }),
+      flowId: Type.Optional(Type.String({ pattern: "^[A-Za-z0-9_-]{1,64}$" })),
+      covers: Type.Optional(
+        Type.Array(Type.String({ minLength: 1, maxLength: 512 }), {
+          maxItems: 64,
+          description: "Opaque acceptance-criteria identifiers to preserve in evidence.",
+        }),
+      ),
+    },
+    { additionalProperties: false },
+  );
+}
 
 function legacyVariantCommandId(commandId: string) {
   return Type.String({
@@ -84,20 +133,30 @@ function legacyVariantForDefinition(definition: ProjectCommandDefinition): TObje
       {
         commandId,
         force,
+        ...evidenceProperties(),
         paths: Type.Optional(
-          Type.Array(
+          Type.Union([
+            Type.Array(
+              Type.String({
+                pattern: NODE_TEST_PATH_PATTERN,
+                maxLength: PROJECT_COMMAND_MAX_PATH_LENGTH,
+              }),
+              { maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS },
+            ),
             Type.String({
-              pattern: NODE_TEST_PATH_PATTERN,
-              maxLength: PROJECT_COMMAND_MAX_PATH_LENGTH,
+              description:
+                'JSON array of workspace-relative test paths, for example ["src/index.ts"].',
             }),
-            { maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS },
-          ),
+          ]),
         ),
       },
       { additionalProperties: false },
     );
   }
-  return Type.Object({ commandId, force }, { additionalProperties: false });
+  return Type.Object(
+    { commandId, force, ...evidenceProperties() },
+    { additionalProperties: false },
+  );
 }
 
 function variantForDefinition(definition: ProjectCommandDefinition): TObject {
@@ -108,6 +167,7 @@ function variantForDefinition(definition: ProjectCommandDefinition): TObject {
       {
         commandId,
         force,
+        ...evidenceProperties(),
         variant: Type.Optional(
           Type.String({
             pattern: PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN,
@@ -116,16 +176,22 @@ function variantForDefinition(definition: ProjectCommandDefinition): TObject {
           }),
         ),
         paths: Type.Optional(
-          Type.Array(
+          Type.Union([
+            Type.Array(
+              Type.String({
+                pattern: NODE_TEST_PATH_PATTERN,
+                maxLength: PROJECT_COMMAND_MAX_PATH_LENGTH,
+              }),
+              {
+                maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS,
+                description: "Optional workspace-relative test paths.",
+              },
+            ),
             Type.String({
-              pattern: NODE_TEST_PATH_PATTERN,
-              maxLength: PROJECT_COMMAND_MAX_PATH_LENGTH,
+              description:
+                'JSON array of workspace-relative test paths, for example ["src/index.ts"].',
             }),
-            {
-              maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS,
-              description: "Optional workspace-relative test paths.",
-            },
-          ),
+          ]),
         ),
       },
       { additionalProperties: false },
@@ -136,6 +202,7 @@ function variantForDefinition(definition: ProjectCommandDefinition): TObject {
       {
         commandId,
         force,
+        ...evidenceProperties(),
         variant: Type.Optional(
           Type.String({
             pattern: PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN,
@@ -152,6 +219,7 @@ function variantForDefinition(definition: ProjectCommandDefinition): TObject {
       {
         commandId,
         force,
+        ...evidenceProperties(),
         variant: Type.Optional(
           Type.String({
             pattern: PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN,
@@ -169,6 +237,7 @@ function variantForDefinition(definition: ProjectCommandDefinition): TObject {
       {
         commandId,
         force,
+        ...evidenceProperties(),
         base: Type.String({
           pattern: FALLOW_REVISION_PATTERN,
           description: "Required safe revision used as the Fallow audit base.",
@@ -177,7 +246,10 @@ function variantForDefinition(definition: ProjectCommandDefinition): TObject {
       { additionalProperties: false },
     );
   }
-  return Type.Object({ commandId, force }, { additionalProperties: false });
+  return Type.Object(
+    { commandId, force, ...evidenceProperties() },
+    { additionalProperties: false },
+  );
 }
 
 export function createProjectCommandInputSchema<
@@ -195,6 +267,7 @@ export function createProjectCommandInputSchema(
       const legacy = legacyVariantForDefinition(definition);
       return legacy === undefined ? [] : [legacy];
     }),
+    lookupEvidenceSchema(),
   ];
   if (variants.length === 0) {
     return Type.Union([Type.Never()]);

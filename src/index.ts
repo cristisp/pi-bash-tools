@@ -43,7 +43,11 @@ export default function (pi: ExtensionAPI): void {
       repositoryStateReader: createProjectCommandRepositoryStateReader(exec),
     }),
   );
-  pi.registerTool(createVerifyTool(exec));
+  pi.registerTool(
+    createVerifyTool(exec, {
+      invocationRecorder: invocationSessionRecorder.invocationRecorder,
+    }),
+  );
   pi.registerTool(createMoveTool(exec));
   pi.registerTool(createDeleteTool(exec));
 }

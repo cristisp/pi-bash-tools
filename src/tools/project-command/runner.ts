@@ -74,9 +74,17 @@ import type {
   ProjectCommandRepositoryStateReader,
 } from "./repository-state.ts";
 import {
+  createProjectCommandEvidenceRecord,
+  type ProjectCommandEvidenceProvenance,
+  type ProjectCommandEvidencePublication,
+  type ProjectCommandEvidenceRecord,
+  type ProjectCommandEvidenceStore,
+} from "./evidence.ts";
+import {
   readProjectCommandOrchestrationContext,
   type ProjectCommandOrchestrationContext,
 } from "./orchestration.ts";
+import { projectCommandMutatesWorkspace } from "./mutability.ts";
 import {
   cancellationError,
   invalidRequest,
@@ -103,6 +111,7 @@ export interface ProjectCommandInvocationOptions {
   readonly recorder?: ProjectCommandInvocationRecorder;
   readonly schemaHash?: string;
   readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
+  readonly evidence?: ProjectCommandEvidenceStore;
 }
 
 export type ProjectCommandExecute<Definitions extends readonly ProjectCommandDefinition[]> = (
@@ -131,6 +140,19 @@ interface InvocationMetadataOptions {
   readonly cacheDecision?: ProjectCommandCacheDecision;
   readonly forced?: boolean;
   readonly reused?: boolean;
+  readonly evidenceRef?: string;
+  readonly covers?: readonly string[];
+  readonly publication?: ProjectCommandEvidencePublication;
+  readonly provenance?: ProjectCommandEvidenceProvenance;
+  readonly repositoryState?: ProjectCommandRepositoryState;
+  readonly recordedRepositoryState?: ProjectCommandRepositoryState;
+  readonly currentRepositoryState?: ProjectCommandRepositoryState;
+  readonly repositoryStateStatus?: "matches" | "mismatch" | "unreadable";
+  readonly coercions?: readonly string[];
+  readonly mutating?: boolean;
+  readonly concurrentExecutions?: number;
+  readonly stateDrift?: boolean;
+  readonly sharedExecution?: boolean;
   readonly authFingerprint?: string;
   readonly policyId?: string;
   readonly reusePolicyId?: string;
@@ -158,6 +180,19 @@ function invocationMetadata(
     cacheDecision: options.cacheDecision ?? "ineligible",
     forced: options.forced ?? false,
     ...definedObjectProperties([
+      ["evidenceRef", options.evidenceRef],
+      ["covers", options.covers],
+      ["publication", options.publication],
+      ["provenance", options.provenance],
+      ["repositoryState", options.repositoryState],
+      ["recordedRepositoryState", options.recordedRepositoryState],
+      ["currentRepositoryState", options.currentRepositoryState],
+      ["repositoryStateStatus", options.repositoryStateStatus],
+      ["coercions", options.coercions],
+      ["mutating", options.mutating],
+      ["concurrentExecutions", options.concurrentExecutions],
+      ["stateDrift", options.stateDrift],
+      ["sharedExecution", options.sharedExecution],
       ["authFingerprint", options.authFingerprint],
       ["policyId", options.policyId],
       ["reusePolicyId", options.reusePolicyId],
@@ -904,6 +939,91 @@ async function executeWithCache(
   };
 }
 
+function evidenceStorageFlowId(state: ProjectCommandInvocationState): string | undefined {
+  return state.producerScope === "flow" ? state.flowId : undefined;
+}
+
+function withEvidencePublication(
+  evidence: ProjectCommandEvidenceStore,
+  record: ProjectCommandEvidenceRecord,
+  details: ProjectCommandOutputDetails,
+  state: ProjectCommandInvocationState,
+): ProjectCommandOutputDetails {
+  const storageFlowId = evidenceStorageFlowId(state);
+  evidence.set(record, storageFlowId);
+  if (state.requestedPublicationFlowId !== undefined) {
+    const targetFlowId = state.requestedPublicationFlowId;
+    const publicationCandidate: ProjectCommandEvidencePublication = {
+      scope: "flow",
+      flowId: targetFlowId,
+      published: true,
+    };
+    const published = evidence.publish(
+      record.ref,
+      targetFlowId,
+      state.repositoryState?.repositoryIdentity,
+      publicationCandidate,
+    );
+    const publication: ProjectCommandEvidencePublication = published
+      ? publicationCandidate
+      : {
+          ...publicationCandidate,
+          published: false,
+          error: "Evidence publication was not available from the producer scope.",
+        };
+    state.publication = publication;
+    const root = storageFlowId === undefined ? evidence.getByRef(record.ref) : undefined;
+    if (root !== undefined) {
+      evidence.set(
+        Object.freeze({
+          ...root,
+          details: Object.freeze({ ...root.details, publication }),
+          publication,
+        }),
+      );
+    }
+  }
+  return {
+    ...details,
+    ref: record.ref,
+    covers: record.covers,
+    ...(record.repositoryState === undefined
+      ? {}
+      : {
+          repositoryState: record.repositoryState,
+          recordedRepositoryState: record.repositoryState,
+        }),
+    ...(record.provenance === undefined ? {} : { provenance: record.provenance }),
+    ...(state.publication === undefined ? {} : { publication: state.publication }),
+  };
+}
+
+function storeEvidence(
+  evidence: ProjectCommandEvidenceStore | undefined,
+  details: ProjectCommandOutputDetails,
+  state: ProjectCommandInvocationState,
+  toolCallId: string,
+): ProjectCommandOutputDetails {
+  if (evidence === undefined || !details.executed) return details;
+  const provenance: ProjectCommandEvidenceProvenance = {
+    ...(state.provenance ?? { scope: state.producerScope ?? "session" }),
+    producerInvocationId: toolCallId,
+  };
+  state.producerInvocationId = state.producerInvocationId ?? toolCallId;
+  state.provenance = provenance;
+  const record = createProjectCommandEvidenceRecord(details, {
+    repositoryState: state.repositoryState,
+    covers: state.covers,
+    producerScope: state.producerScope ?? "session",
+    ...(state.flowId === undefined ? {} : { flowId: state.flowId }),
+    ...(state.producerRole === undefined ? {} : { producerRole: state.producerRole }),
+    ...(state.delegationId === undefined ? {} : { producerDelegationId: state.delegationId }),
+    provenance,
+  });
+  state.evidenceRef = record.ref;
+  return withEvidencePublication(evidence, record, details, state);
+}
+
 interface ProjectCommandInvocationState {
   readonly startedAt: number;
   executionStartedAt: number | undefined;
@@ -920,8 +1040,21 @@ interface ProjectCommandInvocationState {
   producerInvocationId: string | undefined;
   producerScope: "session" | "flow" | undefined;
   flowId: string | undefined;
+  delegationId: string | undefined;
   producerRole: string | undefined;
   repositoryState: ProjectCommandRepositoryState | undefined;
+  currentRepositoryState: ProjectCommandRepositoryState | undefined;
+  evidenceRef: string | undefined;
+  covers: readonly string[] | undefined;
+  coercions: readonly string[] | undefined;
+  mutating: boolean | undefined;
+  concurrentExecutions: number | undefined;
+  stateDrift: boolean | undefined;
+  sharedExecution: boolean;
+  publication: ProjectCommandEvidencePublication | undefined;
+  requestedPublicationFlowId: string | undefined;
+  provenance: ProjectCommandEvidenceProvenance | undefined;
+  repositoryStateStatus: "matches" | "mismatch" | "unreadable" | undefined;
   commandId: string | undefined;
   redactedParameters: Readonly<Record<string, unknown>> | undefined;
   resultCategory: ResultCategory | undefined;
@@ -950,8 +1083,21 @@ function createInvocationState(
     producerInvocationId: undefined,
     producerScope: orchestration.orchestrated ? orchestration.effectiveScope : undefined,
     flowId: orchestration.flowId,
+    delegationId: orchestration.delegationId,
     producerRole: orchestration.role,
     repositoryState: undefined,
+    currentRepositoryState: undefined,
+    evidenceRef: undefined,
+    covers: undefined,
+    coercions: undefined,
+    mutating: undefined,
+    concurrentExecutions: undefined,
+    stateDrift: undefined,
+    sharedExecution: false,
+    publication: undefined,
+    requestedPublicationFlowId: undefined,
+    provenance: undefined,
+    repositoryStateStatus: undefined,
     commandId: undefined,
     redactedParameters: undefined,
     resultCategory: undefined,
@@ -1001,6 +1147,71 @@ const EARLY_FAILURE_REASONS: Partial<Record<ResultCategory, ProjectCommandInvoca
   BLOCKED: "policy-failure",
   CANCELLED: "cancelled",
 };
+
+interface ProjectCommandSingleFlight {
+  readonly promise: Promise<ProjectCommandOutputDetails>;
+  active: number;
+}
+
+const PROJECT_COMMAND_SINGLE_FLIGHTS = new Map<string, ProjectCommandSingleFlight>();
+
+function awaitWithCancellation<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (signal === undefined) return promise;
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(commandCancellationError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+function projectCommandSingleFlightKey(
+  prepared: PreparedProjectCommand,
+  state: ProjectCommandInvocationState,
+  evidence: ProjectCommandEvidenceStore | undefined,
+): string | undefined {
+  if (
+    evidence === undefined ||
+    state.forced ||
+    state.mutating === true ||
+    state.logicalRequestKey === undefined
+  ) {
+    return undefined;
+  }
+  return [
+    state.producerScope ?? "session",
+    state.flowId ?? "",
+    prepared.projectPath,
+    prepared.identity.fingerprint,
+    state.logicalRequestKey,
+    state.repositoryState?.repositoryIdentity ?? "",
+    state.repositoryState?.head ?? "",
+    state.repositoryState?.dirtyFilesDigest ?? "",
+    prepared.resolved.scriptHash ?? "",
+  ].join("\u0000");
+}
 
 const CACHE_DECISION_REASONS: Record<ProjectCommandCacheDecision, ProjectCommandInvocationReason> =
   {
@@ -1054,6 +1265,26 @@ function recordInvocation(
           : elapsedMilliseconds(state.executionStartedAt, finishedAt),
       output: state.output,
       producerScope: state.producerScope,
+      flowId: state.flowId,
+      delegationId: state.delegationId,
+      role: state.producerRole,
+      ref: state.evidenceRef,
+      repositoryState:
+        state.repositoryState === undefined
+          ? undefined
+          : {
+              ...state.repositoryState,
+              readable: true,
+              ...(state.repositoryStateStatus === undefined
+                ? {}
+                : { stateMatchesCurrent: state.repositoryStateStatus === "matches" }),
+            },
+      publication: state.publication,
+      coercions: state.coercions,
+      mutating: state.mutating,
+      concurrentExecutions: state.concurrentExecutions,
+      stateDrift: state.stateDrift,
+      sharedExecution: state.sharedExecution,
     });
   } catch {
     // Session lookup and record construction are also observational best effort.
@@ -1080,6 +1311,19 @@ function invocationMetadataForState(
       relevantInputs: state.relevantInputManifest,
       producerInvocationId: state.producerInvocationId,
       producerScope: state.producerScope,
+      provenance: state.provenance,
+      repositoryState: state.repositoryState,
+      recordedRepositoryState: state.repositoryState,
+      currentRepositoryState: state.currentRepositoryState,
+      repositoryStateStatus: state.repositoryStateStatus,
+      evidenceRef: state.evidenceRef,
+      covers: state.covers,
+      coercions: state.coercions,
+      mutating: state.mutating,
+      concurrentExecutions: state.concurrentExecutions,
+      stateDrift: state.stateDrift,
+      sharedExecution: state.sharedExecution,
+      publication: state.publication,
       ...options,
     },
   );
@@ -1155,6 +1399,21 @@ async function prepareProjectCommand(
   const params = stripForce(validatedParams);
   state.commandId = params.commandId;
   state.redactedParameters = redactProjectCommandParameters(params);
+  state.covers = Array.isArray(params.covers) ? params.covers : undefined;
+  state.coercions = Array.isArray(params.coercions) ? params.coercions : undefined;
+  state.requestedPublicationFlowId =
+    isRecord(params.publish) && typeof params.publish.flowId === "string"
+      ? params.publish.flowId
+      : undefined;
+  state.provenance = {
+    scope: state.producerScope ?? "session",
+    ...(state.flowId === undefined ? {} : { flowId: state.flowId }),
+    ...(getContextSessionId(executorContext) === undefined
+      ? {}
+      : { producerSessionId: getContextSessionId(executorContext) }),
+    ...(state.producerRole === undefined ? {} : { producerRole: state.producerRole }),
+    ...(state.delegationId === undefined ? {} : { producerDelegationId: state.delegationId }),
+  };
   const definition = byId.get(params.commandId);
   if (definition === undefined) throw invalidRequest("commandId");
   const requestSignal = signal ?? executorContext.signal;
@@ -1168,6 +1427,7 @@ async function prepareProjectCommand(
     params,
     capturedDefinitions,
   );
+  state.mutating = projectCommandMutatesWorkspace(definition, resolved);
   throwIfRequestAborted(requestSignal);
   const relevantInputs = await discoverRelevantInputs(
     relevantInputDiscovery,
@@ -1195,7 +1455,7 @@ async function prepareProjectCommand(
     relevantInputs === undefined
       ? undefined
       : await takeStateSnapshot(stateSnapshotter, loaded.projectPath, relevantInputs);
-  if (state.producerScope === "flow" && repositoryStateReader !== undefined) {
+  if (repositoryStateReader !== undefined) {
     state.repositoryState = await repositoryStateReader(loaded.projectPath, requestSignal);
   }
   setResultFingerprints(state, definition, loaded.projectPath, resolved, relevantInputs);
@@ -1209,9 +1469,132 @@ async function prepareProjectCommand(
   };
 }
 
-async function executePreparedProjectCommand(
+function repositoryStatesEqual(
+  left: ProjectCommandRepositoryState | undefined,
+  right: ProjectCommandRepositoryState | undefined,
+): boolean {
+  return (
+    left !== undefined &&
+    right !== undefined &&
+    left.repositoryIdentity === right.repositoryIdentity &&
+    left.head === right.head &&
+    left.dirtyFilesDigest === right.dirtyFilesDigest
+  );
+}
+
+function repositoryStateStatus(
+  recorded: ProjectCommandRepositoryState | undefined,
+  current: ProjectCommandRepositoryState | undefined,
+): "matches" | "mismatch" | "unreadable" {
+  if (recorded === undefined || current === undefined) return "unreadable";
+  return recorded.repositoryIdentity === current.repositoryIdentity &&
+    recorded.head === current.head &&
+    recorded.dirtyFilesDigest === current.dirtyFilesDigest
+    ? "matches"
+    : "mismatch";
+}
+
+function evidenceLookupFlowId(
+  requested: string | undefined,
+  orchestration: ProjectCommandOrchestrationContext,
+): string | undefined {
+  if (requested !== undefined) {
+    return orchestration.effectiveScope === "flow" && orchestration.flowId === requested
+      ? requested
+      : undefined;
+  }
+  return orchestration.effectiveScope === "flow" ? orchestration.flowId : undefined;
+}
+
+function evidenceNotFound(ref: string, flowId: string | undefined): ProjectCommandToolError {
+  const scope = flowId === undefined ? "the process-local root-session store" : `flow ${flowId}`;
+  return new ProjectCommandToolError(
+    `Project command evidence ref ${ref} not found in ${scope}; evidence refs are non-replayable and process-scoped.`,
+  );
+}
+
+async function executeEvidenceLookup(
+  evidence: ProjectCommandEvidenceStore,
+  repositoryStateReader: ProjectCommandRepositoryStateReader | undefined,
+  ref: string,
+  requestedFlowId: string | undefined,
+  signal: AbortSignal | undefined,
+  state: ProjectCommandInvocationState,
+): Promise<AgentToolResult<ProjectCommandOutputDetails>> {
+  const orchestration = readProjectCommandOrchestrationContext();
+  if (
+    requestedFlowId !== undefined &&
+    (orchestration.effectiveScope !== "flow" || orchestration.flowId !== requestedFlowId)
+  ) {
+    throw evidenceNotFound(ref, requestedFlowId);
+  }
+  const flowId = evidenceLookupFlowId(requestedFlowId, orchestration);
+  const record = evidence.getByRef(ref, flowId);
+  if (record === undefined) throw evidenceNotFound(ref, flowId);
+  throwIfRequestAborted(signal);
+
+  let currentRepositoryState: ProjectCommandRepositoryState | undefined;
+  if (repositoryStateReader !== undefined) {
+    try {
+      currentRepositoryState = await repositoryStateReader(
+        record.details.scope.projectPath,
+        signal,
+      );
+    } catch {
+      if (signal?.aborted) throw commandCancellationError();
+    }
+  }
+  const status = repositoryStateStatus(record.repositoryState, currentRepositoryState);
+  const provenance =
+    record.provenance ??
+    (record.producerScope === undefined
+      ? undefined
+      : {
+          scope: record.producerScope,
+          ...(record.flowId === undefined ? {} : { flowId: record.flowId }),
+          ...(record.producerRole === undefined ? {} : { producerRole: record.producerRole }),
+          ...(record.producerDelegationId === undefined
+            ? {}
+            : { producerDelegationId: record.producerDelegationId }),
+          ...(record.details.producerInvocationId === undefined
+            ? {}
+            : { producerInvocationId: record.details.producerInvocationId }),
+        });
+  const details = {
+    ...record.details,
+    ref: record.ref,
+    covers: record.covers,
+    ...(record.repositoryState === undefined
+      ? {}
+      : {
+          repositoryState: record.repositoryState,
+          recordedRepositoryState: record.repositoryState,
+        }),
+    ...(currentRepositoryState === undefined ? {} : { currentRepositoryState }),
+    repositoryStateStatus: status,
+    ...(provenance === undefined ? {} : { provenance }),
+    ...(record.publication === undefined ? {} : { publication: record.publication }),
+  } satisfies ProjectCommandOutputDetails;
+  state.commandId = record.details.commandId;
+  state.redactedParameters = record.details.parameters;
+  state.evidenceRef = record.ref;
+  state.covers = record.covers;
+  state.provenance = provenance;
+  state.repositoryState = record.repositoryState;
+  state.currentRepositoryState = currentRepositoryState;
+  state.repositoryStateStatus = status;
+  state.resultCategory = record.details.category;
+  state.status = undefined;
+  state.executed = false;
+  state.publication = record.publication;
+  return result(details);
+}
+
+async function executePreparedProjectCommandCore(
   executor: ProjectCommandExecutor,
   cache: ProjectCommandResultCache,
+  evidence: ProjectCommandEvidenceStore | undefined,
+  repositoryStateReader: ProjectCommandRepositoryStateReader | undefined,
   stateSnapshotter: ProjectCommandStateSnapshotter,
   prepared: PreparedProjectCommand,
   toolCallId: string,
@@ -1264,6 +1647,25 @@ async function executePreparedProjectCommand(
   );
   state.cacheDecision = executed.decision;
   setOutcomeInvocationState(state, prepared.definition, executed.outcome);
+  if (repositoryStateReader !== undefined) {
+    try {
+      state.currentRepositoryState = await repositoryStateReader(
+        prepared.projectPath,
+        prepared.requestSignal,
+      );
+    } catch {
+      if (prepared.requestSignal?.aborted) throw commandCancellationError();
+      state.currentRepositoryState = undefined;
+    }
+    state.repositoryStateStatus = repositoryStateStatus(
+      state.repositoryState,
+      state.currentRepositoryState,
+    );
+    state.stateDrift =
+      state.repositoryState !== undefined &&
+      state.currentRepositoryState !== undefined &&
+      !repositoryStatesEqual(state.repositoryState, state.currentRepositoryState);
+  }
   if (executed.canStore) state.producerInvocationId = toolCallId;
   const metadata = invocationMetadataForState(toolCallId, state);
   const details = outputDetails(
@@ -1282,8 +1684,9 @@ async function executePreparedProjectCommand(
     prepared.projectPath,
     toolCallId,
   );
+  const evidencedDetails = storeEvidence(evidence, details, state, toolCallId);
   if (isAbortedOutcome(executed.outcome, prepared.requestSignal)) {
-    throw cancellationError(cancellationOutputDetails(details));
+    throw cancellationError(cancellationOutputDetails(evidencedDetails));
   }
   if (isFailedOutcome(prepared.resolved, executed.outcome)) {
     throw createExecutionFailure(
@@ -1291,10 +1694,103 @@ async function executePreparedProjectCommand(
       prepared.projectPath,
       prepared.resolved,
       executed.outcome,
-      metadata,
+      invocationMetadataForState(toolCallId, state),
     );
   }
-  return result(details);
+  return result(evidencedDetails);
+}
+
+async function executePreparedProjectCommand(
+  executor: ProjectCommandExecutor,
+  cache: ProjectCommandResultCache,
+  evidence: ProjectCommandEvidenceStore | undefined,
+  repositoryStateReader: ProjectCommandRepositoryStateReader | undefined,
+  stateSnapshotter: ProjectCommandStateSnapshotter,
+  prepared: PreparedProjectCommand,
+  toolCallId: string,
+  state: ProjectCommandInvocationState,
+  ctx: ProjectCommandToolContext,
+): Promise<AgentToolResult<ProjectCommandOutputDetails>> {
+  const key = projectCommandSingleFlightKey(prepared, state, evidence);
+  if (key === undefined) {
+    return executePreparedProjectCommandCore(
+      executor,
+      cache,
+      evidence,
+      repositoryStateReader,
+      stateSnapshotter,
+      prepared,
+      toolCallId,
+      state,
+      ctx,
+    );
+  }
+  const existing = PROJECT_COMMAND_SINGLE_FLIGHTS.get(key);
+  if (existing !== undefined) {
+    existing.active += 1;
+    state.sharedExecution = true;
+    state.concurrentExecutions = existing.active;
+    try {
+      const shared = await awaitWithCancellation(existing.promise, prepared.requestSignal);
+      state.cacheDecision = shared.cacheDecision;
+      state.resultCategory = shared.category;
+      state.status = shared.status;
+      state.executed = false;
+      state.output = shared.output;
+      state.evidenceRef = shared.ref;
+      state.covers = shared.covers;
+      state.provenance = shared.provenance;
+      state.publication = shared.publication;
+      state.repositoryState = shared.recordedRepositoryState ?? shared.repositoryState;
+      state.currentRepositoryState = shared.currentRepositoryState;
+      state.repositoryStateStatus = shared.repositoryStateStatus;
+      state.stateDrift = shared.stateDrift;
+      return result({
+        ...shared,
+        toolCallId,
+        reused: false,
+        executed: false,
+        sharedExecution: true,
+        concurrentExecutions: existing.active,
+        durationMs: elapsedMilliseconds(state.startedAt, performance.now()),
+        executionDurationMs: 0,
+      });
+    } finally {
+      existing.active -= 1;
+    }
+  }
+  const entry: ProjectCommandSingleFlight = {
+    promise: Promise.resolve().then(async () => {
+      const output = await executePreparedProjectCommandCore(
+        executor,
+        cache,
+        evidence,
+        repositoryStateReader,
+        stateSnapshotter,
+        prepared,
+        toolCallId,
+        state,
+        ctx,
+      );
+      if (output.details !== undefined && state.concurrentExecutions !== undefined) {
+        return {
+          ...output.details,
+          concurrentExecutions: state.concurrentExecutions,
+        };
+      }
+      return output.details;
+    }),
+    active: 1,
+  };
+  state.concurrentExecutions = 1;
+  PROJECT_COMMAND_SINGLE_FLIGHTS.set(key, entry);
+  try {
+    return result(await entry.promise);
+  } finally {
+    if (PROJECT_COMMAND_SINGLE_FLIGHTS.get(key) === entry) {
+      PROJECT_COMMAND_SINGLE_FLIGHTS.delete(key);
+    }
+  }
 }
 
 export function createProjectCommandExecute<
@@ -1316,6 +1812,28 @@ export function createProjectCommandExecute<
       readProjectCommandOrchestrationContext(),
     );
     try {
+      const requestSignal = signal ?? ctx.signal;
+      if (isRecord(rawParams) && "ref" in rawParams) {
+        const validatedLookup = validateProjectCommandInput(rawParams, capturedDefinitions);
+        const lookupRecord: Readonly<Record<string, unknown>> = isRecord(validatedLookup)
+          ? validatedLookup
+          : {};
+        const lookupRef = typeof lookupRecord.ref === "string" ? lookupRecord.ref : undefined;
+        if (lookupRef === undefined) {
+          throw invalidRequest("ref");
+        }
+        if (invocationOptions.evidence === undefined) {
+          throw evidenceNotFound(lookupRef, undefined);
+        }
+        return await executeEvidenceLookup(
+          invocationOptions.evidence,
+          invocationOptions.repositoryStateReader,
+          lookupRef,
+          typeof lookupRecord.flowId === "string" ? lookupRecord.flowId : undefined,
+          requestSignal,
+          state,
+        );
+      }
       const prepared = await prepareProjectCommand(
         policy,
         resolver,
@@ -1332,6 +1850,8 @@ export function createProjectCommandExecute<
       return await executePreparedProjectCommand(
         executor,
         cache,
+        invocationOptions.evidence,
+        invocationOptions.repositoryStateReader,
         stateSnapshotter,
         prepared,
         toolCallId,

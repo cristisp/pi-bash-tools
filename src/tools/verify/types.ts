@@ -38,6 +38,22 @@ export interface VerifyRepositoryState {
   readonly dirtyFilesDigest: string;
 }
 
+export type VerifyRepositoryStateStatus = "matches" | "mismatch" | "unreadable";
+export type VerifyEvidenceScope = "root" | "flow";
+
+export interface VerifyEvidenceProvenance {
+  readonly scope: VerifyEvidenceScope;
+  readonly flowId?: string;
+  readonly repositoryIdentity?: string;
+}
+
+export interface VerifyPublication {
+  readonly flowId: string;
+  readonly repositoryIdentity: string;
+  readonly producerScope: VerifyEvidenceScope;
+  readonly published: boolean;
+}
+
 export interface VerifyEvidenceRecord {
   readonly cacheFormatVersion: typeof VERIFY_CACHE_FORMAT_VERSION;
   readonly key: string;
@@ -50,6 +66,12 @@ export interface VerifyEvidenceRecord {
   readonly failureTail?: string;
   readonly covers: readonly string[];
   readonly createdAt: number;
+  readonly provenance?: VerifyEvidenceProvenance;
+  readonly publication?: VerifyPublication;
+  readonly mutating?: boolean;
+  readonly concurrentExecutions?: number;
+  readonly stateDrift?: boolean;
+  readonly sharedExecution?: boolean;
 }
 
 export interface VerifyOutput {
@@ -62,4 +84,13 @@ export interface VerifyOutput {
   readonly reused: boolean;
   readonly covers: readonly string[];
   readonly repositoryState?: VerifyRepositoryState;
+  readonly recordedRepositoryState?: VerifyRepositoryState;
+  readonly currentRepositoryState?: VerifyRepositoryState;
+  readonly repositoryStateStatus?: VerifyRepositoryStateStatus;
+  readonly provenance?: VerifyEvidenceProvenance;
+  readonly publication?: VerifyPublication;
+  readonly mutating?: boolean;
+  readonly concurrentExecutions?: number;
+  readonly stateDrift?: boolean;
+  readonly sharedExecution?: boolean;
 }

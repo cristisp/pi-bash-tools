@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { validateVerifyInput } from "../../src/tools/verify/schema.ts";
 import { validateProjectCommandInput } from "../../src/tools/project-command/schema.ts";
 
 it("accepts only the catalog command IDs and supported package-script options", () => {
@@ -103,6 +104,75 @@ it("rejects arbitrary command fields and inline execution forms", () => {
   for (const request of invalidRequests) {
     expect(() => validateProjectCommandInput(request)).toThrow(/invalid/iu);
   }
+});
+
+it("coerces JSON path arrays and records the coercion", () => {
+  expect(
+    validateProjectCommandInput({
+      commandId: "node_test",
+      paths: '["src/index.ts"]',
+    }),
+  ).toEqual({
+    commandId: "node_test",
+    paths: ["src/index.ts"],
+    coercions: ["paths:string-json-array"],
+  });
+  expect(validateVerifyInput({ paths: '["src/index.ts"]' })).toMatchObject({
+    paths: ["src/index.ts"],
+    coercions: ["paths:string-json-array"],
+  });
+  expect(() => validateVerifyInput({ paths: "src/index.ts" })).toThrow(
+    /field paths.*array.*JSON array.*src\/index\.ts/iu,
+  );
+});
+
+it("keeps evidence references lookup-only with a fail-closed allowlist", () => {
+  expect(
+    validateProjectCommandInput({
+      ref: "pc_example",
+      flowId: "flow-1",
+      covers: ["AC-001"],
+    }),
+  ).toEqual({
+    ref: "pc_example",
+    flowId: "flow-1",
+    covers: ["AC-001"],
+  });
+  expect(validateVerifyInput({ ref: "vr_example", covers: ["AC-001"] })).toMatchObject({
+    ref: "vr_example",
+    covers: ["AC-001"],
+    fresh: false,
+  });
+  expect(() =>
+    validateProjectCommandInput({ ref: "pc_example", publish: { flowId: "flow-1" } }),
+  ).toThrow(/lookup requests.*only.*ref.*flowId.*covers/iu);
+  expect(() => validateVerifyInput({ ref: "vr_example", fresh: false })).toThrow(
+    /lookup cannot include execution options/iu,
+  );
+  expect(() => validateProjectCommandInput({ ref: "pc_example", futureOption: true })).toThrow(
+    /lookup requests.*only/iu,
+  );
+  expect(() => validateProjectCommandInput({ commandId: "node_test", fresh: true })).toThrow(
+    /invalid/iu,
+  );
+});
+
+it("includes an expected shape and literal example in new validation errors", () => {
+  try {
+    validateProjectCommandInput({ commandId: "node_test", paths: "not-json" });
+    throw new Error("expected invalid paths");
+  } catch (error) {
+    expect(error).toMatchObject({
+      contract: { invalidField: "paths" },
+      details: {
+        correctedExample: { commandId: "node_test", paths: '["src/index.ts"]' },
+        remediation: expect.stringContaining("unambiguous JSON array"),
+      },
+    });
+  }
+  expect(() => validateVerifyInput({ paths: "not-json" })).toThrow(
+    /expected string\[\].*src\/index\.ts/iu,
+  );
 });
 
 it("normalizes exact string booleans without changing force semantics", () => {

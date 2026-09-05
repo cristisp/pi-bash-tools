@@ -12,6 +12,11 @@ import { definedObjectProperties } from "./defined-properties.ts";
 import { projectCommandResultCategory } from "./categories.ts";
 import type { ProjectCommandExecutionOutcome, ProjectCommandOutput } from "./execution.ts";
 import type { ProjectCommandCacheDecision } from "./cache.ts";
+import type { ProjectCommandRepositoryState } from "./repository-state.ts";
+import type {
+  ProjectCommandEvidenceProvenance,
+  ProjectCommandEvidencePublication,
+} from "./evidence.ts";
 import { boundProjectCommandText, projectCommandDiagnostic } from "./diagnostics.ts";
 import type { ProjectCommandResolutionError } from "./errors.ts";
 import { getProjectCommandDefinitions, type ProjectCommandDefinition } from "./definitions.ts";
@@ -31,6 +36,19 @@ export interface ProjectCommandInvocationMetadata {
   readonly reused: boolean;
   readonly cacheDecision: ProjectCommandCacheDecision;
   readonly forced: boolean;
+  readonly evidenceRef?: string;
+  readonly covers?: readonly string[];
+  readonly repositoryState?: ProjectCommandRepositoryState;
+  readonly publication?: ProjectCommandEvidencePublication;
+  readonly provenance?: ProjectCommandEvidenceProvenance;
+  readonly recordedRepositoryState?: ProjectCommandRepositoryState;
+  readonly currentRepositoryState?: ProjectCommandRepositoryState;
+  readonly repositoryStateStatus?: "matches" | "mismatch" | "unreadable";
+  readonly sharedExecution?: boolean;
+  readonly coercions?: readonly string[];
+  readonly mutating?: boolean;
+  readonly concurrentExecutions?: number;
+  readonly stateDrift?: boolean;
   readonly authFingerprint?: string;
   readonly policyId?: string;
   readonly reusePolicyId?: string;
@@ -45,6 +63,19 @@ export interface ProjectCommandOutputDetails {
   readonly commandId: string;
   readonly projectPath: string;
   readonly fingerprint: string;
+  readonly ref?: string;
+  readonly covers?: readonly string[];
+  readonly publication?: ProjectCommandEvidencePublication;
+  readonly provenance?: ProjectCommandEvidenceProvenance;
+  readonly repositoryState?: ProjectCommandRepositoryState;
+  readonly recordedRepositoryState?: ProjectCommandRepositoryState;
+  readonly currentRepositoryState?: ProjectCommandRepositoryState;
+  readonly repositoryStateStatus?: "matches" | "mismatch" | "unreadable";
+  readonly sharedExecution?: boolean;
+  readonly coercions?: readonly string[];
+  readonly mutating?: boolean;
+  readonly concurrentExecutions?: number;
+  readonly stateDrift?: boolean;
   readonly authFingerprint: string;
   readonly resultFingerprint?: string;
   readonly resultFingerprintVersion?: number;
@@ -112,6 +143,19 @@ function outputMetadata(
     ["relevantInputs", metadata.relevantInputs],
     ["producerInvocationId", metadata.producerInvocationId],
     ["producerScope", metadata.producerScope],
+    ["ref", metadata.evidenceRef],
+    ["covers", metadata.covers],
+    ["coercions", metadata.coercions],
+    ["mutating", metadata.mutating],
+    ["concurrentExecutions", metadata.concurrentExecutions],
+    ["stateDrift", metadata.stateDrift],
+    ["publication", metadata.publication],
+    ["provenance", metadata.provenance],
+    ["repositoryState", metadata.repositoryState],
+    ["recordedRepositoryState", metadata.recordedRepositoryState],
+    ["currentRepositoryState", metadata.currentRepositoryState],
+    ["repositoryStateStatus", metadata.repositoryStateStatus],
+    ["sharedExecution", metadata.sharedExecution],
   ]);
 }
 

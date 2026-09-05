@@ -2,7 +2,7 @@ import { mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import type { PolicyStore } from "../../src/tools/policy/types.ts";
+import type { PolicyDecisionRequest, PolicyStore } from "../../src/tools/policy/types.ts";
 import { createProjectCommandExecutor } from "../../src/tools/project-command/execution.ts";
 import type { ProjectCommandExecutionOutcome } from "../../src/tools/project-command/execution.ts";
 import type { ProjectCommandExecutor } from "../../src/tools/project-command/runner.ts";
@@ -998,6 +998,279 @@ it("limits failure tails to failed steps and strips ANSI escapes", async () => {
   expectNoAnsi(lookup.details);
   expect(lookup.details.perStep[1]?.stderr.text).not.toContain("\u001b");
   expect(lookup.details.perStep[1]?.stderr.totalBytes).toBe(ansiOutput.length);
+});
+
+it("reruns fresh evidence without changing its stable reference", async () => {
+  const cwd = await projectFixture();
+  const deps = dependencies();
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver: deps.resolver,
+    executor: deps.executor,
+    repositoryStateReader: deps.repositoryStateReader,
+  });
+  const input = { omit: ["typecheck"] as const };
+  const first = await tool.execute("verify-fresh-1", input, undefined, undefined, context(cwd));
+  const fresh = await tool.execute(
+    "verify-fresh-2",
+    { ...input, fresh: true },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  expect(deps.executor).toHaveBeenCalledTimes(6);
+  expect(fresh.details).toMatchObject({
+    status: "completed",
+    reused: false,
+    ref: first.details.ref,
+  });
+});
+
+it("reports recorded, matching, changed, and unreadable repository state on lookup", async () => {
+  const cwd = await projectFixture();
+  const deps = dependencies();
+  let state: { repositoryIdentity: string; head: string; dirtyFilesDigest: string } | undefined = {
+    repositoryIdentity: "/repo",
+    head: "HEAD",
+    dirtyFilesDigest: "clean",
+  };
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver: deps.resolver,
+    executor: deps.executor,
+    repositoryStateReader: async () => state,
+  });
+  const completed = await tool.execute(
+    "verify-state-lookup",
+    { omit: ["typecheck"] },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  const matching = await tool.execute(
+    "verify-state-matching",
+    { ref: completed.details.ref },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  expect(matching.details).toMatchObject({
+    repositoryStateStatus: "matches",
+    recordedRepositoryState: { head: "HEAD" },
+    currentRepositoryState: { head: "HEAD" },
+  });
+
+  state = { ...state, head: "changed" };
+  const mismatch = await tool.execute(
+    "verify-state-mismatch",
+    { ref: completed.details.ref },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  expect(mismatch.details).toMatchObject({
+    repositoryStateStatus: "mismatch",
+    recordedRepositoryState: { head: "HEAD" },
+    currentRepositoryState: { head: "changed" },
+  });
+
+  state = undefined;
+  const unreadable = await tool.execute(
+    "verify-state-unreadable",
+    { ref: completed.details.ref },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  expect(unreadable.details).toMatchObject({
+    repositoryStateStatus: "unreadable",
+    recordedRepositoryState: { head: "HEAD" },
+  });
+  expect(unreadable.details).not.toHaveProperty("currentRepositoryState");
+});
+
+it("publishes only stable root evidence to an explicitly requested flow", async () => {
+  const cwd = await projectFixture();
+  const cacheRoot = await mkdtemp(join(tmpdir(), "bash-tools-verify-publish-"));
+  fixtureDirectories.push(cacheRoot);
+  const previousFlow = process.env.PI_ORCHESTRATION_FLOW;
+  const previousScope = process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
+  vi.stubEnv("PI_ORCHESTRATION_FLOW", undefined);
+  vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", undefined);
+  try {
+    const deps = dependencies();
+    const cache = createVerifyEvidenceCache({ rootDirectory: cacheRoot });
+    const tool = createVerifyToolForTesting({
+      policy: policy(),
+      resolver: deps.resolver,
+      executor: deps.executor,
+      repositoryStateReader: deps.repositoryStateReader,
+      cache,
+    });
+    const published = await tool.execute(
+      "verify-publish",
+      { omit: ["typecheck"], publish: { flowId: "publish-flow" } },
+      undefined,
+      undefined,
+      context(cwd),
+    );
+    expect(published.details).toMatchObject({
+      ref: expect.stringMatching(/^vr_/u),
+      publication: { flowId: "publish-flow", published: true },
+      provenance: { scope: "flow", flowId: "publish-flow" },
+    });
+
+    vi.stubEnv("PI_ORCHESTRATION_FLOW", "publish-flow");
+    vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
+    const lookup = await tool.execute(
+      "verify-publish-lookup",
+      { ref: published.details.ref, flowId: "publish-flow" },
+      undefined,
+      undefined,
+      context(cwd),
+    );
+    expect(lookup.details).toMatchObject({
+      ref: published.details.ref,
+      publication: { flowId: "publish-flow", published: true },
+      provenance: { scope: "flow", flowId: "publish-flow" },
+    });
+  } finally {
+    if (previousFlow === undefined) delete process.env.PI_ORCHESTRATION_FLOW;
+    else process.env.PI_ORCHESTRATION_FLOW = previousFlow;
+    if (previousScope === undefined) delete process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
+    else process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE = previousScope;
+  }
+});
+
+it("binds verify authorization to scripts, excludes paths, and re-prompts outside flow scope", async () => {
+  const cwd = await projectFixture();
+  let storedIdentity: { commandId: string; fingerprint: string } | undefined;
+  const selections = vi.fn(async () => "Allow for this project");
+  const flowPolicy: PolicyStore = {
+    configPath: "flow-policy",
+    load: async (projectPath) => ({
+      projectPath: await realpath(projectPath),
+      confirmationTimeoutMs: 1000,
+      document: {
+        version: 2,
+        environment: {
+          version: 1,
+          confirmationTimeoutMs: 1000,
+          global: { allow: [], deny: [] },
+          projects: {},
+        },
+        projectCommands: {
+          version: 1,
+          global: { allow: [], deny: [] },
+          projects:
+            storedIdentity === undefined
+              ? {}
+              : {
+                  [await realpath(projectPath)]: {
+                    allow: [storedIdentity],
+                    deny: [],
+                  },
+                },
+        },
+      },
+    }),
+    recordDecisions: async (_projectPath, requests: readonly PolicyDecisionRequest[]) => {
+      const request = requests[0];
+      if (request?.kind === "project-command" && request.decision === "allow-project") {
+        storedIdentity = request.identity;
+      }
+    },
+  };
+  const previousFlow = process.env.PI_ORCHESTRATION_FLOW;
+  const previousScope = process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
+  vi.stubEnv("PI_ORCHESTRATION_FLOW", "verify-auth-flow");
+  vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
+  try {
+    const deps = dependencies();
+    const tool = createVerifyToolForTesting({
+      policy: flowPolicy,
+      resolver: deps.resolver,
+      executor: deps.executor,
+      repositoryStateReader: deps.repositoryStateReader,
+    });
+    await tool.execute(
+      "verify-auth-paths-1",
+      { omit: ["typecheck"], paths: ["src/one.ts"] },
+      undefined,
+      undefined,
+      { ...context(cwd), ui: { select: selections } },
+    );
+    await tool.execute(
+      "verify-auth-paths-2",
+      { omit: ["typecheck"], paths: ["src/two.ts"] },
+      undefined,
+      undefined,
+      { ...context(cwd), ui: { select: selections } },
+    );
+    expect(selections).toHaveBeenCalledTimes(1);
+
+    vi.stubEnv("PI_ORCHESTRATION_FLOW", undefined);
+    vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", undefined);
+    await tool.execute(
+      "verify-auth-session",
+      { omit: ["typecheck"], paths: ["src/two.ts"] },
+      undefined,
+      undefined,
+      { ...context(cwd), ui: { select: selections } },
+    );
+    expect(selections).toHaveBeenCalledTimes(2);
+  } finally {
+    if (previousFlow === undefined) delete process.env.PI_ORCHESTRATION_FLOW;
+    else process.env.PI_ORCHESTRATION_FLOW = previousFlow;
+    if (previousScope === undefined) delete process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
+    else process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE = previousScope;
+  }
+});
+
+it("records one aggregate invocation for execution, reuse, and lookup", async () => {
+  const cwd = await projectFixture();
+  const deps = dependencies();
+  const records: unknown[] = [];
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver: deps.resolver,
+    executor: deps.executor,
+    repositoryStateReader: deps.repositoryStateReader,
+    invocationRecorder: (record) => records.push(record),
+  });
+  const first = await tool.execute(
+    "verify-record-1",
+    { omit: ["typecheck"] },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  await tool.execute(
+    "verify-record-2",
+    { omit: ["typecheck"] },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  await tool.execute(
+    "verify-record-lookup",
+    { ref: first.details.ref },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  expect(records).toHaveLength(3);
+  expect(records).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ commandId: "verify", aggregate: true, ref: first.details.ref }),
+    ]),
+  );
+  expect(
+    records.every(
+      (record) =>
+        record && typeof record === "object" && "aggregate" in record && record.aggregate === true,
+    ),
+  ).toBe(true);
 });
 
 it("keeps the record failure pointer without duplicating complete step tails by ref", async () => {

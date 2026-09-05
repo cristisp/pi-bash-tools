@@ -30,8 +30,13 @@ export interface VerifyEvidenceCacheOptions {
 
 export interface VerifyEvidenceCache {
   get(key: string): VerifyEvidenceRecord | undefined;
-  getByRef(ref: string): VerifyEvidenceRecord | undefined;
+  getByRef(ref: string, flowId?: string): VerifyEvidenceRecord | undefined;
   set(record: VerifyEvidenceRecord): void;
+  publish?(
+    ref: string,
+    flowId: string,
+    repositoryIdentity: string,
+  ): VerifyEvidenceRecord | undefined;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -162,6 +167,25 @@ function isRepositoryState(value: unknown): value is VerifyRepositoryState {
   );
 }
 
+function isProvenance(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    (value.scope === "root" || value.scope === "flow") &&
+    (value.flowId === undefined || isBoundedNonEmptyString(value.flowId, 64)) &&
+    (value.repositoryIdentity === undefined || isBoundedString(value.repositoryIdentity, 4096))
+  );
+}
+
+function isPublication(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isBoundedNonEmptyString(value.flowId, 64) &&
+    isBoundedNonEmptyString(value.repositoryIdentity, 4096) &&
+    (value.producerScope === "root" || value.producerScope === "flow") &&
+    typeof value.published === "boolean"
+  );
+}
+
 function hasConsistentVerdict(value: Readonly<Record<string, unknown>>): boolean {
   if (!Array.isArray(value.perStep)) return false;
   const steps = value.perStep.filter(isStep);
@@ -190,6 +214,13 @@ export function isVerifyEvidenceRecord(
     (value.repositoryState === undefined ||
       (isRepositoryState(value.repositoryState) &&
         value.repositoryState.workingDirectory === value.projectPath)) &&
+    (value.provenance === undefined || isProvenance(value.provenance)) &&
+    (value.publication === undefined || isPublication(value.publication)) &&
+    (value.mutating === undefined || typeof value.mutating === "boolean") &&
+    (value.concurrentExecutions === undefined ||
+      isBoundedInteger(value.concurrentExecutions, 0, 256)) &&
+    (value.stateDrift === undefined || typeof value.stateDrift === "boolean") &&
+    (value.sharedExecution === undefined || typeof value.sharedExecution === "boolean") &&
     Array.isArray(value.resolvedCommands) &&
     value.resolvedCommands.length > 0 &&
     value.resolvedCommands.length <= VERIFY_CACHE_MAX_COMMANDS &&
@@ -265,8 +296,14 @@ export function createVerifyEvidenceCache(
       }
       return local.get(key);
     },
-    getByRef(ref) {
+    getByRef(ref, requestedFlowId) {
       const orchestration = readProjectCommandOrchestrationContext();
+      if (requestedFlowId !== undefined) {
+        if (orchestration.effectiveScope !== "flow" || orchestration.flowId !== requestedFlowId) {
+          return undefined;
+        }
+        return unwrapRef(disk.get(requestedFlowId, `ref:${ref}`), ref);
+      }
       if (orchestration.effectiveScope === "flow" && orchestration.flowId !== undefined) {
         return unwrapRef(disk.get(orchestration.flowId, `ref:${ref}`), ref);
       }
@@ -293,6 +330,43 @@ export function createVerifyEvidenceCache(
       }
       local.set(record.key, record);
       byRef.set(record.ref, record);
+    },
+    publish(ref, flowId, repositoryIdentity) {
+      const orchestration = readProjectCommandOrchestrationContext();
+      if (orchestration.effectiveScope === "flow" && orchestration.flowId !== flowId) {
+        return undefined;
+      }
+      const source =
+        orchestration.effectiveScope === "flow" && orchestration.flowId !== undefined
+          ? unwrapRef(disk.get(orchestration.flowId, `ref:${ref}`), ref)
+          : byRef.get(ref);
+      if (
+        source === undefined ||
+        (source.provenance?.scope === "flow" && source.provenance.flowId !== flowId) ||
+        source.repositoryState?.repositoryIdentity !== repositoryIdentity
+      ) {
+        return undefined;
+      }
+      const published: VerifyEvidenceRecord = {
+        ...source,
+        provenance: {
+          scope: "flow",
+          flowId,
+          repositoryIdentity,
+        },
+        publication: {
+          flowId,
+          repositoryIdentity,
+          producerScope: source.provenance?.scope ?? "root",
+          published: true,
+        },
+      };
+      const firstWrite = disk.publish(flowId, published.key, published);
+      const secondWrite = disk.publish(flowId, `ref:${published.ref}`, {
+        key: `ref:${published.ref}`,
+        record: published,
+      });
+      return firstWrite && secondWrite ? published : undefined;
     },
   };
 }

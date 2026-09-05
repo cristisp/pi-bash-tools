@@ -69,6 +69,60 @@ describe("project command invocation metadata", () => {
     });
   });
 
+  it("bounds optional orchestration, state, publication, and coercion metadata", () => {
+    const record = buildProjectCommandInvocationRecord(
+      input({
+        flowId: "flow-".repeat(100),
+        delegationId: "delegation-".repeat(100),
+        role: "role-".repeat(100),
+        ref: "ref-".repeat(100),
+        repositoryState: {
+          repositoryIdentity: "repo-".repeat(100),
+          head: "head-".repeat(100),
+          dirtyFilesDigest: "digest-".repeat(100),
+          readable: true,
+          stateMatchesCurrent: false,
+        },
+        verdict: "incomplete",
+        mutating: true,
+        publication: {
+          scope: "flow",
+          flowId: "flow-".repeat(100),
+          published: true,
+          error: "error-".repeat(100),
+        },
+        coercions: Array.from({ length: 100 }, () => "paths:string-json-array"),
+        concurrentExecutions: Number.MAX_SAFE_INTEGER,
+        stateDrift: true,
+        aggregate: true,
+      }),
+    );
+
+    expect(record).toMatchObject({
+      flowId: expect.any(String),
+      delegationId: expect.any(String),
+      role: expect.any(String),
+      ref: expect.any(String),
+      repositoryState: {
+        readable: true,
+        stateMatchesCurrent: false,
+      },
+      verdict: "incomplete",
+      mutating: true,
+      publication: { scope: "flow", published: true },
+      coercions: expect.arrayContaining(["paths:string-json-array"]),
+      concurrentExecutions: 9_999_999_999,
+      stateDrift: true,
+      aggregate: true,
+    });
+    expect(record.flowId).toHaveLength(256);
+    expect(record.repositoryState?.repositoryIdentity).toHaveLength(256);
+    expect(record.coercions).toHaveLength(16);
+    expect(Buffer.byteLength(JSON.stringify(record), "utf8")).toBeLessThanOrEqual(
+      PROJECT_COMMAND_INVOCATION_MAX_BYTES,
+    );
+  });
+
   it("hashes sensitive arguments and bounds the complete persisted shape", () => {
     const record = buildProjectCommandInvocationRecord(
       input({

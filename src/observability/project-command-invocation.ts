@@ -53,6 +53,21 @@ export interface ProjectCommandInvocationOutputMetadata {
   readonly stderr: ProjectCommandInvocationStreamMetadata;
 }
 
+export interface ProjectCommandInvocationRepositoryStateMetadata {
+  readonly repositoryIdentity: string;
+  readonly head: string;
+  readonly dirtyFilesDigest: string;
+  readonly readable?: boolean;
+  readonly stateMatchesCurrent?: boolean;
+}
+
+export interface ProjectCommandInvocationPublicationMetadata {
+  readonly scope: "root" | "flow";
+  readonly flowId?: string;
+  readonly published: boolean;
+  readonly error?: string;
+}
+
 /** Values in this map are either bounded non-sensitive values or redaction metadata. */
 export type ProjectCommandInvocationParameters = Readonly<Record<string, unknown>>;
 
@@ -75,6 +90,19 @@ export interface ProjectCommandInvocationRecordInput {
   readonly executionDurationMs: number;
   readonly output?: ProjectCommandInvocationOutputMetadata;
   readonly producerScope?: "session" | "flow";
+  readonly flowId?: string;
+  readonly delegationId?: string;
+  readonly role?: string;
+  readonly ref?: string;
+  readonly repositoryState?: ProjectCommandInvocationRepositoryStateMetadata;
+  readonly verdict?: "passed" | "failed" | "incomplete";
+  readonly mutating?: boolean;
+  readonly publication?: ProjectCommandInvocationPublicationMetadata;
+  readonly coercions?: readonly string[];
+  readonly concurrentExecutions?: number;
+  readonly stateDrift?: boolean;
+  readonly sharedExecution?: boolean;
+  readonly aggregate?: boolean;
 }
 
 export interface ProjectCommandInvocationRecord {
@@ -95,6 +123,19 @@ export interface ProjectCommandInvocationRecord {
   readonly executionDurationMs: number;
   readonly output: ProjectCommandInvocationOutputMetadata;
   readonly producerScope?: "session" | "flow";
+  readonly flowId?: string;
+  readonly delegationId?: string;
+  readonly role?: string;
+  readonly ref?: string;
+  readonly repositoryState?: ProjectCommandInvocationRepositoryStateMetadata;
+  readonly verdict?: "passed" | "failed" | "incomplete";
+  readonly mutating?: boolean;
+  readonly publication?: ProjectCommandInvocationPublicationMetadata;
+  readonly coercions?: readonly string[];
+  readonly concurrentExecutions?: number;
+  readonly stateDrift?: boolean;
+  readonly sharedExecution?: boolean;
+  readonly aggregate?: boolean;
 }
 
 export type ProjectCommandInvocationRecorder = (record: ProjectCommandInvocationRecord) => void;
@@ -178,6 +219,44 @@ function boundedOutput(
     stdout: stream(output?.stdout),
     stderr: stream(output?.stderr),
   };
+}
+
+function boundedOptionalIdentifier(value: string | undefined): string | undefined {
+  return value === undefined ? undefined : boundedIdentifier(value);
+}
+
+function boundedState(
+  value: ProjectCommandInvocationRepositoryStateMetadata | undefined,
+): ProjectCommandInvocationRepositoryStateMetadata | undefined {
+  if (value === undefined) return undefined;
+  return {
+    repositoryIdentity: boundedIdentifier(value.repositoryIdentity),
+    head: boundedIdentifier(value.head),
+    dirtyFilesDigest: boundedIdentifier(value.dirtyFilesDigest),
+    ...(value.readable === undefined ? {} : { readable: value.readable }),
+    ...(value.stateMatchesCurrent === undefined
+      ? {}
+      : { stateMatchesCurrent: value.stateMatchesCurrent }),
+  };
+}
+
+function boundedPublication(
+  value: ProjectCommandInvocationPublicationMetadata | undefined,
+): ProjectCommandInvocationPublicationMetadata | undefined {
+  if (value === undefined) return undefined;
+  return {
+    scope: value.scope === "flow" ? "flow" : "root",
+    published: value.published,
+    ...(value.flowId === undefined ? {} : { flowId: boundedIdentifier(value.flowId) }),
+    ...(value.error === undefined ? {} : { error: boundedIdentifier(value.error) }),
+  };
+}
+
+function boundedCoercions(value: readonly string[] | undefined): readonly string[] | undefined {
+  if (value === undefined || value.length === 0) return undefined;
+  return Object.freeze(
+    value.slice(0, MAX_PARAMETER_ITEMS).map((entry) => boundedIdentifier(entry)),
+  );
 }
 
 function safeHash(value: unknown): string {
@@ -295,6 +374,21 @@ function boundedRecord(record: ProjectCommandInvocationRecord): ProjectCommandIn
     durationMs: record.durationMs,
     executionDurationMs: record.executionDurationMs,
     output: record.output,
+    ...(record.flowId === undefined ? {} : { flowId: record.flowId }),
+    ...(record.delegationId === undefined ? {} : { delegationId: record.delegationId }),
+    ...(record.role === undefined ? {} : { role: record.role }),
+    ...(record.ref === undefined ? {} : { ref: record.ref }),
+    ...(record.repositoryState === undefined ? {} : { repositoryState: record.repositoryState }),
+    ...(record.verdict === undefined ? {} : { verdict: record.verdict }),
+    ...(record.mutating === undefined ? {} : { mutating: record.mutating }),
+    ...(record.publication === undefined ? {} : { publication: record.publication }),
+    ...(record.coercions === undefined ? {} : { coercions: record.coercions }),
+    ...(record.concurrentExecutions === undefined
+      ? {}
+      : { concurrentExecutions: record.concurrentExecutions }),
+    ...(record.stateDrift === undefined ? {} : { stateDrift: record.stateDrift }),
+    ...(record.sharedExecution === undefined ? {} : { sharedExecution: record.sharedExecution }),
+    ...(record.aggregate === undefined ? {} : { aggregate: record.aggregate }),
   });
 }
 
@@ -323,6 +417,35 @@ export function buildProjectCommandInvocationRecord(
     executionDurationMs: boundedNumber(input.executionDurationMs),
     output: boundedOutput(input.output),
     ...(input.producerScope === undefined ? {} : { producerScope: input.producerScope }),
+    ...(boundedOptionalIdentifier(input.flowId) === undefined
+      ? {}
+      : { flowId: boundedOptionalIdentifier(input.flowId) }),
+    ...(boundedOptionalIdentifier(input.delegationId) === undefined
+      ? {}
+      : { delegationId: boundedOptionalIdentifier(input.delegationId) }),
+    ...(boundedOptionalIdentifier(input.role) === undefined
+      ? {}
+      : { role: boundedOptionalIdentifier(input.role) }),
+    ...(boundedOptionalIdentifier(input.ref) === undefined
+      ? {}
+      : { ref: boundedOptionalIdentifier(input.ref) }),
+    ...(boundedState(input.repositoryState) === undefined
+      ? {}
+      : { repositoryState: boundedState(input.repositoryState) }),
+    ...(input.verdict === undefined ? {} : { verdict: input.verdict }),
+    ...(input.mutating === undefined ? {} : { mutating: input.mutating }),
+    ...(boundedPublication(input.publication) === undefined
+      ? {}
+      : { publication: boundedPublication(input.publication) }),
+    ...(boundedCoercions(input.coercions) === undefined
+      ? {}
+      : { coercions: boundedCoercions(input.coercions) }),
+    ...(input.concurrentExecutions === undefined
+      ? {}
+      : { concurrentExecutions: boundedNumber(input.concurrentExecutions) }),
+    ...(input.stateDrift === undefined ? {} : { stateDrift: input.stateDrift }),
+    ...(input.sharedExecution === undefined ? {} : { sharedExecution: input.sharedExecution }),
+    ...(input.aggregate === undefined ? {} : { aggregate: input.aggregate }),
   };
   return boundedRecord(record);
 }

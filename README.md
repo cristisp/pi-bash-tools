@@ -197,6 +197,47 @@ git --no-optional-locks -c core.fsmonitor=false log --no-ext-diff --no-textconv 
 git --no-optional-locks -c core.fsmonitor=false show --no-ext-diff --no-textconv <revision> -- <path>
 ```
 
+## Validation evidence and freshness
+
+`verify` runs the format, lint, typecheck, and test phases in fixed order and returns an aggregate `verdict` of `passed`, `failed`, or `incomplete`.
+An omitted phase is visible in `perStep` and makes the aggregate verdict `incomplete`, rather than successful.
+
+A successful execution returns a bounded `vr_` evidence reference when repository state is readable and stable.
+The same unchanged request can return a compact `reused: true` result with the same reference.
+Set `fresh: true` to execute again without changing the content-addressed cache key.
+A fresh execution reports `reused: false` and can retain the same reference when its evidence is identical.
+`fresh` cannot be combined with `ref`.
+
+`project_command` execution evidence uses distinct bounded `pc_` references.
+Project-command evidence is non-replayable: looking up `{ "ref": "pc_example" }` returns stored evidence without executing a command and never acts as a result-cache hit.
+Project-command script and Fallow commands retain `reusePolicy: "never"`.
+Lookup accepts only `ref`, optional `flowId`, and opaque `covers` fields.
+Unknown fields and execution options such as `publish` or `fresh` are rejected for lookup requests.
+The same lookup-only rules apply to `verify` references.
+
+Root-session evidence is process-local by default and is not durable across processes.
+A lookup with `flowId` succeeds only when the caller has the same effective flow scope.
+An executing request may explicitly request `publish: { "flowId": "flow-1" }` after authorization and compatible repository-state checks.
+Publication is reported only after the destination write is confirmed.
+Publishing to the caller's own effective flow is an accepted no-op that preserves the flow record.
+
+Evidence includes `covers`, producer provenance, recorded repository state, and current repository state when it can be read.
+`repositoryStateStatus` is `matches`, `mismatch`, or `unreadable`.
+The recorded state includes `dirtyFilesDigest`, which fingerprints the Git-reported paths together with their content, mode, size, and status while excluding ignored paths.
+`stateDrift: true` indicates that the repository moved between the start and completion observations of an execution.
+`mutating` reports the conservative command-variant classification.
+`node_format` and `node_lint:fix` are mutating, while `node_format:check`, `node_lint`, and `node_lint:check` are non-mutating.
+Unknown variants in a family containing a writing form are treated as mutating because package-script bodies remain opaque.
+
+Identical non-mutating evidence requests that overlap in one process use single-flight coordination.
+A shared request reports `sharedExecution: true` and is distinct from an ordinary cache hit.
+`concurrentExecutions` reports the observed overlapping execution count for the repository identity.
+The consumer-owned repository write lock remains authoritative for coordination between writers and readers.
+
+The project-command invocation recorder stores bounded `flowId`, `delegationId`, `role`, `ref`, verdict, mutability, publication, coercion, concurrency, drift, and aggregate-verify metadata.
+One aggregate invocation record is emitted per `verify` call rather than one record per phase.
+Process status remains separate from the aggregate verify verdict.
+
 ## Safety and contract behavior
 
 Git is invoked through pi's argument-array `exec` API, never through shell interpolation or an arbitrary shell command.

@@ -58,9 +58,14 @@ it("keeps schema variants strict and preserves command-specific fields", () => {
     properties: {
       commandId: { const: "node_test" },
       paths: {
-        type: "array",
-        maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS,
-        items: { type: "string", maxLength: PROJECT_COMMAND_MAX_PATH_LENGTH },
+        anyOf: [
+          {
+            type: "array",
+            maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS,
+            items: { type: "string", maxLength: PROJECT_COMMAND_MAX_PATH_LENGTH },
+          },
+          { type: "string" },
+        ],
       },
     },
   });
@@ -99,6 +104,10 @@ it("keeps schema variants strict and preserves command-specific fields", () => {
   });
   expect(variants).toHaveLength(18);
   expect(variants.every((variant) => !variant.additionalProperties)).toBe(true);
+  expect(JSON.stringify(projectCommandInputSchema)).toContain(
+    '"description":"Lookup-only evidence reference.',
+  );
+  expect(JSON.stringify(projectCommandInputSchema)).toContain('"pattern":"^[A-Za-z0-9_-]{1,64}$"');
   expect(variants.every((variant) => JSON.stringify(variant).includes('"force"'))).toBe(true);
   expect(variants.every((variant) => JSON.stringify(variant).includes('"true"'))).toBe(true);
 });

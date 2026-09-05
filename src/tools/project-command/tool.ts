@@ -20,6 +20,7 @@ import type { ProjectCommandRelevantInputDiscovery } from "./relevant-inputs.ts"
 import type { ProjectCommandStateSnapshotter } from "./state-snapshot.ts";
 import type { ProjectCommandRepositoryStateReader } from "./repository-state.ts";
 import type { ProjectCommandResultCache } from "./cache.ts";
+import { createProjectCommandEvidenceStore, type ProjectCommandEvidenceStore } from "./evidence.ts";
 import {
   createProjectCommandExecute,
   type ProjectCommandExecute,
@@ -42,6 +43,7 @@ export interface ProjectCommandToolTestOptions<
   readonly stateSnapshotter?: ProjectCommandStateSnapshotter;
   readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
   readonly cache?: ProjectCommandResultCache;
+  readonly evidence?: ProjectCommandEvidenceStore;
   readonly definitions?: Definitions;
   readonly invocationRecorder?: ProjectCommandInvocationRecorder;
   readonly schemaHash?: string;
@@ -52,6 +54,7 @@ export interface ProjectCommandToolOptions {
   readonly schemaHash?: string;
   readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
   readonly cache?: ProjectCommandResultCache;
+  readonly evidence?: ProjectCommandEvidenceStore;
 }
 
 export type ProjectCommandToolDefinition<
@@ -92,6 +95,7 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
   relevantInputDiscovery?: ProjectCommandRelevantInputDiscovery,
   stateSnapshotter?: ProjectCommandStateSnapshotter,
   cache?: ProjectCommandResultCache,
+  evidence: ProjectCommandEvidenceStore = createProjectCommandEvidenceStore(),
   invocationOptions: ProjectCommandToolOptions = {},
 ): ProjectCommandToolDefinition<Definitions> {
   const capturedDefinitions = captureDefinitions(definitions);
@@ -105,7 +109,7 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
     name: "project_command",
     label: "Project command",
     description:
-      "Run one fixed Node dependency listing or package script, six fixed Fallow analyses, or the existing workspace_path, node_version, and node_project_info observations. node_project_info reports project state in process; node_deps_list uses a detected package manager's fixed read-only list form; supported Node script commands run only exact package.json scripts or validated existing lint:<variant>, test:<variant>, and format:<variant> family forms. Variants use bounded package-script-safe names and select the exact script configured by the project. Fallow commands run only the project-local Fallow binary with fixed machine-readable arguments. Do not use this tool for dependency installation, Git inspection, file access, arbitrary commands, environment inspection, or project mutation outside the project-controlled package scripts exposed by this catalog.",
+      "Run one fixed Node dependency listing or package script, six fixed Fallow analyses, or the existing workspace_path, node_version, and node_project_info observations. node_project_info reports project state in process; node_deps_list uses a detected package manager's fixed read-only list form; supported Node script commands run only exact package.json scripts or validated existing lint:<variant>, test:<variant>, and format:<variant> family forms. Variants use bounded package-script-safe names and select the exact script configured by the project. Fallow commands run only the project-local Fallow binary with fixed machine-readable arguments. Executing evidence requests may include opaque covers and publish: { flowId }; lookup-only requests accept only ref, optional flowId, and covers and never execute a command. Evidence refs are non-replayable and process-scoped unless explicitly published to an authorized flow. Do not use this tool for dependency installation, Git inspection, file access, arbitrary commands, environment inspection, or project mutation outside the project-controlled package scripts exposed by this catalog.",
     promptSnippet:
       "Inspect Node project state, list top-level dependencies, run one exact Node package script or validated variant including lint fixes and formatting, or run one fixed Fallow analysis",
     promptGuidelines: [
@@ -117,6 +121,8 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
       "Use node_build or node_typecheck only when package.json has the exact corresponding script; node_lint accepts an optional variant selecting an existing validated lint:<variant> script, including project-defined fix scripts.",
       "Use node_format with an optional variant only when package.json has the exact format or format:<variant> script; formatting scripts may modify project files.",
       "Use fallow_dead_code, fallow_dupes, fallow_health, fallow_audit, fallow_list_entry_points, or fallow_list_boundaries only with their fixed machine-readable Fallow forms.",
+      "Use project_command with ref and optional flowId only to look up stored non-replayable evidence; lookup parameters cannot be combined with publish or other execution options.",
+      "Executing project_command requests may include covers and publish: { flowId } to preserve or explicitly publish evidence.",
       "Do not use project_command for dependency installation, Git inspection, file inspection, arbitrary commands, environment access, or project mutation outside the project-controlled package scripts exposed by this catalog.",
     ],
     parameters,
@@ -143,6 +149,7 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
         recorder: invocationOptions.invocationRecorder,
         schemaHash,
         repositoryStateReader: invocationOptions.repositoryStateReader,
+        evidence,
       },
     ),
   };
@@ -159,6 +166,7 @@ export function createProjectCommandTool(
     undefined,
     undefined,
     options.cache,
+    options.evidence,
     options,
   );
 }
@@ -197,6 +205,7 @@ export function createProjectCommandToolForTesting<
     options.relevantInputDiscovery,
     options.stateSnapshotter,
     options.cache,
+    options.evidence,
     {
       invocationRecorder: options.invocationRecorder,
       schemaHash: options.schemaHash,
