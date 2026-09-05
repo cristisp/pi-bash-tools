@@ -1,5 +1,4 @@
 node_modules/
 *.tgz
 
-PLAN.md
 coverage/
