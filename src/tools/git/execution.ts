@@ -29,7 +29,7 @@ export type GitExec = (
   options?: GitExecOptions,
 ) => Promise<GitExecResult>;
 
-const CHILD_TERMINATION_GRACE_MS = 100;
+export const CHILD_TERMINATION_GRACE_MS = 100;
 
 /**
  * Raised when captured Git output exceeds the configured bound.

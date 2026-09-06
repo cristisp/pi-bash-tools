@@ -963,7 +963,10 @@ function withEvidencePublication(
   state: ProjectCommandInvocationState,
 ): ProjectCommandOutputDetails {
   const storageFlowId = evidenceStorageFlowId(state);
-  evidence.set(record, storageFlowId);
+  if (!evidence.set(record, storageFlowId)) {
+    state.evidenceRef = undefined;
+    return details;
+  }
   if (state.requestedPublicationFlowId !== undefined) {
     const targetFlowId = state.requestedPublicationFlowId;
     const publicationCandidate: ProjectCommandEvidencePublication = {

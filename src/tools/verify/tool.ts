@@ -93,7 +93,9 @@ const MAX_FAILURE_TAIL = 8 * 1024;
 
 interface VerifyStepSingleFlight {
   readonly promise: Promise<ProjectCommandExecutionOutcome>;
+  readonly controller: AbortController;
   active: number;
+  settled: boolean;
 }
 
 const VERIFY_STEP_SINGLE_FLIGHTS = new Map<string, VerifyStepSingleFlight>();
@@ -109,6 +111,10 @@ function awaitVerifyStep<T>(promise: Promise<T>, signal: AbortSignal | undefined
       cleanup();
       reject(new VerifyToolError("cancelled", "verify was cancelled"));
     };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
     signal.addEventListener("abort", onAbort, { once: true });
     promise.then(
       (value) => {
@@ -802,6 +808,7 @@ async function runVerifySteps(options: VerifyStepRunOptions, index = 0): Promise
   const existing =
     singleFlightKey === undefined ? undefined : VERIFY_STEP_SINGLE_FLIGHTS.get(singleFlightKey);
   let flight: VerifyStepSingleFlight | undefined;
+  let joinedFlight: VerifyStepSingleFlight | undefined;
   if (existing !== undefined) {
     existing.active += 1;
     options.telemetry.concurrentExecutions = Math.max(
@@ -809,14 +816,34 @@ async function runVerifySteps(options: VerifyStepRunOptions, index = 0): Promise
       existing.active,
     );
     sharedExecution = true;
+    joinedFlight = existing;
   } else if (singleFlightKey !== undefined) {
-    flight = {
+    const controller = new AbortController();
+    const created: VerifyStepSingleFlight = {
       promise: Promise.resolve().then(() =>
-        options.executor(step.resolved, options.projectPath, stepController.signal),
+        options.executor(step.resolved, options.projectPath, controller.signal),
       ),
+      controller,
       active: 1,
+      settled: false,
     };
-    VERIFY_STEP_SINGLE_FLIGHTS.set(singleFlightKey, flight);
+    flight = created;
+    joinedFlight = created;
+    VERIFY_STEP_SINGLE_FLIGHTS.set(singleFlightKey, created);
+    void created.promise.then(
+      () => {
+        created.settled = true;
+        if (VERIFY_STEP_SINGLE_FLIGHTS.get(singleFlightKey) === created) {
+          VERIFY_STEP_SINGLE_FLIGHTS.delete(singleFlightKey);
+        }
+      },
+      () => {
+        created.settled = true;
+        if (VERIFY_STEP_SINGLE_FLIGHTS.get(singleFlightKey) === created) {
+          VERIFY_STEP_SINGLE_FLIGHTS.delete(singleFlightKey);
+        }
+      },
+    );
     options.telemetry.concurrentExecutions = Math.max(options.telemetry.concurrentExecutions, 1);
   }
   try {
@@ -824,7 +851,7 @@ async function runVerifySteps(options: VerifyStepRunOptions, index = 0): Promise
       existing?.promise ??
         flight?.promise ??
         options.executor(step.resolved, options.projectPath, stepController.signal),
-      options.requestSignal,
+      stepController.signal,
     );
     if (sharedExecution) {
       options.telemetry.sharedExecution = true;
@@ -841,12 +868,16 @@ async function runVerifySteps(options: VerifyStepRunOptions, index = 0): Promise
   } finally {
     clearTimeout(stepTimer);
     options.aggregateController.signal.removeEventListener("abort", abortStep);
-    if (existing !== undefined) {
-      existing.active -= 1;
-    }
-    if (singleFlightKey !== undefined && flight !== undefined) {
-      if (VERIFY_STEP_SINGLE_FLIGHTS.get(singleFlightKey) === flight) {
-        VERIFY_STEP_SINGLE_FLIGHTS.delete(singleFlightKey);
+    if (joinedFlight !== undefined) {
+      joinedFlight.active -= 1;
+      if (joinedFlight.active === 0) {
+        if (!joinedFlight.settled) joinedFlight.controller.abort();
+        if (
+          singleFlightKey !== undefined &&
+          VERIFY_STEP_SINGLE_FLIGHTS.get(singleFlightKey) === joinedFlight
+        ) {
+          VERIFY_STEP_SINGLE_FLIGHTS.delete(singleFlightKey);
+        }
       }
     }
   }

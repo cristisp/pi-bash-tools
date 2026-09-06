@@ -472,6 +472,62 @@ it("preserves cancellation during command resolution", async () => {
   expect(deps.executor).not.toHaveBeenCalled();
 });
 
+it("detaches a cancelled shared consumer without aborting the producer", async () => {
+  const cwd = await projectFixture();
+  const deps = dependencies();
+  let signalAborted = false;
+  let release: (value: ProjectCommandExecutionOutcome) => void = () => undefined;
+  const execution = new Promise<ProjectCommandExecutionOutcome>((resolve) => {
+    release = resolve;
+  });
+  let executorStarted: () => void = () => undefined;
+  const executorStartedPromise = new Promise<void>((resolve) => {
+    executorStarted = resolve;
+  });
+  const executor = vi.fn(async (_resolved, _projectPath, signal) => {
+    signal?.addEventListener("abort", () => {
+      signalAborted = true;
+    });
+    executorStarted();
+    return execution;
+  });
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver: deps.resolver,
+    executor,
+    repositoryStateReader: deps.repositoryStateReader,
+  });
+  const controller = new AbortController();
+  const input = { omit: ["format", "lint", "typecheck"] as const };
+  const producer = tool.execute(
+    "verify-shared-producer",
+    input,
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  await executorStartedPromise;
+  const consumer = tool.execute(
+    "verify-shared-consumer",
+    input,
+    controller.signal,
+    undefined,
+    context(cwd),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(executor).toHaveBeenCalledTimes(1);
+
+  controller.abort();
+  await expect(consumer).rejects.toMatchObject({ code: "cancelled" });
+  expect(signalAborted).toBe(false);
+
+  release(outcome("success"));
+  const result = await producer;
+  expect(result.details.verdict).toBe("incomplete");
+  expect(result.details.perStep[3]).toMatchObject({ phase: "test", status: "passed" });
+  expect(executor).toHaveBeenCalledTimes(1);
+});
+
 it("rejects contradictory persisted evidence", () => {
   const chunk = { text: "", truncated: false, totalBytes: 0, totalLines: 0 };
   const step = (phase: "format" | "lint" | "typecheck" | "test") => ({

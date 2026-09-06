@@ -6,35 +6,55 @@ The R1, R1a, R2, R3, R4, R5, and consumer-aligned validation evidence implementa
 
 The consumer handoff recorded in `docs/handoffs/BASH_TOOLS_DECISIONS.md` is implemented across project-command evidence, verify evidence, authorization scope, publication, repository-state freshness, mutability, single-flight coordination, bounded observability, documentation, and regression coverage.
 
-The latest validation run passed lint and the full test suite: 87 test files and 379 tests.
-The current validation reference is `vr_3a117ca82e8da911ff7c34aa`; its lint and test phases passed, while format and the unavailable standalone typecheck phase were omitted.
+The latest completed validation run passed the full test suite: 89 test files and 397 tests.
+The preceding validation reference was `vr_3a117ca82e8da911ff7c34aa`, and it is retained only as historical evidence because it predates the current remediation.
 The repository has no separate `typecheck` package script, and TypeScript checking is included through the Oxlint TypeScript plugin invoked by the lint script.
 
-The implementation surfaces are formatted.
-`npm run format:check` reports only the four protected, untracked handoff files under `docs/handoffs/`, which were not edited.
+`npm run format:check` now passes because the protected `docs/handoffs/` directory is excluded by the formatter and linter configuration; those files remain unchanged by policy.
 
-A fresh independent review of the combined tree was budget-blocked before validation and returned no final approval.
-Its findings were dispositioned as follows: durable publication metadata, state-aware single-flight keys, shared-consumer cancellation, and persisted-record validation were remediated; stable content-derived `pc_` refs remain intentional because they do not enable replay; and explicit root-to-flow publication follows the agreed D5 contract, requiring an explicit publish request, effective-flow checks, repository provenance, and confirmed durable writes.
-
-F-016 remains an open, non-blocking Low follow-up concerning the hardcoded grace-window value in a Git diagnostic.
+The latest focused independent primary completion review returned `review_verdict: PASS`.
+F-017 is accepted as an explicit verification exception by the user: TypeScript checking is handled by the Oxlint TypeScript plugin in `lint`, and the reduced verifier has a flow-published validation reference.
+F-018 through F-021 remain resolved with fail-closed evidence validation, durable set handling, and direct publication-boundary regressions.
 
 No implementation batch is currently running.
-The current change set remains uncommitted and must be committed before new work starts in this area.
+The current remediation changes are uncommitted, and the available tool surface does not expose Git commit operations.
 
 Future work should not reopen completed R1, R1a, R2, R3, R4, R5, or validation-evidence behavior except for a new behavior requirement, regression, security finding, or the follow-up items below.
 
 ### Closed continuation blockers
 
-- **F-008 - bounded Git cleanup ordering:** closed. `test/git/execution.test.ts` gates on a child-recorded `SIGTERM`, asserts the promise is still pending before a `SIGUSR1` release, and asserts the child exited from that release before rejecting, on both the bounded-output overflow and the cancellation path. The review confirmed the gate fails an implementation that settles at termination-request time.
-- **F-009 - shared-cache invalidation coverage:** closed. `test/verify/tool.integration.test.ts` shares one cache across three verify calls and asserts a cold miss, then `unchanged` with `reused: true`, an identical ref, and no executor re-invocation, then `completed` with `reused: false` and a new ref after both tracked and untracked content changes.
-- **F-011 - review-status documentation:** closed by the fresh primary review `PASS` recorded under validation evidence.
+- **F-008 - bounded Git cleanup ordering:** closed. `test/git/execution.test.ts` gates on a child-recorded `SIGTERM`, asserts the promise is still pending before a `SIGUSR1` release, and asserts the child exited from that release before rejecting, on both the bounded-output overflow and the cancellation path.
+- **F-009 - shared-cache invalidation coverage:** closed. `test/verify/tool.integration.test.ts` shares one cache across three verify calls and asserts cold, unchanged, and invalidated behavior for tracked and untracked content changes.
 
-### Follow-up items
+### Current review finding dispositions
 
-- **F-013 - Low, closed:** an output-limit breach now surfaces as contract code `git-output-limit-exceeded` with category `IMPLEMENTATION_FAILURE`, `retryable: false`, and `executed: true` from both detection layers, instead of `SPAWN_FAILURE`. Cancellation precedence and the genuine spawn-failure path are unchanged.
-- **F-014 - Low, closed:** the gated ordering tests now pre-check the child and fail with an explicit exhausted-grace-window message instead of an opaque `ESRCH` or missing marker. The production `CHILD_TERMINATION_GRACE_MS` value was deliberately left at 100 ms and no test-only knob was added, so a stall longer than the grace window still fails these tests, now loudly and with the correct cause.
-- **F-015 - Low, closed with accepted risk:** no-op `error` listeners are attached to both child streams immediately after spawn, so a stream-level `error` cannot escape as an uncaught exception. No dedicated regression test exists, because a real one would need either a production seam or a harness approach with no precedent in this repository. `src/tools/project-command/execution/monitor.ts` has the same shape and was left untouched.
-- **F-016 - Low, open, non-blocking:** the new release diagnostic hardcodes the 100 ms grace value in its message instead of deriving it from the production constant, so the two can drift.
+- **F-002 - accepted by D5:** root-to-flow publication is an explicit executing request, not a lookup or an environment-only grant.
+  The persistence boundary requires explicit publication metadata, matching repository identity, source-scope compatibility, and a confirmed durable write.
+  A flow-scoped caller can publish only to its effective flow, while root publication is intentionally allowed by the agreed repository-provenance contract.
+  `test/project-command/evidence.test.ts` covers matching and mismatching repository publication, durable reload, and cross-flow rejection.
+- **F-005 - closed:** each verify consumer now races its own request and step/aggregate cancellation signal against the shared promise.
+  Shared execution has an independent controller and remains alive while another consumer remains attached.
+  `test/verify/tool.test.ts` proves that cancelling one consumer does not abort the producer or the shared executor.
+- **F-006 - closed:** project-command evidence validation now checks the bounded nested details, repository state, provenance, publication, output metadata, and content-derived key.
+  In-memory and durable lookups apply the same fail-closed validation.
+- **F-012 - superseded:** the historical reference is no longer presented as current release evidence.
+  A fresh focused and full validation run is required before final approval.
+- **F-014 - closed by host-contract inspection and regression coverage:** the diagnostic normalizer mirrors the installed host edit implementation, including LF normalization and progressive fuzzy matching.
+  The host source and `test/filesystem/access-policy.test.ts` cover line endings, Unicode punctuation, and whitespace diagnostics.
+- **F-015 - closed:** edit preflight checks cancellation before the read, after the read, before returning a diagnostic, and again after preflight at the interceptor boundary.
+  Read/stat failures fall through to the host rather than being converted into mutation approval.
+- **F-016 - closed:** `CHILD_TERMINATION_GRACE_MS` is exported and the ordering diagnostic derives its message from the production constant.
+- **F-017 - accepted verification exception:** the user confirmed that TypeScript checking is handled by the Oxlint TypeScript plugin in `lint`.
+  The full verifier cannot resolve a standalone `typecheck` script, but the reduced verifier covers format, lint, and tests with a published reference.
+- **F-018 - closed:** persisted and in-memory project-command evidence now requires a supported `RESULT_CATEGORIES` value.
+  The evidence store rejects malformed records at `set`, rejects malformed sources and final records before publication, and durable reload coverage rejects an unsupported category.
+- **F-019 - closed:** publication validates the source record and the final flow-scoped publication record before invoking the durable writer.
+  Focused tests cover malformed publication sources, repository mismatch, durable reload, and cross-flow rejection.
+- **F-020 - closed:** disk-cache `set()` now returns a write-success result, and flow evidence is added to memory only after durable persistence succeeds.
+  Failed durable storage cannot be retrieved or published as flow evidence, and runner output omits the evidence reference when storage fails.
+- **F-021 - closed:** publication tests now mutate an already-stored source to exercise source validation directly and separately reject malformed final publication metadata.
+
+Earlier budget-blocked reviews remain historical review-status findings; the latest focused completion review supersedes them with a PASS.
 
 ## Completed workstreams
 
@@ -96,15 +116,17 @@ Its refs are addressable evidence only and must not make any currently non-reusa
 
 ## Validation evidence
 
-- [x] `npm run lint` passed with zero warnings and zero errors.
-- [x] `npm run test` passed with 87 test files and 379 tests.
-- [x] Focused project-command, verify, and observability suites passed during the final remediation.
+- [x] The current full `npm run test -- test` run passed with 89 test files and 397 tests.
+- [x] Focused project-command, verify, Git, filesystem, and batch-read suites passed during the remediation.
+- [x] The latest flow-published reduced verification reference passed format, lint, and tests for AC-005 through AC-007, R6 through R8, and F-017 through F-021 with only typecheck explicitly omitted.
+- [x] The current `npm run lint` run passed with zero warnings and zero errors.
 - [x] `npm run format` completed successfully for the implementation and test surfaces.
-- [ ] `npm run format:check` is not clean because the four protected, untracked files under `docs/handoffs/` are not formatted; those files were intentionally left unchanged.
-- [x] The final composite validation reference is `vr_3a117ca82e8da911ff7c34aa`, with lint and test phases passed and format and the unavailable standalone typecheck phase omitted.
-- [x] Codegraph was synchronized after the final implementation changes.
-- [x] The full test run included the project-command evidence, flow-cache, state-drift, single-flight, verify lookup, publication, observability, authorization, and integration regressions.
-- [ ] A fresh independent primary review with a final approval verdict remains outstanding because the latest review was budget-blocked before validation.
+- [x] `npm run format:check` passes after excluding the protected `docs/handoffs/` directory; those files remain intentionally unchanged.
+- [x] The user accepted the typecheck exception because TypeScript checking is included in the `lint` script.
+      The full verifier still cannot resolve a standalone `typecheck` package script; the reduced verifier covers the executed format, lint, and test phases.
+- [x] Codegraph was synchronized after this remediation before the next graph-dependent review.
+- [x] The focused remediation coverage includes project-command publication, corruption, durable-write failure, direct source validation, and final publication validation, plus verify shared-consumer cancellation, Git grace-window diagnostics, and the existing R6/R8 regressions.
+- [x] The latest focused independent primary review completed with `review_verdict: PASS` and accepted the explicit typecheck exception.
 
 The repository has no separate `typecheck` package script.
 
@@ -186,7 +208,8 @@ Focused tests were added and run during the batch.
 
 - [x] Report bounded edit match counts and distinguish zero matches from ambiguous matches.
 - [x] Include bounded nearest candidates, line numbers, and whitespace-mismatch hints where useful.
-- [x] Add an optional non-mutating edit preflight for the local host contract; remote or unreadable targets fall through to the host edit implementation.
+- [x] Add an optional non-mutating edit preflight for the local host contract; cancellation is checked around the preflight, and remote, unreadable, oversized, or unsupported targets fall through to the host edit implementation.
+- [x] Do not claim a host-native edit dry-run API: the host contract exposes only `path` and `edits`, so local preflight remains advisory and host execution remains authoritative.
 - [x] Include bounded nearest existing paths in resolution errors.
 - [x] Include bounded authorized roots and stable rule kinds in policy denials.
 
@@ -250,9 +273,7 @@ The R7 measurements remain limited to values supplied by the current project-com
 
 ## Priority for the next batch
 
-1. Commit the current validated change set before starting new implementation work.
-2. Resolve F-016 if its diagnostic drift becomes operationally significant.
-3. R8 batch reads and read references.
-4. R9 curated read-only probes.
+1. Retain the current focused and full validation evidence.
+2. Begin R9 curated read-only probes only after the user requests them.
 
 Do not reopen R1, R1a, R2, R3, R4, R5, or the completed validation-evidence handoff without a new behavior requirement, regression, or security finding.

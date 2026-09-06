@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   boundedGitExec,
+  CHILD_TERMINATION_GRACE_MS,
   GitOutputLimitError,
   runGit,
   validateRevision,
@@ -90,15 +91,15 @@ async function expectStillPending(pending: Promise<unknown>): Promise<void> {
   }
 }
 
-// The SIGUSR1 release has to land inside the production CHILD_TERMINATION_GRACE_MS (100 ms)
-// window. When an event-loop stall exhausts that window the escalation SIGKILL kills the child
-// first, so the release can never work: report that cause instead of a bare ESRCH or a missing
-// "released" marker. Kept synchronous so it adds no event-loop delay to the release path.
+// The SIGUSR1 release has to land inside the production CHILD_TERMINATION_GRACE_MS window.
+// When an event-loop stall exhausts that window the escalation SIGKILL kills the child first, so
+// the release can never work: report that cause instead of a bare ESRCH or a missing "released"
+// marker. Kept synchronous so it adds no event-loop delay to the release path.
 function releaseParkedChild(pid: number): void {
   const escalationWon = new Error(
     `child ${pid} was already killed when the SIGUSR1 release was attempted: the ` +
-      "CHILD_TERMINATION_GRACE_MS (100 ms) escalation window was exhausted by an event-loop " +
-      "stall in the test harness, not by a change in termination ordering",
+      `CHILD_TERMINATION_GRACE_MS (${CHILD_TERMINATION_GRACE_MS} ms) escalation window was exhausted ` +
+      "by an event-loop stall in the test harness, not by a change in termination ordering",
   );
   if (processIsGone(pid)) {
     throw escalationWon;
