@@ -168,6 +168,16 @@ export function resolveDelegation(options: {
 	if (scope) delegation.scope = scope;
 	if (validReviewSurfacePath(flowId, orchestration.reviewSurfacePath))
 		delegation.reviewSurfacePath = orchestration.reviewSurfacePath;
+	const reviewSurfaceRevision = orchestration.reviewSurfaceRevision;
+	if (
+		typeof reviewSurfaceRevision === 'number' &&
+		Number.isSafeInteger(reviewSurfaceRevision) &&
+		reviewSurfaceRevision > 0
+	)
+		delegation.reviewSurfaceRevision = reviewSurfaceRevision;
+	if (orchestration.reviewSurfaceRefreshed !== undefined)
+		delegation.reviewSurfaceRefreshed = orchestration.reviewSurfaceRefreshed;
+	if (orchestration.dirtyPaths?.length) delegation.dirtyPaths = [...orchestration.dirtyPaths];
 	return delegation;
 }
 
@@ -180,6 +190,11 @@ export function orchestrationFromEntry(entry: RegistryEntry): OrchestrationConte
 	if (entry.evidenceScope) orchestration.evidenceScope = entry.evidenceScope;
 	if (entry.scope) orchestration.scope = entry.scope;
 	if (entry.reviewSurfacePath) orchestration.reviewSurfacePath = entry.reviewSurfacePath;
+	if (entry.reviewSurfaceRevision !== undefined)
+		orchestration.reviewSurfaceRevision = entry.reviewSurfaceRevision;
+	if (entry.reviewSurfaceRefreshed !== undefined)
+		orchestration.reviewSurfaceRefreshed = entry.reviewSurfaceRefreshed;
+	if (entry.dirtyPaths?.length) orchestration.dirtyPaths = [...entry.dirtyPaths];
 	const taskId = sanitizeTaskId(entry.taskId);
 	if (taskId) orchestration.taskId = taskId;
 	return orchestration;

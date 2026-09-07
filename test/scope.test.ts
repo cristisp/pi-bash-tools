@@ -16,11 +16,15 @@ describe('review surface and read manifests', () => {
 		const flowId = 'flow-scope-test';
 		const surface = ensureReviewSurface(flowId, process.cwd());
 		expect(surface).toBeDefined();
-		expect(fs.existsSync(surface as string)).toBe(true);
-		const initial = fs.readFileSync(surface as string, 'utf8');
-		const second = ensureReviewSurface(flowId, '/tmp');
-		expect(second).toBe(surface);
-		expect(fs.readFileSync(surface as string, 'utf8')).toBe(initial);
+		expect(fs.existsSync(surface!.path)).toBe(true);
+		expect(surface!.revision).toBe(1);
+		expect(surface!.refreshed).toBe(true);
+		const initial = fs.readFileSync(surface!.path, 'utf8');
+		const second = ensureReviewSurface(flowId, process.cwd());
+		expect(second?.path).toBe(surface?.path);
+		expect(second?.revision).toBe(surface?.revision);
+		expect(second?.refreshed).toBe(false);
+		expect(fs.readFileSync(surface!.path, 'utf8')).toBe(initial);
 
 		const delegation = {
 			delegationId: 'delegation-scope-test',
@@ -28,18 +32,22 @@ describe('review surface and read manifests', () => {
 			role: 'reviewer',
 			evidenceScope: 'flow' as const,
 			scope: { paths: ['src/run.ts'], hunks: ['@@ -1,2 +1,3 @@'], outOfScope: ['docs'] },
-			reviewSurfacePath: surface,
+			reviewSurfacePath: surface?.path,
+			dirtyPaths: surface?.dirtyPaths,
 		};
 		const manifest = buildReadManifest(delegation);
-		expect(manifest.artifactPaths).toContain(surface);
+		expect(manifest.artifactPaths).toContain(surface!.path);
 		expect(manifest.allowedPaths).toEqual(['src/run.ts']);
+		expect(manifest.dirtyPaths).toEqual(
+			surface!.dirtyPaths.length > 0 ? surface!.dirtyPaths : undefined,
+		);
 		expect(
 			buildReadManifest({
 				...delegation,
 				scope: { paths: ['src//run.ts', '../secret', '/tmp/secret'] },
 			}).allowedPaths,
 		).toEqual(['src/run.ts']);
-		expect(manifest.doNotReread).toEqual([surface]);
+		expect(manifest.doNotReread).toEqual([surface!.path]);
 
 		const temp = makeTempDir();
 		const written = await writeReadManifest(temp, delegation);
@@ -113,9 +121,9 @@ describe('review surface and read manifests', () => {
 		expect(
 			resolveDelegation({
 				...base,
-				orchestration: { reviewSurfacePath: expected },
+				orchestration: { reviewSurfacePath: expected?.path },
 			}).reviewSurfacePath,
-		).toBe(expected);
+		).toBe(expected?.path);
 		expect(
 			resolveDelegation({
 				...base,

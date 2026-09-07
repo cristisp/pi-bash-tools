@@ -62,6 +62,9 @@ export function buildReadManifest(delegation: DelegationContext): ReadManifest {
 		v: 1,
 		...(delegation.flowId ? { flowId: delegation.flowId } : {}),
 		artifactPaths: artifactPaths.slice(0, MAX_MANIFEST_ITEMS),
+		...(delegation.dirtyPaths?.length
+			? { dirtyPaths: delegation.dirtyPaths.slice(0, MAX_MANIFEST_ITEMS) }
+			: {}),
 		allowedPaths: allowedPaths
 			.filter((scopePath) => scopePath.length <= MAX_MANIFEST_ITEM_LENGTH)
 			.slice(0, MAX_MANIFEST_ITEMS),

@@ -120,6 +120,7 @@ describe('appendLedgerRevision', () => {
 			childFields: {
 				delegation_status: 'completed',
 				validation_verdict: 'PASS',
+				validation_omitted: 'lint',
 				budget: '4/0/1',
 				free_prose: 'a wall of narrative that must not reach the ledger',
 			},
@@ -127,6 +128,7 @@ describe('appendLedgerRevision', () => {
 		const text = read();
 		expect(text).toContain('delegation_status: completed');
 		expect(text).toContain('validation_verdict: PASS');
+		expect(text).toContain('validation_omitted: lint');
 		expect(text).toContain('tool_calls: 12');
 		expect(text).toContain('failed_tool_calls: 2');
 		expect(text).toContain('report: /tmp/report.md');

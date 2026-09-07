@@ -197,6 +197,12 @@ function lastRunLine(entry: RegistryEntry): string | null {
 	if (run.manifestRereads) parts.push(`manifest-rereads:${run.manifestRereads}`);
 	if (run.discoveryCalls !== undefined) parts.push(`discovery:${run.discoveryCalls}`);
 	if (run.fullValidationPasses !== undefined) parts.push(`validation:${run.fullValidationPasses}`);
+	if (run.validationRefs?.length || run.lookupFailures?.length) {
+		const executed = run.validationRefs?.filter((reference) => !reference.lookup).length ?? 0;
+		const failed = run.lookupFailures?.length ?? 0;
+		parts.push(`verify:${(run.validationRefs?.length ?? 0) + failed} ran:${executed}`);
+		if (failed) parts.push(`unresolved:${failed}`);
+	}
 	if (run.outputTokens !== undefined) parts.push(`output:${formatTokens(run.outputTokens)}`);
 	if (run.budget) parts.push(`budget:${run.budget.outcome}/${run.budget.breaches.length}`);
 	if (run.turns) parts.push(`turns:${run.turns}`);
@@ -206,7 +212,8 @@ function lastRunLine(entry: RegistryEntry): string | null {
 	if (waiting) parts.push(`waiting:${(waiting / 1000).toFixed(1)}s`);
 	if (run.report) {
 		const ledger = run.report.ledgerParsed ? '' : ':no-ledger';
-		parts.push(`report:${run.report.digestTokens}/${run.report.tokens}${ledger}`);
+		const review = run.report.filesReviewedPresent === false ? ':no-files-reviewed' : '';
+		parts.push(`report:${run.report.digestTokens}/${run.report.tokens}${ledger}${review}`);
 	}
 	if (run.ledgerRevision !== undefined) {
 		parts.push(

@@ -11,7 +11,14 @@ import {
 	ownWorkspaceId,
 	sleep,
 } from './herdr.ts';
-import { mutateRegistry, readRegistry, REGISTRY_PATH, sanitizeSegment } from './registry-store.ts';
+import {
+	mutateRegistry,
+	readRegistry,
+	readRegistryCached,
+	REGISTRY_PATH,
+	sanitizeSegment,
+	type RegistryReadCache,
+} from './registry-store.ts';
 import type { RegistryEntry } from './types.ts';
 
 function shortId(id: string | undefined): string | null {
@@ -115,8 +122,13 @@ export function removeRegistryEntry(label: string): void {
 	});
 }
 
-export function findEntry(label: string, parentSession?: string): RegistryEntry | undefined {
-	const entry = readRegistry().tabs[`${ownWorkspaceId()}:${label}`];
+export function findEntry(
+	label: string,
+	parentSession?: string,
+	cache?: RegistryReadCache,
+): RegistryEntry | undefined {
+	const registry = cache ? readRegistryCached(cache) : readRegistry();
+	const entry = registry.tabs[`${ownWorkspaceId()}:${label}`];
 	if (!entry || (parentSession !== undefined && entry.parentSession !== parentSession))
 		return undefined;
 	return entry;

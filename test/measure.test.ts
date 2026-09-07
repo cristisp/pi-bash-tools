@@ -7,6 +7,8 @@ import {
 	estimateTokens,
 	measure,
 	quantiles,
+	readProducerExecutionInvocations,
+	readProducerInvocations,
 	readTelemetry,
 	renderMarkdown,
 	scanSession,
@@ -394,6 +396,39 @@ describe('measure', () => {
 		});
 	});
 
+	it('records lock contention and distinguishes an unavailable producer stream', () => {
+		const dir = validationFixture();
+		writeFileSync(
+			join(dir, 'subagent-herdr.telemetry.jsonl'),
+			telemetryRecord({
+				flowId: 'f1',
+				budget: { repositoryWriteLockRefusals: 2 },
+			}),
+		);
+		const m = measure(dir);
+		expect(m.validation.overall.lockContentionRefusals).toBe(2);
+		expect(
+			m.validation.byFlow.find((entry) => entry.scope === 'flow:f1')?.lockContentionRefusals,
+		).toBe(2);
+		expect(m.producerInvocationStream.available).toBe(false);
+		expect(renderMarkdown(m)).toContain(
+			'Producer invocation stream: unavailable; producer execution columns are not zero-event evidence.',
+		);
+		expect(renderMarkdown(m)).toContain('## Repository write lock contention (S2)');
+		expect(renderMarkdown(m)).toContain('| overall | 2 |');
+
+		const emptyStream = join(dir, 'empty-invocations.jsonl');
+		writeFileSync(emptyStream, '');
+		const emptyStreamMeasurement = measure(dir, undefined, emptyStream);
+		expect(emptyStreamMeasurement.producerInvocationStream).toMatchObject({
+			available: true,
+			records: 0,
+		});
+		expect(renderMarkdown(emptyStreamMeasurement)).toContain(
+			'contains no verify records; producer execution columns use consumer telemetry fallback',
+		);
+	});
+
 	it('reads carry no validation refs at all until child seats may mint them', () => {
 		const m = measure(fixture());
 		expect(m.validation.overall).toMatchObject({
@@ -429,6 +464,216 @@ describe('measure', () => {
 		expect(m.carry.meanCarryPerDelegatingRootAfter).toBe(0);
 		expect(m.childrenInTelemetryWindow).toBe(1);
 		expect(m.unattributedChildren).toBe(1);
+	});
+});
+
+describe('producer validation invocations', () => {
+	it('reads one aggregate record per verify call and preserves execution decisions', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'orchestration-producer-'));
+		const file = join(dir, 'invocations.jsonl');
+		writeFileSync(
+			file,
+			[
+				JSON.stringify({
+					commandId: 'node_project_info',
+					flowId: 'f1',
+					executed: true,
+				}),
+				JSON.stringify({
+					toolName: 'verify',
+					flowId: 'f1',
+					ref: 'vr_1',
+					decision: 'miss',
+					executed: true,
+					repositoryState: { dirtyFilesDigest: 'abcdef1234567890' },
+				}),
+				JSON.stringify({
+					toolName: 'verify',
+					flowId: 'f1',
+					ref: 'vr_1',
+					decision: 'hit',
+					executed: false,
+				}),
+				'{ torn line',
+			].join('\n'),
+		);
+		expect(readProducerInvocations(dir, file)).toMatchObject([
+			{ flowId: 'f1', ref: 'vr_1', executed: true, stateDigest: 'abcdef123456' },
+			{ flowId: 'f1', ref: 'vr_1', executed: false, decision: 'hit' },
+		]);
+		expect(readProducerInvocations(dir, file)).toHaveLength(2);
+		expect(readProducerExecutionInvocations(dir, file)).toMatchObject([
+			{ commandId: 'node_project_info', executed: true },
+			{ ref: 'vr_1', executed: true },
+			{ ref: 'vr_1', executed: false },
+		]);
+	});
+
+	it('includes non-verify producer drift in execution diagnostics without counting it as validation', () => {
+		const dir = validationFixture();
+		const file = join(dir, 'invocations.jsonl');
+		writeFileSync(
+			file,
+			JSON.stringify({
+				commandId: 'node_format',
+				flowId: 'f1',
+				delegationId: 'd1',
+				role: 'worker',
+				executed: true,
+				stateDrift: true,
+				mutating: true,
+			}),
+		);
+		const overall = measure(dir, undefined, file).validation.overall;
+		expect(overall).toMatchObject({
+			producerInvocations: 0,
+			producerExecutions: 0,
+			stateDriftExecutions: 1,
+			mutatingCommands: 1,
+		});
+	});
+
+	it('parses structured producer lookup results as lookup reuse', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'orchestration-producer-lookup-'));
+		const file = join(dir, 'invocations.jsonl');
+		writeFileSync(
+			file,
+			JSON.stringify({
+				commandId: 'verify',
+				flowId: 'f1',
+				ref: 'vr_1',
+				executed: false,
+				lookup: { attempted: true, success: true },
+			}),
+		);
+		expect(readProducerInvocations(dir, file)).toMatchObject([
+			{ ref: 'vr_1', lookup: true, lookupFailed: false, executed: false },
+		]);
+	});
+
+	it('joins producer decisions and execution diagnostics without counting failed lookups as reuse', () => {
+		const dir = validationFixture();
+		const file = join(dir, 'invocations.jsonl');
+		writeFileSync(
+			file,
+			[
+				JSON.stringify({
+					toolName: 'verify',
+					flowId: 'f1',
+					ref: 'vr_1',
+					decision: 'forced',
+					executed: true,
+					stateDrift: true,
+					concurrentExecutions: 2,
+					mutating: true,
+					forced: true,
+					repositoryState: { dirtyFilesDigest: 'cccc33334444' },
+				}),
+				JSON.stringify({
+					toolName: 'verify',
+					flowId: 'f1',
+					ref: 'vr_1',
+					decision: 'hit',
+					executed: false,
+				}),
+				JSON.stringify({
+					toolName: 'verify',
+					flowId: 'f1',
+					ref: 'vr_missing',
+					decision: 'denied',
+					lookupFailed: true,
+				}),
+			].join('\n'),
+		);
+		const overall = measure(dir, undefined, file).validation.overall;
+		expect(overall).toMatchObject({
+			producerInvocations: 3,
+			producerExecutions: 1,
+			lookupFailures: 1,
+			lookupFailureClasses: { denied: 1 },
+			reuseRate: 0.33,
+			stateDriftExecutions: 1,
+			maxConcurrentExecutions: 2,
+			mutatingCommands: 1,
+			forcedExecutions: 1,
+			distinctStateDigests: 1,
+			executionsPerDigest: 1,
+		});
+	});
+
+	it('keeps producer joins scoped when the same ref is reused across flows', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'orchestration-producer-cross-flow-'));
+		writeFileSync(
+			join(dir, 'subagent-herdr.telemetry.jsonl'),
+			[
+				telemetryRecord({
+					flowId: 'flow-a',
+					role: 'worker',
+					metrics: refMetrics([validationRef({ ref: 'shared-ref', stateDigest: 'aaaa11112222' })]),
+				}),
+				telemetryRecord({
+					flowId: 'flow-b',
+					role: 'worker',
+					metrics: refMetrics([validationRef({ ref: 'shared-ref', stateDigest: 'bbbb33334444' })]),
+				}),
+				telemetryRecord({
+					flowId: 'flow-a',
+					role: 'worker',
+					metrics: refMetrics([validationRef({ ref: 'flow-a-ref', stateDigest: 'bbbb33334444' })]),
+				}),
+			].join('\n'),
+		);
+		const file = join(dir, 'invocations.jsonl');
+		writeFileSync(
+			file,
+			[
+				JSON.stringify({
+					toolName: 'verify',
+					flowId: 'flow-a',
+					ref: 'shared-ref',
+					executed: true,
+				}),
+				JSON.stringify({
+					toolName: 'verify',
+					flowId: 'flow-a',
+					ref: 'flow-a-ref',
+					executed: true,
+				}),
+				JSON.stringify({
+					toolName: 'verify',
+					flowId: 'flow-b',
+					ref: 'shared-ref',
+					decision: 'hit',
+					executed: false,
+				}),
+			].join('\n'),
+		);
+
+		const validation = measure(dir, undefined, file).validation;
+		expect(validation.overall).toMatchObject({
+			producerInvocations: 3,
+			producerExecutions: 2,
+			distinctStateDigests: 3,
+			executionsPerDigest: 0.67,
+		});
+		expect(validation.byFlow).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					scope: 'flow:flow-a',
+					producerInvocations: 2,
+					producerExecutions: 2,
+					distinctStateDigests: 2,
+					executionsPerDigest: 1,
+				}),
+				expect.objectContaining({
+					scope: 'flow:flow-b',
+					producerInvocations: 1,
+					producerExecutions: 0,
+					distinctStateDigests: 1,
+					executionsPerDigest: 0,
+				}),
+			]),
+		);
 	});
 });
 

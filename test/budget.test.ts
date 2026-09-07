@@ -43,6 +43,10 @@ function fakePi(): {
 	return { pi, handlers, sendUserMessage };
 }
 
+function settleBudget(handlers: Record<string, Handler>, ctx: { abort(): void }): void {
+	handlers.agent_settled?.({}, ctx);
+}
+
 describe('budget classification', () => {
 	it('classifies discovery, validation, and ordinary calls', () => {
 		expect(classifyToolCall('read', { path: 'src/index.ts' })).toBe('discovery');
@@ -55,6 +59,10 @@ describe('budget classification', () => {
 		expect(classifyToolCall('verify', { omit: ['format'] })).toBe('validation');
 		expect(classifyToolCall('verify', { ref: '  ' })).toBe('validation');
 		expect(classifyToolCall('verify', { ref: 'vr_abc' })).toBeUndefined();
+		expect(
+			classifyToolCall('verify', { ref: 'vr_abc', flowId: 'f1', covers: ['AC-001'] }),
+		).toBeUndefined();
+		expect(classifyToolCall('verify', { ref: 'vr_abc', fresh: true })).toBe('validation');
 		expect(isImplementationTool('edit')).toBe(true);
 		expect(isImplementationTool('read')).toBe(false);
 	});
@@ -140,6 +148,29 @@ describe('scope-scaled inspection budgets', () => {
 describe('live budget enforcement', () => {
 	afterEach(() => {
 		vi.unstubAllEnvs();
+	});
+
+	it('persists live budget state at transitions instead of every tool call', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
+		vi.stubEnv('PI_ORCHESTRATION_ROLE', 'worker');
+		vi.stubEnv('PI_SUBAGENT_LABEL', 'worker-persist');
+		registerEntry(makeRegistryEntry({ label: 'worker-persist' }));
+		const { pi, handlers } = fakePi();
+		registerBudgetEnforcement(pi);
+		const ctx = { abort: vi.fn() };
+
+		handlers.before_agent_start?.({ prompt: 'implement this' }, ctx);
+		handlers.tool_call?.({ toolName: 'read', input: { path: 'src/a.ts' } }, ctx);
+		expect(findEntry('worker-persist')?.budget).toBeUndefined();
+		handlers.tool_call?.({ toolName: 'edit', input: { path: 'src/a.ts' } }, ctx);
+		expect(findEntry('worker-persist')?.budget?.registryPersists).toBe(1);
+		handlers.tool_call?.({ toolName: 'read', input: { path: 'src/b.ts' } }, ctx);
+		expect(findEntry('worker-persist')?.budget?.registryPersists).toBe(1);
+		handlers.turn_end?.({ message: assistantMsg('done') }, ctx);
+		expect(findEntry('worker-persist')?.budget?.registryPersists).toBe(2);
+		handlers.agent_end?.({}, ctx);
 	});
 
 	it('does not register on a root session', () => {
@@ -248,6 +279,7 @@ describe('live budget enforcement', () => {
 		expect(lintFix).toMatchObject({ block: true });
 		expect(formatCheck).toBeUndefined();
 		expect(sendUserMessage).not.toHaveBeenCalled();
+		settleBudget(handlers, ctx);
 		expect(findEntry('validator-1')?.budget).toMatchObject({
 			usage: { toolCalls: 3, fullValidationPasses: 1 },
 			breaches: [],
@@ -277,6 +309,7 @@ describe('live budget enforcement', () => {
 		);
 
 		expect(mutate).toBeUndefined();
+		settleBudget(handlers, ctx);
 		expect(findEntry('worker-1')?.budget).toMatchObject({
 			usage: { toolCalls: 1, fullValidationPasses: 1 },
 		});
@@ -313,6 +346,7 @@ describe('live budget enforcement', () => {
 		expect(refPlusPaths).toMatchObject({ block: true });
 		expect(refPlusOmit).toMatchObject({ block: true });
 		// Resolving evidence is not a validation pass, and a refused call must not charge one either.
+		settleBudget(handlers, ctx);
 		expect(findEntry('reviewer-1')?.budget).toMatchObject({
 			usage: { toolCalls: 5, fullValidationPasses: 0 },
 			breaches: [],
@@ -384,6 +418,7 @@ describe('live budget enforcement', () => {
 		// An execution role still owns the read-only gate and every ref lookup.
 		expect(remainder).toBeUndefined();
 		expect(resolved).toBeUndefined();
+		settleBudget(handlers, ctx);
 		expect(findEntry('validator-1')?.budget).toMatchObject({
 			usage: { toolCalls: 6, fullValidationPasses: 1 },
 			breaches: [],
@@ -410,6 +445,7 @@ describe('live budget enforcement', () => {
 		);
 
 		expect(override).toBeUndefined();
+		settleBudget(handlers, ctx);
 		expect(findEntry('worker-1')?.budget).toMatchObject({
 			usage: { toolCalls: 1, fullValidationPasses: 1 },
 		});
@@ -450,6 +486,7 @@ describe('live budget enforcement', () => {
 		expect(blocked).toMatchObject({ block: true });
 		expect(unrelated).toMatchObject({ block: true });
 		expect(sendUserMessage).not.toHaveBeenCalled();
+		settleBudget(handlers, ctx);
 		expect(findEntry('worker-1')?.budget).toMatchObject({
 			outcome: 'within',
 			breaches: [],
@@ -817,8 +854,10 @@ describe('budget enforcement - repository contention between siblings', () => {
 			ctx,
 		);
 		expect(probeRepositoryWriteLock({ label: 'worker-9' })).toBeUndefined();
+		settleBudget(handlers, ctx);
 		expect(findEntry('worker-1')?.budget).toMatchObject({
 			usage: { toolCalls: 5, fullValidationPasses: 1 },
+			repositoryWriteLockRefusals: 2,
 		});
 
 		handlers.agent_end?.({}, ctx);
@@ -864,8 +903,10 @@ describe('budget enforcement - repository contention between siblings', () => {
 		expect(remainder).toMatchObject({ block: true });
 		expect(lookup).toBeUndefined();
 		// A refused check is not charged: the validator keeps its passes for the state it can measure.
+		settleBudget(handlers, ctx);
 		expect(findEntry('validator-1')?.budget).toMatchObject({
 			usage: { toolCalls: 3, fullValidationPasses: 0 },
+			repositoryWriteLockRefusals: 2,
 		});
 
 		if (sibling.acquired) releaseRepositoryWriteLock(sibling.handle);

@@ -30,13 +30,34 @@ export function readRegistry(): Registry {
 	return { counters: {}, tabs: {} };
 }
 
+export interface RegistryReadCache {
+	mtimeMs: number | null;
+	size: number | null;
+	registry?: Registry;
+}
+
+export function readRegistryCached(cache: RegistryReadCache): Registry {
+	let mtimeMs: number | null = null;
+	let size: number | null = null;
+	try {
+		const stat = fs.statSync(REGISTRY_PATH);
+		mtimeMs = stat.mtimeMs;
+		size = stat.size;
+	} catch {}
+	if (cache.registry && cache.mtimeMs === mtimeMs && cache.size === size) return cache.registry;
+	cache.registry = readRegistry();
+	cache.mtimeMs = mtimeMs;
+	cache.size = size;
+	return cache.registry;
+}
+
 function writeRegistry(reg: Registry): void {
 	// Unique per write: with a shared temp name, two writers can each overwrite the other's temp
 	// file, so one rename publishes stale content and the other fails on a missing file - a whole
 	// registry update is lost with no error.
 	const tmp = `${REGISTRY_PATH}.${process.pid}.${randomUUID()}.tmp`;
 	try {
-		fs.writeFileSync(tmp, JSON.stringify(reg, null, 2), { mode: 0o600 });
+		fs.writeFileSync(tmp, JSON.stringify(reg), { mode: 0o600 });
 		fs.renameSync(tmp, REGISTRY_PATH);
 	} catch {
 		try {

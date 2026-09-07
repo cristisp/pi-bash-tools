@@ -12,6 +12,12 @@ The items below are what the consuming side still cannot express, each one obser
 Owner of implementation: `bash-tools`.
 Owner of the orchestration contract: `subagent-herdr`.
 
+## Status in `bash-tools` 0.11.7
+
+All producer-side asks in F1-F7 and F9 are shipped in the installed `bash-tools` 0.11.7 build.
+This document is now a verification checklist for the consumer-side integration, not an open implementation request.
+F8 remains withdrawn; its retained documentation note concerns the digest boundary and ignored paths only.
+
 ## Already satisfied, recorded so nobody re-litigates it
 
 - R1, R1a: flow-scoped store keyed on `PI_ORCHESTRATION_FLOW` with `producerScope` on records and decisions, process-local fallback when the env is absent, narrowing-only evidence scope from the spawner.

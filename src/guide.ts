@@ -35,7 +35,7 @@ const GUIDE_ROLES: GuideRole[] = [
 		note: (budget) =>
 			`Make at most ${budget.implementationDiscoveryCalls} discovery reads before the first implementation change, run at most ` +
 			`${budget.fullValidationPasses} full validation passes, and mint one \`verify\` ref for the final state. ` +
-			`That ref is the validation evidence unless the workflow carries a validator. ` +
+			`That ref is the validation evidence unless the workflow carries a validator. Publish flow-owned evidence with \`publish: { flowId }\`, and report the ref plus its \`repositoryStateStatus\`. ` +
 			`When siblings implement in parallel, do not run the gate: the session that integrates the fan-in mints one ref for the combined state.`,
 	},
 	{
@@ -43,8 +43,8 @@ const GUIDE_ROLES: GuideRole[] = [
 		label: 'Validator',
 		artifact: 'report',
 		note: (budget) =>
-			`Resolve the refs in the ledger before executing anything, up to ` +
-			`${budget.fullValidationPasses} full validation passes; execute only what no live ref covers, and cite the ref you minted.`,
+			`Resolve the refs in the ledger before executing anything, up to ${budget.fullValidationPasses} full validation passes; ` +
+			`use \`{ ref, flowId?, covers? }\`, execute only what no live ref covers, use \`fresh: true\` only for a new run, and cite the ref plus \`repositoryStateStatus\`.`,
 	},
 	{
 		role: 'reviewer',

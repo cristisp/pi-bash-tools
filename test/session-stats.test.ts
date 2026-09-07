@@ -72,6 +72,11 @@ describe('sessionStatsText', () => {
 					turns: 6,
 					cost: 0.0987,
 					contextTokens: 42000,
+					validationRefs: [
+						{ ref: 'vr_1', lookup: false, reused: false },
+						{ ref: 'vr_2', lookup: true, reused: true },
+					],
+					lookupFailures: [{ ref: 'vr_missing', errorClass: 'timeout' }],
 					steerMs: 2500,
 				},
 			}),
@@ -89,7 +94,7 @@ describe('sessionStatsText', () => {
 		expect(out).toContain('surface: /tmp/review-surface.md');
 		expect(out).toContain('manifest: /tmp/persisted-read-manifest.json');
 		expect(out).toContain(
-			'last run: tools:12 tool-errors:2 rereads:3 turns:6 $0.0987 ctx:42k waiting:2.5s',
+			'last run: tools:12 tool-errors:2 rereads:3 verify:3 ran:1 unresolved:1 turns:6 $0.0987 ctx:42k waiting:2.5s',
 		);
 	});
 

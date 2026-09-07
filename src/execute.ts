@@ -473,6 +473,14 @@ function deliverableText(result: SingleResult, fallback?: string): string {
 				: `[Report contract: no ledger block parsed from ~${report.tokens} tokens of report.]`,
 		);
 	}
+	if (report.contractIssues?.length) {
+		const issue = report.contractIssues.join('; ');
+		parts.push(
+			getConfig().reportContractPolicy === 'reject'
+				? `[Report contract FAILED: ${issue}. Treat this delegation as unfinished: request the required section or re-delegate.]`
+				: `[Report contract: ${issue}.]`,
+		);
+	}
 	return applyOutputByteCap(parts.filter((part) => part.trim()).join('\n\n'));
 }
 
@@ -533,9 +541,18 @@ async function executeParallelMode(
 		return { content: [{ type: 'text', text: scopeError }], details: makeDetails('parallel')([]) };
 
 	const flowId = deriveFlowId(ctx.sessionFile);
-	const reviewSurfacePath = ensureReviewSurface(flowId, ctx.cwd);
-	const fanOutContext = reviewSurfacePath
-		? { ...ctx, orchestration: { ...ctx.orchestration, reviewSurfacePath } }
+	const reviewSurface = ensureReviewSurface(flowId, ctx.cwd);
+	const fanOutContext = reviewSurface
+		? {
+				...ctx,
+				orchestration: {
+					...ctx.orchestration,
+					reviewSurfacePath: reviewSurface.path,
+					reviewSurfaceRevision: reviewSurface.revision,
+					reviewSurfaceRefreshed: reviewSurface.refreshed,
+					dirtyPaths: reviewSurface.dirtyPaths,
+				},
+			}
 		: ctx;
 	const allResults = initParallelResults(tasks);
 	const emitUpdate = makeParallelUpdateEmit(fanOutContext, allResults, makeDetails);

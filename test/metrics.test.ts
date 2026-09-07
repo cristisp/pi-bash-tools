@@ -80,6 +80,68 @@ describe('measureExecutionMetrics', () => {
 		]);
 	});
 
+	it('records failed lookups and preserves producer freshness fields', () => {
+		const messages = [
+			assistantMsg('lookup and execute', {
+				toolCalls: [
+					{
+						id: 'missing',
+						name: 'verify',
+						args: { ref: 'vr_missing', flowId: 'f1', covers: ['AC-001'] },
+					},
+					{ id: 'fresh', name: 'verify', args: { fresh: true, publish: { flowId: 'f1' } } },
+				],
+			}),
+			{
+				...toolResultMsg(
+					'missing',
+					JSON.stringify({ code: 'NOT_FOUND', message: 'ref not found' }),
+					'verify',
+				),
+				isError: true,
+			},
+			toolResultMsg(
+				'fresh',
+				JSON.stringify({
+					ref: 'vr_fresh',
+					verdict: 'passed',
+					reused: false,
+					repositoryStateStatus: 'mismatch',
+					stateDrift: true,
+					concurrentExecutions: 2,
+					mutating: false,
+					forced: true,
+					perStep: { format: { status: 'passed' }, lint: { status: 'omitted' } },
+				}),
+				'verify',
+			),
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+		expect(metrics.fullValidationPasses).toBe(1);
+		expect(metrics.lookupFailures).toEqual([
+			{ ref: 'vr_missing', errorClass: 'not-found', message: 'ref not found' },
+		]);
+		expect(metrics.validationRefs?.[0]).toMatchObject({
+			ref: 'vr_fresh',
+			verdict: 'incomplete',
+			repositoryStateStatus: 'mismatch',
+			stateDrift: true,
+			concurrentExecutions: 2,
+			forced: true,
+			omitted: ['lint'],
+		});
+		expect(metrics.validationExecutions).toEqual([
+			{
+				tool: 'verify',
+				stateDrift: true,
+				concurrentExecutions: 2,
+				mutating: false,
+				forced: true,
+			},
+		]);
+	});
+
 	it('separates report prose from output spent on tool arguments', () => {
 		const messages = [
 			assistantMsg('reading', {

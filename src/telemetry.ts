@@ -78,6 +78,11 @@ export function buildTelemetryRecord(input: TelemetryInput, now = Date.now()): T
 	if (delegation.parentPaneId) record.parentPaneId = delegation.parentPaneId;
 	if (delegation.scope) record.scope = delegation.scope;
 	if (delegation.reviewSurfacePath) record.reviewSurfacePath = delegation.reviewSurfacePath;
+	if (delegation.reviewSurfaceRevision !== undefined)
+		record.reviewSurfaceRevision = delegation.reviewSurfaceRevision;
+	if (delegation.reviewSurfaceRefreshed !== undefined)
+		record.reviewSurfaceRefreshed = delegation.reviewSurfaceRefreshed;
+	if (delegation.dirtyPaths?.length) record.dirtyPaths = delegation.dirtyPaths;
 	if (result.readManifest) record.readManifest = result.readManifest;
 	if (result.model) record.childModel = result.model;
 	if (result.stopReason) record.stopReason = result.stopReason;
@@ -92,6 +97,9 @@ export function buildTelemetryRecord(input: TelemetryInput, now = Date.now()): T
 			digestTokens: report.digestTokens,
 			truncated: report.truncated,
 			ledgerParsed: report.ledgerParsed,
+			filesReviewedPresent: report.filesReviewedPresent,
+			filesReviewed: report.filesReviewed,
+			contractIssues: report.contractIssues,
 		};
 		if (report.path) summary.path = report.path;
 		record.report = summary;

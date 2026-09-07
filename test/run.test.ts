@@ -546,9 +546,9 @@ describe('runReusedAgent - lookups', () => {
 			.mocked(herdrCli)
 			.mock.calls.map((call) => call[0])
 			.find((args) => args[1] === 'prompt');
-		expect(prompt?.[3]).toMatch(
-			/^ledger: .*ledger\.md@\d+ \(advanced since your session started; read it with the read tool before continuing\)\n\nnext task$/,
-		);
+		expect(prompt?.[3]).toContain('ledger: /');
+		expect(prompt?.[3]).toContain('next task');
+		expect(prompt?.[3]).toContain('Shared review surface snapshot: ');
 	});
 });
 
@@ -565,7 +565,12 @@ describe('runReusedAgent - flow ledger', () => {
 			);
 			const result = await reuseCall('worker-1', 'next task', '/sess/current.jsonl');
 			expect(result.exitCode).toBe(0);
-			expect(herdrCli).toHaveBeenCalledWith(['agent', 'prompt', 'ws1:p10', 'next task']);
+			expect(herdrCli).toHaveBeenCalledWith([
+				'agent',
+				'prompt',
+				'ws1:p10',
+				expect.stringContaining('next task'),
+			]);
 			expect(result.ledgerInjection).toBe('none');
 		} finally {
 			fs.rmSync(configPath(), { force: true });
@@ -687,6 +692,17 @@ describe('delegation identity', () => {
 		expect(command).toMatch(/PI_DELEGATION_ID='[0-9a-f-]{36}'/);
 		expect(command).not.toContain('PI_ORCHESTRATION_FLOW');
 		expect(result.flowId).toBeUndefined();
+	});
+
+	it('forwards the configured bash-tools stream to child panes', async () => {
+		vi.stubEnv('BASH_TOOLS_INVOCATIONS_PATH', '/tmp/bash-tools-child.jsonl');
+		vi.stubEnv('BASH_TOOLS_INVOCATION_STREAM', '/tmp/bash-tools-stream.jsonl');
+		vi.stubEnv('BASH_TOOLS_TELEMETRY_PATH', '/tmp/bash-tools-telemetry.jsonl');
+		await singleCall({ parentSession: '/sess/parent.jsonl' });
+		const command = vi.mocked(launchInPane).mock.calls[0][1];
+		expect(command).toContain("BASH_TOOLS_INVOCATIONS_PATH='/tmp/bash-tools-child.jsonl'");
+		expect(command).toContain("BASH_TOOLS_INVOCATION_STREAM='/tmp/bash-tools-stream.jsonl'");
+		expect(command).toContain("BASH_TOOLS_TELEMETRY_PATH='/tmp/bash-tools-telemetry.jsonl'");
 	});
 
 	it('honours narrowing of the evidence scope and exports the inherited default', async () => {

@@ -92,6 +92,10 @@ multi-worker fan-out, a remediation round, or any task the guide classifies abov
 worker. An unconditional system-prompt read costs the whole guide before the first delegation. When an older hand-maintained copy such as `~/.pi/agent/SUBAGENTS_GUIDE.md` still
 exists, the command reports it as superseded - delete it, because two copies of one contract drift.
 
+The installed `bash-tools` 0.11.7 producer grants one composite operator per project for flow-scoped child seats by default; `paths` are no longer part of that authorization identity.
+The extension consumes that policy but does not write the producer policy file.
+Workers publish reusable evidence with `publish: { flowId }`, consumers resolve with `{ ref, flowId?, covers? }`, and `fresh: true` is an execution request rather than a lookup.
+
 ## Model presets
 
 Subagent models are configured as named presets in
@@ -480,7 +484,7 @@ file is re-read on every use, so edits take effect without a restart. Running
 | `evidenceScopeDefault` | `"flow"` | Widest evidence scope a delegated child may reuse (`"session"` or `"flow"`) |
 | `evidenceScopeByRole` | `{}` | Per-role overrides of `evidenceScopeDefault`; empty means every role, the validator included, inherits `flow` and can resolve a sibling ref |
 | `mutatingCommandRoles` | `["worker"]` | Roles whose children may run commands that write to the repository. Enforcement covers `project_command` ids that write, where a variant of a family that has a writing form is refused unless it names a `check`, `verify`, or `ci` form, and any `verify` call that overrides a phase through `scripts`, because each phase accepts an arbitrary package script and its defaults are the read-only checks. The rule is shaped by command names, so a write-capable script in a family with no known writing form is not recognised as a write |
-| `validationExecutionRoles` | `["worker","validator"]` | Roles permitted to execute validation. Every other role, the reviewer included, may call `verify` only as a bare `{ ref }` lookup; any other parameter is refused, so evidence handoff is enforced rather than requested |
+| `validationExecutionRoles` | `["worker","validator"]` | Roles permitted to execute validation. Every other role, the reviewer included, may call `verify` with `{ ref, flowId?, covers? }` for lookup; `publish` and `fresh` remain execution-capable and are refused, so evidence handoff is enforced rather than requested |
 | `repositoryWriteLock` | `true` | Serialize repository-writing `project_command` calls across child sessions and refuse a validation check that would run while a sibling holds a write in flight. The lock is keyed by repository root, so it also covers two flows sharing one checkout, and an abandoned hold is dropped after 5 minutes. Exclusion fails open: an unusable lock store allows the call rather than wedging every write in a flow |
 | `roleBudgets` | role defaults | Live limits for tool calls, discovery, worker pre-implementation discovery, validation, failed calls, repeated reads, output tokens, wall time, and enforcement policy |
 | `scopeCallAllowancePerPath` | 2 | Extra tool and discovery calls granted per path declared in a child's assigned scope |

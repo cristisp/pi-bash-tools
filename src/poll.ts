@@ -5,6 +5,7 @@ import { BUDGET_STEER_MESSAGE } from './budget.ts';
 import { getConfig } from './config.ts';
 import { getAgentStatus, sleep } from './herdr.ts';
 import { findEntry, updateRegistryEntry } from './registry.ts';
+import type { RegistryReadCache } from './registry-store.ts';
 import { measureExecutionMetrics } from './metrics.ts';
 import type { SubagentHerdrConfig } from './config.ts';
 import type {
@@ -87,6 +88,7 @@ function processSessionMessage(
 	currentResult: SingleResult,
 	pendingToolCalls: Map<string, { name: string; args: Record<string, any> }>,
 	state: TailState,
+	registryCache: RegistryReadCache,
 ): void {
 	currentResult.messages.push(msg);
 	trackToolCalls(msg, pendingToolCalls);
@@ -100,7 +102,7 @@ function processSessionMessage(
 						.map((part) => (part.type === 'text' ? part.text : ''))
 						.join(' ');
 		const budget = currentResult.label
-			? findEntry(currentResult.label)?.budget
+			? findEntry(currentResult.label, undefined, registryCache)?.budget
 			: currentResult.budget;
 		const automaticSteerId = budget?.automaticSteerId;
 		const isAutomaticBudgetSteer =
@@ -388,6 +390,7 @@ interface PollLoopState {
 	lastEmitKey: string;
 	prevReason: BlockReason | undefined;
 	pendingToolCalls: Map<string, { name: string; args: Record<string, any> }>;
+	registryCache: RegistryReadCache;
 }
 
 async function pollIteration(
@@ -409,7 +412,9 @@ async function pollIteration(
 	}
 	tail.read();
 	currentResult.metrics = measureExecutionMetrics(currentResult, startedAt);
-	const liveEntry = currentResult.label ? findEntry(currentResult.label) : undefined;
+	const liveEntry = currentResult.label
+		? findEntry(currentResult.label, undefined, state.registryCache)
+		: undefined;
 	if (liveEntry?.budget) currentResult.budget = liveEntry.budget;
 	if (currentResult.budget?.outcome === 'aborted') return 'aborted';
 	currentResult.steered = tailState.userMessages > 1;
@@ -463,6 +468,7 @@ export async function pollSubagent(
 		lastEmitKey: '',
 		prevReason: undefined,
 		pendingToolCalls: new Map<string, { name: string; args: Record<string, any> }>(),
+		registryCache: { mtimeMs: null, size: null },
 	};
 	const tailState: TailState = {
 		lastEntryAt: Date.now(),
@@ -472,7 +478,13 @@ export async function pollSubagent(
 		abortedAt: null,
 	};
 	const tail = createSessionTailReader(sessionFile, initialOffset, (msg) =>
-		processSessionMessage(msg, currentResult, state.pendingToolCalls, tailState),
+		processSessionMessage(
+			msg,
+			currentResult,
+			state.pendingToolCalls,
+			tailState,
+			state.registryCache,
+		),
 	);
 
 	try {

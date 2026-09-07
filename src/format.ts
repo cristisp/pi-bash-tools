@@ -35,9 +35,11 @@ export function formatExecutionMetrics(metrics: ExecutionMetrics): string {
 	if (metrics.discoveryCalls !== undefined) parts.push(`discovery:${metrics.discoveryCalls}`);
 	if (metrics.fullValidationPasses !== undefined)
 		parts.push(`validation:${metrics.fullValidationPasses}`);
-	if (metrics.validationRefs?.length) {
-		const executed = metrics.validationRefs.filter((reference) => !reference.lookup).length;
-		parts.push(`verify:${metrics.validationRefs.length} ran:${executed}`);
+	if (metrics.validationRefs?.length || metrics.lookupFailures?.length) {
+		const executed = metrics.validationRefs?.filter((reference) => !reference.lookup).length ?? 0;
+		const failed = metrics.lookupFailures?.length ?? 0;
+		parts.push(`verify:${(metrics.validationRefs?.length ?? 0) + failed} ran:${executed}`);
+		if (failed) parts.push(`unresolved:${failed}`);
 	}
 	if (metrics.outputTokens !== undefined)
 		parts.push(`output:${formatTokens(metrics.outputTokens)}`);
@@ -278,6 +280,13 @@ export function completionPatch(currentResult: SingleResult): Partial<RegistryEn
 		...(currentResult.reviewSurfacePath
 			? { reviewSurfacePath: currentResult.reviewSurfacePath }
 			: {}),
+		...(currentResult.reviewSurfaceRevision !== undefined
+			? { reviewSurfaceRevision: currentResult.reviewSurfaceRevision }
+			: {}),
+		...(currentResult.reviewSurfaceRefreshed !== undefined
+			? { reviewSurfaceRefreshed: currentResult.reviewSurfaceRefreshed }
+			: {}),
+		...(currentResult.dirtyPaths?.length ? { dirtyPaths: currentResult.dirtyPaths } : {}),
 		...(currentResult.readManifest ? { readManifest: currentResult.readManifest } : {}),
 	};
 	if (isFailedResult(currentResult)) {
@@ -316,6 +325,10 @@ export function buildRunSummary(
 	if (metrics.discoveryCalls !== undefined) summary.discoveryCalls = metrics.discoveryCalls;
 	if (metrics.fullValidationPasses !== undefined)
 		summary.fullValidationPasses = metrics.fullValidationPasses;
+	if (metrics.validationRefs?.length) summary.validationRefs = metrics.validationRefs;
+	if (metrics.lookupFailures?.length) summary.lookupFailures = metrics.lookupFailures;
+	if (metrics.validationExecutions?.length)
+		summary.validationExecutions = metrics.validationExecutions;
 	if (metrics.outputTokens !== undefined) summary.outputTokens = metrics.outputTokens;
 	if (metrics.manifestRereads) summary.manifestRereads = metrics.manifestRereads;
 	if (metrics.approvalMs) summary.approvalMs = metrics.approvalMs;
@@ -331,6 +344,9 @@ export function buildRunSummary(
 			digestTokens: report.digestTokens,
 			truncated: report.truncated,
 			ledgerParsed: report.ledgerParsed,
+			filesReviewedPresent: report.filesReviewedPresent,
+			filesReviewed: report.filesReviewed,
+			contractIssues: report.contractIssues,
 		};
 		if (report.path) summary.report.path = report.path;
 	}

@@ -209,10 +209,10 @@ export function verifyResolvesRef(input: Record<string, unknown> | undefined): b
  * producer's release schedule - a `ref` lookup that names a flow, a `fresh` re-run, a publish target - and a
  * blocklist misclassified each new one as a harmless lookup the moment it shipped, in the one place where a
  * wrong guess lets a read-only seat reach an execution path.
- * `flowId` is admitted because a lookup that names a store reads no working tree; the publish side effect is
- * not admitted, because writing evidence somewhere is not the same act as reading it.
+ * `flowId` is admitted because a lookup that names a store reads no working tree; `covers` is an opaque scope
+ * list and does not alter the stored evidence. Publication and fresh execution remain execution-capable options.
  */
-const VERIFY_LOOKUP_PARAMS: ReadonlySet<string> = new Set(['ref', 'flowId']);
+const VERIFY_LOOKUP_PARAMS: ReadonlySet<string> = new Set(['ref', 'flowId', 'covers']);
 
 /**
  * A pure reference lookup: a non-empty `ref` and nothing that could change what the gate executes.
@@ -244,7 +244,7 @@ export function classifyToolCall(
 	name: string,
 	input: Record<string, unknown> | undefined,
 ): 'discovery' | 'validation' | undefined {
-	if (name === 'verify') return verifyResolvesRef(input) ? undefined : 'validation';
+	if (name === 'verify') return verifyIsRefLookupOnly(input) ? undefined : 'validation';
 	if (name === 'project_command') {
 		const commandId = commandIdOf(input);
 		// Variant identifiers such as node_test:coverage or node_format:check run the same family of work
@@ -315,6 +315,8 @@ function budgetSummary(
 	automaticSteerId?: string,
 	implementationStarted = false,
 	implementationGateReached = false,
+	registryPersists = 0,
+	repositoryWriteLockRefusals = 0,
 ): BudgetSummary {
 	return {
 		role,
@@ -327,6 +329,8 @@ function budgetSummary(
 		automaticSteerId,
 		implementationStarted,
 		implementationGateReached,
+		registryPersists,
+		repositoryWriteLockRefusals,
 	};
 }
 
@@ -357,6 +361,8 @@ export function budgetSummaryFromMetrics(
 		existing?.automaticSteerId,
 		existing?.implementationStarted ?? false,
 		existing?.implementationGateReached ?? false,
+		existing?.registryPersists ?? 0,
+		existing?.repositoryWriteLockRefusals ?? 0,
 	);
 }
 
@@ -372,6 +378,8 @@ interface MutableBudgetState {
 	automaticSteerId?: string;
 	implementationStarted: boolean;
 	implementationGateReached: boolean;
+	registryPersists: number;
+	repositoryWriteLockRefusals: number;
 }
 
 function currentBreach(state: MutableBudgetState): BudgetBreach | undefined {
@@ -397,11 +405,14 @@ function summaryOf(state: MutableBudgetState): BudgetSummary {
 		state.automaticSteerId,
 		state.implementationStarted,
 		state.implementationGateReached,
+		state.registryPersists,
+		state.repositoryWriteLockRefusals,
 	);
 }
 
 function persist(label: string | undefined, state: MutableBudgetState): void {
 	if (!label) return;
+	state.registryPersists++;
 	updateRegistryEntry(label, { budget: summaryOf(state), updatedAt: Date.now() });
 }
 
@@ -422,6 +433,7 @@ function resetTurn(state: MutableBudgetState): void {
 	state.automaticSteerId = undefined;
 	state.implementationStarted = false;
 	state.implementationGateReached = false;
+	state.repositoryWriteLockRefusals = 0;
 }
 
 function abortForBudget(ctx: { abort(): void }, state: MutableBudgetState): void {
@@ -454,8 +466,14 @@ function enforceNewBreach(
 ): boolean {
 	const breach = addCurrentBreach(state);
 	if (!breach) return false;
-	if (state.limits.budgetPolicy === 'abort') abortForBudget(ctx, state);
-	else steerForBudget(pi, state, beforeSteer);
+	if (state.limits.budgetPolicy === 'abort') {
+		abortForBudget(ctx, state);
+		beforeSteer?.();
+	} else {
+		const alreadySteered = state.steerIssued;
+		steerForBudget(pi, state, beforeSteer);
+		if (alreadySteered) beforeSteer?.();
+	}
 	return true;
 }
 
@@ -546,6 +564,8 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		automaticSteerPending: false,
 		implementationStarted: false,
 		implementationGateReached: false,
+		registryPersists: 0,
+		repositoryWriteLockRefusals: 0,
 	};
 	let turnStartedAt = Date.now();
 	let wallTimer: ReturnType<typeof setTimeout> | undefined;
@@ -569,8 +589,10 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 			wallTimer = undefined;
 			if (startedAt !== turnStartedAt) return;
 			state.usage.wallTimeMs = Math.max(state.usage.wallTimeMs, Date.now() - startedAt);
-			enforceNewBreach(pi, { abort: abortCurrent }, state, () => persist(label, state));
-			persist(label, state);
+			const breached = enforceNewBreach(pi, { abort: abortCurrent }, state, () =>
+				persist(label, state),
+			);
+			if (!breached) persist(label, state);
 		}, delay);
 	};
 
@@ -627,6 +649,8 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 			state.usage.discoveryCalls = Math.max(0, state.usage.discoveryCalls - 1);
 		if (category === 'validation')
 			state.usage.fullValidationPasses = Math.max(0, state.usage.fullValidationPasses - 1);
+		state.repositoryWriteLockRefusals++;
+		persist(label, state);
 		return {
 			block: true,
 			reason: contentionNote(
@@ -646,13 +670,15 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		// A writing command is not a reader with a stale-evidence problem; the write exclusion refuses it.
 		if (isWriteCapableCall(toolName, input, commandId)) return undefined;
 		const readsRepository =
-			toolName === 'verify' ? !verifyResolvesRef(input) : category === 'validation';
+			toolName === 'verify' ? !verifyIsRefLookupOnly(input) : category === 'validation';
 		if (!readsRepository) return undefined;
 		const contention = probeRepositoryWriteLock({
 			label: lockLabel,
 			...(flowId ? { flowId } : {}),
 		});
 		if (!contention) return undefined;
+		state.repositoryWriteLockRefusals++;
+		persist(label, state);
 		return {
 			block: true,
 			reason: contentionNote(
@@ -681,15 +707,15 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 			state.automaticSteerPending = false;
 			preserveTurnDeadline = true;
 			armWallTimer();
-			persist(label, state);
 			return;
 		}
+		const previousOutcome = state.outcome;
 		resetTurn(state);
 		readKeys.clear();
+		if (previousOutcome !== state.outcome) persist(label, state);
 		preserveTurnDeadline = false;
 		turnStartedAt = Date.now();
 		armWallTimer();
-		persist(label, state);
 	});
 
 	pi.on('tool_call', (event: ToolCallEvent, ctx): ToolCallEventResult | undefined => {
@@ -698,7 +724,6 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		state.usage.toolCalls++;
 		const commandId = event.toolName === 'project_command' ? commandIdOf(event.input) : '';
 		if (commandId && isMutatingCommandId(commandId) && !mutatingRoles.has(role)) {
-			persist(label, state);
 			return {
 				block: true,
 				reason: `Role ${role} may not run the mutating project command ${commandId}. Use its check form (for example node_format:check), the verify gate, or delegate to a role listed in mutatingCommandRoles.`,
@@ -706,14 +731,12 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		}
 		if (event.toolName === 'verify') {
 			if (!validationExecutionRoles.has(role) && !verifyIsRefLookupOnly(event.input)) {
-				persist(label, state);
 				return {
 					block: true,
-					reason: `Role ${role} may only resolve validation evidence, not execute it: call verify with a bare { ref: 'vr_…' } lookup, or delegate execution to a role listed in validationExecutionRoles (${validationOwners}).`,
+					reason: `Role ${role} may only resolve validation evidence, not execute it: call verify with { ref: 'vr_…' or 'pc_…', flowId?, covers? }, or delegate execution to a role listed in validationExecutionRoles (${validationOwners}).`,
 				};
 			}
 			if (!mutatingRoles.has(role) && verifySetsScriptOverrides(event.input)) {
-				persist(label, state);
 				return {
 					block: true,
 					reason: `Role ${role} may not override verify phases: each scripts entry accepts any package script, so an override can reach a writing formatter, a lint fix, or a snapshot writer, and the default phases are the read-only checks. Omit scripts, use the read-only project_command check forms, or delegate to a role listed in mutatingCommandRoles.`,
@@ -723,10 +746,7 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		const category = classifyToolCall(event.toolName, event.input);
 		if (writeLockEnabled) {
 			const contended = repositoryReadGuard(event.toolName, event.input, commandId, category);
-			if (contended) {
-				persist(label, state);
-				return contended;
-			}
+			if (contended) return contended;
 		}
 		if (category === 'discovery') state.usage.discoveryCalls++;
 		if (category === 'validation') state.usage.fullValidationPasses++;
@@ -740,15 +760,17 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		}
 		const reportRead = isReportRead(event.toolName, event.input, flowId);
 		const breached = enforceNewBreach(pi, ctx, state, () => persist(label, state));
-		persist(label, state);
 		if (state.outcome === 'aborted')
 			return {
 				block: true,
 				reason: `Budget exhausted for role ${role}: ${state.breaches.at(-1)?.metric}`,
 			};
 		if (state.reportOnly && !reportRead) {
-			state.outcome = breached ? 'steered' : 'report_only';
-			persist(label, state);
+			const nextOutcome = breached ? 'steered' : 'report_only';
+			if (state.outcome !== nextOutcome) {
+				state.outcome = nextOutcome;
+				persist(label, state);
+			}
 			return {
 				block: true,
 				reason: `Budget exhausted for role ${role}; only ledger/report reads are allowed`,
@@ -760,12 +782,13 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 				reason: `Budget exhausted for role ${role}: ${state.breaches.at(-1)?.metric}`,
 			};
 		}
-		if (isImplementationTool(event.toolName)) {
+		if (isImplementationTool(event.toolName) && !state.implementationStarted) {
 			state.implementationStarted = true;
 			persist(label, state);
 		}
+		const gateWasReached = state.implementationGateReached;
 		if (blocksBeforeImplementation(state, event.toolName, event.input, flowId)) {
-			persist(label, state);
+			if (!gateWasReached) persist(label, state);
 			return {
 				block: true,
 				reason: `Worker must make an implementation change before more discovery; only implementation tools and ledger/report reads are allowed`,
@@ -779,10 +802,7 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 				commandId,
 				category,
 			);
-			if (contended) {
-				persist(label, state);
-				return contended;
-			}
+			if (contended) return contended;
 		}
 		return undefined;
 	});
@@ -792,7 +812,6 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		if (writeLockEnabled) releaseWriteHold(event.toolCallId);
 		if (event.isError) state.usage.failedToolCalls++;
 		enforceNewBreach(pi, ctx, state, () => persist(label, state));
-		persist(label, state);
 	});
 
 	pi.on('turn_end', (event: TurnEndEvent, ctx) => {

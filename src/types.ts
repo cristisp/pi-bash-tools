@@ -83,6 +83,10 @@ export interface BudgetSummary {
 	implementationStarted?: boolean;
 	/** Whether the worker-only pre-implementation discovery gate has blocked a call. */
 	implementationGateReached?: boolean;
+	/** Number of registry writes made by this child budget enforcer. */
+	registryPersists?: number;
+	/** Number of tool calls refused because another session held the repository write lock. */
+	repositoryWriteLockRefusals?: number;
 }
 
 export type EvidenceScope = 'session' | 'flow';
@@ -116,6 +120,8 @@ export interface ReadManifest {
 	persistedPath?: string;
 	artifactPaths: string[];
 	allowedPaths: string[];
+	/** Dirty repository paths captured with the review surface snapshot. */
+	dirtyPaths?: string[];
 	priorReports: string[];
 	establishedEvidence: string[];
 	doNotReread: string[];
@@ -139,6 +145,12 @@ export interface OrchestrationContext {
 	scope?: ReviewScope;
 	/** Flow-owned snapshot of the review surface. */
 	reviewSurfacePath?: string;
+	/** Monotonic revision of the flow-owned review surface snapshot. */
+	reviewSurfaceRevision?: number;
+	/** Whether this delegation caused the review surface to be rewritten. */
+	reviewSurfaceRefreshed?: boolean;
+	/** Dirty paths captured while producing the review surface snapshot. */
+	dirtyPaths?: string[];
 }
 
 /** Identity resolved for one delegation, exported into the child environment. */
@@ -170,9 +182,18 @@ export interface RunSummary {
 	report?: ReportSummary;
 	/** Ledger revision written for this turn, and how the pointer reached the child. */
 	ledgerRevision?: number;
+	/** Validation refs minted or resolved during this turn. */
+	validationRefs?: ValidationReference[];
+	/** Failed validation-evidence lookups during this turn. */
+	lookupFailures?: ValidationLookupFailure[];
+	/** Execution-level producer fields observed during this turn. */
+	validationExecutions?: ValidationExecution[];
 	ledgerInjection?: LedgerInjection;
 	scope?: ReviewScope;
 	reviewSurfacePath?: string;
+	reviewSurfaceRevision?: number;
+	reviewSurfaceRefreshed?: boolean;
+	dirtyPaths?: string[];
 	readManifest?: ReadManifest;
 	budget?: BudgetSummary;
 }
@@ -185,6 +206,12 @@ export interface ReportSummary {
 	digestTokens: number;
 	truncated: boolean;
 	ledgerParsed: boolean;
+	/** Whether the report contained the mandatory reviewer inspection section. */
+	filesReviewedPresent?: boolean;
+	/** Paths named by the report's `## Files Reviewed` section. */
+	filesReviewed?: string[];
+	/** Report-contract violations detected while compressing the report. */
+	contractIssues?: string[];
 	path?: string;
 }
 
@@ -229,6 +256,9 @@ export interface RegistryEntry {
 	evidenceScope?: EvidenceScope;
 	scope?: ReviewScope;
 	reviewSurfacePath?: string;
+	reviewSurfaceRevision?: number;
+	reviewSurfaceRefreshed?: boolean;
+	dirtyPaths?: string[];
 	readManifest?: ReadManifest;
 	/**
 	 * Ledger revision this session was launched against. A reuse turn whose ledger head has advanced
@@ -298,14 +328,39 @@ export interface ExecutionMetrics {
 	/** Reasoning/thinking tokens reported by the provider; excluded from the report budget. */
 	reasoningTokens?: number;
 	/**
-	 * Tool-issued `verify` refs this child minted or resolved, in call order. Refs are resolvable inside
+	 * Tool-issued validation refs this child minted or resolved, in call order. Refs are resolvable inside
 	 * the flow that minted them; refs minted by a root session are process-local and never reach a child.
 	 */
 	validationRefs?: ValidationReference[];
+	/** Failed validation-evidence lookups, kept separate from successful zero-reuse runs. */
+	lookupFailures?: ValidationLookupFailure[];
+	/** Execution-level producer fields that are not attached to a reusable ref. */
+	validationExecutions?: ValidationExecution[];
+}
+
+export type RepositoryStateStatus = 'matches' | 'mismatch' | 'unreadable';
+
+export type ValidationLookupFailureClass = 'denied' | 'timeout' | 'not-found' | 'unknown';
+
+export interface ValidationLookupFailure {
+	/** Ref the lookup attempted, when the tool call named one. */
+	ref?: string;
+	errorClass: ValidationLookupFailureClass;
+	message?: string;
+}
+
+export interface ValidationExecution {
+	tool: 'verify' | 'project_command';
+	ref?: string;
+	commandId?: string;
+	stateDrift?: boolean;
+	concurrentExecutions?: number;
+	mutating?: boolean;
+	forced?: boolean;
 }
 
 export interface ValidationReference {
-	/** Opaque ref issued by the `verify` tool. */
+	/** Opaque ref issued by the validation tool. */
 	ref: string;
 	/** Aggregate verdict of the run the ref points at. */
 	verdict?: 'passed' | 'failed' | 'incomplete';
@@ -320,6 +375,18 @@ export interface ValidationReference {
 	 * minted against, so comparing refs inside one flow exposes evidence reused across differing states.
 	 */
 	stateDigest?: string;
+	/** Freshness comparison made by the producer on lookup. */
+	repositoryStateStatus?: RepositoryStateStatus;
+	/** True when the producer observed drift during an execution. */
+	stateDrift?: boolean;
+	/** Number of concurrent validation executions observed by the producer. */
+	concurrentExecutions?: number;
+	/** Whether the command was mutating. */
+	mutating?: boolean;
+	/** Whether the producer was forced to execute instead of reusing evidence. */
+	forced?: boolean;
+	/** Validation phases reported as omitted rather than passed. */
+	omitted?: string[];
 }
 
 export interface TelemetryRecord {
@@ -356,6 +423,9 @@ export interface TelemetryRecord {
 	ledgerInjection?: LedgerInjection;
 	scope?: ReviewScope;
 	reviewSurfacePath?: string;
+	reviewSurfaceRevision?: number;
+	reviewSurfaceRefreshed?: boolean;
+	dirtyPaths?: string[];
 	readManifest?: ReadManifest;
 	budget?: BudgetSummary;
 }
@@ -385,6 +455,9 @@ export interface SingleResult {
 	delegationId?: string;
 	scope?: ReviewScope;
 	reviewSurfacePath?: string;
+	reviewSurfaceRevision?: number;
+	reviewSurfaceRefreshed?: boolean;
+	dirtyPaths?: string[];
 	readManifest?: ReadManifest;
 	flowId?: string;
 	tier?: number;

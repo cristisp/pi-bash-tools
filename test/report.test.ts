@@ -5,6 +5,7 @@ import { flowReportsDir } from '../src/flow.ts';
 import {
 	buildReportDigest,
 	estimateTokens,
+	parseFilesReviewed,
 	parseLedgerBlock,
 	signalLines,
 	tokensFromChars,
@@ -49,6 +50,21 @@ function delegation(overrides: Partial<DelegationContext> = {}): DelegationConte
 		...overrides,
 	};
 }
+
+describe('parseFilesReviewed', () => {
+	it('extracts reviewer paths and folds them into changed_files', () => {
+		const output = `## Files Reviewed\n\n- src/run.ts:10-24 - dispatch behavior\n- src/types.ts: lines 30-42 - contract\n- [src/types.ts](src/types.ts):line-range - linked contract\n\n## Findings\n\nNone`;
+		expect(parseFilesReviewed(output)).toEqual(['src/run.ts', 'src/types.ts']);
+		expect(parseLedgerBlock(`${output}\n\n${LEGGED}`)?.fields.changed_files).toBe(
+			'src/run.ts,src/types.ts',
+		);
+	});
+
+	it('distinguishes an absent section from an explicit empty inspection set', () => {
+		expect(parseFilesReviewed('## Findings\n\nNone')).toBeUndefined();
+		expect(parseFilesReviewed('## Files Reviewed\n\n- None\n\n## Findings')).toEqual([]);
+	});
+});
 
 describe('parseLedgerBlock', () => {
 	it('parses the ledger fields from a fenced block', () => {
@@ -95,6 +111,22 @@ describe('buildReportDigest', () => {
 		expect(built.digest).toContain('workflow_version: 1');
 		expect(built.digest).toContain('Wired the digest.');
 		expect(built.digest.match(/workflow_version/g)).toHaveLength(1);
+	});
+
+	it('requires the reviewer inspection section when requested', () => {
+		const missing = buildReportDigest(LEGGED, 250, { requireFilesReviewed: true });
+		expect(missing.contractIssues).toEqual(['missing required ## Files Reviewed section']);
+		expect(missing.digest).toContain(
+			'Report contract: missing required ## Files Reviewed section.',
+		);
+
+		const reviewed = buildReportDigest(
+			`## Files Reviewed\n\n- src/run.ts:10-20 - behavior\n\n${LEGGED}`,
+			250,
+			{ requireFilesReviewed: true },
+		);
+		expect(reviewed.contractIssues).toEqual([]);
+		expect(reviewed.filesReviewed).toEqual(['src/run.ts']);
 	});
 
 	it('surfaces status lines instead when the child emitted no ledger', () => {

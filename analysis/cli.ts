@@ -7,6 +7,7 @@ import { measure, renderMarkdown } from './measure.ts';
 const agentDir = process.argv[2] ?? getAgentDir();
 const cutoffArg = Number(process.env.MEASURE_CUTOFF ?? '');
 const cutoff = Number.isFinite(cutoffArg) && cutoffArg > 0 ? cutoffArg : undefined;
-const markdown = renderMarkdown(measure(agentDir, cutoff));
+const producerInvocationPath = process.argv[3];
+const markdown = renderMarkdown(measure(agentDir, cutoff, producerInvocationPath));
 writeFileSync(join(dirname(fileURLToPath(import.meta.url)), 'MEASUREMENT.md'), markdown);
 process.stdout.write(markdown);

@@ -265,6 +265,225 @@ export function readTelemetry(agentDir: string): TelemetryRecord[] {
 	return records;
 }
 
+export interface ProducerInvocation {
+	at?: number;
+	commandId?: string;
+	flowId?: string;
+	delegationId?: string;
+	role?: string;
+	ref?: string;
+	stateDigest?: string;
+	decision?: string;
+	errorClass?: string;
+	stateDrift?: boolean;
+	concurrentExecutions?: number;
+	mutating?: boolean;
+	forced?: boolean;
+	lookup?: boolean;
+	executed: boolean;
+	lookupFailed: boolean;
+}
+
+const PRODUCER_INVOCATION_ENV = [
+	'BASH_TOOLS_INVOCATIONS_PATH',
+	'BASH_TOOLS_INVOCATION_STREAM',
+	'BASH_TOOLS_TELEMETRY_PATH',
+];
+
+function producerInvocationFiles(agentDir: string): string[] {
+	const configured = PRODUCER_INVOCATION_ENV.map((name) => process.env[name]).filter(
+		(value): value is string => Boolean(value),
+	);
+	return [
+		...configured,
+		join(agentDir, 'bash-tools', 'invocations.jsonl'),
+		join(agentDir, 'bash-tools', 'verify-invocations.jsonl'),
+		join(agentDir, 'bash-tools-invocations.jsonl'),
+		join(agentDir, 'bash-tools-invocation-stream.jsonl'),
+	].filter((file, index, all) => all.indexOf(file) === index);
+}
+
+export function resolveProducerInvocationPath(
+	agentDir: string,
+	filePath?: string,
+): string | undefined {
+	const file =
+		filePath ?? producerInvocationFiles(agentDir).find((candidate) => existsSync(candidate));
+	return file && existsSync(file) ? file : undefined;
+}
+
+function invocationStateDigest(value: unknown): string | undefined {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+	const state = value as Record<string, unknown>;
+	const nested = state.repositoryState ?? state.repository_state;
+	if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+		const digest =
+			(nested as Record<string, unknown>).dirtyFilesDigest ??
+			(nested as Record<string, unknown>).dirty_digest;
+		if (typeof digest === 'string') return digest.slice(0, 12);
+	}
+	const digest = state.stateDigest ?? state.state_digest ?? state.dirtyFilesDigest;
+	return typeof digest === 'string' ? digest.slice(0, 12) : undefined;
+}
+
+function producerInvocationOf(
+	record: unknown,
+	validationOnly = true,
+): ProducerInvocation | undefined {
+	if (!record || typeof record !== 'object' || Array.isArray(record)) return undefined;
+	const raw = record as Record<string, unknown>;
+	const payload =
+		raw.payload && typeof raw.payload === 'object' && !Array.isArray(raw.payload)
+			? (raw.payload as Record<string, unknown>)
+			: raw;
+	const decision =
+		typeof raw.decision === 'string'
+			? raw.decision
+			: typeof payload.decision === 'string'
+				? payload.decision
+				: undefined;
+	const decisionLower = decision?.toLowerCase().replaceAll('_', '-');
+	const lookupValue = raw.lookup ?? payload.lookup;
+	const lookupDetails =
+		lookupValue && typeof lookupValue === 'object' && !Array.isArray(lookupValue)
+			? (lookupValue as Record<string, unknown>)
+			: undefined;
+	const lookup =
+		(typeof lookupValue === 'boolean' ? lookupValue : undefined) ??
+		(lookupDetails?.attempted === true ? true : undefined) ??
+		(['lookup', 'resolved', 'not-found'].includes(decisionLower ?? '') ? true : undefined);
+	const failedDecision = ['error', 'failed', 'not-found', 'denied', 'timeout'].includes(
+		decisionLower ?? '',
+	);
+	const lookupFailed =
+		raw.lookupFailed === true ||
+		payload.lookupFailed === true ||
+		lookupDetails?.success === false ||
+		(lookup === true && failedDecision);
+	const executed =
+		typeof raw.executed === 'boolean'
+			? raw.executed
+			: typeof payload.executed === 'boolean'
+				? payload.executed
+				: raw.reused === true ||
+					  payload.reused === true ||
+					  decisionLower === 'hit' ||
+					  decisionLower === 'lookup' ||
+					  decisionLower === 'resolved' ||
+					  failedDecision
+					? false
+					: !lookupFailed;
+	const toolName = raw.toolName ?? raw.tool ?? payload.toolName ?? payload.tool;
+	const commandIdValue = raw.commandId ?? payload.commandId;
+	const commandId = typeof commandIdValue === 'string' ? commandIdValue : undefined;
+	if (validationOnly && toolName !== undefined && toolName !== 'verify') return undefined;
+	if (validationOnly && commandId !== undefined && commandId !== 'verify') return undefined;
+	if (!validationOnly && commandId === undefined && toolName === undefined) return undefined;
+	const ref = [raw.ref, payload.ref].find(
+		(candidate): candidate is string => typeof candidate === 'string' && candidate.length > 0,
+	);
+	const flowId = [raw.flowId, payload.flowId].find(
+		(candidate): candidate is string => typeof candidate === 'string' && candidate.length > 0,
+	);
+	const delegationId = [raw.delegationId, payload.delegationId].find(
+		(candidate): candidate is string => typeof candidate === 'string' && candidate.length > 0,
+	);
+	const role = [raw.role, payload.role].find(
+		(candidate): candidate is string => typeof candidate === 'string' && candidate.length > 0,
+	);
+	const explicitErrorClass = [raw.errorClass, payload.errorClass].find(
+		(candidate): candidate is string => typeof candidate === 'string' && candidate.length > 0,
+	);
+	const errorClass =
+		explicitErrorClass ??
+		(['denied', 'timeout', 'not-found'].includes(decisionLower ?? '') ? decisionLower : undefined);
+	const execution =
+		raw.execution && typeof raw.execution === 'object' && !Array.isArray(raw.execution)
+			? (raw.execution as Record<string, unknown>)
+			: payload.execution &&
+				  typeof payload.execution === 'object' &&
+				  !Array.isArray(payload.execution)
+				? (payload.execution as Record<string, unknown>)
+				: {};
+	const booleanField = (name: string): boolean | undefined => {
+		const value = raw[name] ?? payload[name] ?? execution[name];
+		if (typeof value === 'boolean') return value;
+		if (name === 'forced' && decisionLower === 'forced') return true;
+		return undefined;
+	};
+	const numberField = (name: string): number | undefined => {
+		const value = raw[name] ?? payload[name] ?? execution[name];
+		return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+	};
+	const atValue = raw.at ?? payload.at;
+	const at =
+		typeof atValue === 'number'
+			? atValue
+			: typeof atValue === 'string'
+				? Date.parse(atValue) || undefined
+				: undefined;
+	return {
+		...(at === undefined ? {} : { at }),
+		...(commandId ? { commandId } : {}),
+		...(flowId ? { flowId } : {}),
+		...(delegationId ? { delegationId } : {}),
+		...(role ? { role } : {}),
+		...(ref ? { ref } : {}),
+		...((invocationStateDigest(raw) ?? invocationStateDigest(payload))
+			? { stateDigest: invocationStateDigest(raw) ?? invocationStateDigest(payload) }
+			: {}),
+		...(decision ? { decision } : {}),
+		...(errorClass ? { errorClass } : {}),
+		...(booleanField('stateDrift') === undefined ? {} : { stateDrift: booleanField('stateDrift') }),
+		...(numberField('concurrentExecutions') === undefined
+			? {}
+			: { concurrentExecutions: numberField('concurrentExecutions') }),
+		...(booleanField('mutating') === undefined ? {} : { mutating: booleanField('mutating') }),
+		...(booleanField('forced') === undefined ? {} : { forced: booleanField('forced') }),
+		...(lookup === undefined ? {} : { lookup }),
+		executed,
+		lookupFailed,
+	};
+}
+
+function readProducerRecords(
+	agentDir: string,
+	filePath: string | undefined,
+	validationOnly: boolean,
+): ProducerInvocation[] {
+	const file = resolveProducerInvocationPath(agentDir, filePath);
+	if (!file) return [];
+	let contents: string;
+	try {
+		contents = readFileSync(file, 'utf8');
+	} catch {
+		return [];
+	}
+	const records: ProducerInvocation[] = [];
+	for (const line of contents.split('\n')) {
+		if (!line.trim()) continue;
+		try {
+			const invocation = producerInvocationOf(JSON.parse(line), validationOnly);
+			if (invocation) records.push(invocation);
+		} catch {
+			// Ignore torn invocation records just as telemetry ignores torn lines.
+		}
+	}
+	return records;
+}
+
+export function readProducerInvocations(agentDir: string, filePath?: string): ProducerInvocation[] {
+	return readProducerRecords(agentDir, filePath, true);
+}
+
+/** Reads all producer command records for repository-state diagnostics, not only verify calls. */
+export function readProducerExecutionInvocations(
+	agentDir: string,
+	filePath?: string,
+): ProducerInvocation[] {
+	return readProducerRecords(agentDir, filePath, false);
+}
+
 export function defaultCutoff(records: TelemetryRecord[]): number {
 	const withReport = records.filter((r) => r.report).map((r) => r.at);
 	return withReport.length ? Math.min(...withReport) : Number.POSITIVE_INFINITY;
@@ -303,6 +522,18 @@ export interface ValidationEvidence {
 	distinctStateDigests: number;
 	/** Executed mints per distinct digest; null when no flow minted a digest-bearing ref. */
 	executionsPerDigest: number | null;
+	/** Failed lookups, kept distinct from a flow that simply had no refs to reuse. */
+	lookupFailures: number;
+	lookupFailureClasses: Record<string, number>;
+	/** Successful reuse divided by all successful and failed evidence attempts. */
+	reuseRate: number | null;
+	producerInvocations: number;
+	producerExecutions: number;
+	stateDriftExecutions: number;
+	maxConcurrentExecutions: number;
+	mutatingCommands: number;
+	forcedExecutions: number;
+	lockContentionRefusals: number;
 }
 
 export interface Measurement {
@@ -313,6 +544,7 @@ export interface Measurement {
 	childSessions: number;
 	telemetryRecords: number;
 	cutoff: number;
+	producerInvocationStream: { available: boolean; records: number; path?: string };
 	delivered: { all: Quantiles; before: Quantiles; after: Quantiles; childResults: number };
 	carry: {
 		rootCarryTokens: number;
@@ -332,7 +564,11 @@ export interface Measurement {
 	rootReportReadsBefore: number;
 	rootReportReadsAfter: number;
 	guide: GuideMeasurement;
-	validation: { overall: ValidationEvidence; byRole: ValidationEvidence[] };
+	validation: {
+		overall: ValidationEvidence;
+		byRole: ValidationEvidence[];
+		byFlow: ValidationEvidence[];
+	};
 	telemetryFrom: number;
 	childrenInTelemetryWindow: number;
 	byRole: {
@@ -373,15 +609,19 @@ function guideRenderSize(agentDir: string): { chars: number; tokens: number | nu
 }
 
 /**
- * Tally the `verify` refs one set of delegations carries. Deduplication happens inside one flow: refs
- * are grouped by `flowId`, the distinct `stateDigest` values of the refs minted there are counted, and
- * executed mints are divided by that count, so a ratio above 1 is a gate executed again over state that
- * was already validated. A mint without a `stateDigest` cannot be deduplicated at all, so flows whose
- * refs carry no digest stay out of the ratio instead of contributing a guessed denominator.
+ * Tally validation evidence for one role, flow, or the complete sample. Producer invocation records
+ * refine execution and digest counts when the producer stream is available; extension telemetry remains
+ * the fallback so historical fixtures and partial installations stay measurable.
  */
-function tallyValidation(records: TelemetryRecord[], scope: string): ValidationEvidence {
+function tallyValidation(
+	records: TelemetryRecord[],
+	scope: string,
+	producerInvocations: ProducerInvocation[] = [],
+	producerExecutionInvocations: ProducerInvocation[] = producerInvocations,
+): ValidationEvidence {
 	const digests = new Map<string, Set<string>>();
 	const executedInFlow = new Map<string, number>();
+	const consumerDigestByRef = new Map<string, string>();
 	let delegations = 0;
 	let delegationsWithRefs = 0;
 	let refsMinted = 0;
@@ -389,25 +629,160 @@ function tallyValidation(records: TelemetryRecord[], scope: string): ValidationE
 	let refsReused = 0;
 	let refsResolvedByLookup = 0;
 	let fullValidationPasses = 0;
+	let lookupFailures = 0;
+	let lookupFailureClasses: Record<string, number> = {};
+	let stateDriftExecutions = 0;
+	let maxConcurrentExecutions = 0;
+	let mutatingCommands = 0;
+	let forcedExecutions = 0;
+	let lockContentionRefusals = 0;
+	let successfulReuse = 0;
+	let evidenceAttempts = 0;
 	for (const record of records) {
 		delegations++;
 		fullValidationPasses += record.metrics?.fullValidationPasses ?? 0;
+		lockContentionRefusals += record.budget?.repositoryWriteLockRefusals ?? 0;
 		const refs = record.metrics?.validationRefs ?? [];
+		const failures = record.metrics?.lookupFailures ?? [];
 		if (refs.length) delegationsWithRefs++;
 		const flow = record.flowId ?? '-';
 		for (const ref of refs) {
+			evidenceAttempts++;
 			if (ref.lookup) {
 				refsResolvedByLookup++;
+				successfulReuse++;
 				continue;
 			}
 			refsMinted++;
-			if (ref.reused) refsReused++;
-			else refsExecuted++;
+			if (ref.reused) {
+				refsReused++;
+				successfulReuse++;
+			} else refsExecuted++;
 			const digestsHere = digests.get(flow) ?? new Set<string>();
 			digests.set(flow, digestsHere);
 			executedInFlow.set(flow, (executedInFlow.get(flow) ?? 0) + (ref.reused ? 0 : 1));
-			if (ref.stateDigest) digestsHere.add(ref.stateDigest);
+			if (ref.stateDigest) {
+				digestsHere.add(ref.stateDigest);
+				consumerDigestByRef.set(`${flow}:${ref.ref}`, ref.stateDigest);
+			}
 		}
+		for (const failure of failures) {
+			lookupFailures++;
+			lookupFailureClasses[failure.errorClass] =
+				(lookupFailureClasses[failure.errorClass] ?? 0) + 1;
+			evidenceAttempts++;
+		}
+		for (const execution of record.metrics?.validationExecutions ?? []) {
+			if (execution.stateDrift) stateDriftExecutions++;
+			if (execution.concurrentExecutions !== undefined)
+				maxConcurrentExecutions = Math.max(maxConcurrentExecutions, execution.concurrentExecutions);
+			if (execution.mutating) mutatingCommands++;
+			if (execution.forced) forcedExecutions++;
+		}
+	}
+
+	const scopedInvocations = producerInvocations.filter((invocation) => {
+		if (scope === 'overall') return true;
+		if (scope.startsWith('flow:')) return (invocation.flowId ?? '-') === scope.slice(5);
+		return invocation.role === scope;
+	});
+	const scopedExecutionInvocations = producerExecutionInvocations.filter((invocation) => {
+		if (scope === 'overall') return true;
+		if (scope.startsWith('flow:')) return (invocation.flowId ?? '-') === scope.slice(5);
+		return invocation.role === scope;
+	});
+	const producerHasStateDrift = scopedExecutionInvocations.some(
+		(invocation) => invocation.stateDrift !== undefined,
+	);
+	const producerHasConcurrency = scopedExecutionInvocations.some(
+		(invocation) => invocation.concurrentExecutions !== undefined,
+	);
+	const producerHasMutating = scopedExecutionInvocations.some(
+		(invocation) => invocation.mutating !== undefined,
+	);
+	const producerHasForced = scopedExecutionInvocations.some(
+		(invocation) => invocation.forced !== undefined,
+	);
+	if (producerHasStateDrift) stateDriftExecutions = 0;
+	if (producerHasConcurrency) maxConcurrentExecutions = 0;
+	if (producerHasMutating) mutatingCommands = 0;
+	if (producerHasForced) forcedExecutions = 0;
+	let producerExecutions = 0;
+	for (const invocation of scopedExecutionInvocations) {
+		if (invocation.stateDrift && invocation.executed) stateDriftExecutions++;
+		if (invocation.concurrentExecutions !== undefined)
+			maxConcurrentExecutions = Math.max(maxConcurrentExecutions, invocation.concurrentExecutions);
+		if (invocation.mutating && invocation.executed) mutatingCommands++;
+		if (invocation.forced && invocation.executed) forcedExecutions++;
+	}
+	for (const invocation of scopedInvocations) {
+		const flow = invocation.flowId ?? '-';
+		const digest =
+			invocation.stateDigest ??
+			(invocation.ref ? consumerDigestByRef.get(`${flow}:${invocation.ref}`) : undefined);
+		if (digest) {
+			const digestsHere = digests.get(flow) ?? new Set<string>();
+			digests.set(flow, digestsHere);
+			digestsHere.add(digest);
+		}
+		if (invocation.lookupFailed) {
+			lookupFailures++;
+			lookupFailureClasses[invocation.decision ?? 'unknown'] =
+				(lookupFailureClasses[invocation.decision ?? 'unknown'] ?? 0) + 1;
+			evidenceAttempts++;
+		}
+		if (invocation.executed) {
+			producerExecutions++;
+			executedInFlow.set(flow, (executedInFlow.get(flow) ?? 0) + 1);
+		}
+	}
+	if (scopedInvocations.length > 0) {
+		// The producer stream is one record per invocation and is authoritative for attempts, reuse, and execution.
+		const producerDigests = new Map<string, Set<string>>();
+		for (const invocation of scopedInvocations) {
+			const flow = invocation.flowId ?? '-';
+			const digest =
+				invocation.stateDigest ??
+				(invocation.ref ? consumerDigestByRef.get(`${flow}:${invocation.ref}`) : undefined);
+			if (!digest) continue;
+			const digestsHere = producerDigests.get(flow) ?? new Set<string>();
+			digestsHere.add(digest);
+			producerDigests.set(flow, digestsHere);
+		}
+		if (producerDigests.size > 0) {
+			digests.clear();
+			for (const [flow, flowDigests] of producerDigests) digests.set(flow, flowDigests);
+		}
+		const successfulInvocations = scopedInvocations.filter(
+			(invocation) => !invocation.lookupFailed,
+		);
+		evidenceAttempts = scopedInvocations.length;
+		successfulReuse = successfulInvocations.filter((invocation) => !invocation.executed).length;
+		refsMinted = successfulInvocations.filter(
+			(invocation) => Boolean(invocation.ref) && invocation.lookup !== true,
+		).length;
+		refsExecuted = successfulInvocations.filter(
+			(invocation) => Boolean(invocation.ref) && invocation.executed,
+		).length;
+		refsReused = successfulInvocations.filter(
+			(invocation) => Boolean(invocation.ref) && !invocation.executed && invocation.lookup !== true,
+		).length;
+		refsResolvedByLookup = successfulInvocations.filter(
+			(invocation) => Boolean(invocation.ref) && invocation.lookup === true,
+		).length;
+		lookupFailures = scopedInvocations.filter((invocation) => invocation.lookupFailed).length;
+		lookupFailureClasses = {};
+		for (const invocation of scopedInvocations.filter((item) => item.lookupFailed)) {
+			const key = invocation.errorClass ?? 'unknown';
+			lookupFailureClasses[key] = (lookupFailureClasses[key] ?? 0) + 1;
+		}
+		for (const flow of new Set(scopedInvocations.map((invocation) => invocation.flowId ?? '-')))
+			executedInFlow.set(
+				flow,
+				scopedInvocations.filter(
+					(invocation) => (invocation.flowId ?? '-') === flow && invocation.executed,
+				).length,
+			);
 	}
 	let distinctStateDigests = 0;
 	let digestibleExecutions = 0;
@@ -429,14 +804,31 @@ function tallyValidation(records: TelemetryRecord[], scope: string): ValidationE
 		executionsPerDigest: distinctStateDigests
 			? Number((digestibleExecutions / distinctStateDigests).toFixed(2))
 			: null,
+		lookupFailures,
+		lookupFailureClasses,
+		reuseRate: evidenceAttempts ? Number((successfulReuse / evidenceAttempts).toFixed(2)) : null,
+		producerInvocations: scopedInvocations.length,
+		producerExecutions,
+		stateDriftExecutions,
+		maxConcurrentExecutions,
+		mutatingCommands,
+		forcedExecutions,
+		lockContentionRefusals,
 	};
 }
 
 export function measure(
 	agentDir: string,
 	cutoff = defaultCutoff(readTelemetry(agentDir)),
+	producerInvocationPath?: string,
 ): Measurement {
 	const records = readTelemetry(agentDir);
+	const producerStreamPath = resolveProducerInvocationPath(agentDir, producerInvocationPath);
+	const producerInvocations = readProducerInvocations(agentDir, producerStreamPath);
+	const producerExecutionInvocations = readProducerExecutionInvocations(
+		agentDir,
+		producerStreamPath,
+	);
 	const files = sessionFiles(agentDir);
 	const telemetryFrom = firstTelemetryAt(records);
 	const results: DeliveredResult[] = [];
@@ -533,6 +925,11 @@ export function measure(
 		telemetryRecords: records.length,
 		telemetryFrom,
 		cutoff,
+		producerInvocationStream: {
+			available: producerStreamPath !== undefined,
+			records: producerInvocations.length,
+			...(producerStreamPath ? { path: producerStreamPath } : {}),
+		},
 		delivered: {
 			all: quantiles(tokensOf(results)),
 			before: quantiles(tokensOf(beforeResults)),
@@ -567,10 +964,33 @@ export function measure(
 			renderedTokens: guideSize.tokens,
 		},
 		validation: {
-			overall: tallyValidation(records, 'overall'),
+			overall: tallyValidation(
+				records,
+				'overall',
+				producerInvocations,
+				producerExecutionInvocations,
+			),
 			byRole: [...validationRoles.entries()]
-				.map(([role, list]) => tallyValidation(list, role))
+				.map(([role, list]) =>
+					tallyValidation(list, role, producerInvocations, producerExecutionInvocations),
+				)
 				.toSorted((a, b) => b.delegations - a.delegations || a.scope.localeCompare(b.scope)),
+			byFlow: [
+				...new Set([
+					...records.map((record) => record.flowId ?? '-'),
+					...producerInvocations.map((invocation) => invocation.flowId ?? '-'),
+					...producerExecutionInvocations.map((invocation) => invocation.flowId ?? '-'),
+				]),
+			]
+				.map((flow) =>
+					tallyValidation(
+						records.filter((record) => (record.flowId ?? '-') === flow),
+						`flow:${flow}`,
+						producerInvocations,
+						producerExecutionInvocations,
+					),
+				)
+				.toSorted((a, b) => a.scope.localeCompare(b.scope)),
 		},
 		byRole,
 		childrenInTelemetryWindow: childrenInWindow,
@@ -598,6 +1018,17 @@ const validationColumns = [
 	'full validation passes',
 	'distinct state digests',
 	'executions per digest',
+];
+
+const validationDiagnosticColumns = [
+	'scope',
+	'lookup failures',
+	'failure classes',
+	'reuse rate',
+	'producer invocations',
+	'producer executions',
+	'state drift',
+	'max concurrent',
 ];
 
 function validationCells(v: ValidationEvidence): (string | number)[] {
@@ -735,21 +1166,64 @@ export function renderMarkdown(m: Measurement): string {
 	lines.push('## Validation evidence (the W7 target)');
 	lines.push('');
 	lines.push(
-		'Per role and overall: delegations carrying a `verify` ref, refs minted, refs ' +
-			'executed rather than reused, refs resolved by lookup, full validation passes ' +
+		'Per role, flow, and overall: delegations carrying a `verify` ref, refs minted, refs ' +
+			'executed rather than reused, refs resolved by lookup, failed lookups, reuse rate, full validation passes ' +
 			'charged, and executions per distinct repository-state digest. Deduplication means ' +
 			'grouping records by `flowId`, counting the distinct `stateDigest` values across the ' +
 			'refs minted in that flow, and dividing executed mints by that count, because a ratio ' +
-			'above 1 is the duplicate execution this workstream exists to remove.',
+			'above 1 is the duplicate execution this workstream exists to remove. When the producer invocation ' +
+			'stream is present, its one-record-per-call execution decision refines the consumer-side telemetry; ' +
+			'otherwise the report says only what the extension observed.',
 	);
 	lines.push('');
+	const producerStreamStatus = !m.producerInvocationStream.available
+		? 'Producer invocation stream: unavailable; producer execution columns are not zero-event evidence.'
+		: m.producerInvocationStream.records === 0
+			? `Producer invocation stream: present at \`${m.producerInvocationStream.path}\`, but it contains no verify records; producer execution columns use consumer telemetry fallback and are not zero-event evidence.`
+			: `Producer invocation stream: \`${m.producerInvocationStream.path}\` (${m.producerInvocationStream.records} verify records).`;
+	lines.push(producerStreamStatus);
+	lines.push('');
 	lines.push(row(validationColumns));
-	lines.push(row(['---', '---:', '---:', '---:', '---:', '---:', '---:', '---:', '---:', '---:']));
+	lines.push(row(validationColumns.map((_, index) => (index === 0 ? '---' : '---:'))));
 	lines.push(row(validationCells(m.validation.overall)));
 	for (const v of m.validation.byRole) {
 		lines.push(row(validationCells(v)));
 	}
+	lines.push('');
+	lines.push('Per-flow reuse and lookup outcomes:');
+	lines.push('');
+	lines.push(row(validationDiagnosticColumns));
+	lines.push(row(validationDiagnosticColumns.map((_, index) => (index === 0 ? '---' : '---:'))));
+	for (const v of m.validation.byFlow) {
+		lines.push(
+			row([
+				v.scope,
+				v.lookupFailures,
+				Object.entries(v.lookupFailureClasses)
+					.map(([kind, count]) => `${kind}:${count}`)
+					.join(',') || '-',
+				v.reuseRate === null ? '-' : `${Math.round(v.reuseRate * 100)}%`,
+				v.producerInvocations,
+				v.producerExecutions,
+				v.stateDriftExecutions,
+				v.maxConcurrentExecutions,
+			]),
+		);
+	}
 	lines.push(row([VALIDATION_BASELINE_LABEL, ...validationColumns.slice(1).map(() => '-')]));
+	lines.push('');
+	lines.push('## Repository write lock contention (S2)');
+	lines.push('');
+	lines.push(
+		'Counts consumer-enforced refusals while a sibling held the repository write lock. ' +
+			'The validation table includes state-drift and concurrency diagnostics from all producer command records, ' +
+			'not only verify calls; producer diagnostics remain unavailable when the stream is absent.',
+	);
+	lines.push('');
+	lines.push(row(['scope', 'lock refusals']));
+	lines.push(row(['---', '---:']));
+	for (const v of [m.validation.overall, ...m.validation.byRole, ...m.validation.byFlow])
+		lines.push(row([v.scope, v.lockContentionRefusals]));
 	lines.push('');
 	lines.push(
 		'Every ref counted here was minted by a delegated child seat, because root ' +

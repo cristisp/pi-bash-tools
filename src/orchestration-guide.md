@@ -64,6 +64,12 @@ A primary reviewer plus focused security or validation reviewers only when a spe
 
 Where a check is deterministic, the validation plan is one `verify` ref plus one review owner. Never delegate a validator to re-run a deterministic gate a ref already covers; that is a defect, not extra assurance.
 
+Evidence contract: workers publish with `publish: { flowId }` and report the returned ref.
+Consumers resolve with `{ ref, flowId?, covers? }`; `covers` is scope, not a quality signal.
+`fresh: true` executes rather than looks up; successful lookups report `repositoryStateStatus: matches`.
+Mismatches, unreadable states, and denied, timeout, or not-found errors are unresolved and must be NOT_RUN or unverified.
+Reviewer reports require `## Files Reviewed` with every inspected path and line range.
+
 ## Escalation triggers
 
 Escalate to the parent and select a stronger workflow, rather than silently continuing with the original workflow, when:
@@ -98,6 +104,7 @@ evidence_refs:
 invariants:
 changed_files:
 validation_refs:
+validation_omitted:
 findings:
 baseline_failures:
 environment_blockers:

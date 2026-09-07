@@ -161,9 +161,9 @@ The validator must report, for each supplied AC-### and required check:
 - Exact command or check, exit code, concise result, and covered criterion or F-###
 - Whether the evidence is sufficient, plus baseline failures and environment blockers
 
-Validation evidence is a tool-issued \`verify\` ref, never a private fingerprint. The session that modified files owns execution of the validation gate and mints the ref, or under a parallel fan-out the single session that integrates the fan-in: run the composite gate once with \`verify\` after the last implementation change, pass \`covers\` with the \`AC-###\` and \`F-###\` ids addressed, and report the ref verbatim, never paraphrased or truncated. Every other role consumes that ref instead of re-running the gate, and mints a new one only for changes it owns itself. Record every ref you cite in the \`validation_refs\` field of your ledger block, one entry per ref, naming the ids it covers and the freshness with which you cite it, because that field is how the next role finds the evidence.
+Validation evidence is a tool-issued \`verify\` ref, never a private fingerprint. The session that modified files owns execution of the validation gate and mints the ref, or under a parallel fan-out the single session that integrates the fan-in: run the composite gate once with \`verify\` after the last implementation change, pass \`covers\` with the \`AC-###\` and \`F-###\` ids addressed, and report the ref verbatim, never paraphrased or truncated. A worker that publishes evidence to a flow uses \`publish: { flowId }\`; publication is not a lookup and does not replace reporting the returned ref. Every other role consumes that ref instead of re-running the gate, and mints a new one only for changes it owns itself. Record every ref you cite in the \`validation_refs\` field of your ledger block, one entry per ref, naming the ids it covers and the freshness with which you cite it, because that field is how the next role finds the evidence.
 
-Resolve before you execute. Call \`verify\` with \`{ ref }\` for every ref in the ledger, confirm the verdict, confirm \`covers\` spans every required id, and confirm the ref repository state still matches the repository under review. A ref is stale when its \`repositoryState\`, head plus dirty digest, no longer matches the state under review or its \`covers\` list omits a required id. Treat the digest as seeing only what \`git status\` reports: a path excluded by \`.gitignore\` never moves it, so a change to an ignored or generated input that matters to the verdict is a reason to rerun rather than to reuse, and the ref will not tell you. A stale ref is reported \`NOT_RUN\` and then executed by whoever is allowed to execute. A ref you resolved is not evidence that you validated anything, and resolving a ref is not a validation pass. Report the freshness of every cited ref as \`executed\` when this role ran the command, \`reused\` when this role ran \`verify\` and the tool returned stored evidence for unchanged state, or \`resolved\` when this role called \`verify\` with \`{ ref }\` and executed nothing. A reference you cannot resolve is not evidence, so report the check as \`NOT_RUN\` or otherwise unverified, execute it only if your role is permitted to execute, and never assert a freshness you cannot establish.
+Resolve before you execute. Call \`verify\` with \`{ ref }\` for every ref in the ledger; add \`flowId?\` or \`covers?\` when the lookup needs them; \`flowId\` selects the evidence store and \`covers\` is a scope list, not a quality signal. Confirm the verdict, confirm \`covers\` spans every required id, and confirm the returned \`repositoryStateStatus\` is \`matches\`. A ref is stale when its \`repositoryState\`, head plus dirty digest, no longer matches the state under review, its \`repositoryStateStatus\` is \`mismatch\` or \`unreadable\`, or its \`covers\` list omits a required id. Use \`fresh: true\` only to request a new execution when stored evidence is stale or incomplete; it is not a lookup and is charged as validation. Treat the digest as seeing only what \`git status\` reports: a path excluded by \`.gitignore\` never moves it, so a change to an ignored or generated input that matters to the verdict is a reason to rerun rather than to reuse, and the ref will not tell you. A stale ref is reported \`NOT_RUN\` and then executed by whoever is allowed to execute. A ref you resolved is not evidence that you validated anything, and resolving a ref is not a validation pass. Report the freshness of every cited ref as \`executed\` when this role ran the command, \`reused\` when this role ran \`verify\` and the tool returned stored evidence for unchanged state, or \`resolved\` when this role called \`verify\` and executed nothing. A reference you cannot resolve is not evidence. A lookup refusal, timeout, or not-found result is unresolved evidence, not a passing result: record the check as \`NOT_RUN\` or otherwise unverified, execute it only if your role is permitted to execute, and never assert a freshness you cannot establish.
 
 Mint a manual fingerprint only as the fallback shape for projects with no composite \`verify\` gate, using compact validation references such as V-001: command | result | scope. Each fallback fingerprint must include the exact command, working directory, covered IDs, relevant repository-state reference (diff hash or focused file hashes when available; otherwise exact paths plus a Git status/diff reference), dependency or runtime assumption when relevant, result, and exit code. Mark fingerprints without hashes non-reusable and rerun after any relevant change. Reuse evidence only when those inputs are unchanged; rerun for changed inputs or environment-sensitive checks. Keep validation and review verdicts separate.
 
@@ -225,7 +225,7 @@ function budgetSection(role: string): string {
 				'validator',
 				'## Validation budget',
 				() =>
-					'Resolve the refs in the ledger first, then execute at most the uncovered remainder. Call `verify` with `{ ref }` for every ref, because resolution executes nothing and is not charged as a validation pass. Run each remaining unchanged command once by default; retry only to distinguish flakiness or an environment issue. Report compact usage as budget: checks/retries/output. Keep the report under the configured output limit.',
+					'Resolve the refs in the ledger first, then execute at most the uncovered remainder. Call `verify` with `{ ref, flowId?, covers? }` for every ref, because resolution executes nothing and is not charged as a validation pass. Use `fresh: true` only when a new execution is required. Run each remaining unchanged command once by default; retry only to distinguish flakiness or an environment issue. Report compact usage as budget: checks/retries/output. Keep the report under the configured output limit.',
 			);
 		case 'reviewer':
 			return roleBudgetText(
@@ -378,7 +378,7 @@ Do not commit, reset, stash, or otherwise modify the repository.
 Do not invoke the subagent tool.
 Do not run builds, tests, linters, formatters, generators, audits, or other commands that execute project code.
 
-\`verify\` is available to you as a lookup only: call it with \`{ ref }\` and nothing else.
+\`verify\` is available to you as a lookup only: call it with \`{ ref, flowId?, covers? }\`; do not add \`publish\` or \`fresh\` to a lookup.
 
 Use read-only Git tools for repository inspection.
 Do not call codegraph_sync.
@@ -480,7 +480,7 @@ Write None when there are no findings.
 
 - command or supplied evidence - Result, the ref cited for it, that ref's \`covers\` ids, and whether it is sufficient.
 
-The reviewer audits refs and never re-executes them. Resolve a supplied ref by calling \`verify\` with \`{ ref }\` and nothing else, because a lookup executes nothing and is not a validation pass; a \`verify\` call carrying any other parameter is out of contract and is refused by enforcement. A required check with no live ref is a finding, and so is a ref cited with a freshness of \`resolved\` for a check that needed execution. A ref that returns nothing is reported unverified rather than trusted or re-run, because you cannot establish a freshness you did not observe.
+The reviewer audits refs and never re-executes them. Resolve a supplied ref by calling \`verify\` with \`{ ref }\` and nothing else for the default flow; add \`flowId\` or \`covers\` only when needed; a lookup executes nothing and is not a validation pass; do not add \`publish\` or \`fresh\` to a lookup; those shapes are refused by enforcement. Confirm \`repositoryStateStatus: matches\`; a mismatch, unreadable state, refusal, timeout, or not-found lookup is unresolved evidence. A required check with no live ref is a finding, and so is a ref cited with a freshness of \`resolved\` for a check that needed execution. A ref that returns nothing is reported unverified rather than trusted or re-run, because you cannot establish a freshness you did not observe. The mandatory \`## Files Reviewed\` section is the inspected set: list every reviewed path and relevant line range, and do not treat \`covers\` as a substitute for inspection.
 
 ## Unverified Checks
 
@@ -765,7 +765,7 @@ ${VALIDATOR_BUDGET}
 
 ## Command policy
 
-Resolve before you execute. Call \`verify\` with \`{ ref }\` for every ref in the ledger, confirm the verdict, confirm \`covers\` spans every required id, and confirm the ref repository state still matches the repository under review.
+Resolve before you execute. Call \`verify\` with \`{ ref, flowId?, covers? }\` for every ref in the ledger, confirm the verdict, confirm \`covers\` spans every required id, and confirm \`repositoryStateStatus\` is \`matches\`.
 A ref that is stale, covers no required id, or was minted against a different repository state is reported \`NOT_RUN\` and then executed.
 Execute only what no live ref covers, once per command, and cite the ref you minted.
 Re-running evidence a live ref already covers is a defect, not extra assurance. When the refs already cover every required check your report says so, and it cites them instead of re-running them.
@@ -797,7 +797,7 @@ Attribute each unexpected change before reporting it: one made by a sibling sess
 ## Validation process
 
 1. Read the task, workflow mode, changed files, acceptance criteria, planner validation section, worker report, and every \`verify\` ref named in the ledger.
-2. Resolve each ref with \`verify\` and \`{ ref }\`: confirm the verdict, confirm \`covers\` spans every required id, and confirm the ref repository state still matches the repository under review. Resolution executes nothing and is not a validation pass.
+2. Resolve each ref with \`verify\` and \`{ ref }\`: add \`flowId\` or \`covers\` when needed, confirm the verdict, confirm \`covers\` spans every required id, and confirm \`repositoryStateStatus\` is \`matches\`. Resolution executes nothing and is not a validation pass.
 3. Report every check named by a stale ref, or by a ref whose \`covers\` list omits a required id, as \`NOT_RUN\` before executing it.
 4. Determine the minimum required checks from the changed files, plan, selected tier, and project instructions.
 5. Confirm that the commands are approved and non-mutating before running them.

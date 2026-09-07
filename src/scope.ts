@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -36,48 +37,122 @@ function hunkHeaders(diff: string): string {
 	return lines.length > 0 ? lines.join('\n') : '(none)';
 }
 
-function snapshotText(flowId: string, cwd: string): string {
+const MAX_DIRTY_PATHS = 100;
+const MAX_DIRTY_PATH_LENGTH = 512;
+
+export interface ReviewSurfaceSnapshot {
+	path: string;
+	revision: number;
+	refreshed: boolean;
+	dirtyPaths: string[];
+}
+
+interface SnapshotInputs {
+	status: string;
+	stat: string;
+	diff: string;
+	fingerprint: string;
+	dirtyPaths: string[];
+}
+
+function dirtyPathsFromStatus(status: string): string[] {
+	if (status === '(clean)' || status === '(unavailable)') return [];
+	return status
+		.split('\n')
+		.map((line) => line.trimEnd())
+		.filter(Boolean)
+		.map((line) => {
+			const value = line.length > 3 ? line.slice(3).trim() : line.trim();
+			const rename = value.lastIndexOf(' -> ');
+			return rename >= 0 ? value.slice(rename + 4) : value;
+		})
+		.filter(
+			(value, index, all) =>
+				value.length > 0 && value.length <= MAX_DIRTY_PATH_LENGTH && all.indexOf(value) === index,
+		)
+		.slice(0, MAX_DIRTY_PATHS);
+}
+
+function snapshotInputs(cwd: string): SnapshotInputs {
 	const status = gitOutput(cwd, ['status', '--short']).trim() || '(clean)';
 	const stat = gitOutput(cwd, ['diff', '--stat']).trim() || '(none)';
 	const diff = gitOutput(cwd, ['diff', '--no-color', '--unified=0']);
+	const fingerprint = createHash('sha256').update(`${status}\n${stat}`).digest('hex');
+	return { status, stat, diff, fingerprint, dirtyPaths: dirtyPathsFromStatus(status) };
+}
+
+function snapshotText(
+	flowId: string,
+	cwd: string,
+	inputs: SnapshotInputs,
+	revision: number,
+): string {
 	return capUtf8(
 		[
 			'# Review surface snapshot',
 			'',
 			`flow_id: ${flowId}`,
+			`snapshot_fingerprint: ${inputs.fingerprint}`,
+			`snapshot_revision: ${revision}`,
 			`cwd: ${cwd}`,
 			'',
 			'## Working-tree status',
 			'',
-			status,
+			inputs.status,
 			'',
 			'## Diff stat',
 			'',
-			stat,
+			inputs.stat,
 			'',
 			'## Diff hunk headers',
 			'',
-			hunkHeaders(diff),
+			hunkHeaders(inputs.diff),
 			'',
 		].join('\n'),
 		MAX_SNAPSHOT_BYTES,
 	);
 }
 
+function snapshotMetadata(target: string): { fingerprint: string; revision: number } | undefined {
+	try {
+		const content = fs.readFileSync(target, 'utf8');
+		const fingerprint = /^snapshot_fingerprint:\s*(\S+)$/m.exec(content)?.[1];
+		const revision = Number(/^snapshot_revision:\s*(\d+)$/m.exec(content)?.[1]);
+		if (fingerprint && Number.isSafeInteger(revision) && revision > 0)
+			return { fingerprint, revision };
+	} catch {}
+	return undefined;
+}
+
 export function reviewSurfacePath(flowId: string): string {
 	return path.join(flowDirFor(flowId), PREDIGEST_SUBDIR, 'review-surface.md');
 }
 
-export function ensureReviewSurface(flowId: string | undefined, cwd: string): string | undefined {
+export function ensureReviewSurface(
+	flowId: string | undefined,
+	cwd: string,
+): ReviewSurfaceSnapshot | undefined {
 	if (!flowId || !ensureFlow({ flowId })) return undefined;
 	const target = reviewSurfacePath(flowId);
 	try {
 		return withFileLock(path.join(flowDirFor(flowId), '.lock'), () => {
-			if (!fs.existsSync(target)) {
-				fs.mkdirSync(path.dirname(target), { recursive: true });
-				fs.writeFileSync(target, snapshotText(flowId, cwd), { encoding: 'utf8', mode: 0o600 });
+			const inputs = snapshotInputs(cwd);
+			const previous = snapshotMetadata(target);
+			if (previous?.fingerprint === inputs.fingerprint) {
+				return {
+					path: target,
+					revision: previous.revision,
+					refreshed: false,
+					dirtyPaths: inputs.dirtyPaths,
+				};
 			}
-			return target;
+			const revision = previous ? previous.revision + 1 : 1;
+			fs.mkdirSync(path.dirname(target), { recursive: true });
+			fs.writeFileSync(target, snapshotText(flowId, cwd, inputs, revision), {
+				encoding: 'utf8',
+				mode: 0o600,
+			});
+			return { path: target, revision, refreshed: true, dirtyPaths: inputs.dirtyPaths };
 		});
 	} catch {
 		return undefined;

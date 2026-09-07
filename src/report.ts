@@ -8,6 +8,8 @@ const LEDGER_MARKER = /^[ \t]*workflow_version[ \t]*:/m;
 const LEDGER_FIELD = /^[ \t]*([a-z][a-z0-9_]*)[ \t]*:[ \t]*(.*)$/;
 const SIGNAL_FIELD =
 	/(delegation_status|validation_verdict|review_verdict|verdict|escalat|blocker|unresolved|recommended_next_action|budget)\s*:/i;
+const FILES_REVIEWED_HEADING = /^##[ \t]+Files Reviewed[ \t]*$/im;
+const NEXT_H2_HEADING = /^##[ \t]+/gm;
 
 /** Character heuristic for budget arithmetic; the analyzer uses real token counts. */
 export const CHARS_PER_TOKEN = 4;
@@ -21,6 +23,10 @@ export interface LedgerBlock {
 	/** The full fenced block as it appeared, used to strip it from the remainder. */
 	raw: string;
 	index: number;
+	/** Whether the report included a `## Files Reviewed` section. */
+	filesReviewedPresent: boolean;
+	/** Paths extracted from the reviewer inspection section. */
+	filesReviewed: string[];
 }
 
 export function tokensFromChars(chars: number): number {
@@ -29,6 +35,29 @@ export function tokensFromChars(chars: number): number {
 
 export function estimateTokens(text: string): number {
 	return tokensFromChars(text.length);
+}
+
+export function parseFilesReviewed(output: string): string[] | undefined {
+	const heading = FILES_REVIEWED_HEADING.exec(output);
+	if (!heading || heading.index === undefined) return undefined;
+	const start = heading.index + heading[0].length;
+	NEXT_H2_HEADING.lastIndex = start;
+	const next = NEXT_H2_HEADING.exec(output);
+	const section = output.slice(start, next?.index ?? output.length);
+	const paths: string[] = [];
+	for (const rawLine of section.split('\n')) {
+		const line = rawLine.trim();
+		if (!/^[-*+][ \t]+/.test(line)) continue;
+		let item = line.replace(/^[-*+][ \t]+/, '').trim();
+		if (!item || /^(none|no files reviewed)\.?$/i.test(item)) continue;
+		item = item.split(/\s+-\s+/, 1)[0].trim();
+		const link = /^\[([^\]]+)\]\([^)]*\)/.exec(item);
+		if (link) item = link[1].trim();
+		item = item.replace(/:\s*(?:line[- ]?range|lines?|L)?\s*\d+(?:[-,]\d+)*$/i, '').trim();
+		item = item.replace(/:\s*(?:line[- ]?range|lines?)$/i, '').trim();
+		if (item && !paths.includes(item)) paths.push(item);
+	}
+	return paths;
 }
 
 export function parseLedgerBlock(output: string): LedgerBlock | null {
@@ -41,7 +70,16 @@ export function parseLedgerBlock(output: string): LedgerBlock | null {
 			const kv = LEDGER_FIELD.exec(line);
 			if (kv) fields[kv[1] as string] = (kv[2] ?? '').trim();
 		}
-		found = { fields, block: body.trim(), raw: match[0], index: match.index ?? 0 };
+		const filesReviewed = parseFilesReviewed(output);
+		if (filesReviewed !== undefined) fields.changed_files = filesReviewed.join(',');
+		found = {
+			fields,
+			block: body.trim(),
+			raw: match[0],
+			index: match.index ?? 0,
+			filesReviewedPresent: filesReviewed !== undefined,
+			filesReviewed: filesReviewed ?? [],
+		};
 	}
 	return found;
 }
@@ -62,14 +100,26 @@ export interface ReportDigest {
 	tokens: number;
 	truncated: boolean;
 	ledgerParsed: boolean;
+	filesReviewedPresent: boolean;
+	filesReviewed: string[];
+	contractIssues: string[];
 }
 
 /**
  * Compresses a child report into what the parent needs to decide: the ledger when the
  * child emitted one, otherwise its status lines, plus the head of the report.
  */
-export function buildReportDigest(output: string, digestTokens: number): ReportDigest {
+export function buildReportDigest(
+	output: string,
+	digestTokens: number,
+	options: { requireFilesReviewed?: boolean } = {},
+): ReportDigest {
 	const ledger = parseLedgerBlock(output);
+	const filesReviewed = parseFilesReviewed(output);
+	const contractIssues =
+		options.requireFilesReviewed && filesReviewed === undefined
+			? ['missing required ## Files Reviewed section']
+			: [];
 	const remainder = ledger
 		? output.slice(0, ledger.index) + output.slice(ledger.index + ledger.raw.length)
 		: output;
@@ -97,8 +147,19 @@ export function buildReportDigest(output: string, digestTokens: number): ReportD
 	} else if (body) {
 		parts.push(body);
 	}
+	if (contractIssues.length > 0) {
+		parts.unshift(`Report contract: ${contractIssues.join('; ')}.`);
+	}
 	const digest = parts.join('\n\n').trim();
-	return { digest, tokens: estimateTokens(digest), truncated, ledgerParsed: ledger !== null };
+	return {
+		digest,
+		tokens: estimateTokens(digest),
+		truncated,
+		ledgerParsed: ledger !== null,
+		filesReviewedPresent: filesReviewed !== undefined,
+		filesReviewed: filesReviewed ?? [],
+		contractIssues,
+	};
 }
 
 export interface RoleReportWrite {

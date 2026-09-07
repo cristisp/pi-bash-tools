@@ -129,12 +129,12 @@ record contention refusals, so "does the lock ever fire" is a number rather than
 
 Changes:
 
-- [ ] Freeze: no new features and no review rounds on `src/repo-lock.ts`; defects fixed only on a
+- [x] Freeze: no new features and no review rounds on `src/repo-lock.ts`; defects fixed only on a
       live wedge.
-- [ ] Teach the role prompts and the guide the drift vocabulary: a result carrying
+- [x] Teach the role prompts and the guide the drift vocabulary: a result carrying
       `stateDrift: true` is not usable evidence; the seat waits for the sibling to settle and
       re-executes, which is the same discipline the lock's contention refusal already prints.
-- [ ] Record contention in telemetry: `stateDrift` and `concurrentExecutions` extracted from `verify`
+- [x] Record contention in telemetry: `stateDrift` and `concurrentExecutions` extracted from `verify`
       and `project_command` payloads (lands with the S5 metrics work), plus our own lock refusals.
 - [ ] Deletion gate, consumer-side and measurable: delete the module when a full measurement window
       shows zero contention refusals and zero drift-flagged executions across flows, because then the

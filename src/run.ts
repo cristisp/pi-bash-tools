@@ -13,7 +13,7 @@ import {
 	type EvidenceScopePolicy,
 } from './delegation.ts';
 import { ensureFlow, recordFlowParticipant } from './flow.ts';
-import { ensureReviewSurface } from './scope.ts';
+import { ensureReviewSurface, type ReviewSurfaceSnapshot } from './scope.ts';
 import { manifestGuidance, writeReadManifest } from './manifest.ts';
 import {
 	appendLedgerRevision,
@@ -91,6 +91,12 @@ function scopeGuidance(delegation: DelegationContext): string {
 	const lines = ['## Assigned review scope'];
 	if (delegation.reviewSurfacePath)
 		lines.push(`Shared review surface snapshot: ${delegation.reviewSurfacePath}`);
+	if (delegation.reviewSurfaceRevision !== undefined)
+		lines.push(
+			`Review surface revision: ${delegation.reviewSurfaceRevision}${delegation.reviewSurfaceRefreshed ? ' (refreshed for this launch)' : ' (unchanged)'}`,
+		);
+	if (delegation.dirtyPaths?.length)
+		lines.push(`Dirty paths at snapshot: ${delegation.dirtyPaths.join(', ')}`);
 	if (scope?.paths?.length) {
 		lines.push(`In-scope paths: ${scope.paths.join(', ')}`);
 		const budget = scopedRoleBudget(delegation.role, scope.paths.length);
@@ -107,17 +113,40 @@ function scopeGuidance(delegation: DelegationContext): string {
 	return lines.join('\n');
 }
 
+function applyReviewSurface(
+	currentResult: SingleResult,
+	delegation: DelegationContext,
+	surface?: ReviewSurfaceSnapshot,
+): void {
+	if (surface) {
+		delegation.reviewSurfacePath = surface.path;
+		delegation.reviewSurfaceRevision = surface.revision;
+		delegation.reviewSurfaceRefreshed = surface.refreshed;
+		delegation.dirtyPaths = surface.dirtyPaths;
+	}
+	currentResult.reviewSurfacePath = delegation.reviewSurfacePath;
+	currentResult.reviewSurfaceRevision = delegation.reviewSurfaceRevision;
+	currentResult.reviewSurfaceRefreshed = delegation.reviewSurfaceRefreshed;
+	currentResult.dirtyPaths = delegation.dirtyPaths;
+}
+
 function scopedTask(
 	task: string,
 	delegation: DelegationContext,
 	readManifest?: ReadManifest,
 ): string {
 	const sections = [
-		delegation.scope ? scopeGuidance(delegation) : '',
+		delegation.scope || delegation.reviewSurfacePath ? scopeGuidance(delegation) : '',
 		readManifest?.persistedPath ? manifestGuidance(readManifest.persistedPath) : '',
 	].filter(Boolean);
 	return sections.length > 0 ? `${sections.join('\n\n')}\n\n${task}` : task;
 }
+
+const PRODUCER_ENVIRONMENT_KEYS = [
+	'BASH_TOOLS_INVOCATIONS_PATH',
+	'BASH_TOOLS_INVOCATION_STREAM',
+	'BASH_TOOLS_TELEMETRY_PATH',
+] as const;
 
 function buildLaunchCommand(
 	agents: AgentConfig,
@@ -129,6 +158,10 @@ function buildLaunchCommand(
 	delegation?: DelegationContext,
 ): string {
 	const env: Record<string, string> = { PI_SUBAGENT_NESTED: '1', PI_SUBAGENT_LABEL: label };
+	for (const key of PRODUCER_ENVIRONMENT_KEYS) {
+		const value = process.env[key];
+		if (value !== undefined) env[key] = value;
+	}
 	if (delegation) Object.assign(env, orchestrationEnv(delegation));
 	const parts: string[] = Object.entries(env).map(([key, value]) => `${key}=${shellQuote(value)}`);
 	parts.push('pi');
@@ -269,13 +302,22 @@ function attachRoleReport(
 	if (!delegation || isFailedResult(currentResult)) return;
 	const output = getResultOutput(currentResult);
 	if (!output.trim() || output === '(no output)') return;
-	const built = buildReportDigest(output, getConfig().reportDigestTokens);
+	const built = buildReportDigest(output, getConfig().reportDigestTokens, {
+		requireFilesReviewed: delegation.role === 'reviewer',
+	});
 	const report: RoleReport = {
 		digest: built.digest,
 		tokens: estimateTokens(output),
 		digestTokens: built.tokens,
 		truncated: built.truncated,
 		ledgerParsed: built.ledgerParsed,
+		...(delegation.role === 'reviewer'
+			? {
+					filesReviewedPresent: built.filesReviewedPresent,
+					filesReviewed: built.filesReviewed,
+					contractIssues: built.contractIssues,
+				}
+			: {}),
 	};
 	const reportPath = writeRoleReport({
 		flowId: delegation.flowId,
@@ -320,6 +362,14 @@ function emitDelegationTelemetry(
 				? 'failed'
 				: 'settled';
 	const childLedger = parseLedgerBlock(getFinalOutput(currentResult.messages));
+	const childFields = childLedger?.fields ? { ...childLedger.fields } : undefined;
+	const omitted =
+		currentResult.metrics?.validationRefs?.flatMap((reference) => reference.omitted ?? []) ?? [];
+	if (childFields && omitted.length > 0) {
+		childFields.validation_omitted = [...new Set(omitted)].join(',');
+		if (/^(pass(?:ed)?|ok|success)$/i.test(childFields.validation_verdict ?? ''))
+			childFields.validation_verdict = 'incomplete';
+	}
 	const revision = appendLedgerRevision({
 		flowId: delegation.flowId,
 		kind: 'result',
@@ -332,7 +382,7 @@ function emitDelegationTelemetry(
 		failedToolCalls: currentResult.metrics?.failedToolCalls,
 		turns: currentResult.metrics?.turns,
 		reportPath: currentResult.report?.path,
-		childFields: childLedger?.fields,
+		childFields,
 	});
 	if (revision) currentResult.ledgerRevision = revision.revision;
 	if (!currentResult.ledgerInjection) currentResult.ledgerInjection = 'none';
@@ -371,6 +421,9 @@ function emitDelegationTelemetry(
 		);
 		lastRun.scope = currentResult.scope;
 		lastRun.reviewSurfacePath = currentResult.reviewSurfacePath;
+		lastRun.reviewSurfaceRevision = delegation.reviewSurfaceRevision;
+		lastRun.reviewSurfaceRefreshed = delegation.reviewSurfaceRefreshed;
+		lastRun.dirtyPaths = delegation.dirtyPaths;
 		lastRun.readManifest = currentResult.readManifest;
 		updateRegistryEntry(context.label, {
 			lastRun,
@@ -607,6 +660,13 @@ async function createFreshSubagentTab(
 		...(delegation.parentPaneId ? { parentPaneId: delegation.parentPaneId } : {}),
 		delegationId: delegation.delegationId,
 		...(delegation.flowId ? { flowId: delegation.flowId } : {}),
+		...(delegation.reviewSurfaceRevision !== undefined
+			? { reviewSurfaceRevision: delegation.reviewSurfaceRevision }
+			: {}),
+		...(delegation.reviewSurfaceRefreshed !== undefined
+			? { reviewSurfaceRefreshed: delegation.reviewSurfaceRefreshed }
+			: {}),
+		...(delegation.dirtyPaths?.length ? { dirtyPaths: delegation.dirtyPaths } : {}),
 		...(typeof delegation.tier === 'number' ? { tier: delegation.tier } : {}),
 		...(delegation.workflowMode ? { workflowMode: delegation.workflowMode } : {}),
 		...(delegation.reviewMode ? { reviewMode: delegation.reviewMode } : {}),
@@ -671,10 +731,12 @@ async function launchFreshAgent(
 	currentResult: SingleResult,
 	delegation: DelegationContext,
 ): Promise<FreshAgentTab | null> {
-	if (!delegation.reviewSurfacePath)
-		delegation.reviewSurfacePath = ensureReviewSurface(delegation.flowId, cwd ?? defaultCwd);
+	const surface =
+		delegation.reviewSurfacePath && delegation.reviewSurfaceRevision !== undefined
+			? undefined
+			: ensureReviewSurface(delegation.flowId, cwd ?? defaultCwd);
+	applyReviewSurface(currentResult, delegation, surface);
 	currentResult.scope = delegation.scope;
-	currentResult.reviewSurfacePath = delegation.reviewSurfacePath;
 	const dispatch = recordLedgerDispatch(delegation, { reused: false });
 	if (dispatch) currentResult.ledgerInjection = 'prefix';
 	const tmp = await writeAgentTempFiles(
@@ -917,7 +979,7 @@ export async function runSingleAgent(
 	currentResult.rootSession = delegation.rootSession;
 	currentResult.parentPaneId = delegation.parentPaneId;
 	currentResult.scope = delegation.scope;
-	currentResult.reviewSurfacePath = delegation.reviewSurfacePath;
+	applyReviewSurface(currentResult, delegation);
 	currentResult.tier = delegation.tier;
 	currentResult.workflowMode = delegation.workflowMode;
 	currentResult.reviewMode = delegation.reviewMode;
@@ -1029,14 +1091,16 @@ export async function runReusedAgent(
 		rootSession: entry.rootSession ?? parentSession,
 		parentPaneId: HERDR_PANE_ID,
 	});
-	if (!delegation.reviewSurfacePath)
-		delegation.reviewSurfacePath = ensureReviewSurface(delegation.flowId, entry.cwd || defaultCwd);
+	const surface =
+		orchestration?.reviewSurfaceRevision !== undefined
+			? undefined
+			: ensureReviewSurface(delegation.flowId, entry.cwd || defaultCwd);
+	applyReviewSurface(currentResult, delegation, surface);
 	currentResult.delegationId = delegation.delegationId;
 	currentResult.flowId = delegation.flowId;
 	currentResult.rootSession = delegation.rootSession;
 	currentResult.parentPaneId = delegation.parentPaneId;
 	currentResult.scope = delegation.scope;
-	currentResult.reviewSurfacePath = delegation.reviewSurfacePath;
 	currentResult.tier = delegation.tier;
 	currentResult.workflowMode = delegation.workflowMode;
 	currentResult.reviewMode = delegation.reviewMode;
@@ -1068,6 +1132,13 @@ export async function runReusedAgent(
 			...(delegation.rootSession ? { rootSession: delegation.rootSession } : {}),
 			...(delegation.parentPaneId ? { parentPaneId: delegation.parentPaneId } : {}),
 			...(delegation.flowId ? { flowId: delegation.flowId } : {}),
+			...(delegation.reviewSurfaceRevision !== undefined
+				? { reviewSurfaceRevision: delegation.reviewSurfaceRevision }
+				: {}),
+			...(delegation.reviewSurfaceRefreshed !== undefined
+				? { reviewSurfaceRefreshed: delegation.reviewSurfaceRefreshed }
+				: {}),
+			...(delegation.dirtyPaths?.length ? { dirtyPaths: delegation.dirtyPaths } : {}),
 			...(typeof delegation.tier === 'number' ? { tier: delegation.tier } : {}),
 			...(delegation.workflowMode ? { workflowMode: delegation.workflowMode } : {}),
 			...(delegation.reviewMode ? { reviewMode: delegation.reviewMode } : {}),
@@ -1078,6 +1149,13 @@ export async function runReusedAgent(
 			evidenceScope: delegation.evidenceScope,
 			scope: delegation.scope,
 			reviewSurfacePath: delegation.reviewSurfacePath,
+			...(delegation.reviewSurfaceRevision !== undefined
+				? { reviewSurfaceRevision: delegation.reviewSurfaceRevision }
+				: {}),
+			...(delegation.reviewSurfaceRefreshed !== undefined
+				? { reviewSurfaceRefreshed: delegation.reviewSurfaceRefreshed }
+				: {}),
+			...(delegation.dirtyPaths?.length ? { dirtyPaths: delegation.dirtyPaths } : {}),
 			...(dispatch ? { ledgerRevisionAtLaunch: dispatch.revision } : {}),
 		});
 		recordTask(label, entry, task);
