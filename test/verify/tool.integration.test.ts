@@ -1,11 +1,18 @@
-import { realpath, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { afterEach, expect, it, vi } from "vitest";
 import type { PolicyStore } from "../../src/tools/policy/types.ts";
 import type { ProjectCommandExecutionOutcome } from "../../src/tools/project-command/execution.ts";
 import type { ProjectCommandExecutor } from "../../src/tools/project-command/runner.ts";
 import type { ProjectCommandResolver } from "../../src/tools/project-command/resolution.ts";
+import { createProjectCommandExecutor } from "../../src/tools/project-command/execution.ts";
+import { resolveNodeProjectCommand } from "../../src/tools/project-command/node.ts";
 import { createProjectCommandRepositoryStateReader } from "../../src/tools/project-command/repository-state.ts";
+import {
+  BASH_TOOLS_INVOCATIONS_PATH,
+  createProjectCommandInvocationRecorder,
+} from "../../src/observability/project-command-invocation.ts";
 import { createVerifyEvidenceCache } from "../../src/tools/verify/cache.ts";
 import { createVerifyToolForTesting, type VerifyToolContext } from "../../src/tools/verify/tool.ts";
 import {
@@ -54,6 +61,16 @@ function context(cwd: string): VerifyToolContext {
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseRecord(line: string): Record<string, unknown> {
+  const value: unknown = JSON.parse(line);
+  if (isRecord(value)) return value;
+  throw new Error("expected a JSON object invocation record");
+}
+
 function outcome(): ProjectCommandExecutionOutcome {
   return {
     status: "success",
@@ -86,6 +103,125 @@ function dependencies(onFirstExecution?: () => Promise<void>) {
 }
 
 gitIntegration("Verify repository-state cache invalidation", () => {
+  it("writes a producer JSONL record for execution and each lookup outcome", async () => {
+    const repository = await fixtures.createRepository();
+    await writeFile(
+      join(repository.directory, "package.json"),
+      JSON.stringify({
+        packageManager: "npm@10.0.0",
+        scripts: {
+          "format:check": 'node -e "process.exit(0)"',
+          lint: 'node -e "process.exit(0)"',
+          test: 'node -e "process.exit(0)"',
+        },
+      }),
+    );
+    await rawGit(repository.directory, ["add", "package.json"]);
+    await rawGit(repository.directory, ["commit", "--quiet", "-m", "project manifest"]);
+    const streamRoot = await mkdtemp(join(tmpdir(), "bash-tools-invocation-stream-"));
+    fixtures.trackDirectory(streamRoot);
+    const streamPath = join(streamRoot, "invocations.jsonl");
+    const cacheRoot = await mkdtemp(join(tmpdir(), "bash-tools-verify-cache-"));
+    fixtures.trackDirectory(cacheRoot);
+    try {
+      const resolver: ProjectCommandResolver = (definition, projectPath, _signal, parameters) =>
+        resolveNodeProjectCommand(definition, projectPath, parameters, {
+          approvedPackageManagerDirectories: [dirname(process.execPath)],
+        });
+      const invocationRecorder = createProjectCommandInvocationRecorder(
+        { appendEntry: vi.fn() },
+        { [BASH_TOOLS_INVOCATIONS_PATH]: streamPath },
+      );
+      const tool = createVerifyToolForTesting({
+        policy: policy(),
+        resolver,
+        executor: createProjectCommandExecutor(),
+        repositoryStateReader: createProjectCommandRepositoryStateReader(makeRealGitExec()),
+        cache: createVerifyEvidenceCache({ rootDirectory: cacheRoot }),
+        invocationRecorder,
+      });
+      const first = await tool.execute(
+        "verify-stream-execution",
+        { omit: ["typecheck"] },
+        undefined,
+        undefined,
+        context(repository.directory),
+      );
+      expect(first.details.ref).toBeDefined();
+      const reused = await tool.execute(
+        "verify-stream-reuse",
+        { omit: ["typecheck"] },
+        undefined,
+        undefined,
+        context(repository.directory),
+      );
+      expect(reused.details.reused).toBe(true);
+      await tool.execute(
+        "verify-stream-lookup",
+        { ref: first.details.ref },
+        undefined,
+        undefined,
+        context(repository.directory),
+      );
+      await expect(
+        tool.execute(
+          "verify-stream-missing-lookup",
+          { ref: "vr_missing_stream" },
+          undefined,
+          undefined,
+          context(repository.directory),
+        ),
+      ).rejects.toMatchObject({ code: "not-found" });
+      const noReusableTool = createVerifyToolForTesting({
+        policy: policy(),
+        resolver,
+        executor: createProjectCommandExecutor(),
+        repositoryStateReader: async () => undefined,
+        invocationRecorder,
+      });
+      const noReusable = await noReusableTool.execute(
+        "verify-stream-no-ref",
+        { omit: ["typecheck"] },
+        undefined,
+        undefined,
+        context(repository.directory),
+      );
+      expect(noReusable.details.ref).toBeUndefined();
+
+      const records = (await readFile(streamPath, "utf8")).trimEnd().split("\n").map(parseRecord);
+      expect(records).toHaveLength(5);
+      expect(records.every((record) => record.commandId === "verify")).toBe(true);
+      expect(records[0]).toMatchObject({
+        executed: true,
+        reused: false,
+        aggregate: true,
+      });
+      expect(records[1]).toMatchObject({ executed: false, reused: true });
+      expect(records[1]).not.toHaveProperty("lookup");
+      expect(records[2]).toMatchObject({
+        lookup: { attempted: true, success: true },
+        repositoryState: { readable: true, stateMatchesCurrent: true },
+      });
+      expect(records[3]).toMatchObject({
+        executed: false,
+        lookup: { attempted: true, success: false, failure: "not-found" },
+        reason: "lookup-failure",
+        resultCategory: "RESOLUTION_FAILURE",
+      });
+      expect(records[4]).toMatchObject({
+        executed: true,
+        reused: false,
+        cacheDecision: "ineligible",
+      });
+      expect(records[4]).not.toHaveProperty("ref");
+    } finally {
+      await Promise.all([
+        rm(streamRoot, { recursive: true, force: true }),
+        rm(cacheRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
   it("reuses the shared cache and reruns after tracked and untracked content changes", async () => {
     const repository = await fixtures.createRepository();
     await writeFile(join(repository.directory, "package.json"), JSON.stringify({ scripts: {} }));

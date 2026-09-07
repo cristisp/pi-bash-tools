@@ -1,3 +1,5 @@
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname, isAbsolute } from "node:path";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -20,7 +22,15 @@ export const PROJECT_COMMAND_SUMMARY_ENTRY_TYPE = "bash-tools.project-command-su
 export const PROJECT_COMMAND_SUMMARY_MAX_BYTES = 8 * 1024;
 export const PROJECT_COMMAND_SUMMARY_MAX_COUNT = 1_000_000;
 export const PROJECT_COMMAND_SUMMARY_MAX_SCHEMA_HASHES = 32;
+export const BASH_TOOLS_INVOCATIONS_PATH = "BASH_TOOLS_INVOCATIONS_PATH";
+export const BASH_TOOLS_INVOCATION_STREAM = "BASH_TOOLS_INVOCATION_STREAM";
+export const BASH_TOOLS_TELEMETRY_PATH = "BASH_TOOLS_TELEMETRY_PATH";
 
+const INVOCATION_STREAM_ENVIRONMENT_VARIABLES = [
+  BASH_TOOLS_INVOCATIONS_PATH,
+  BASH_TOOLS_INVOCATION_STREAM,
+  BASH_TOOLS_TELEMETRY_PATH,
+] as const;
 const MAX_IDENTIFIER_LENGTH = 256;
 const MAX_PARAMETER_KEYS = 16;
 const MAX_PARAMETER_ITEMS = 16;
@@ -38,6 +48,7 @@ const PROJECT_COMMAND_INVOCATION_REASONS = [
   "policy-failure",
   "execution-failure",
   "cancelled",
+  "lookup-failure",
   "preparation-failure",
 ] as const;
 
@@ -83,6 +94,12 @@ export interface ProjectCommandInvocationPublicationMetadata {
   readonly error?: string;
 }
 
+export interface ProjectCommandInvocationLookupMetadata {
+  readonly attempted: boolean;
+  readonly success: boolean;
+  readonly failure?: string;
+}
+
 /** Values in this map are either bounded non-sensitive values or redaction metadata. */
 export type ProjectCommandInvocationParameters = Readonly<Record<string, unknown>>;
 
@@ -114,6 +131,7 @@ export interface ProjectCommandInvocationRecordInput {
   readonly verdict?: "passed" | "failed" | "incomplete";
   readonly mutating?: boolean;
   readonly publication?: ProjectCommandInvocationPublicationMetadata;
+  readonly lookup?: ProjectCommandInvocationLookupMetadata;
   readonly coercions?: readonly string[];
   readonly concurrentExecutions?: number;
   readonly stateDrift?: boolean;
@@ -148,6 +166,7 @@ export interface ProjectCommandInvocationRecord {
   readonly verdict?: "passed" | "failed" | "incomplete";
   readonly mutating?: boolean;
   readonly publication?: ProjectCommandInvocationPublicationMetadata;
+  readonly lookup?: ProjectCommandInvocationLookupMetadata;
   readonly coercions?: readonly string[];
   readonly concurrentExecutions?: number;
   readonly stateDrift?: boolean;
@@ -326,6 +345,17 @@ function boundedState(
   };
 }
 
+function boundedLookup(
+  value: ProjectCommandInvocationLookupMetadata | undefined,
+): ProjectCommandInvocationLookupMetadata | undefined {
+  if (value === undefined || !value.attempted) return undefined;
+  return {
+    attempted: true,
+    success: value.success,
+    ...(value.failure === undefined ? {} : { failure: boundedIdentifier(value.failure) }),
+  };
+}
+
 function boundedPublication(
   value: ProjectCommandInvocationPublicationMetadata | undefined,
 ): ProjectCommandInvocationPublicationMetadata | undefined {
@@ -469,6 +499,7 @@ function boundedRecord(record: ProjectCommandInvocationRecord): ProjectCommandIn
     ...(record.verdict === undefined ? {} : { verdict: record.verdict }),
     ...(record.mutating === undefined ? {} : { mutating: record.mutating }),
     ...(record.publication === undefined ? {} : { publication: record.publication }),
+    ...(record.lookup === undefined ? {} : { lookup: record.lookup }),
     ...(record.coercions === undefined ? {} : { coercions: record.coercions }),
     ...(record.concurrentExecutions === undefined
       ? {}
@@ -525,6 +556,7 @@ export function buildProjectCommandInvocationRecord(
     ...(boundedPublication(input.publication) === undefined
       ? {}
       : { publication: boundedPublication(input.publication) }),
+    ...(boundedLookup(input.lookup) === undefined ? {} : { lookup: boundedLookup(input.lookup) }),
     ...(boundedCoercions(input.coercions) === undefined
       ? {}
       : { coercions: boundedCoercions(input.coercions) }),
@@ -831,9 +863,53 @@ export function createProjectCommandInvocationSessionRecorder(
   return Object.freeze({ invocationRecorder: record, onSessionStart, onSessionShutdown });
 }
 
-/** Create a best-effort recorder backed by Pi's session custom-entry API. */
+const invocationStreamWarnings = new Set<string>();
+
+function configuredInvocationStreamPath(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): string | undefined {
+  for (const environmentVariable of INVOCATION_STREAM_ENVIRONMENT_VARIABLES) {
+    const value = environment[environmentVariable];
+    if (value === undefined || value.trim().length === 0) continue;
+    const path = value.trim();
+    if (!isAbsolute(path)) {
+      warnInvocationStream(path, `${environmentVariable} must contain an absolute JSONL file path`);
+      return undefined;
+    }
+    return path;
+  }
+  return undefined;
+}
+
+function warnInvocationStream(path: string, message: string): void {
+  const warningKey = `${path}:${message}`;
+  if (invocationStreamWarnings.has(warningKey)) return;
+  invocationStreamWarnings.add(warningKey);
+  process.emitWarning(message, { code: "BASH_TOOLS_INVOCATION_STREAM" });
+}
+
+function appendInvocationStreamRecord(
+  record: ProjectCommandInvocationRecord,
+  environment: Readonly<Record<string, string | undefined>>,
+): void {
+  const path = configuredInvocationStreamPath(environment);
+  if (path === undefined) return;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    appendFileSync(path, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
+  } catch (error) {
+    const code =
+      typeof error === "object" && error !== null && "code" in error
+        ? String((error as { readonly code?: unknown }).code)
+        : "unknown";
+    warnInvocationStream(path, `Could not append the invocation stream (${code})`);
+  }
+}
+
+/** Create a best-effort recorder backed by Pi's session custom-entry API and JSONL stream. */
 export function createProjectCommandInvocationRecorder(
   api: ProjectCommandInvocationAPI,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
 ): ProjectCommandInvocationRecorder {
   return (record) => {
     try {
@@ -841,6 +917,7 @@ export function createProjectCommandInvocationRecorder(
     } catch {
       // Observability must never change a command result or error.
     }
+    appendInvocationStreamRecord(record, environment);
   };
 }
 

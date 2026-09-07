@@ -21,9 +21,12 @@ import { projectCommandMutatesWorkspace } from "../project-command/mutability.ts
 import {
   createProjectCommandInvocationMeasurements,
   recordProjectCommandInvocation,
+  type ProjectCommandInvocationLookupMetadata,
+  type ProjectCommandInvocationReason,
   type ProjectCommandInvocationPublicationMetadata,
   type ProjectCommandInvocationRecorder,
 } from "../../observability/project-command-invocation.ts";
+import type { ResultCategory } from "../errors.ts";
 import type { ProjectCommandExecutor } from "../project-command/runner.ts";
 import type { ProjectCommandExecutionOutcome } from "../project-command/execution.ts";
 import {
@@ -655,9 +658,12 @@ function recordVerifyInvocation(
   telemetry?: {
     readonly concurrentExecutions?: number;
     readonly stateDrift?: boolean;
+    readonly stateMatchesCurrent?: boolean;
     readonly sharedExecution?: boolean;
     readonly mutating?: boolean;
   },
+  invocationRef?: string | null,
+  lookup?: ProjectCommandInvocationLookupMetadata,
 ): void {
   const orchestration = readProjectCommandOrchestrationContext();
   const output = record.perStep.reduce(
@@ -686,6 +692,7 @@ function recordVerifyInvocation(
     redactedParameters: {
       phases: prepared.map(({ phase }) => phase),
       coercions: input.coercions,
+      ...(input.ref === undefined ? {} : { lookup: true, ref: input.ref }),
     },
     resultCategory: record.verdict === "passed" ? "PASS" : "IMPLEMENTATION_FAILURE",
     status: record.verdict === "failed" ? "nonzero" : "success",
@@ -712,13 +719,20 @@ function recordVerifyInvocation(
       ? {}
       : { delegationId: orchestration.delegationId }),
     ...(orchestration.role === undefined ? {} : { role: orchestration.role }),
-    ref: record.ref,
+    ...(invocationRef === null
+      ? { ref: record.ref }
+      : invocationRef === undefined
+        ? {}
+        : { ref: invocationRef }),
     ...(record.repositoryState === undefined
       ? {}
       : {
           repositoryState: {
             ...record.repositoryState,
             readable: true,
+            ...(telemetry?.stateMatchesCurrent === undefined
+              ? {}
+              : { stateMatchesCurrent: telemetry.stateMatchesCurrent }),
           },
         }),
     verdict: record.verdict,
@@ -731,6 +745,7 @@ function recordVerifyInvocation(
         ),
       ),
     ...(publication === undefined ? {} : { publication }),
+    ...(lookup === undefined ? {} : { lookup }),
     coercions: input.coercions,
     ...(telemetry?.concurrentExecutions === undefined
       ? {}
@@ -741,6 +756,129 @@ function recordVerifyInvocation(
       : { sharedExecution: telemetry.sharedExecution }),
     aggregate: true,
   });
+}
+
+function failureResultCategory(error: unknown): ResultCategory {
+  const code = error instanceof VerifyToolError ? error.code : "implementation-failure";
+  if (code === "invalid-request") return "INVALID_REQUEST";
+  if (code === "not-found" || code.includes("resolution") || code.includes("repository-state")) {
+    return "RESOLUTION_FAILURE";
+  }
+  if (code === "cancelled") return "CANCELLED";
+  if (
+    code.startsWith("policy-") ||
+    code.includes("authorization") ||
+    code === "publication-failure"
+  ) {
+    return "POLICY_FAILURE";
+  }
+  return "IMPLEMENTATION_FAILURE";
+}
+
+function failureReason(
+  error: unknown,
+  lookupAttempted: boolean,
+  executionStarted: boolean,
+): ProjectCommandInvocationReason {
+  const code = error instanceof VerifyToolError ? error.code : "";
+  if (code === "cancelled") return "cancelled";
+  if (lookupAttempted) return "lookup-failure";
+  if (code === "invalid-request") return "invalid-request";
+  if (code === "not-found" || code.includes("resolution") || code.includes("repository-state")) {
+    return "resolution-failure";
+  }
+  if (
+    code.startsWith("policy-") ||
+    code.includes("authorization") ||
+    code === "publication-failure"
+  ) {
+    return "policy-failure";
+  }
+  return executionStarted ? "execution-failure" : "preparation-failure";
+}
+
+function rawVerifyParameter(rawParams: VerifyInput, key: keyof VerifyInput): unknown {
+  if (typeof rawParams !== "object" || rawParams === null) return undefined;
+  return rawParams[key];
+}
+
+function rawVerifyStringParameter(
+  rawParams: VerifyInput,
+  key: keyof VerifyInput,
+): string | undefined {
+  const value = rawVerifyParameter(rawParams, key);
+  return typeof value === "string" ? value : undefined;
+}
+
+function recordVerifyFailureInvocation(
+  recorder: ProjectCommandInvocationRecorder | undefined,
+  ctx: VerifyToolContext,
+  toolCallId: string,
+  startedAt: number,
+  rawParams: VerifyInput,
+  input: NormalizedVerifyInput | undefined,
+  prepared: readonly PreparedStep[],
+  error: unknown,
+  executionStarted: boolean,
+): void {
+  const orchestration = readProjectCommandOrchestrationContext();
+  const ref = input?.ref ?? rawVerifyStringParameter(rawParams, "ref");
+  const flowId = input?.flowId ?? rawVerifyStringParameter(rawParams, "flowId");
+  const lookupAttempted = ref !== undefined;
+  const category = failureResultCategory(error);
+  const fresh = input?.fresh === true || rawVerifyParameter(rawParams, "fresh") === true;
+  const invocation: Parameters<typeof recordProjectCommandInvocation>[1] = {
+    sessionId: sessionId(ctx),
+    toolCallId,
+    schemaHash: hash(verifyInputSchema),
+    commandId: "verify",
+    redactedParameters: {
+      phases:
+        prepared.length > 0
+          ? prepared.map(({ phase }) => phase)
+          : input === undefined
+            ? []
+            : VERIFY_PHASES.filter((phase) => !input.omit.includes(phase)),
+      ...(ref === undefined ? {} : { lookup: true, ref }),
+      ...(flowId === undefined ? {} : { flowId }),
+    },
+    resultCategory: category,
+    executed: executionStarted,
+    reason: failureReason(error, lookupAttempted, executionStarted),
+    cacheDecision: fresh && executionStarted ? "forced" : "ineligible",
+    forced: fresh && executionStarted,
+    reused: false,
+    durationMs: durationMs(startedAt),
+    executionDurationMs: executionStarted ? durationMs(startedAt) : 0,
+    output: {
+      stdout: { truncated: false, totalBytes: 0, totalLines: 0 },
+      stderr: { truncated: false, totalBytes: 0, totalLines: 0 },
+    },
+    ...(orchestration.orchestrated ? { producerScope: orchestration.effectiveScope } : {}),
+    ...(orchestration.flowId === undefined ? {} : { flowId: orchestration.flowId }),
+    ...(orchestration.delegationId === undefined
+      ? {}
+      : { delegationId: orchestration.delegationId }),
+    ...(orchestration.role === undefined ? {} : { role: orchestration.role }),
+    ...(ref === undefined ? {} : { ref }),
+    ...(lookupAttempted
+      ? {
+          lookup: {
+            attempted: true,
+            success: false,
+            failure: error instanceof VerifyToolError ? error.code : "implementation-failure",
+          },
+        }
+      : {}),
+    mutating: prepared.some(({ phase, resolved }) =>
+      projectCommandMutatesWorkspace(
+        stepDefinition(phase, resolved.scriptKey ?? SCRIPT_BY_PHASE[phase]),
+        resolved,
+      ),
+    ),
+    aggregate: true,
+  };
+  recordProjectCommandInvocation(recorder, invocation);
 }
 
 interface VerifyStepRunOptions {
@@ -938,303 +1076,353 @@ function createVerifyToolWithDependencies(
       ctx,
     ) {
       const invocationStartedAt = performance.now();
-      const input = validateVerifyInput(rawParams);
-      const requestSignal = signal ?? ctx.signal;
-      if (requestSignal?.aborted) throw new VerifyToolError("cancelled", "verify was cancelled");
-      if (input.ref !== undefined) {
-        const orchestration = readProjectCommandOrchestrationContext();
-        if (
-          input.flowId !== undefined &&
-          (orchestration.effectiveScope !== "flow" || orchestration.flowId !== input.flowId)
-        ) {
-          throw new VerifyToolError(
-            "not-found",
-            `validation ref not found in the effective flow scope ${input.flowId}. A flow lookup requires the same effective flow scope; environment variables alone do not authorize a lookup.`,
-          );
-        }
-        const record = cache.getByRef(input.ref, input.flowId);
-        if (record === undefined) {
-          const bucket =
-            input.flowId !== undefined
-              ? `the effective flow scope ${input.flowId}`
-              : orchestration.effectiveScope === "flow" && orchestration.flowId !== undefined
-                ? `the effective flow scope ${orchestration.flowId}`
-                : "the process-local root-session cache";
-          const guidance =
+      let input: NormalizedVerifyInput | undefined;
+      let preparedForInvocation: readonly PreparedStep[] = [];
+      let invocationRecorded = false;
+      let executionStarted = false;
+      const recordInvocation: typeof recordVerifyInvocation = (...args) => {
+        if (invocationRecorded) return;
+        invocationRecorded = true;
+        recordVerifyInvocation(...args);
+      };
+      try {
+        input = validateVerifyInput(rawParams);
+        const requestSignal = signal ?? ctx.signal;
+        if (requestSignal?.aborted) throw new VerifyToolError("cancelled", "verify was cancelled");
+        if (input.ref !== undefined) {
+          const orchestration = readProjectCommandOrchestrationContext();
+          if (
             input.flowId !== undefined &&
             (orchestration.effectiveScope !== "flow" || orchestration.flowId !== input.flowId)
-              ? "A flow lookup requires the same effective flow scope; environment variables alone do not authorize a lookup."
-              : bucket === "the process-local root-session cache"
-                ? "Root-session refs are process-scoped and are not durable across processes."
-                : "Only refs from the current effective flow are searchable.";
-          throw new VerifyToolError(
-            "not-found",
-            `validation ref not found in ${bucket}. ${guidance}`,
+          ) {
+            throw new VerifyToolError(
+              "not-found",
+              `validation ref not found in the effective flow scope ${input.flowId}. A flow lookup requires the same effective flow scope; environment variables alone do not authorize a lookup.`,
+            );
+          }
+          const record = cache.getByRef(input.ref, input.flowId);
+          if (record === undefined) {
+            const bucket =
+              input.flowId !== undefined
+                ? `the effective flow scope ${input.flowId}`
+                : orchestration.effectiveScope === "flow" && orchestration.flowId !== undefined
+                  ? `the effective flow scope ${orchestration.flowId}`
+                  : "the process-local root-session cache";
+            const guidance =
+              input.flowId !== undefined &&
+              (orchestration.effectiveScope !== "flow" || orchestration.flowId !== input.flowId)
+                ? "A flow lookup requires the same effective flow scope; environment variables alone do not authorize a lookup."
+                : bucket === "the process-local root-session cache"
+                  ? "Root-session refs are process-scoped and are not durable across processes."
+                  : "Only refs from the current effective flow are searchable.";
+            throw new VerifyToolError(
+              "not-found",
+              `validation ref not found in ${bucket}. ${guidance}`,
+            );
+          }
+          let currentRepositoryState: VerifyRepositoryState | undefined;
+          if (repositoryStateReader !== undefined) {
+            try {
+              currentRepositoryState = await readVerifyRepositoryState(
+                repositoryStateReader,
+                record.projectPath,
+                requestSignal,
+              );
+            } catch (error) {
+              if (error instanceof VerifyToolError && error.code === "cancelled") throw error;
+            }
+          }
+          const lookupStateStatus = repositoryStateMatches(
+            record.repositoryState,
+            currentRepositoryState,
           );
+          recordInvocation(
+            invocationRecorder,
+            ctx,
+            toolCallId,
+            invocationStartedAt,
+            input,
+            [],
+            record,
+            true,
+            undefined,
+            {
+              concurrentExecutions: record.concurrentExecutions,
+              stateDrift: record.stateDrift,
+              stateMatchesCurrent:
+                lookupStateStatus === "unreadable" ? undefined : lookupStateStatus === "matches",
+              sharedExecution: record.sharedExecution,
+              mutating: record.mutating,
+            },
+            null,
+            { attempted: true, success: true },
+          );
+          return result(fullOutput(record, currentRepositoryState));
         }
-        let currentRepositoryState: VerifyRepositoryState | undefined;
+        if (requestSignal?.aborted) throw new VerifyToolError("cancelled", "verify was cancelled");
+        let loadedPolicy;
+        try {
+          loadedPolicy = await policy.load(ctx.cwd);
+        } catch {
+          throw new VerifyToolError("policy-load-failure", "verify policy could not be loaded");
+        }
+        const prepared = await resolveSteps(
+          input,
+          loadedPolicy.projectPath,
+          resolver,
+          requestSignal,
+        );
+        preparedForInvocation = prepared;
+        const stateBeforeAuthorization =
+          repositoryStateReader === undefined
+            ? undefined
+            : await readVerifyRepositoryState(
+                repositoryStateReader,
+                loadedPolicy.projectPath,
+                requestSignal,
+              );
+        const resolvedCommands = prepared.map(({ resolved }) => displayCommand(resolved));
+        const authorizationCommands = prepared.map(
+          ({ phase, resolved }) =>
+            `${phase}: ${displayCommand(resolved)} [script-sha256:${scriptFingerprint(resolved)}]`,
+        );
+        const identity = verificationIdentity(prepared, input);
+        await authorizeVerify(policy, ctx, requestSignal, identity, authorizationCommands);
+        if (requestSignal?.aborted) throw new VerifyToolError("cancelled", "verify was cancelled");
+        let state = stateBeforeAuthorization;
+        let repositoryStateReliable = repositoryStateReader === undefined;
         if (repositoryStateReader !== undefined) {
           try {
-            currentRepositoryState = await readVerifyRepositoryState(
+            state = await readVerifyRepositoryState(
               repositoryStateReader,
-              record.projectPath,
+              loadedPolicy.projectPath,
               requestSignal,
             );
+            repositoryStateReliable = state !== undefined;
           } catch (error) {
             if (error instanceof VerifyToolError && error.code === "cancelled") throw error;
+            state = undefined;
+            repositoryStateReliable = false;
           }
         }
-        recordVerifyInvocation(
+        let key = cacheKey(loadedPolicy.projectPath, state, prepared, input);
+        if (
+          !input.fresh &&
+          input.publish === undefined &&
+          state !== undefined &&
+          repositoryStateReader !== undefined
+        ) {
+          const cached = cache.get(key);
+          if (cached !== undefined) {
+            let stableState: VerifyRepositoryState | undefined;
+            try {
+              stableState = await readVerifyRepositoryState(
+                repositoryStateReader,
+                loadedPolicy.projectPath,
+                requestSignal,
+              );
+            } catch (error) {
+              if (error instanceof VerifyToolError && error.code === "cancelled") throw error;
+            }
+            const stableKey = cacheKey(loadedPolicy.projectPath, stableState, prepared, input);
+            if (stableState !== undefined && stableKey === key) {
+              recordInvocation(
+                invocationRecorder,
+                ctx,
+                toolCallId,
+                invocationStartedAt,
+                input,
+                prepared,
+                cached,
+                true,
+                undefined,
+                { stateMatchesCurrent: true },
+                null,
+              );
+              return result(compactOutput(cached, stableState));
+            }
+            state = stableState;
+            key = stableKey;
+            repositoryStateReliable = stableState !== undefined;
+          }
+        }
+        const ref = `vr_${key.slice(0, 24)}`;
+
+        const aggregateController = new AbortController();
+        const abortAggregate = () => aggregateController.abort();
+        requestSignal?.addEventListener("abort", abortAggregate, { once: true });
+        let aggregateTimedOut = false;
+        const aggregateTimer = setTimeout(() => {
+          aggregateTimedOut = true;
+          aggregateController.abort();
+        }, aggregateTimeoutMs);
+        const byPhase = new Map<VerifyPhase, PreparedStep>(
+          prepared.map((step) => [step.phase, step]),
+        );
+        const steps: VerifyStepResult[] = [];
+        const verifyStepTelemetry = {
+          sharedExecution: false,
+          concurrentExecutions: 1,
+        };
+        executionStarted = true;
+        try {
+          await runVerifySteps({
+            input,
+            prepared: byPhase,
+            projectPath: loadedPolicy.projectPath,
+            repositoryState: state,
+            executor,
+            aggregateController,
+            requestSignal,
+            stepTimeoutMs,
+            isAggregateTimedOut: () => aggregateTimedOut,
+            steps,
+            telemetry: verifyStepTelemetry,
+          });
+        } finally {
+          clearTimeout(aggregateTimer);
+          requestSignal?.removeEventListener("abort", abortAggregate);
+        }
+        steps.sort(
+          (left, right) => VERIFY_PHASES.indexOf(left.phase) - VERIFY_PHASES.indexOf(right.phase),
+        );
+        const verdict = aggregateVerdict(steps);
+        const firstFailure = steps.find((step) => step.status === "failed");
+        const orchestration = readProjectCommandOrchestrationContext();
+        let finalState = state;
+        let stableForCache = repositoryStateReliable;
+        let stateDrift = false;
+        let stateMatchesCurrent: boolean | undefined;
+        if (repositoryStateReader !== undefined) {
+          try {
+            finalState = await readVerifyRepositoryState(
+              repositoryStateReader,
+              loadedPolicy.projectPath,
+              requestSignal,
+            );
+            stableForCache =
+              state !== undefined &&
+              finalState !== undefined &&
+              cacheKey(loadedPolicy.projectPath, finalState, prepared, input) === key;
+            stateMatchesCurrent =
+              state === undefined || finalState === undefined
+                ? undefined
+                : repositoryStateMatches(state, finalState) === "matches";
+            stateDrift = stateMatchesCurrent === false;
+          } catch (error) {
+            if (error instanceof VerifyToolError && error.code === "cancelled") throw error;
+            finalState = undefined;
+            stableForCache = false;
+            stateMatchesCurrent = undefined;
+          }
+        }
+        const record: VerifyEvidenceRecord = {
+          cacheFormatVersion: VERIFY_CACHE_FORMAT_VERSION,
+          key,
+          ref,
+          projectPath: loadedPolicy.projectPath,
+          ...(state === undefined ? {} : { repositoryState: state }),
+          resolvedCommands,
+          perStep: steps,
+          verdict,
+          ...(firstFailure?.failureTail === undefined
+            ? {}
+            : { failureTail: firstFailure.failureTail }),
+          covers: input.covers,
+          createdAt: Date.now(),
+          provenance: {
+            scope: orchestration.effectiveScope === "flow" ? "flow" : "root",
+            ...(orchestration.flowId === undefined ? {} : { flowId: orchestration.flowId }),
+            ...(state === undefined ? {} : { repositoryIdentity: state.repositoryIdentity }),
+          },
+          mutating: prepared.some(({ phase, resolved }) =>
+            projectCommandMutatesWorkspace(
+              stepDefinition(phase, resolved.scriptKey ?? SCRIPT_BY_PHASE[phase]),
+              resolved,
+            ),
+          ),
+          concurrentExecutions: Math.max(1, verifyStepTelemetry.concurrentExecutions),
+          stateDrift,
+          sharedExecution: verifyStepTelemetry.sharedExecution,
+        };
+        if (stableForCache && !verifyStepTelemetry.sharedExecution) cache.set(record);
+        let outputRecord = record;
+        let publication: ProjectCommandInvocationPublicationMetadata | undefined;
+        if (input.publish !== undefined) {
+          if (!stableForCache || state === undefined || finalState === undefined) {
+            throw new VerifyToolError(
+              "publication-failure",
+              `verify could not publish ${record.ref}: repository state is unreadable or changed during execution; rerun with a readable, stable repository`,
+            );
+          }
+          if (state.repositoryIdentity !== finalState.repositoryIdentity) {
+            throw new VerifyToolError(
+              "publication-failure",
+              `verify could not publish ${record.ref}: repository identity changed from ${state.repositoryIdentity} to ${finalState.repositoryIdentity}`,
+            );
+          }
+          const published = cache.publish?.(
+            record.ref,
+            input.publish.flowId,
+            finalState.repositoryIdentity,
+          );
+          if (published === undefined) {
+            throw new VerifyToolError(
+              "publication-failure",
+              `verify could not publish ${record.ref} to flow ${input.publish.flowId}: no compatible stable evidence was stored`,
+            );
+          }
+          outputRecord = published;
+          publication = {
+            scope: "flow",
+            flowId: input.publish.flowId,
+            published: true,
+          };
+        }
+        recordInvocation(
           invocationRecorder,
           ctx,
           toolCallId,
           invocationStartedAt,
           input,
-          [],
-          record,
-          true,
-          undefined,
+          prepared,
+          outputRecord,
+          false,
+          publication,
           {
             concurrentExecutions: record.concurrentExecutions,
             stateDrift: record.stateDrift,
+            stateMatchesCurrent,
             sharedExecution: record.sharedExecution,
             mutating: record.mutating,
           },
-        );
-        return result(fullOutput(record, currentRepositoryState));
-      }
-      if (requestSignal?.aborted) throw new VerifyToolError("cancelled", "verify was cancelled");
-      let loadedPolicy;
-      try {
-        loadedPolicy = await policy.load(ctx.cwd);
-      } catch {
-        throw new VerifyToolError("policy-load-failure", "verify policy could not be loaded");
-      }
-      const prepared = await resolveSteps(input, loadedPolicy.projectPath, resolver, requestSignal);
-      const stateBeforeAuthorization =
-        repositoryStateReader === undefined
-          ? undefined
-          : await readVerifyRepositoryState(
-              repositoryStateReader,
-              loadedPolicy.projectPath,
-              requestSignal,
-            );
-      const resolvedCommands = prepared.map(({ resolved }) => displayCommand(resolved));
-      const authorizationCommands = prepared.map(
-        ({ phase, resolved }) =>
-          `${phase}: ${displayCommand(resolved)} [script-sha256:${scriptFingerprint(resolved)}]`,
-      );
-      const identity = verificationIdentity(prepared, input);
-      await authorizeVerify(policy, ctx, requestSignal, identity, authorizationCommands);
-      if (requestSignal?.aborted) throw new VerifyToolError("cancelled", "verify was cancelled");
-      let state = stateBeforeAuthorization;
-      let repositoryStateReliable = repositoryStateReader === undefined;
-      if (repositoryStateReader !== undefined) {
-        try {
-          state = await readVerifyRepositoryState(
-            repositoryStateReader,
-            loadedPolicy.projectPath,
-            requestSignal,
-          );
-          repositoryStateReliable = state !== undefined;
-        } catch (error) {
-          if (error instanceof VerifyToolError && error.code === "cancelled") throw error;
-          state = undefined;
-          repositoryStateReliable = false;
-        }
-      }
-      let key = cacheKey(loadedPolicy.projectPath, state, prepared, input);
-      if (
-        !input.fresh &&
-        input.publish === undefined &&
-        state !== undefined &&
-        repositoryStateReader !== undefined
-      ) {
-        const cached = cache.get(key);
-        if (cached !== undefined) {
-          let stableState: VerifyRepositoryState | undefined;
-          try {
-            stableState = await readVerifyRepositoryState(
-              repositoryStateReader,
-              loadedPolicy.projectPath,
-              requestSignal,
-            );
-          } catch (error) {
-            if (error instanceof VerifyToolError && error.code === "cancelled") throw error;
-          }
-          const stableKey = cacheKey(loadedPolicy.projectPath, stableState, prepared, input);
-          if (stableState !== undefined && stableKey === key) {
-            recordVerifyInvocation(
-              invocationRecorder,
-              ctx,
-              toolCallId,
-              invocationStartedAt,
-              input,
-              prepared,
-              cached,
-              true,
-            );
-            return result(compactOutput(cached, stableState));
-          }
-          state = stableState;
-          key = stableKey;
-          repositoryStateReliable = stableState !== undefined;
-        }
-      }
-      const ref = `vr_${key.slice(0, 24)}`;
-
-      const aggregateController = new AbortController();
-      const abortAggregate = () => aggregateController.abort();
-      requestSignal?.addEventListener("abort", abortAggregate, { once: true });
-      let aggregateTimedOut = false;
-      const aggregateTimer = setTimeout(() => {
-        aggregateTimedOut = true;
-        aggregateController.abort();
-      }, aggregateTimeoutMs);
-      const byPhase = new Map<VerifyPhase, PreparedStep>(
-        prepared.map((step) => [step.phase, step]),
-      );
-      const steps: VerifyStepResult[] = [];
-      const verifyStepTelemetry = {
-        sharedExecution: false,
-        concurrentExecutions: 1,
-      };
-      try {
-        await runVerifySteps({
-          input,
-          prepared: byPhase,
-          projectPath: loadedPolicy.projectPath,
-          repositoryState: state,
-          executor,
-          aggregateController,
-          requestSignal,
-          stepTimeoutMs,
-          isAggregateTimedOut: () => aggregateTimedOut,
-          steps,
-          telemetry: verifyStepTelemetry,
-        });
-      } finally {
-        clearTimeout(aggregateTimer);
-        requestSignal?.removeEventListener("abort", abortAggregate);
-      }
-      steps.sort(
-        (left, right) => VERIFY_PHASES.indexOf(left.phase) - VERIFY_PHASES.indexOf(right.phase),
-      );
-      const verdict = aggregateVerdict(steps);
-      const firstFailure = steps.find((step) => step.status === "failed");
-      const orchestration = readProjectCommandOrchestrationContext();
-      let finalState = state;
-      let stableForCache = repositoryStateReliable;
-      let stateDrift = false;
-      if (repositoryStateReader !== undefined) {
-        try {
-          finalState = await readVerifyRepositoryState(
-            repositoryStateReader,
-            loadedPolicy.projectPath,
-            requestSignal,
-          );
-          stableForCache =
-            state !== undefined &&
-            finalState !== undefined &&
-            cacheKey(loadedPolicy.projectPath, finalState, prepared, input) === key;
-          stateDrift =
-            state !== undefined &&
-            finalState !== undefined &&
-            repositoryStateMatches(state, finalState) === "mismatch";
-        } catch (error) {
-          if (error instanceof VerifyToolError && error.code === "cancelled") throw error;
-          finalState = undefined;
-          stableForCache = false;
-        }
-      }
-      const record: VerifyEvidenceRecord = {
-        cacheFormatVersion: VERIFY_CACHE_FORMAT_VERSION,
-        key,
-        ref,
-        projectPath: loadedPolicy.projectPath,
-        ...(state === undefined ? {} : { repositoryState: state }),
-        resolvedCommands,
-        perStep: steps,
-        verdict,
-        ...(firstFailure?.failureTail === undefined
-          ? {}
-          : { failureTail: firstFailure.failureTail }),
-        covers: input.covers,
-        createdAt: Date.now(),
-        provenance: {
-          scope: orchestration.effectiveScope === "flow" ? "flow" : "root",
-          ...(orchestration.flowId === undefined ? {} : { flowId: orchestration.flowId }),
-          ...(state === undefined ? {} : { repositoryIdentity: state.repositoryIdentity }),
-        },
-        mutating: prepared.some(({ phase, resolved }) =>
-          projectCommandMutatesWorkspace(
-            stepDefinition(phase, resolved.scriptKey ?? SCRIPT_BY_PHASE[phase]),
-            resolved,
-          ),
-        ),
-        concurrentExecutions: Math.max(1, verifyStepTelemetry.concurrentExecutions),
-        stateDrift,
-        sharedExecution: verifyStepTelemetry.sharedExecution,
-      };
-      if (stableForCache && !verifyStepTelemetry.sharedExecution) cache.set(record);
-      let outputRecord = record;
-      let publication: ProjectCommandInvocationPublicationMetadata | undefined;
-      if (input.publish !== undefined) {
-        if (!stableForCache || state === undefined || finalState === undefined) {
-          throw new VerifyToolError(
-            "publication-failure",
-            `verify could not publish ${record.ref}: repository state is unreadable or changed during execution; rerun with a readable, stable repository`,
-          );
-        }
-        if (state.repositoryIdentity !== finalState.repositoryIdentity) {
-          throw new VerifyToolError(
-            "publication-failure",
-            `verify could not publish ${record.ref}: repository identity changed from ${state.repositoryIdentity} to ${finalState.repositoryIdentity}`,
-          );
-        }
-        const published = cache.publish?.(
-          record.ref,
-          input.publish.flowId,
-          finalState.repositoryIdentity,
-        );
-        if (published === undefined) {
-          throw new VerifyToolError(
-            "publication-failure",
-            `verify could not publish ${record.ref} to flow ${input.publish.flowId}: no compatible stable evidence was stored`,
-          );
-        }
-        outputRecord = published;
-        publication = {
-          scope: "flow",
-          flowId: input.publish.flowId,
-          published: true,
-        };
-      }
-      recordVerifyInvocation(
-        invocationRecorder,
-        ctx,
-        toolCallId,
-        invocationStartedAt,
-        input,
-        prepared,
-        outputRecord,
-        false,
-        publication,
-        {
-          concurrentExecutions: record.concurrentExecutions,
-          stateDrift: record.stateDrift,
-          sharedExecution: record.sharedExecution,
-          mutating: record.mutating,
-        },
-      );
-      return result(
-        completedOutput(
-          outputRecord,
-          false,
           stableForCache ? outputRecord.ref : undefined,
-          finalState,
-        ),
-      );
+        );
+        return result(
+          completedOutput(
+            outputRecord,
+            false,
+            stableForCache ? outputRecord.ref : undefined,
+            finalState,
+          ),
+        );
+      } catch (error) {
+        if (!invocationRecorded) {
+          invocationRecorded = true;
+          recordVerifyFailureInvocation(
+            invocationRecorder,
+            ctx,
+            toolCallId,
+            invocationStartedAt,
+            rawParams,
+            input,
+            preparedForInvocation,
+            error,
+            executionStarted,
+          );
+        }
+        throw error;
+      }
     },
   };
 }

@@ -239,9 +239,18 @@ A shared request reports `sharedExecution: true` and is distinct from an ordinar
 `concurrentExecutions` reports the observed overlapping execution count for the repository identity.
 The consumer-owned repository write lock remains authoritative for coordination between writers and readers.
 
-The project-command invocation recorder stores bounded `flowId`, `delegationId`, `role`, `ref`, verdict, mutability, publication, coercion, concurrency, drift, and aggregate-verify metadata.
+The project-command invocation recorder stores bounded `flowId`, `delegationId`, `role`, `ref`, verdict, mutability, publication, lookup outcome, coercion, concurrency, drift, and aggregate-verify metadata.
 One aggregate invocation record is emitted per `verify` call rather than one record per phase.
 Process status remains separate from the aggregate verify verdict.
+
+Set `BASH_TOOLS_INVOCATIONS_PATH` to an absolute file path to enable the producer-owned JSONL invocation stream.
+The child process inherits this environment variable from its parent.
+The `BASH_TOOLS_INVOCATION_STREAM` and `BASH_TOOLS_TELEMETRY_PATH` names are accepted as lower-priority path aliases, but `BASH_TOOLS_INVOCATIONS_PATH` is canonical.
+The selected path is read when each record is emitted.
+Its parent directories are created as needed, and each bounded invocation record is appended as one newline-delimited JSON object using append mode.
+The stream contains the same records sent to Pi custom entries, including execution decisions, refs, repository-state metadata, orchestration join fields, successful lookups, and failed lookups.
+A failed or denied `verify` call still emits a record with `executed: false` when no phase ran, rather than being omitted from the stream.
+A missing or unwritable configured path emits a process warning and does not change the tool result.
 
 ## Safety and contract behavior
 

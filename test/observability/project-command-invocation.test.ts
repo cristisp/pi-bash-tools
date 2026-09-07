@@ -1,5 +1,9 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  BASH_TOOLS_INVOCATIONS_PATH,
   buildProjectCommandInvocationRecord,
   createProjectCommandInvocationRecorder,
   createProjectCommandInvocationSessionRecorder,
@@ -152,6 +156,30 @@ describe("project command invocation metadata", () => {
       variant: "unit",
       paths: { count: 16, hashes: expect.any(Array) },
     });
+  });
+
+  it("appends one JSONL record per invocation to the configured absolute stream path", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bash-tools-invocation-stream-"));
+    const streamPath = join(directory, "nested", "invocations.jsonl");
+    try {
+      const recorder = createProjectCommandInvocationRecorder(
+        { appendEntry: vi.fn() },
+        { [BASH_TOOLS_INVOCATIONS_PATH]: streamPath },
+      );
+      const first = buildProjectCommandInvocationRecord(input({ toolCallId: "stream-1" }));
+      const second = buildProjectCommandInvocationRecord(
+        input({ toolCallId: "stream-2", lookup: { attempted: true, success: false } }),
+      );
+
+      recorder(first);
+      recorder(second);
+
+      const lines = (await readFile(streamPath, "utf8")).trimEnd().split("\n");
+      expect(lines).toHaveLength(2);
+      expect(lines.map((line) => JSON.parse(line))).toEqual([first, second]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("does not let append failures affect callers", () => {
