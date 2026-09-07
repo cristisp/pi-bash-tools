@@ -1,4 +1,5 @@
 import { promptWithTimeout } from "./confirmation-prompt.ts";
+import { notifySubagentApproval } from "./approval-notification.ts";
 import { readProjectCommandOrchestrationContext } from "./project-command/orchestration.ts";
 import type {
   LoadedPolicy,
@@ -145,9 +146,8 @@ function notifyManualApproval(context: AuthorizeOrPromptContext): void {
   if (!readProjectCommandOrchestrationContext().orchestrated) return;
   try {
     context.ui.notify?.("Subagent is waiting for manual policy approval.", "warning");
-  } catch {
-    return;
-  }
+  } catch {}
+  notifySubagentApproval(context.mode);
 }
 
 async function resolvePrompt<Identity, Request extends PolicyDecisionRequest>(

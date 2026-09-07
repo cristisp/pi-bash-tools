@@ -66,6 +66,7 @@ A cancellation after the commit rejects without returning environment values, bu
 A confirmation timeout records a project-level deny and returns no environment values.
 Print, JSON, and other no-UI modes reject unknown keys without modifying policy.
 When an orchestrated subagent reaches a manual policy approval prompt, the extension emits a warning notification through Pi before opening the prompt.
+In TUI and RPC modes it also emits a terminal-native notification through OSC 777, Kitty OSC 99, or a Windows toast when the terminal supports it.
 Notification failures are ignored and never change the authorization result.
 
 ## Filesystem access policy
