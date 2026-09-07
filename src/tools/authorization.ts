@@ -1,4 +1,5 @@
 import { promptWithTimeout } from "./confirmation-prompt.ts";
+import { readProjectCommandOrchestrationContext } from "./project-command/orchestration.ts";
 import type {
   LoadedPolicy,
   PolicyAuthorization,
@@ -45,6 +46,7 @@ export interface AuthorizeOrPromptContext {
       choices: readonly string[],
       options: { readonly signal: AbortSignal },
     ): Promise<string | undefined>;
+    notify?(message: string, type?: "info" | "warning" | "error"): void;
   };
 }
 
@@ -139,9 +141,19 @@ async function promptChoice<Identity, Request extends PolicyDecisionRequest>(
   return prompt.choice;
 }
 
+function notifyManualApproval(context: AuthorizeOrPromptContext): void {
+  if (!readProjectCommandOrchestrationContext().orchestrated) return;
+  try {
+    context.ui.notify?.("Subagent is waiting for manual policy approval.", "warning");
+  } catch {
+    return;
+  }
+}
+
 async function resolvePrompt<Identity, Request extends PolicyDecisionRequest>(
   options: AuthorizeOrPromptOptions<Identity, Request>,
 ): Promise<Request | undefined> {
+  notifyManualApproval(options.context);
   const choice = await promptChoice(options);
   throwIfAborted(options);
   let decision: AuthorizationDecision;

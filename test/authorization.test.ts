@@ -66,6 +66,30 @@ it("rejects unknown requests without eligible UI", async () => {
   ).rejects.toThrow("not-authorized");
 });
 
+it("notifies before an orchestrated manual approval prompt", async () => {
+  const previousDelegationId = process.env.PI_DELEGATION_ID;
+  process.env.PI_DELEGATION_ID = "child-1";
+  try {
+    const notify = vi.fn();
+    const select = vi.fn(async () => "Allow once");
+    const result = await authorizeOrPrompt(
+      options({ context: { hasUI: true, mode: "tui", ui: { select, notify } } }),
+    );
+    expect(result).toBeUndefined();
+    expect(notify).toHaveBeenCalledWith(
+      "Subagent is waiting for manual policy approval.",
+      "warning",
+    );
+    expect(select).toHaveBeenCalledOnce();
+  } finally {
+    if (previousDelegationId === undefined) {
+      delete process.env.PI_DELEGATION_ID;
+    } else {
+      process.env.PI_DELEGATION_ID = previousDelegationId;
+    }
+  }
+});
+
 it("uses the exact choices and title and defers an allow", async () => {
   const select = vi.fn(async (title: string, choices: readonly string[]) => {
     expect(title).toBe("Authorize TOKEN");

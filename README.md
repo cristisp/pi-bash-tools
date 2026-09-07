@@ -65,6 +65,8 @@ A manual cancellation before the policy commit rejects the current request witho
 A cancellation after the commit rejects without returning environment values, but the completed policy commit is retained.
 A confirmation timeout records a project-level deny and returns no environment values.
 Print, JSON, and other no-UI modes reject unknown keys without modifying policy.
+When an orchestrated subagent reaches a manual policy approval prompt, the extension emits a warning notification through Pi before opening the prompt.
+Notification failures are ignored and never change the authorization result.
 
 ## Filesystem access policy
 
