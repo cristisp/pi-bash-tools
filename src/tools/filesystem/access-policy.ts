@@ -142,11 +142,7 @@ function blockedResult(
 
 const MAX_EDIT_PREFLIGHT_BYTES = 256_000;
 
-async function readPreflightBytes(
-  handle: FileHandle,
-  buffer: Buffer,
-  offset = 0,
-): Promise<number> {
+async function readPreflightBytes(handle: FileHandle, buffer: Buffer, offset = 0): Promise<number> {
   if (offset >= buffer.length) return offset;
   const result = await handle.read(buffer, offset, buffer.length - offset, offset);
   if (result.bytesRead === 0) return offset;

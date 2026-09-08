@@ -24,6 +24,7 @@ import type { GitExec } from "../git/execution.ts";
 import { findProjectCommandPolicyDecision } from "../policy/decisions.ts";
 import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
 import type { PolicyFileSystem, PolicyStore } from "../policy/types.ts";
+import type { ProjectCommandCacheDecision } from "../project-command/cache.ts";
 import { createProjectCommandExecutor } from "../project-command/execution.ts";
 import type { ProjectCommandExecutionOutcome } from "../project-command/execution.ts";
 import { projectCommandMutatesWorkspace } from "../project-command/mutability.ts";
@@ -457,6 +458,7 @@ function verifyInvocationSuccess(
   record: VerifyEvidenceRecord,
   reused: boolean,
   output: VerifyOutputSummary,
+  executedCacheDecision: ProjectCommandCacheDecision | undefined,
 ): Pick<
   VerifyInvocationRecord,
   | "resultCategory"
@@ -472,16 +474,26 @@ function verifyInvocationSuccess(
   | "measurements"
   | "verdict"
 > {
-  const cacheDecision = input.fresh ? "forced" : reused ? "hit" : "ineligible";
+  const cacheDecision = input.fresh
+    ? "forced"
+    : reused
+      ? "hit"
+      : (executedCacheDecision ?? "ineligible");
+  const reason =
+    cacheDecision === "forced"
+      ? "executed-forced-cache-bypass"
+      : cacheDecision === "hit"
+        ? "reused-cache-hit"
+        : cacheDecision === "miss"
+          ? "executed-after-cache-miss"
+          : cacheDecision === "invalidated"
+            ? "executed-after-cache-invalidation"
+            : "executed-cache-ineligible";
   return {
     resultCategory: record.verdict === "passed" ? "PASS" : "IMPLEMENTATION_FAILURE",
     status: record.verdict === "failed" ? "nonzero" : "success",
     executed: !reused,
-    reason: input.fresh
-      ? "executed-forced-cache-bypass"
-      : reused
-        ? "reused-cache-hit"
-        : "executed-cache-ineligible",
+    reason,
     cacheDecision,
     forced: input.fresh,
     reused,
@@ -504,6 +516,7 @@ function recordVerifyInvocation(
   reused: boolean,
   publication?: ProjectCommandInvocationPublicationMetadata,
   telemetry?: {
+    readonly cacheDecision?: ProjectCommandCacheDecision;
     readonly concurrentExecutions?: number;
     readonly stateDrift?: boolean;
     readonly stateMatchesCurrent?: boolean;
@@ -518,7 +531,7 @@ function recordVerifyInvocation(
   recordProjectCommandInvocation(recorder, {
     ...verifyInvocationMetadata(ctx, toolCallId),
     ...verifyInvocationDetails(input, prepared),
-    ...verifyInvocationSuccess(input, startedAt, record, reused, output),
+    ...verifyInvocationSuccess(input, startedAt, record, reused, output, telemetry?.cacheDecision),
     ...orchestrationInvocationMetadata(
       orchestration,
       invocationRef === null ? record.ref : invocationRef,
@@ -1460,6 +1473,7 @@ async function executePreparedVerify(options: {
     false,
     publication,
     {
+      cacheDecision: input.fresh ? "forced" : stableForCache ? "miss" : "ineligible",
       concurrentExecutions: record.concurrentExecutions,
       stateDrift: record.stateDrift,
       stateMatchesCurrent,

@@ -7,6 +7,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import {
   BASH_TOOLS_INVOCATIONS_PATH,
   createProjectCommandInvocationRecorder,
+  type ProjectCommandInvocationRecord,
 } from "../../src/observability/project-command-invocation.ts";
 import type { PolicyStore } from "../../src/tools/policy/types.ts";
 import type { ProjectCommandExecutionOutcome } from "../../src/tools/project-command/execution.ts";
@@ -222,6 +223,81 @@ gitIntegration("Verify repository-state cache invalidation", () => {
         rm(cacheRoot, { recursive: true, force: true }),
       ]);
     }
+  });
+
+  it("classifies overlapping read-only verify producers as cache-eligible", async () => {
+    const repository = await fixtures.createRepository();
+    await writeFile(
+      join(repository.directory, "package.json"),
+      JSON.stringify({
+        packageManager: "npm@10.0.0",
+        scripts: {
+          lint: 'node -e \\"process.exit(0)\\"',
+          typecheck: 'node -e \\"process.exit(0)\\"',
+          test: 'node -e \\"process.exit(0)\\"',
+        },
+      }),
+    );
+    await rawGit(repository.directory, ["add", "package.json"]);
+    await rawGit(repository.directory, ["commit", "--quiet", "-m", "project manifest"]);
+
+    const records: ProjectCommandInvocationRecord[] = [];
+    const resolver: ProjectCommandResolver = (definition, projectPath, _signal, parameters) =>
+      resolveNodeProjectCommand(definition, projectPath, parameters, {
+        approvedPackageManagerDirectories: [dirname(process.execPath)],
+      });
+    let activeExecutions = 0;
+    let maximumActiveExecutions = 0;
+    const executor = vi.fn<ProjectCommandExecutor>(async (_resolved, _projectPath, signal) => {
+      activeExecutions += 1;
+      maximumActiveExecutions = Math.max(maximumActiveExecutions, activeExecutions);
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 50);
+        signal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          { once: true },
+        );
+      });
+      activeExecutions -= 1;
+      return outcome();
+    });
+    const tool = createVerifyToolForTesting({
+      policy: policy(),
+      resolver,
+      executor,
+      repositoryStateReader: createProjectCommandRepositoryStateReader(makeRealGitExec()),
+      invocationRecorder: (record) => records.push(record),
+    });
+
+    const results = await Promise.all(
+      Array.from({ length: 4 }, (_, index) =>
+        tool.execute(
+          `verify-parallel-${index}`,
+          { omit: ["format"] },
+          undefined,
+          undefined,
+          context(repository.directory),
+        ),
+      ),
+    );
+
+    expect(new Set(results.map(({ details }) => details.ref)).size).toBe(1);
+    expect(
+      new Set(results.map(({ details }) => details.repositoryState?.dirtyFilesDigest)).size,
+    ).toBe(1);
+    expect(executor).toHaveBeenCalledTimes(3);
+    expect(maximumActiveExecutions).toBe(1);
+    expect(records).toHaveLength(4);
+    expect(records.every((record) => record.cacheDecision === "miss")).toBe(true);
+    expect(records.every((record) => record.reason === "executed-after-cache-miss")).toBe(true);
+    expect(records.some((record) => record.sharedExecution === true)).toBe(true);
+    expect(Math.max(...records.map((record) => record.concurrentExecutions ?? 0))).toBeGreaterThan(
+      1,
+    );
   });
 
   it("reuses the shared cache and reruns after tracked and untracked content changes", async () => {
