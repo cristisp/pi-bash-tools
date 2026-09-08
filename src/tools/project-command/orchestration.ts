@@ -45,11 +45,3 @@ export function readProjectCommandOrchestrationContext(
       environment.PI_ORCHESTRATION_EVIDENCE_SCOPE !== undefined,
   };
 }
-
-export function narrowProjectCommandEvidenceScope(
-  requested: ProjectCommandEvidenceScope | undefined,
-  context: ProjectCommandOrchestrationContext,
-): ProjectCommandEvidenceScope {
-  if (requested !== "flow") return "session";
-  return context.effectiveScope === "flow" ? "flow" : "session";
-}

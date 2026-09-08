@@ -1,14 +1,16 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+
 import { afterEach, describe, expect, it } from "vitest";
+
 import type { CommandIdentity } from "../../src/tools/policy/types.ts";
-import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
-import type { ProjectCommandToolDefinition } from "../../src/tools/project-command/tool.ts";
 import {
   getProjectCommandDefinition,
   projectCommandIdentity,
 } from "../../src/tools/project-command/definitions.ts";
 import { resolveProjectCommand } from "../../src/tools/project-command/resolution.ts";
+import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
+import type { ProjectCommandToolDefinition } from "../../src/tools/project-command/tool.ts";
 import {
   createCatalogRequests,
   createCommandContext,

@@ -1,18 +1,19 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+
 import { Type } from "typebox";
-import { renderCallLine, renderStringArgument } from "../../call-render.ts";
+
 import { booleanInputSchema } from "../../boolean.ts";
-import type { GitDiffOutput, GitDiffSummaryOutput } from "./output.ts";
+import { renderCallLine, renderStringArgument } from "../../call-render.ts";
 import {
-  createGitDiffSummaryCache,
-  type GitDiffSummaryCache,
-  type GitDiffSummaryCacheClaim,
-  type GitDiffSummaryCacheState,
-} from "./cache.ts";
-import { createGitDiffSummary } from "./summary.ts";
-import type { GitStatusEntry } from "../status/output.ts";
+  cancellationError,
+  invalidGitRequest,
+  normalizeGitBoolean,
+  runGit,
+  validateGitRequestKeys,
+  type GitExec,
+} from "../execution.ts";
 import {
   MAX_CONTENT_BYTES,
   makeToolResult,
@@ -22,15 +23,16 @@ import {
   validateIntegerLimit,
 } from "../output.ts";
 import { resolvePath, resolvePaths, resolveRepository } from "../repository.ts";
-import {
-  cancellationError,
-  invalidGitRequest,
-  normalizeGitBoolean,
-  runGit,
-  validateGitRequestKeys,
-  type GitExec,
-} from "../execution.ts";
+import type { GitStatusEntry } from "../status/output.ts";
 import { defineGitTool, type GitToolDefinition } from "../tool.ts";
+import {
+  createGitDiffSummaryCache,
+  type GitDiffSummaryCache,
+  type GitDiffSummaryCacheClaim,
+  type GitDiffSummaryCacheState,
+} from "./cache.ts";
+import type { GitDiffOutput, GitDiffPatchOutput, GitDiffSummaryOutput } from "./output.ts";
+import { createGitDiffSummary } from "./summary.ts";
 
 export const DEFAULT_GIT_DIFF_MAX_BYTES = 16 * 1024;
 
@@ -189,31 +191,360 @@ function waitForSummaryClaim(
   });
 }
 
+type GitDiffRequestParams =
+  | {
+      readonly mode?: "summary" | "patch";
+      readonly staged?: boolean | "true" | "false";
+      readonly maxBytes?: number;
+    }
+  | {
+      readonly mode?: "summary" | "patch";
+      readonly path: string;
+      readonly staged?: boolean | "true" | "false";
+      readonly maxBytes?: number;
+    }
+  | {
+      readonly mode?: "summary" | "patch";
+      readonly paths: readonly string[];
+      readonly staged?: boolean | "true" | "false";
+      readonly maxBytes?: number;
+    };
+
+type GitRepository = Awaited<ReturnType<typeof resolveRepository>>;
+type GitDiffRenderTheme = Parameters<typeof renderCallLine>[0];
+
+type GitDiffRequest = {
+  readonly responseMode: "summary" | "patch";
+  readonly staged: boolean;
+  readonly responseLimit: number;
+};
+
+type RawDiscovery = {
+  readonly rawText: string;
+  readonly untrackedDigest: string;
+};
+
+type RawDiscoveryFlights = Map<string, Promise<RawDiscovery>>;
+
+function selectedStatus(entry: GitStatusEntry, stagedMode: boolean): string {
+  return stagedMode ? entry.indexStatus : entry.worktreeStatus;
+}
+
+function shouldSelectStatus(status: string, stagedMode: boolean): boolean {
+  return stagedMode ? status !== " " && status !== "?" : status !== " ";
+}
+
+function normalizeSelectedStatus(
+  entry: GitStatusEntry,
+  status: string,
+  stagedMode: boolean,
+): GitStatusEntry {
+  const normalized = {
+    path: entry.path,
+    indexStatus: stagedMode ? status : " ",
+    worktreeStatus: stagedMode ? " " : status,
+  };
+  return status === "R" || status === "C"
+    ? entry.renamedFrom === undefined
+      ? normalized
+      : { ...normalized, renamedFrom: entry.renamedFrom }
+    : normalized;
+}
+
+function selectStatusEntry(entry: GitStatusEntry, stagedMode: boolean): GitStatusEntry | undefined {
+  const status = selectedStatus(entry, stagedMode);
+  return shouldSelectStatus(status, stagedMode)
+    ? normalizeSelectedStatus(entry, status, stagedMode)
+    : undefined;
+}
+
 function selectStatus(entries: readonly GitStatusEntry[], stagedMode: boolean): GitStatusEntry[] {
   const selected: GitStatusEntry[] = [];
   for (const entry of entries) {
-    const selectedStatus = stagedMode ? entry.indexStatus : entry.worktreeStatus;
-    const include = stagedMode
-      ? selectedStatus !== " " && selectedStatus !== "?"
-      : selectedStatus !== " ";
-    if (!include) continue;
-
-    const normalized = {
-      path: entry.path,
-      indexStatus: stagedMode ? selectedStatus : " ",
-      worktreeStatus: stagedMode ? " " : selectedStatus,
-    };
-    if (selectedStatus === "R" || selectedStatus === "C") {
-      selected.push(
-        entry.renamedFrom === undefined
-          ? normalized
-          : { ...normalized, renamedFrom: entry.renamedFrom },
-      );
-    } else {
-      selected.push(normalized);
-    }
+    const normalized = selectStatusEntry(entry, stagedMode);
+    if (normalized !== undefined) selected.push(normalized);
   }
   return selected;
+}
+
+export function renderGitDiffCall(
+  args: GitDiffRequestParams | undefined,
+  theme: GitDiffRenderTheme,
+) {
+  const parts: string[] = [];
+  if (args?.mode !== undefined) {
+    parts.push(theme.fg("muted", `mode=${args.mode}`));
+  } else {
+    parts.push(theme.fg("muted", "mode=summary"));
+  }
+  if (args?.staged === true || args?.staged === "true") {
+    parts.push(theme.fg("muted", "--staged"));
+  }
+  const paths =
+    args === undefined ? [] : "paths" in args ? args.paths : "path" in args ? [args.path] : [];
+  if (paths.length === 0) {
+    parts.push(theme.fg("muted", "(whole repository)"));
+  } else {
+    for (const path of paths) {
+      parts.push(renderStringArgument(path, theme));
+    }
+  }
+  parts.push(theme.fg("muted", `maxBytes=${args?.maxBytes ?? DEFAULT_GIT_DIFF_MAX_BYTES}`));
+  return renderCallLine(theme, "git_diff", parts);
+}
+
+function normalizeGitDiffRequest(params: GitDiffRequestParams): GitDiffRequest {
+  validateGitRequestKeys(
+    params,
+    ["mode", "path", "paths", "staged", "maxBytes"],
+    '{ mode?: "summary" | "patch", path?: string, paths?: string[], staged?: boolean, maxBytes?: integer }',
+  );
+  const hasLegacyPath = "path" in params;
+  const hasPaths = "paths" in params;
+  if (hasLegacyPath && hasPaths) {
+    throw invalidGitRequest("provide either path or paths, not both", "path");
+  }
+  const responseMode = params.mode ?? "summary";
+  if (responseMode !== "summary" && responseMode !== "patch") {
+    throw invalidGitRequest('mode must be either "summary" or "patch"', "mode");
+  }
+  const staged = normalizeGitBoolean(params.staged, "staged") === true;
+  const responseLimit = params.maxBytes ?? DEFAULT_GIT_DIFF_MAX_BYTES;
+  validateIntegerLimit(responseLimit, 1, MAX_CONTENT_BYTES, "maxBytes");
+  return { responseMode, staged, responseLimit };
+}
+
+async function resolveGitDiffPaths(
+  repository: GitRepository,
+  params: GitDiffRequestParams,
+): Promise<string[]> {
+  const hasLegacyPath = "path" in params;
+  const hasPaths = "paths" in params;
+  return hasPaths
+    ? await resolvePaths(repository, params.paths)
+    : hasLegacyPath
+      ? [await resolvePath(repository, params.path)]
+      : [];
+}
+
+async function executeGitDiffPatch(
+  exec: GitExec,
+  repository: GitRepository,
+  signal: AbortSignal | undefined,
+  staged: boolean,
+  paths: readonly string[],
+  responseLimit: number,
+): Promise<GitDiffPatchOutput> {
+  const result = await runGit(
+    exec,
+    diffArgs(staged, paths),
+    repository.root,
+    signal,
+    "read Git diff",
+  );
+  const bounded = truncateUtf8(result.stdout, responseLimit);
+  const message = bounded.output.truncated
+    ? `INCOMPLETE git_diff patch: ${bounded.output.totalBytes} bytes were available and only the first ${responseLimit} bytes are returned. Follow up with an explicit scoped request using mode: "patch", paths: ["file"], and a larger maxBytes.`
+    : undefined;
+  return {
+    mode: "patch",
+    patch: bounded.text,
+    output: bounded.output,
+    ...(message === undefined ? {} : { message }),
+  };
+}
+
+async function discoverRawState(
+  exec: GitExec,
+  repository: GitRepository,
+  staged: boolean,
+  paths: readonly string[],
+  head: string,
+  statusOutput: string,
+  completeStatus: readonly GitStatusEntry[],
+  rawDiscoveryFlights: RawDiscoveryFlights,
+): Promise<RawDiscovery> {
+  const rawDiscoveryKey = createHash("sha256")
+    .update(
+      JSON.stringify({
+        repositoryRoot: repository.root,
+        workingDirectory: repository.cwd,
+        head,
+        status: statusOutput,
+        staged,
+        paths,
+      }),
+      "utf8",
+    )
+    .digest("hex");
+  let rawDiscovery = rawDiscoveryFlights.get(rawDiscoveryKey);
+  if (rawDiscovery === undefined) {
+    rawDiscovery = Promise.all([
+      runGit(
+        exec,
+        diffRawArgs(staged, paths),
+        repository.root,
+        undefined,
+        "read Git diff content state",
+      ),
+      hashUntrackedFiles(repository.root, completeStatus),
+    ]).then(([rawResult, untrackedDigest]) => ({
+      rawText: rawResult.stdout,
+      untrackedDigest,
+    }));
+    rawDiscoveryFlights.set(rawDiscoveryKey, rawDiscovery);
+    void rawDiscovery.then(
+      () => {
+        if (rawDiscoveryFlights.get(rawDiscoveryKey) === rawDiscovery) {
+          rawDiscoveryFlights.delete(rawDiscoveryKey);
+        }
+      },
+      () => {
+        if (rawDiscoveryFlights.get(rawDiscoveryKey) === rawDiscovery) {
+          rawDiscoveryFlights.delete(rawDiscoveryKey);
+        }
+      },
+    );
+  }
+  return rawDiscovery;
+}
+
+function createSummaryCacheState(
+  repository: GitRepository,
+  head: string,
+  statusOutput: string,
+  rawText: string,
+  untrackedDigest: string,
+  staged: boolean,
+  paths: readonly string[],
+  responseLimit: number,
+): GitDiffSummaryCacheState {
+  return {
+    repositoryIdentity: repository.root,
+    workingDirectory: repository.cwd,
+    head,
+    dirtyFilesDigest: createHash("sha256")
+      .update(statusOutput, "utf8")
+      .update("\\0", "utf8")
+      .update(rawText, "utf8")
+      .update("\\0", "utf8")
+      .update(untrackedDigest, "utf8")
+      .digest("hex"),
+    staged,
+    paths,
+    maxBytes: responseLimit,
+  };
+}
+
+async function computeAndCacheSummary(
+  exec: GitExec,
+  repository: GitRepository,
+  signal: AbortSignal | undefined,
+  staged: boolean,
+  paths: readonly string[],
+  responseLimit: number,
+  displayStatus: readonly GitStatusEntry[],
+  completeStatus: readonly GitStatusEntry[],
+  summaryCache: GitDiffSummaryCache,
+  cacheState: GitDiffSummaryCacheState,
+  claim: GitDiffSummaryCacheClaim,
+): Promise<GitDiffSummaryOutput> {
+  try {
+    const diffResult = await runGit(
+      exec,
+      diffHunkArgs(staged, paths),
+      repository.root,
+      signal,
+      "read Git diff summary hunks",
+    );
+    const statResult = await runGit(
+      exec,
+      diffStatArgs(staged, paths),
+      repository.root,
+      signal,
+      "read Git diff stat",
+    );
+    const summary = createGitDiffSummary(
+      displayStatus,
+      statResult.stdout,
+      diffResult.stdout,
+      responseLimit,
+      completeStatus.length > MAX_RECORDS,
+      completeStatus,
+    );
+    summaryCache.set(cacheState, summary);
+    return summary;
+  } finally {
+    summaryCache.releaseClaim(claim);
+  }
+}
+
+async function executeGitDiffSummary(
+  exec: GitExec,
+  repository: GitRepository,
+  signal: AbortSignal | undefined,
+  staged: boolean,
+  paths: readonly string[],
+  responseLimit: number,
+  summaryCache: GitDiffSummaryCache,
+  rawDiscoveryFlights: RawDiscoveryFlights,
+): Promise<GitDiffSummaryOutput> {
+  const statusResult = await runGit(
+    exec,
+    statusArgs(paths),
+    repository.root,
+    signal,
+    "read Git status for diff summary",
+  );
+  const headResult = await runGit(
+    exec,
+    ["rev-parse", "HEAD"],
+    repository.root,
+    signal,
+    "read Git repository HEAD for diff summary",
+  );
+  const completeStatus = selectStatus(parseStatus(statusResult.stdout), staged);
+  const displayStatus = completeStatus.slice(0, MAX_RECORDS);
+  const { rawText, untrackedDigest } = await discoverRawState(
+    exec,
+    repository,
+    staged,
+    paths,
+    headResult.stdout.trim(),
+    statusResult.stdout,
+    completeStatus,
+    rawDiscoveryFlights,
+  );
+  const cacheState = createSummaryCacheState(
+    repository,
+    headResult.stdout.trim(),
+    statusResult.stdout,
+    rawText,
+    untrackedDigest,
+    staged,
+    paths,
+    responseLimit,
+  );
+  const cached = summaryCache.get(cacheState);
+  if (cached !== undefined) return cached;
+  const claimResult = await waitForSummaryClaim(summaryCache, cacheState, signal);
+  if (claimResult.summary !== undefined) return claimResult.summary;
+  if (claimResult.cancelled) throw cancellationError(true);
+  const claim = claimResult.claim;
+  if (claim === undefined) throw new Error("summary claim was lost before computation");
+  return computeAndCacheSummary(
+    exec,
+    repository,
+    signal,
+    staged,
+    paths,
+    responseLimit,
+    displayStatus,
+    completeStatus,
+    summaryCache,
+    cacheState,
+    claim,
+  );
 }
 
 export function createGitDiffTool(
@@ -233,181 +564,34 @@ export function createGitDiffTool(
     promptSnippet: "Inspect a bounded Git diff",
     parameters: gitDiffParameters,
     renderCall(args, theme) {
-      const parts: string[] = [];
-      if (args?.mode !== undefined) {
-        parts.push(theme.fg("muted", `mode=${args.mode}`));
-      } else {
-        parts.push(theme.fg("muted", "mode=summary"));
-      }
-      if (args?.staged === true || args?.staged === "true") {
-        parts.push(theme.fg("muted", "--staged"));
-      }
-      const paths =
-        args === undefined ? [] : "paths" in args ? args.paths : "path" in args ? [args.path] : [];
-      if (paths.length === 0) {
-        parts.push(theme.fg("muted", "(whole repository)"));
-      } else {
-        for (const path of paths) {
-          parts.push(renderStringArgument(path, theme));
-        }
-      }
-      parts.push(theme.fg("muted", `maxBytes=${args?.maxBytes ?? DEFAULT_GIT_DIFF_MAX_BYTES}`));
-      return renderCallLine(theme, "git_diff", parts);
+      return renderGitDiffCall(args, theme);
     },
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      validateGitRequestKeys(
-        params,
-        ["mode", "path", "paths", "staged", "maxBytes"],
-        '{ mode?: "summary" | "patch", path?: string, paths?: string[], staged?: boolean, maxBytes?: integer }',
-      );
-      const hasLegacyPath = "path" in params;
-      const hasPaths = "paths" in params;
-      if (hasLegacyPath && hasPaths) {
-        throw invalidGitRequest("provide either path or paths, not both", "path");
-      }
-      const responseMode = params.mode ?? "summary";
-      if (responseMode !== "summary" && responseMode !== "patch") {
-        throw invalidGitRequest('mode must be either "summary" or "patch"', "mode");
-      }
-      const staged = normalizeGitBoolean(params.staged, "staged") === true;
-      const responseLimit = params.maxBytes ?? DEFAULT_GIT_DIFF_MAX_BYTES;
-      validateIntegerLimit(responseLimit, 1, MAX_CONTENT_BYTES, "maxBytes");
-      const repository = await resolveRepository(exec, ctx.cwd, signal ?? ctx.signal);
-      const paths = hasPaths
-        ? await resolvePaths(repository, params.paths)
-        : hasLegacyPath
-          ? [await resolvePath(repository, params.path)]
-          : [];
-      const diffPaths = paths;
-      if (responseMode === "patch") {
-        const result = await runGit(
-          exec,
-          diffArgs(staged, diffPaths),
-          repository.root,
-          signal ?? ctx.signal,
-          "read Git diff",
-        );
-        const bounded = truncateUtf8(result.stdout, responseLimit);
-        const message = bounded.output.truncated
-          ? `INCOMPLETE git_diff patch: ${bounded.output.totalBytes} bytes were available and only the first ${responseLimit} bytes are returned. Follow up with an explicit scoped request using mode: "patch", paths: ["file"], and a larger maxBytes.`
-          : undefined;
-        return makeToolResult({
-          mode: "patch" as const,
-          patch: bounded.text,
-          output: bounded.output,
-          ...(message === undefined ? {} : { message }),
-        });
-      }
-
-      const statusResult = await runGit(
-        exec,
-        statusArgs(paths),
-        repository.root,
-        signal ?? ctx.signal,
-        "read Git status for diff summary",
-      );
-      const headResult = await runGit(
-        exec,
-        ["rev-parse", "HEAD"],
-        repository.root,
-        signal ?? ctx.signal,
-        "read Git repository HEAD for diff summary",
-      );
-      const completeStatus = selectStatus(parseStatus(statusResult.stdout), staged);
-      const displayStatus = completeStatus.slice(0, MAX_RECORDS);
-      const rawDiscoveryKey = createHash("sha256")
-        .update(
-          JSON.stringify({
-            repositoryRoot: repository.root,
-            workingDirectory: repository.cwd,
-            head: headResult.stdout.trim(),
-            status: statusResult.stdout,
-            staged,
-            paths: diffPaths,
-          }),
-          "utf8",
-        )
-        .digest("hex");
-      let rawDiscovery = rawDiscoveryFlights.get(rawDiscoveryKey);
-      if (rawDiscovery === undefined) {
-        rawDiscovery = Promise.all([
-          runGit(
-            exec,
-            diffRawArgs(staged, diffPaths),
-            repository.root,
-            undefined,
-            "read Git diff content state",
-          ),
-          hashUntrackedFiles(repository.root, completeStatus),
-        ]).then(([rawResult, untrackedDigest]) => ({
-          rawText: rawResult.stdout,
-          untrackedDigest,
-        }));
-        rawDiscoveryFlights.set(rawDiscoveryKey, rawDiscovery);
-        void rawDiscovery.then(
-          () => {
-            if (rawDiscoveryFlights.get(rawDiscoveryKey) === rawDiscovery) {
-              rawDiscoveryFlights.delete(rawDiscoveryKey);
-            }
-          },
-          () => {
-            if (rawDiscoveryFlights.get(rawDiscoveryKey) === rawDiscovery) {
-              rawDiscoveryFlights.delete(rawDiscoveryKey);
-            }
-          },
-        );
-      }
-      const { rawText, untrackedDigest } = await rawDiscovery;
-      const cacheState: GitDiffSummaryCacheState = {
-        repositoryIdentity: repository.root,
-        workingDirectory: repository.cwd,
-        head: headResult.stdout.trim(),
-        dirtyFilesDigest: createHash("sha256")
-          .update(statusResult.stdout, "utf8")
-          .update("\\0", "utf8")
-          .update(rawText, "utf8")
-          .update("\\0", "utf8")
-          .update(untrackedDigest, "utf8")
-          .digest("hex"),
-        staged,
-        paths: diffPaths,
-        maxBytes: responseLimit,
-      };
-      const cached = summaryCache.get(cacheState);
-      if (cached !== undefined) return makeToolResult(cached);
-      const claimResult = await waitForSummaryClaim(summaryCache, cacheState, signal ?? ctx.signal);
-      if (claimResult.summary !== undefined) return makeToolResult(claimResult.summary);
-      if (claimResult.cancelled) throw cancellationError(true);
-      const claim = claimResult.claim;
-      if (claim === undefined) throw new Error("summary claim was lost before computation");
-      try {
-        const diffResult = await runGit(
-          exec,
-          diffHunkArgs(staged, diffPaths),
-          repository.root,
-          signal ?? ctx.signal,
-          "read Git diff summary hunks",
-        );
-        const statResult = await runGit(
-          exec,
-          diffStatArgs(staged, diffPaths),
-          repository.root,
-          signal ?? ctx.signal,
-          "read Git diff stat",
-        );
-        const summary = createGitDiffSummary(
-          displayStatus,
-          statResult.stdout,
-          diffResult.stdout,
-          responseLimit,
-          completeStatus.length > MAX_RECORDS,
-          completeStatus,
-        );
-        summaryCache.set(cacheState, summary);
-        return makeToolResult(summary);
-      } finally {
-        summaryCache.releaseClaim(claim);
-      }
+      const request = normalizeGitDiffRequest(params);
+      const executionSignal = signal ?? ctx.signal;
+      const repository = await resolveRepository(exec, ctx.cwd, executionSignal);
+      const paths = await resolveGitDiffPaths(repository, params);
+      const details =
+        request.responseMode === "patch"
+          ? await executeGitDiffPatch(
+              exec,
+              repository,
+              executionSignal,
+              request.staged,
+              paths,
+              request.responseLimit,
+            )
+          : await executeGitDiffSummary(
+              exec,
+              repository,
+              executionSignal,
+              request.staged,
+              paths,
+              request.responseLimit,
+              summaryCache,
+              rawDiscoveryFlights,
+            );
+      return makeToolResult(details);
     },
   });
 }

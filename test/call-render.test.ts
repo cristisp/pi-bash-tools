@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
+import { describe, expect, it } from "vitest";
+
 import {
   renderCallLine,
   renderStringArgument,

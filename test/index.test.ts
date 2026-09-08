@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
+
 import extension from "../src/index.ts";
 
 describe("bash tools extension", () => {

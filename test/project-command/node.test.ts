@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+
 import { canonicalizeNodeScripts, hashNodeScripts } from "../../src/tools/project-command/node.ts";
 
 describe("Node project command facade", () => {

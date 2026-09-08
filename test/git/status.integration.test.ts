@@ -1,6 +1,8 @@
 import { readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
 import { afterEach, expect, it } from "vitest";
+
 import type { GitStatusChangedOutput, GitStatusOutput } from "../../src/tools/git/status/output.ts";
 import { createGitStatusTool } from "../../src/tools/git/status/tool.ts";
 import {

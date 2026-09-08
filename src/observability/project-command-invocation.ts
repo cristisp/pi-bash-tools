@@ -1,17 +1,19 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
+
 import type {
   ExtensionAPI,
   ExtensionContext,
   SessionShutdownEvent,
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import { hashCanonicalJson } from "./canonical-json.ts";
-import { measurementPair, type MeasurementPair } from "./measurements.ts";
+
 import { RESULT_CATEGORIES, type ResultCategory } from "../tools/errors.ts";
-import { EXTENSION_VERSION } from "../version.ts";
 import type { ProjectCommandCacheDecision } from "../tools/project-command/cache.ts";
 import type { ProjectCommandExecutionStatus } from "../tools/project-command/execution.ts";
+import { EXTENSION_VERSION } from "../version.ts";
+import { hashCanonicalJson } from "./canonical-json.ts";
+import { measurementPair, type MeasurementPair } from "./measurements.ts";
 
 const PROJECT_COMMAND_INVOCATION_FORMAT_VERSION = 1 as const;
 export const PROJECT_COMMAND_INVOCATION_ENTRY_TYPE =
@@ -23,8 +25,8 @@ export const PROJECT_COMMAND_SUMMARY_MAX_BYTES = 8 * 1024;
 export const PROJECT_COMMAND_SUMMARY_MAX_COUNT = 1_000_000;
 export const PROJECT_COMMAND_SUMMARY_MAX_SCHEMA_HASHES = 32;
 export const BASH_TOOLS_INVOCATIONS_PATH = "BASH_TOOLS_INVOCATIONS_PATH";
-export const BASH_TOOLS_INVOCATION_STREAM = "BASH_TOOLS_INVOCATION_STREAM";
-export const BASH_TOOLS_TELEMETRY_PATH = "BASH_TOOLS_TELEMETRY_PATH";
+const BASH_TOOLS_INVOCATION_STREAM = "BASH_TOOLS_INVOCATION_STREAM";
+const BASH_TOOLS_TELEMETRY_PATH = "BASH_TOOLS_TELEMETRY_PATH";
 
 const INVOCATION_STREAM_ENVIRONMENT_VARIABLES = [
   BASH_TOOLS_INVOCATIONS_PATH,
@@ -65,7 +67,7 @@ export interface ProjectCommandInvocationOutputMetadata {
   readonly stderr: ProjectCommandInvocationStreamMetadata;
 }
 
-export interface ProjectCommandInvocationMeasurementState {
+interface ProjectCommandInvocationMeasurementState {
   readonly cacheReuse: number;
   readonly cacheInvalidation: number;
   readonly truncation: number;

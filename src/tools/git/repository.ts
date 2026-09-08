@@ -1,5 +1,7 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+
+import { isPathWithin } from "../path-containment.ts";
 import {
   containsPathspecCharacter,
   gitImplementationError,
@@ -13,13 +15,6 @@ import {
 export interface Repository {
   readonly root: string;
   readonly cwd: string;
-}
-
-function isInside(parent: string, child: string): boolean {
-  const suffix = relative(parent, child);
-  return (
-    suffix === "" || (suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix))
-  );
 }
 
 function isUnsafePath(path: string): boolean {
@@ -72,7 +67,7 @@ export async function resolveRepository(
   try {
     const root = await realpath(rootText);
     const canonicalCwd = await realpath(cwd);
-    if (!isInside(root, canonicalCwd)) {
+    if (!isPathWithin(root, canonicalCwd)) {
       throw gitImplementationError("current workspace is outside the Git repository", true);
     }
     return { root, cwd: canonicalCwd };
@@ -91,11 +86,11 @@ export async function resolvePath(
 ): Promise<string> {
   validatePathSyntax(input, label);
   const candidate = resolve(repository.cwd, input);
-  if (!isInside(repository.cwd, candidate) || !isInside(repository.root, candidate)) {
+  if (!isPathWithin(repository.cwd, candidate) || !isPathWithin(repository.root, candidate)) {
     throw invalidGitRequest(`${label} escapes the workspace or repository`, label);
   }
   const canonicalAncestor = await existingAncestor(candidate);
-  if (canonicalAncestor && !isInside(repository.root, canonicalAncestor)) {
+  if (canonicalAncestor && !isPathWithin(repository.root, canonicalAncestor)) {
     throw invalidGitRequest(`${label} escapes the repository through a symlink`, label);
   }
   const repositoryPath = relative(repository.root, candidate).split(sep).join("/") || ".";

@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { basename, join } from "node:path";
+
+import {
+  closePolicyHandle,
+  closeSecureDirectory,
+  openPolicyParentDirectory,
+  type SecureDirectory,
+} from "./directory/operations.ts";
+import { parsePolicyDocument, serializePolicyDocument } from "./document.ts";
 import {
   getPolicyReadOpenFlags,
   isMissingPolicyFileError,
@@ -7,14 +15,7 @@ import {
   isUnsupportedPolicyChmodError,
   type PolicyFileSystem,
 } from "./filesystem.ts";
-import {
-  closePolicyHandle,
-  closeSecureDirectory,
-  openPolicyParentDirectory,
-  type SecureDirectory,
-} from "./directory/operations.ts";
 import { createEmptyEnvironmentPolicy, policyError } from "./format.ts";
-import { parsePolicyDocument, serializePolicyDocument } from "./document.ts";
 import type { PolicyDocument } from "./types.ts";
 
 const POLICY_LOCK_TIMEOUT_MS = 5_000;

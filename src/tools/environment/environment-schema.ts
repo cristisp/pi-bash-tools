@@ -1,5 +1,7 @@
 import { Type, type Static } from "typebox";
+
 import {
+  buildToolErrorContract,
   createToolErrorContract,
   suggestedActionForCategory,
   withToolErrorContract,
@@ -7,6 +9,7 @@ import {
   type ToolErrorContract,
 } from "../errors.ts";
 import { ENVIRONMENT_VARIABLE_NAME_PATTERN } from "../policy/format.ts";
+import { isRecord } from "../value-validation.ts";
 
 export const environmentInputSchema = Type.Object(
   {
@@ -27,10 +30,6 @@ export const environmentInputSchema = Type.Object(
 
 export type EnvironmentInput = Static<typeof environmentInputSchema>;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 export class EnvironmentToolError extends Error {
   readonly details: unknown;
   readonly contract: ToolErrorContract;
@@ -48,9 +47,7 @@ export class EnvironmentToolError extends Error {
         retryable: true,
         executed: false,
       });
-    this.details = isRecord(details)
-      ? withToolErrorContract(details, this.contract)
-      : withToolErrorContract({}, this.contract);
+    this.details = withToolErrorContract(isRecord(details) ? details : {}, this.contract);
   }
 }
 
@@ -62,14 +59,13 @@ export function environmentContract(
   executed: boolean,
   invalidField?: string,
 ): ToolErrorContract {
-  return createToolErrorContract({
+  return buildToolErrorContract({
     code,
     category,
     explanation,
-    ...(invalidField === undefined ? {} : { invalidField }),
-    suggestedAction: suggestedActionForCategory(category),
     retryable,
     executed,
+    invalidField,
   });
 }
 

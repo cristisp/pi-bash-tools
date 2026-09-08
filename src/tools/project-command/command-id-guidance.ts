@@ -1,3 +1,4 @@
+import { editDistance } from "../edit-distance.ts";
 import type { ProjectCommandDefinition } from "./definitions.ts";
 
 export interface ProjectCommandIdGuidance {
@@ -7,25 +8,6 @@ export interface ProjectCommandIdGuidance {
   readonly canonicalVariant?: string;
   readonly correctedExample?: Readonly<Record<string, string>>;
   readonly remediation: string;
-}
-
-function editDistance(left: string, right: string): number {
-  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
-  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
-    let diagonal = previous[0] ?? 0;
-    previous[0] = leftIndex;
-    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
-      const above = previous[rightIndex] ?? 0;
-      const cost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
-      previous[rightIndex] = Math.min(
-        (previous[rightIndex - 1] ?? 0) + 1,
-        above + 1,
-        diagonal + cost,
-      );
-      diagonal = above;
-    }
-  }
-  return previous[right.length] ?? left.length;
 }
 
 function legacyVariant(

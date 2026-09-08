@@ -1,7 +1,11 @@
+/* oxlint-disable typescript/no-unsafe-type-assertion */
+
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
+
 import {
   BASH_TOOLS_INVOCATIONS_PATH,
   buildProjectCommandInvocationRecord,
@@ -13,6 +17,7 @@ import {
   PROJECT_COMMAND_SUMMARY_MAX_BYTES,
   PROJECT_COMMAND_SUMMARY_MAX_COUNT,
   PROJECT_COMMAND_SUMMARY_MAX_SCHEMA_HASHES,
+  recordProjectCommandInvocation,
   summarizeProjectCommandInvocations,
   type ProjectCommandInvocationRecordInput,
 } from "../../src/observability/project-command-invocation.ts";
@@ -71,6 +76,94 @@ describe("project command invocation metadata", () => {
         stderr: { truncated: false, totalBytes: 20, totalLines: 1 },
       },
     });
+  });
+
+  it("normalizes malformed enum, identifier, numeric, and stream metadata", () => {
+    const malformed = {
+      ...input(),
+      sessionId: "s".repeat(300),
+      toolCallId: "t".repeat(300),
+      schemaHash: "h".repeat(300),
+      resultCategory: "not-a-category",
+      status: "not-a-status",
+      reason: "not-a-reason",
+      cacheDecision: "not-a-cache-decision",
+      durationMs: Number.NaN,
+      executionDurationMs: Number.POSITIVE_INFINITY,
+      output: {
+        stdout: { truncated: 1, totalBytes: -1, totalLines: Number.POSITIVE_INFINITY },
+        stderr: { truncated: "yes", totalBytes: Number.NaN, totalLines: 1.9 },
+      },
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+    } as unknown as ProjectCommandInvocationRecordInput;
+
+    const record = buildProjectCommandInvocationRecord(malformed);
+
+    expect(record.sessionId).toHaveLength(256);
+    expect(record.toolCallId).toHaveLength(256);
+    expect(record.schemaHash).toHaveLength(256);
+    expect(record.resultCategory).toBe("IMPLEMENTATION_FAILURE");
+    expect(record.status).toBeUndefined();
+    expect(record.reason).toBe("preparation-failure");
+    expect(record.cacheDecision).toBe("ineligible");
+    expect(record.durationMs).toBe(0);
+    expect(record.executionDurationMs).toBe(0);
+    expect(record.output).toEqual({
+      stdout: { truncated: false, totalBytes: 0, totalLines: 0 },
+      stderr: { truncated: false, totalBytes: 0, totalLines: 1 },
+    });
+  });
+
+  it("redacts parameter values while preserving bounded command metadata", () => {
+    const record = buildProjectCommandInvocationRecord(
+      input({
+        parameters: {
+          commandId: "c".repeat(300),
+          variant: "v".repeat(300),
+          secret: "private prompt",
+          flag: true,
+          count: 42,
+          empty: null,
+          paths: ["private/source.ts", "private/other.ts"],
+          object: { password: "hidden" },
+        },
+      }),
+    );
+
+    expect(record.parameters).toMatchObject({
+      commandId: `${"c".repeat(255)}…`,
+      variant: `${"v".repeat(255)}…`,
+      secret: { hash: expect.any(String), length: 14 },
+      flag: true,
+      count: 42,
+      empty: { type: "null" },
+      paths: { count: 2, hashes: [expect.any(String), expect.any(String)] },
+      object: { hash: expect.any(String), type: "object" },
+    });
+    const serialized = JSON.stringify(record);
+    expect(serialized).not.toContain("private prompt");
+    expect(serialized).not.toContain("private/source.ts");
+    expect(serialized).not.toContain("hidden");
+  });
+
+  it("falls back to a minimal bounded record for oversized or cyclic fields", () => {
+    const oversized = buildProjectCommandInvocationRecord(
+      input({
+        redactedParameters: { oversized: "x".repeat(PROJECT_COMMAND_INVOCATION_MAX_BYTES) },
+      }),
+    );
+    expect(oversized.parameters).toBeUndefined();
+    expect(oversized.commandId).toBeUndefined();
+    expect(Buffer.byteLength(JSON.stringify(oversized), "utf8")).toBeLessThanOrEqual(
+      PROJECT_COMMAND_INVOCATION_MAX_BYTES,
+    );
+
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const malformed = buildProjectCommandInvocationRecord(input({ redactedParameters: cyclic }));
+    expect(malformed.parameters).toBeUndefined();
+    expect(malformed.commandId).toBeUndefined();
+    expect(malformed.output).toEqual(input().output);
   });
 
   it("bounds optional orchestration, state, publication, and coercion metadata", () => {
@@ -166,7 +259,12 @@ describe("project command invocation metadata", () => {
         { appendEntry: vi.fn() },
         { [BASH_TOOLS_INVOCATIONS_PATH]: streamPath },
       );
-      const first = buildProjectCommandInvocationRecord(input({ toolCallId: "stream-1" }));
+      const first = buildProjectCommandInvocationRecord(
+        input({
+          toolCallId: "stream-1",
+          parameters: { commandId: "node_test", secret: "private stream output" },
+        }),
+      );
       const second = buildProjectCommandInvocationRecord(
         input({ toolCallId: "stream-2", lookup: { attempted: true, success: false } }),
       );
@@ -174,9 +272,11 @@ describe("project command invocation metadata", () => {
       recorder(first);
       recorder(second);
 
-      const lines = (await readFile(streamPath, "utf8")).trimEnd().split("\n");
+      const serialized = await readFile(streamPath, "utf8");
+      const lines = serialized.trimEnd().split("\n");
       expect(lines).toHaveLength(2);
       expect(lines.map((line) => JSON.parse(line))).toEqual([first, second]);
+      expect(serialized).not.toContain("private stream output");
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -193,6 +293,31 @@ describe("project command invocation metadata", () => {
       PROJECT_COMMAND_INVOCATION_ENTRY_TYPE,
       expect.objectContaining({ toolCallId: "call-1" }),
     );
+  });
+
+  it("builds and persists a bounded record through an injected recorder", () => {
+    const recorder = vi.fn();
+
+    recordProjectCommandInvocation(recorder, input({ sessionId: "s".repeat(10_000) }));
+
+    expect(recorder).toHaveBeenCalledOnce();
+    const [record] = recorder.mock.calls[0] as [
+      ReturnType<typeof buildProjectCommandInvocationRecord>,
+    ];
+    expect(record.sessionId).toHaveLength(256);
+    expect(record.parameters).toBeDefined();
+    expect(Buffer.byteLength(JSON.stringify(record), "utf8")).toBeLessThanOrEqual(
+      PROJECT_COMMAND_INVOCATION_MAX_BYTES,
+    );
+  });
+
+  it("swallows failures from an injected invocation recorder", () => {
+    const recorder = vi.fn(() => {
+      throw new Error("recorder unavailable");
+    });
+
+    expect(() => recordProjectCommandInvocation(recorder, input())).not.toThrow();
+    expect(recorder).toHaveBeenCalledOnce();
   });
 
   it("aggregates cache decisions, repeated requests, outcomes, statuses, and bounded output metrics", () => {
@@ -268,6 +393,46 @@ describe("project command invocation metadata", () => {
       },
       schemaHashes: ["schema-hash"],
     });
+  });
+
+  it("normalizes malformed records while adding them to a summary", () => {
+    const malformed = {
+      ...buildProjectCommandInvocationRecord(input()),
+      resultCategory: "not-a-category",
+      cacheDecision: "not-a-cache-decision",
+      status: "not-a-status",
+      durationMs: Number.NaN,
+      executionDurationMs: Number.POSITIVE_INFINITY,
+      output: {
+        stdout: { truncated: true, totalBytes: Number.NaN, totalLines: -1 },
+        stderr: { truncated: false, totalBytes: Number.POSITIVE_INFINITY, totalLines: 0 },
+      },
+      measurements: {
+        cacheReuse: { before: Number.NaN, after: -1 },
+      },
+      schemaHash: 42,
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+    } as unknown as ReturnType<typeof buildProjectCommandInvocationRecord>;
+
+    const summary = summarizeProjectCommandInvocations([malformed]);
+    if (summary === undefined) throw new Error("expected a summary");
+
+    expect(summary.invocationCount).toBe(1);
+    expect(summary.cacheDecisions.ineligible).toBe(1);
+    expect(summary.resultCategories.IMPLEMENTATION_FAILURE).toBe(1);
+    expect(summary.processStatuses).toEqual({
+      success: 0,
+      nonzero: 0,
+      timeout: 0,
+      "spawn-failure": 0,
+      cancelled: 0,
+    });
+    expect(summary.durationMs).toBe(0);
+    expect(summary.executionDurationMs).toBe(0);
+    expect(summary.outputBytes).toEqual({ stdout: 0, stderr: 0 });
+    expect(summary.truncationCounts).toEqual({ stdout: 1, stderr: 0 });
+    expect(summary.measurements.cacheReuse).toEqual({ before: 0, after: 0 });
+    expect(summary.schemaHashes).toEqual([]);
   });
 
   it("keeps summaries bounded and excludes parameters and output text", () => {

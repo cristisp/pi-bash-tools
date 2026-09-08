@@ -34,8 +34,6 @@ export interface ToolErrorContract {
   readonly executed: boolean;
 }
 
-export type StructuredToolError = ToolErrorContract;
-
 export function suggestedActionForCategory(category: ResultCategory): string | undefined {
   switch (category) {
     case "INVALID_REQUEST":
@@ -71,8 +69,29 @@ export function suggestedActionForCategory(category: ResultCategory): string | u
   }
 }
 
+export interface ToolErrorContractOptions {
+  readonly code: string;
+  readonly category: Exclude<ResultCategory, "PASS">;
+  readonly explanation: string;
+  readonly retryable: boolean;
+  readonly executed: boolean;
+  readonly invalidField?: string;
+}
+
 export function createToolErrorContract(contract: ToolErrorContract): ToolErrorContract {
   return Object.freeze({ ...contract });
+}
+
+export function buildToolErrorContract(options: ToolErrorContractOptions): ToolErrorContract {
+  return createToolErrorContract({
+    code: options.code,
+    category: options.category,
+    explanation: options.explanation,
+    ...(options.invalidField === undefined ? {} : { invalidField: options.invalidField }),
+    suggestedAction: suggestedActionForCategory(options.category),
+    retryable: options.retryable,
+    executed: options.executed,
+  });
 }
 
 export function withToolErrorContract<T extends object>(

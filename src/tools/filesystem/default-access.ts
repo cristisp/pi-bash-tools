@@ -1,13 +1,8 @@
-import { isAbsolute, relative, sep } from "node:path";
-import { resolveRepository } from "../git/repository.ts";
-import { runGit, type GitExec } from "../git/execution.ts";
+import { relative, sep } from "node:path";
 
-function isPathWithin(parent: string, child: string): boolean {
-  const suffix = relative(parent, child);
-  return (
-    suffix === "" || (!isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(`..${sep}`))
-  );
-}
+import { runGit, type GitExec } from "../git/execution.ts";
+import { resolveRepository } from "../git/repository.ts";
+import { isPathWithin } from "../path-containment.ts";
 
 function repositoryRelativePath(root: string, path: string): string | undefined {
   if (!isPathWithin(root, path)) {

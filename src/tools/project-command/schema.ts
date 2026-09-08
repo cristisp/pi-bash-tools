@@ -1,4 +1,5 @@
 import { Type, type Static, type TObject, type TUnion } from "typebox";
+
 import { booleanInputSchema, type BooleanInput } from "../boolean.ts";
 import {
   getProjectCommandDefinitions,
@@ -118,6 +119,36 @@ function legacyVariantCommandId(commandId: string) {
   });
 }
 
+function scriptVariantSchema(description: string) {
+  return Type.Optional(
+    Type.String({
+      pattern: PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN,
+      maxLength: PROJECT_COMMAND_MAX_SCRIPT_VARIANT_LENGTH,
+      description,
+    }),
+  );
+}
+
+function testPathsSchema(arrayDescription?: string) {
+  return Type.Optional(
+    Type.Union([
+      Type.Array(
+        Type.String({
+          pattern: NODE_TEST_PATH_PATTERN,
+          maxLength: PROJECT_COMMAND_MAX_PATH_LENGTH,
+        }),
+        {
+          maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS,
+          ...(arrayDescription === undefined ? {} : { description: arrayDescription }),
+        },
+      ),
+      Type.String({
+        description: 'JSON array of workspace-relative test paths, for example ["src/index.ts"].',
+      }),
+    ]),
+  );
+}
+
 function legacyVariantForDefinition(definition: ProjectCommandDefinition): TObject | undefined {
   if (
     definition.commandId !== "node_test" &&
@@ -128,33 +159,13 @@ function legacyVariantForDefinition(definition: ProjectCommandDefinition): TObje
   }
   const commandId = legacyVariantCommandId(definition.commandId);
   const force = Type.Optional(booleanInputSchema);
-  if (definition.commandId === "node_test") {
-    return Type.Object(
-      {
-        commandId,
-        force,
-        ...evidenceProperties(),
-        paths: Type.Optional(
-          Type.Union([
-            Type.Array(
-              Type.String({
-                pattern: NODE_TEST_PATH_PATTERN,
-                maxLength: PROJECT_COMMAND_MAX_PATH_LENGTH,
-              }),
-              { maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS },
-            ),
-            Type.String({
-              description:
-                'JSON array of workspace-relative test paths, for example ["src/index.ts"].',
-            }),
-          ]),
-        ),
-      },
-      { additionalProperties: false },
-    );
-  }
   return Type.Object(
-    { commandId, force, ...evidenceProperties() },
+    {
+      commandId,
+      force,
+      ...evidenceProperties(),
+      ...(definition.commandId === "node_test" ? { paths: testPathsSchema() } : {}),
+    },
     { additionalProperties: false },
   );
 }
@@ -168,65 +179,23 @@ function variantForDefinition(definition: ProjectCommandDefinition): TObject {
         commandId,
         force,
         ...evidenceProperties(),
-        variant: Type.Optional(
-          Type.String({
-            pattern: PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN,
-            maxLength: PROJECT_COMMAND_MAX_SCRIPT_VARIANT_LENGTH,
-            description: "Optional validated suffix for an existing test:<variant> package script.",
-          }),
+        variant: scriptVariantSchema(
+          "Optional validated suffix for an existing test:<variant> package script.",
         ),
-        paths: Type.Optional(
-          Type.Union([
-            Type.Array(
-              Type.String({
-                pattern: NODE_TEST_PATH_PATTERN,
-                maxLength: PROJECT_COMMAND_MAX_PATH_LENGTH,
-              }),
-              {
-                maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS,
-                description: "Optional workspace-relative test paths.",
-              },
-            ),
-            Type.String({
-              description:
-                'JSON array of workspace-relative test paths, for example ["src/index.ts"].',
-            }),
-          ]),
-        ),
+        paths: testPathsSchema("Optional workspace-relative test paths."),
       },
       { additionalProperties: false },
     );
   }
-  if (definition.commandId === "node_lint") {
+  if (definition.commandId === "node_lint" || definition.commandId === "node_format") {
+    const scriptName = definition.commandId === "node_lint" ? "lint" : "format";
     return Type.Object(
       {
         commandId,
         force,
         ...evidenceProperties(),
-        variant: Type.Optional(
-          Type.String({
-            pattern: PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN,
-            maxLength: PROJECT_COMMAND_MAX_SCRIPT_VARIANT_LENGTH,
-            description: "Optional validated suffix for an existing lint:<variant> package script.",
-          }),
-        ),
-      },
-      { additionalProperties: false },
-    );
-  }
-  if (definition.commandId === "node_format") {
-    return Type.Object(
-      {
-        commandId,
-        force,
-        ...evidenceProperties(),
-        variant: Type.Optional(
-          Type.String({
-            pattern: PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN,
-            maxLength: PROJECT_COMMAND_MAX_SCRIPT_VARIANT_LENGTH,
-            description:
-              "Optional validated suffix for an existing format:<variant> package script.",
-          }),
+        variant: scriptVariantSchema(
+          `Optional validated suffix for an existing ${scriptName}:<variant> package script.`,
         ),
       },
       { additionalProperties: false },

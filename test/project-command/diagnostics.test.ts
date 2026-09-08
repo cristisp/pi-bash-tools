@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+
 import {
+  boundProjectCommandText,
   projectCommandDiagnostic,
   PROJECT_COMMAND_DIAGNOSTIC_MAX_CHARS,
+  sanitizeProjectCommandText,
 } from "../../src/tools/project-command/diagnostics.ts";
 import type { ProjectCommandOutput } from "../../src/tools/project-command/execution.ts";
 
@@ -15,6 +18,16 @@ function output(text: string): ProjectCommandOutput {
 }
 
 describe("project command diagnostics", () => {
+  it("normalizes carriage returns and strips controls before bounding text", () => {
+    expect(sanitizeProjectCommandText("first\r\nsecond\rthird\u0000\u007f")).toBe(
+      "first\nsecond\nthird",
+    );
+
+    const bounded = boundProjectCommandText(`\u001b[31m${"x".repeat(2_500)}\u001b[0m`);
+    expect(bounded).toHaveLength(PROJECT_COMMAND_DIAGNOSTIC_MAX_CHARS);
+    expect(bounded).toBe(`${"x".repeat(PROJECT_COMMAND_DIAGNOSTIC_MAX_CHARS - 3)}...`);
+  });
+
   it("prefers meaningful stderr and removes terminal controls and Node script banners", () => {
     expect(
       projectCommandDiagnostic(

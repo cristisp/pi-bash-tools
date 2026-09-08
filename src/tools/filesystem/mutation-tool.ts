@@ -1,25 +1,28 @@
+import { dirname } from "node:path";
+
 import type {
   AgentToolResult,
   AgentToolUpdateCallback,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { dirname, isAbsolute, relative, sep } from "node:path";
 import { Type, type Static } from "typebox";
+
 import { type AuthorizationErrorKind } from "../authorization.ts";
 import { renderCallLine, renderStringArgument } from "../call-render.ts";
-import { isTrackedWorkspacePath } from "./default-access.ts";
+import type { GitExec } from "../git/execution.ts";
+import { isPathWithin } from "../path-containment.ts";
 import { displayPath } from "../path-display.ts";
+import { filesystemPolicyDenialMetadata } from "../policy/decisions.ts";
 import { createNodePolicyFileSystem, type PolicyFileSystem } from "../policy/filesystem.ts";
 import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
 import type { LoadedPolicy, PolicyAuthorization, PolicyStore } from "../policy/types.ts";
-import { filesystemPolicyDenialMetadata } from "../policy/decisions.ts";
-import type { GitExec } from "../git/execution.ts";
 import {
   authorizeAndPersistFilesystemAccesses,
   loadFilesystemPolicyForRequest,
   type FilesystemAuthorizationContext,
   type FilesystemAuthorizationRequest,
 } from "./authorization.ts";
+import { isTrackedWorkspacePath } from "./default-access.ts";
 import {
   filesystemAuthorizationContract,
   filesystemCancellationError,
@@ -246,13 +249,6 @@ async function canonicalMoveDestination(
     }
     throw filesystemInspectionError("Unable to inspect Move destination");
   }
-}
-
-function isPathWithin(parent: string, child: string): boolean {
-  const suffix = relative(parent, child);
-  return (
-    suffix === "" || (!isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(`..${sep}`))
-  );
 }
 
 async function authorizeMutation(

@@ -4,7 +4,14 @@ import type {
   ExtensionContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+
 import { renderCallLine, renderStringArgument } from "../call-render.ts";
+import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
+import type { PolicyFileSystem, PolicyStore } from "../policy/types.ts";
+import {
+  authorizeAndPersistEnvironmentKeys,
+  loadEnvironmentPolicyForRequest,
+} from "./environment-authorization.ts";
 import {
   environmentCancellationError,
   environmentContract,
@@ -13,13 +20,7 @@ import {
   type EnvironmentInput,
   validateEnvironmentKeys,
 } from "./environment-schema.ts";
-import {
-  authorizeAndPersistEnvironmentKeys,
-  loadEnvironmentPolicyForRequest,
-} from "./environment-authorization.ts";
 import type { EnvironmentOutput } from "./output.ts";
-import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
-import type { PolicyFileSystem, PolicyStore } from "../policy/types.ts";
 
 export interface EnvironmentToolTestOptions {
   readonly configPath: string;
@@ -55,6 +56,19 @@ function makeEnvironmentToolResult(details: EnvironmentOutput): AgentToolResult<
   };
 }
 
+function environmentReadFailure(): ReturnType<typeof environmentError> {
+  return environmentError(
+    "Unable to read requested environment values",
+    environmentContract(
+      "environment-read-failure",
+      "ENVIRONMENT_FAILURE",
+      "The requested environment values could not be read.",
+      true,
+      true,
+    ),
+  );
+}
+
 function readEnvironmentValues(
   keys: readonly string[],
   environment: Readonly<Record<string, string | undefined>>,
@@ -76,16 +90,7 @@ function readEnvironmentValues(
     if (signal?.aborted) {
       throw environmentCancellationError(true);
     }
-    throw environmentError(
-      "Unable to read requested environment values",
-      environmentContract(
-        "environment-read-failure",
-        "ENVIRONMENT_FAILURE",
-        "The requested environment values could not be read.",
-        true,
-        true,
-      ),
-    );
+    throw environmentReadFailure();
   }
 }
 

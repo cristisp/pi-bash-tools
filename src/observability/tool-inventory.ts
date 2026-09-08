@@ -4,8 +4,9 @@ import type {
   SessionStartEvent,
   ToolInfo,
 } from "@earendil-works/pi-coding-agent";
-import { hashToolParameters, serializeCanonicalJson } from "./canonical-json.ts";
+
 import { EXTENSION_VERSION } from "../version.ts";
+import { hashToolParameters, serializeCanonicalJson } from "./canonical-json.ts";
 import {
   INVENTORY_FORMAT_VERSION,
   INVENTORY_HASH_ALGORITHM,

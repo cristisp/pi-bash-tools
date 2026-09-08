@@ -1,6 +1,6 @@
+import type { NodeProjectInfo } from "../node.ts";
 import type { DetectedPackageManager } from "../package-manager.ts";
 import type { ProjectResolutionFileSystem } from "../resolution.ts";
-import type { NodeProjectInfo } from "../node.ts";
 
 export type NodeFileSystem = Pick<ProjectResolutionFileSystem, "readFile" | "stat"> &
   Partial<Pick<ProjectResolutionFileSystem, "realpath" | "lstat">> & {

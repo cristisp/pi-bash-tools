@@ -1,15 +1,17 @@
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
 import { afterEach, describe, expect, it } from "vitest";
+
 import {
   getProjectCommandDefinition,
   type ProjectCommandDefinition,
 } from "../../src/tools/project-command/definitions.ts";
+import { createNodeProjectRelevantInputDiscovery } from "../../src/tools/project-command/node/relevant-inputs.ts";
 import {
   canonicalProjectCommandRelevantInputs,
   type ProjectCommandRelevantInputDiscovery,
 } from "../../src/tools/project-command/relevant-inputs.ts";
-import { createNodeProjectRelevantInputDiscovery } from "../../src/tools/project-command/node/relevant-inputs.ts";
 import { createNodeProject, createNodeTestScope } from "./node/test-fixtures.ts";
 
 const scope = createNodeTestScope();

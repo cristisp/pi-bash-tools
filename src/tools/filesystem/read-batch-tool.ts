@@ -1,30 +1,34 @@
-import type {
-  AgentToolResult,
-  AgentToolUpdateCallback,
-  ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
 import {
   lstat as nodeLstat,
   readFile as nodeReadFile,
   realpath as nodeRealpath,
 } from "node:fs/promises";
-import { isAbsolute, relative, sep } from "node:path";
+import { relative, sep } from "node:path";
+
+import type {
+  AgentToolResult,
+  AgentToolUpdateCallback,
+  ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { renderCallLine, renderStringArgument } from "../call-render.ts";
+
 import { type AuthorizationErrorKind } from "../authorization.ts";
-import { displayPath } from "../path-display.ts";
-import { readProjectCommandOrchestrationContext } from "../project-command/orchestration.ts";
-import { resolveRepository } from "../git/repository.ts";
+import { renderCallLine, renderStringArgument } from "../call-render.ts";
 import type { GitExec } from "../git/execution.ts";
-import { decodeUtf8Prefix } from "../truncation.ts";
+import { resolveRepository } from "../git/repository.ts";
+import { isPathWithin } from "../path-containment.ts";
+import { displayPath } from "../path-display.ts";
 import { filesystemPolicyDenialMetadata } from "../policy/decisions.ts";
-import type { LoadedPolicy, PolicyAuthorization, PolicyStore } from "../policy/types.ts";
 import {
   createNodePolicyFileSystem,
   type PolicyFileStats,
   type PolicyFileSystem,
 } from "../policy/filesystem.ts";
+import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
+import type { LoadedPolicy, PolicyAuthorization, PolicyStore } from "../policy/types.ts";
+import { readProjectCommandOrchestrationContext } from "../project-command/orchestration.ts";
+import { decodeUtf8Prefix } from "../truncation.ts";
 import {
   authorizeAndPersistFilesystemAccesses,
   loadFilesystemPolicyForRequest,
@@ -39,17 +43,16 @@ import {
   filesystemInvalidRequest,
   FilesystemToolError,
 } from "./errors.ts";
-import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
 import { canonicalExistingPath, requestPath } from "./paths.ts";
 
-export const READ_BATCH_MAX_PATHS = 32;
-export const READ_BATCH_MAX_PATH_LENGTH = 4_096;
-export const READ_BATCH_MAX_OFFSET = 1_000_000;
-export const READ_BATCH_MAX_RANGE_LINES = 2_000;
-export const READ_BATCH_MAX_CONTENT_BYTES = 64 * 1024;
-export const READ_BATCH_MAX_FILE_BYTES = 8 * 1024 * 1024;
-export const READ_BATCH_MAX_CACHE_ENTRIES = 512;
-export const READ_BATCH_REF_PREFIX = "rr_";
+const READ_BATCH_MAX_PATHS = 32;
+const READ_BATCH_MAX_PATH_LENGTH = 4_096;
+const READ_BATCH_MAX_OFFSET = 1_000_000;
+const READ_BATCH_MAX_RANGE_LINES = 2_000;
+const READ_BATCH_MAX_CONTENT_BYTES = 64 * 1024;
+const READ_BATCH_MAX_FILE_BYTES = 8 * 1024 * 1024;
+const READ_BATCH_MAX_CACHE_ENTRIES = 512;
+const READ_BATCH_REF_PREFIX = "rr_";
 
 const readBatchRangeParameters = Type.Object(
   {
@@ -83,7 +86,7 @@ const readBatchPathParameters = Type.Object(
   { additionalProperties: false },
 );
 
-export const readBatchParameters = Type.Object(
+const readBatchParameters = Type.Object(
   {
     paths: Type.Array(readBatchPathParameters, {
       minItems: 1,
@@ -235,13 +238,6 @@ function requirePolicy(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isPathWithin(parent: string, child: string): boolean {
-  const suffix = relative(parent, child);
-  return (
-    suffix === "" || (!isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(`..${sep}`))
-  );
 }
 
 function repositoryRelativePath(root: string, path: string): string | undefined {
@@ -520,28 +516,39 @@ async function resolveRoot(
   return { root: canonicalCwd, cwd: canonicalCwd };
 }
 
-async function readOne(
+type ResolvedReadBatchPath =
+  | { readonly path: string; readonly canonical: string }
+  | { readonly path: string; readonly error: ReadBatchPathError };
+
+type ReadBatchFileContents = { readonly bytes: Buffer } | { readonly error: ReadBatchPathError };
+
+function readBatchPathResult(
+  path: string,
+  input: NormalizedReadBatchPath,
+  error?: ReadBatchPathError,
+): ReadBatchPathResult {
+  return {
+    path,
+    ...(input.range === undefined ? {} : { range: input.range }),
+    ...(error === undefined ? {} : { error }),
+  };
+}
+
+async function resolveReadBatchPath(
   input: NormalizedReadBatchPath,
   root: string,
   cwd: string,
-  loaded: LoadedPolicy,
-  context: ReadBatchToolContext,
-  policy: PolicyStore,
   fileSystem: ReadBatchFileSystem,
   signal: AbortSignal | undefined,
-  scope: string,
-  cache: Map<string, PreviousRead>,
-): Promise<ReadBatchPathResult> {
+): Promise<ResolvedReadBatchPath> {
   let path = reportedPath(root, cwd, input.path);
-  let canonical: string;
   try {
     const requested = requestPath(input.path, cwd);
-    canonical = await canonicalExistingPath(requested, fileSystem);
+    const canonical = await canonicalExistingPath(requested, fileSystem);
     path = repositoryRelativePath(root, canonical) ?? "<outside-repository>";
     if (path === "<outside-repository>") {
       return {
         path,
-        ...(input.range === undefined ? {} : { range: input.range }),
         error: pathFailure({
           code: "outside-repository",
           message: "The requested path is outside the repository.",
@@ -551,11 +558,11 @@ async function readOne(
         }),
       };
     }
+    return { path, canonical };
   } catch (error) {
     if (signal?.aborted) throw filesystemCancellationError("Batch read cancelled");
     return {
       path,
-      ...(input.range === undefined ? {} : { range: input.range }),
       error: pathFailureFromError(error, {
         code: "path-resolution-failure",
         message: "The requested file could not be resolved.",
@@ -565,50 +572,53 @@ async function readOne(
       }),
     };
   }
+}
 
+async function inspectReadBatchFile(
+  canonical: string,
+  fileSystem: ReadBatchFileSystem,
+  signal: AbortSignal | undefined,
+): Promise<ReadBatchPathError | undefined> {
   try {
     const stats = await fileSystem.lstat(canonical);
     if (!stats.isFile()) {
-      return {
-        path,
-        ...(input.range === undefined ? {} : { range: input.range }),
-        error: pathFailure({
-          code: "not-regular-file",
-          message: "The requested path is not a regular file.",
-          category: "INVALID_REQUEST",
-          retryable: false,
-          executed: false,
-        }),
-      };
+      return pathFailure({
+        code: "not-regular-file",
+        message: "The requested path is not a regular file.",
+        category: "INVALID_REQUEST",
+        retryable: false,
+        executed: false,
+      });
     }
     if (!Number.isFinite(stats.size) || stats.size > READ_BATCH_MAX_FILE_BYTES) {
-      return {
-        path,
-        ...(input.range === undefined ? {} : { range: input.range }),
-        error: pathFailure({
-          code: "file-too-large",
-          message: "The file exceeds the bounded batch read limit.",
-          category: "INVALID_REQUEST",
-          retryable: false,
-          executed: false,
-        }),
-      };
+      return pathFailure({
+        code: "file-too-large",
+        message: "The file exceeds the bounded batch read limit.",
+        category: "INVALID_REQUEST",
+        retryable: false,
+        executed: false,
+      });
     }
+    return undefined;
   } catch (error) {
     if (signal?.aborted) throw filesystemCancellationError("Batch read cancelled");
-    return {
-      path,
-      ...(input.range === undefined ? {} : { range: input.range }),
-      error: pathFailureFromError(error, {
-        code: "filesystem-inspection-failure",
-        message: "The requested file could not be inspected.",
-        category: "IMPLEMENTATION_FAILURE",
-        retryable: true,
-        executed: false,
-      }),
-    };
+    return pathFailureFromError(error, {
+      code: "filesystem-inspection-failure",
+      message: "The requested file could not be inspected.",
+      category: "IMPLEMENTATION_FAILURE",
+      retryable: true,
+      executed: false,
+    });
   }
+}
 
+async function authorizeReadBatchPath(
+  canonical: string,
+  loaded: LoadedPolicy,
+  context: ReadBatchToolContext,
+  policy: PolicyStore,
+  signal: AbortSignal | undefined,
+): Promise<ReadBatchPathError | undefined> {
   try {
     await authorizeAndPersistFilesystemAccesses(
       [{ access: "read", path: canonical }],
@@ -623,29 +633,30 @@ async function readOne(
           readAuthorizationError(kind, request, decision, currentLoaded),
       },
     );
+    return undefined;
   } catch (error) {
     if (signal?.aborted) throw filesystemCancellationError("Batch read cancelled");
-    return {
-      path,
-      ...(input.range === undefined ? {} : { range: input.range }),
-      error: pathFailureFromError(error, {
-        code: "policy-evaluation-failure",
-        message: "Filesystem read access could not be authorized.",
-        category: "POLICY_FAILURE",
-        retryable: true,
-        executed: false,
-      }),
-    };
+    return pathFailureFromError(error, {
+      code: "policy-evaluation-failure",
+      message: "Filesystem read access could not be authorized.",
+      category: "POLICY_FAILURE",
+      retryable: true,
+      executed: false,
+    });
   }
+}
 
+async function readReadBatchFile(
+  canonical: string,
+  fileSystem: ReadBatchFileSystem,
+  signal: AbortSignal | undefined,
+): Promise<ReadBatchFileContents> {
   let bytes: Buffer;
   try {
     bytes = await fileSystem.readFile(canonical);
   } catch (error) {
     if (signal?.aborted) throw filesystemCancellationError("Batch read cancelled");
     return {
-      path,
-      ...(input.range === undefined ? {} : { range: input.range }),
       error: pathFailureFromError(error, {
         code: "read-failure",
         message: "The requested file could not be read.",
@@ -657,8 +668,6 @@ async function readOne(
   }
   if (bytes.byteLength > READ_BATCH_MAX_FILE_BYTES) {
     return {
-      path,
-      ...(input.range === undefined ? {} : { range: input.range }),
       error: pathFailure({
         code: "file-too-large",
         message: "The file exceeds the bounded batch read limit.",
@@ -668,23 +677,34 @@ async function readOne(
       }),
     };
   }
+  return { bytes };
+}
 
+function finalizeReadBatchRead(
+  input: NormalizedReadBatchPath,
+  path: string,
+  root: string,
+  scope: string,
+  bytes: Buffer,
+  signal: AbortSignal | undefined,
+  cache: Map<string, PreviousRead>,
+): ReadBatchPathResult {
   let selected: { readonly content: string; readonly output: ReadBatchOutput };
   try {
     selected = outputContent(bytes, input.range);
   } catch (error) {
     if (signal?.aborted) throw filesystemCancellationError("Batch read cancelled");
-    return {
+    return readBatchPathResult(
       path,
-      ...(input.range === undefined ? {} : { range: input.range }),
-      error: pathFailureFromError(error, {
+      input,
+      pathFailureFromError(error, {
         code: "invalid-range",
         message: "The requested line range is invalid for this file.",
         category: "INVALID_REQUEST",
         retryable: false,
         executed: false,
       }),
-    };
+    );
   }
 
   const contentHash = createHash("sha256").update(bytes).digest("hex");
@@ -709,6 +729,43 @@ async function readOne(
     content: selected.content,
     output: selected.output,
   };
+}
+
+async function readOne(
+  input: NormalizedReadBatchPath,
+  root: string,
+  cwd: string,
+  loaded: LoadedPolicy,
+  context: ReadBatchToolContext,
+  policy: PolicyStore,
+  fileSystem: ReadBatchFileSystem,
+  signal: AbortSignal | undefined,
+  scope: string,
+  cache: Map<string, PreviousRead>,
+): Promise<ReadBatchPathResult> {
+  const resolved = await resolveReadBatchPath(input, root, cwd, fileSystem, signal);
+  if ("error" in resolved) return readBatchPathResult(resolved.path, input, resolved.error);
+
+  const inspectionError = await inspectReadBatchFile(resolved.canonical, fileSystem, signal);
+  if (inspectionError !== undefined) {
+    return readBatchPathResult(resolved.path, input, inspectionError);
+  }
+
+  const authorizationError = await authorizeReadBatchPath(
+    resolved.canonical,
+    loaded,
+    context,
+    policy,
+    signal,
+  );
+  if (authorizationError !== undefined) {
+    return readBatchPathResult(resolved.path, input, authorizationError);
+  }
+
+  const contents = await readReadBatchFile(resolved.canonical, fileSystem, signal);
+  if ("error" in contents) return readBatchPathResult(resolved.path, input, contents.error);
+
+  return finalizeReadBatchRead(input, resolved.path, root, scope, contents.bytes, signal, cache);
 }
 
 function result(details: ReadBatchDetails): AgentToolResult<ReadBatchDetails> {

@@ -1,4 +1,6 @@
 import { realpath, readFile, stat, lstat } from "node:fs/promises";
+
+import type { NodeProjectResolutionOptions } from "../../node.ts";
 import {
   defaultPackageManagerAvailability,
   detectPackageManagerDetailsImpl as detectPackageManagerDetails,
@@ -6,7 +8,6 @@ import {
 import { supportsNodeDependencyListForManager } from "../../package-manager/detection.ts";
 import { findPackageManagerExecutableImpl as findPackageManagerExecutable } from "../../package-manager/executable.ts";
 import type { ProjectResolutionFileSystem } from "../../resolution.ts";
-import type { NodeProjectResolutionOptions } from "../../node.ts";
 import type {
   NodeFileSystem,
   NodeManifest,

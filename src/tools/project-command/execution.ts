@@ -1,5 +1,5 @@
-import { createProjectCommandExecutorInternal } from "./execution/runner.ts";
 import type { ProjectCommandDefinition } from "./definitions.ts";
+import { createProjectCommandExecutorInternal } from "./execution/runner.ts";
 import type { ResolvedProjectCommand } from "./resolution/types.ts";
 
 export type ProjectCommandExecutionStatus =

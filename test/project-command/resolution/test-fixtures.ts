@@ -1,7 +1,9 @@
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
 import { expect } from "vitest";
+
 import type { PackageManagerAvailability } from "../../../src/tools/project-command/resolution.ts";
 import { createTestScope, type TestScope } from "../test-scope.ts";
 

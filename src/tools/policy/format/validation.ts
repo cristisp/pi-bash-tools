@@ -1,4 +1,5 @@
 import { isAbsolute, normalize, parse } from "node:path";
+
 import { environmentVariableNamePattern } from "./constants.ts";
 import { policyErrorInternal } from "./errors.ts";
 
@@ -26,30 +27,26 @@ export function isEnvironmentVariableNameInternal(value: string): boolean {
   return environmentVariableNamePattern.test(value);
 }
 
+function isValidAbsolutePolicyPath(path: string): boolean {
+  return (
+    path.length > 0 &&
+    isAbsolute(path) &&
+    path === normalize(path) &&
+    !hasNonRootTrailingSeparator(path) &&
+    !hasControlCharacter(path) &&
+    !hasWildcard(path)
+  );
+}
+
 export function validateProjectPathInternal(path: string): string {
-  if (!isAbsolute(path) || path.length === 0) {
-    throw policyErrorInternal();
-  }
-  if (
-    path !== normalize(path) ||
-    hasNonRootTrailingSeparator(path) ||
-    hasControlCharacter(path) ||
-    hasWildcard(path)
-  ) {
+  if (!isValidAbsolutePolicyPath(path)) {
     throw policyErrorInternal();
   }
   return path;
 }
 
 export function validatePolicyPathInternal(path: string): string {
-  if (
-    !isAbsolute(path) ||
-    path.length === 0 ||
-    path !== normalize(path) ||
-    hasNonRootTrailingSeparator(path) ||
-    hasControlCharacter(path) ||
-    hasWildcard(path)
-  ) {
+  if (!isValidAbsolutePolicyPath(path)) {
     throw policyErrorInternal();
   }
   return path;

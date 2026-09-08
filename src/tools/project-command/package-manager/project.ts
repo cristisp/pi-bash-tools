@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+
 import { ProjectCommandResolutionError, type ResolutionErrorDetails } from "../errors.ts";
 import {
   defaultPackageManagerAvailability,

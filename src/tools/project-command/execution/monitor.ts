@@ -1,7 +1,8 @@
 import type { ChildProcess } from "node:child_process";
+
+import type { ProjectCommandExit } from "../execution.ts";
 import { Capture } from "./capture.ts";
 import { terminateChild } from "./termination.ts";
-import type { ProjectCommandExit } from "../execution.ts";
 
 export interface ChildRunState {
   exit: ProjectCommandExit;

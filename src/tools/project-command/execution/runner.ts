@@ -1,14 +1,15 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { resolveFixedProjectCommand } from "../resolution.ts";
-import type { ResolvedProjectCommand } from "../resolution/types.ts";
-import { outputCaptures, emptyOutcome, outcomeWithOutput, Capture } from "./capture.ts";
-import { DEFAULT_KILL_GRACE_MS, environmentForProfile } from "./environment.ts";
-import { monitorChild, setupChildMonitor, type ChildRunState } from "./monitor.ts";
+
 import type {
   ProjectCommandExecutionOutcome,
   ProjectCommandExecutorOptions,
   ProjectCommandSpawn,
 } from "../execution.ts";
+import { resolveFixedProjectCommand } from "../resolution.ts";
+import type { ResolvedProjectCommand } from "../resolution/types.ts";
+import { outputCaptures, emptyOutcome, outcomeWithOutput, Capture } from "./capture.ts";
+import { DEFAULT_KILL_GRACE_MS, environmentForProfile } from "./environment.ts";
+import { monitorChild, setupChildMonitor, type ChildRunState } from "./monitor.ts";
 import type { ProjectCommandExecutionInput } from "./types.ts";
 
 function spawnProjectCommand(

@@ -1,5 +1,7 @@
 import { readFile, realpath, stat } from "node:fs/promises";
+
 import { afterEach, expect, it } from "vitest";
+
 import {
   fingerprintProjectCommandDefinition,
   getProjectCommandDefinition,

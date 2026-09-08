@@ -1,6 +1,8 @@
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
+
 import { afterEach, expect, it } from "vitest";
+
 import {
   applyEnvironmentPolicyDecision,
   applyFilesystemPolicyDecision,
@@ -11,8 +13,8 @@ import {
 } from "../../src/tools/policy/decisions.ts";
 import { createEmptyCommandPolicy, parsePolicyDocument } from "../../src/tools/policy/document.ts";
 import { createPolicyStoreForTesting } from "../../src/tools/policy/store.ts";
-import { createPolicyTestFixtures } from "./test-fixtures.ts";
 import type { LoadedPolicy, PolicyDocument } from "../../src/tools/policy/types.ts";
+import { createPolicyTestFixtures } from "./test-fixtures.ts";
 
 const fixtures = createPolicyTestFixtures();
 

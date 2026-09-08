@@ -1,11 +1,12 @@
 import { expect, it } from "vitest";
-import { createGitStatusTool } from "../../../src/tools/git/status/tool.ts";
+
 import type { GitExec } from "../../../src/tools/git/execution.ts";
-import type { GitToolContext } from "../../../src/tools/git/tool.ts";
 import type {
   GitStatusChangedOutput,
   GitStatusOutput,
 } from "../../../src/tools/git/status/output.ts";
+import { createGitStatusTool } from "../../../src/tools/git/status/tool.ts";
+import type { GitToolContext } from "../../../src/tools/git/tool.ts";
 
 const cwd = process.cwd();
 const context: GitToolContext = { cwd, signal: undefined };

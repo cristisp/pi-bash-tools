@@ -1,7 +1,7 @@
 import { decodeUtf8Prefix, type Truncation } from "../../truncation.ts";
-import type { GitDiffHunk, GitDiffSummaryOutput } from "./output.ts";
-import type { GitStatusEntry } from "../status/output.ts";
 import { MAX_RECORDS } from "../output.ts";
+import type { GitStatusEntry } from "../status/output.ts";
+import type { GitDiffHunk, GitDiffSummaryOutput } from "./output.ts";
 
 function countLines(text: string): number {
   if (text.length === 0) return 0;

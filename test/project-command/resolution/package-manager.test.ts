@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { detectPackageManager } from "../../../src/tools/project-command/resolution.ts";
+
 import {
   nodeDependencyListArgs,
   supportsNodeDependencyList,
 } from "../../../src/tools/project-command/package-manager.ts";
+import { detectPackageManager } from "../../../src/tools/project-command/resolution.ts";
 import { availablePackageManagers, createResolutionTestScope } from "./test-fixtures.ts";
 
 const scope = createResolutionTestScope();

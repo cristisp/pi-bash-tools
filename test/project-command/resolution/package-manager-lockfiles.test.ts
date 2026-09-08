@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+
 import { detectPackageManager } from "../../../src/tools/project-command/resolution.ts";
 import { availablePackageManagers, createResolutionTestScope } from "./test-fixtures.ts";
 

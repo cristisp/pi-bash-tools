@@ -1,8 +1,6 @@
-import type { ProjectCommandDefinition } from "./definitions.ts";
-import type { ResolvedProjectCommand } from "./resolution/types.ts";
-import { ProjectCommandResolutionError } from "./errors.ts";
-import { validateProjectCommandRevision } from "./parameters.ts";
 import { resolveProjectBinary } from "./binary.ts";
+import type { ProjectCommandDefinition } from "./definitions.ts";
+import { ProjectCommandResolutionError } from "./errors.ts";
 import {
   detectPackageManagerDetailsInternal as detectPackageManagerDetailsImpl,
   detectProjectPackageManagerInternal as detectProjectPackageManagerImpl,
@@ -15,6 +13,8 @@ import {
   type PackageManagerExecutableResolutionOptions,
   type ProjectPackageManagerDetectionOptions,
 } from "./package-manager.ts";
+import { validateProjectCommandRevision } from "./parameters.ts";
+import type { ResolvedProjectCommand } from "./resolution/types.ts";
 
 export { ProjectCommandResolutionError, isProjectCommandResolutionError } from "./errors.ts";
 export { resolveProjectBinary } from "./binary.ts";

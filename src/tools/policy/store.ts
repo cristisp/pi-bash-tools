@@ -1,5 +1,7 @@
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
+
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+
 import {
   applyEnvironmentPolicyDecision,
   applyFilesystemPolicyDecision,

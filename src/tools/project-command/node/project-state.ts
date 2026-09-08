@@ -1,5 +1,5 @@
-import { readNodeProjectState } from "./project-state/reader.ts";
 import type { NodeProjectInfo, NodeProjectResolutionOptions } from "../node.ts";
+import { readNodeProjectState } from "./project-state/reader.ts";
 
 export {
   canonicalizeNodeScriptsInternal,

@@ -1,11 +1,13 @@
 import { ChildProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
+
 import { expect, it, vi } from "vitest";
+
+import { getProjectCommandDefinition } from "../../src/tools/project-command/definitions.ts";
 import {
   createProjectCommandExecutor,
   type ProjectCommandSpawn,
 } from "../../src/tools/project-command/execution.ts";
-import { getProjectCommandDefinition } from "../../src/tools/project-command/definitions.ts";
 
 function definition(
   overrides: Partial<NonNullable<ReturnType<typeof getProjectCommandDefinition>>> = {},

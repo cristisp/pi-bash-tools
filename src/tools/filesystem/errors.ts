@@ -1,15 +1,12 @@
+import type { AuthorizationErrorKind } from "../authorization.ts";
 import {
+  buildToolErrorContract,
   createToolErrorContract,
   suggestedActionForCategory,
   withToolErrorContract,
-  type ResultCategory,
   type ToolErrorContract,
 } from "../errors.ts";
-import type { AuthorizationErrorKind } from "../authorization.ts";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+import { isRecord } from "../value-validation.ts";
 
 export class FilesystemToolError extends Error {
   readonly details: unknown;
@@ -28,31 +25,14 @@ export class FilesystemToolError extends Error {
         retryable: true,
         executed: false,
       });
-    this.details = isRecord(details)
-      ? withToolErrorContract(details, this.contract)
-      : withToolErrorContract({}, this.contract);
+    this.details = withToolErrorContract(isRecord(details) ? details : {}, this.contract);
   }
 }
 
-interface FilesystemContractOptions {
-  readonly code: string;
-  readonly category: Exclude<ResultCategory, "PASS">;
-  readonly explanation: string;
-  readonly retryable: boolean;
-  readonly executed: boolean;
-  readonly invalidField?: string;
-}
-
-export function filesystemContract(options: FilesystemContractOptions): ToolErrorContract {
-  return createToolErrorContract({
-    code: options.code,
-    category: options.category,
-    explanation: options.explanation,
-    ...(options.invalidField === undefined ? {} : { invalidField: options.invalidField }),
-    suggestedAction: suggestedActionForCategory(options.category),
-    retryable: options.retryable,
-    executed: options.executed,
-  });
+export function filesystemContract(
+  options: Parameters<typeof buildToolErrorContract>[0],
+): ToolErrorContract {
+  return buildToolErrorContract(options);
 }
 
 export function filesystemError(
@@ -70,6 +50,24 @@ export function filesystemError(
     error.name = name;
   }
   return error;
+}
+
+function filesystemPolicyError(
+  message: string,
+  code: string,
+  explanation: string,
+  retryable = true,
+): FilesystemToolError {
+  return filesystemError(
+    message,
+    filesystemContract({
+      code,
+      category: "POLICY_FAILURE",
+      explanation,
+      retryable,
+      executed: false,
+    }),
+  );
 }
 
 export function filesystemInvalidRequest(
@@ -189,41 +187,26 @@ export function filesystemAuthorizationContract(
 }
 
 export function filesystemPolicyEvaluationError(): FilesystemToolError {
-  return filesystemError(
+  return filesystemPolicyError(
     "Unable to evaluate filesystem access policy",
-    filesystemContract({
-      code: "policy-evaluation-failure",
-      category: "POLICY_FAILURE",
-      explanation: "The filesystem access policy could not be evaluated.",
-      retryable: true,
-      executed: false,
-    }),
+    "policy-evaluation-failure",
+    "The filesystem access policy could not be evaluated.",
   );
 }
 
 export function filesystemPolicyLoadError(): FilesystemToolError {
-  return filesystemError(
+  return filesystemPolicyError(
     "Unable to load filesystem access policy",
-    filesystemContract({
-      code: "policy-load-failure",
-      category: "POLICY_FAILURE",
-      explanation: "The filesystem access policy could not be loaded.",
-      retryable: true,
-      executed: false,
-    }),
+    "policy-load-failure",
+    "The filesystem access policy could not be loaded.",
   );
 }
 
 export function filesystemPolicyPathResolutionError(): FilesystemToolError {
-  return filesystemError(
+  return filesystemPolicyError(
     "Filesystem access policy path could not be safely resolved",
-    filesystemContract({
-      code: "policy-path-resolution-failure",
-      category: "POLICY_FAILURE",
-      explanation: "The filesystem access policy path could not be safely resolved.",
-      retryable: true,
-      executed: false,
-    }),
+    "policy-path-resolution-failure",
+    "The filesystem access policy path could not be safely resolved.",
   );
 }
 

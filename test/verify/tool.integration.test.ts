@@ -1,18 +1,20 @@
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+
 import { afterEach, expect, it, vi } from "vitest";
-import type { PolicyStore } from "../../src/tools/policy/types.ts";
-import type { ProjectCommandExecutionOutcome } from "../../src/tools/project-command/execution.ts";
-import type { ProjectCommandExecutor } from "../../src/tools/project-command/runner.ts";
-import type { ProjectCommandResolver } from "../../src/tools/project-command/resolution.ts";
-import { createProjectCommandExecutor } from "../../src/tools/project-command/execution.ts";
-import { resolveNodeProjectCommand } from "../../src/tools/project-command/node.ts";
-import { createProjectCommandRepositoryStateReader } from "../../src/tools/project-command/repository-state.ts";
+
 import {
   BASH_TOOLS_INVOCATIONS_PATH,
   createProjectCommandInvocationRecorder,
 } from "../../src/observability/project-command-invocation.ts";
+import type { PolicyStore } from "../../src/tools/policy/types.ts";
+import type { ProjectCommandExecutionOutcome } from "../../src/tools/project-command/execution.ts";
+import { createProjectCommandExecutor } from "../../src/tools/project-command/execution.ts";
+import { resolveNodeProjectCommand } from "../../src/tools/project-command/node.ts";
+import { createProjectCommandRepositoryStateReader } from "../../src/tools/project-command/repository-state.ts";
+import type { ProjectCommandResolver } from "../../src/tools/project-command/resolution.ts";
+import type { ProjectCommandExecutor } from "../../src/tools/project-command/runner.ts";
 import { createVerifyEvidenceCache } from "../../src/tools/verify/cache.ts";
 import { createVerifyToolForTesting, type VerifyToolContext } from "../../src/tools/verify/tool.ts";
 import {

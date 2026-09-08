@@ -1,6 +1,8 @@
 import { mkdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
 import { afterEach, describe, expect, it } from "vitest";
+
 import { resolveProjectBinary } from "../../../src/tools/project-command/resolution.ts";
 import { createBinaryProject, createResolutionTestScope } from "./test-fixtures.ts";
 

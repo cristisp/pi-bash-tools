@@ -1,10 +1,11 @@
 import { expect, it } from "vitest";
+
 import { RESULT_CATEGORIES } from "../../src/tools/errors.ts";
+import { projectCommandResultCategory } from "../../src/tools/project-command/categories.ts";
 import {
   getProjectCommandDefinition,
   type ProjectCommandDefinition,
 } from "../../src/tools/project-command/definitions.ts";
-import { projectCommandResultCategory } from "../../src/tools/project-command/categories.ts";
 import type { ProjectCommandExecutionOutcome } from "../../src/tools/project-command/execution.ts";
 
 function outcome(
@@ -51,6 +52,12 @@ it("maps known command families from execution state without parsing output", ()
   expect(projectCommandResultCategory(definition("workspace_path"), outcome("success"))).toBe(
     "PASS",
   );
+  expect(projectCommandResultCategory(definition("node_test"), outcome("success"))).toBe("PASS");
+  expect(projectCommandResultCategory(definition("node_lint"), outcome("success"))).toBe("PASS");
+  expect(projectCommandResultCategory(definition("node_typecheck"), outcome("success"))).toBe(
+    "PASS",
+  );
+  expect(projectCommandResultCategory(definition("node_format"), outcome("success"))).toBe("PASS");
   expect(projectCommandResultCategory(definition("fallow_health"), outcome("nonzero", 1))).toBe(
     "PASS",
   );
@@ -83,4 +90,13 @@ it("maps known command families from execution state without parsing output", ()
   expect(
     projectCommandResultCategory(definition("workspace_path"), outcome("cancelled", null)),
   ).toBe("CANCELLED");
+});
+
+it("treats an explicitly accepted nonzero exit as a pass", () => {
+  expect(projectCommandResultCategory(definition("node_deps_list"), outcome("nonzero", 1))).toBe(
+    "PASS",
+  );
+  expect(projectCommandResultCategory(definition("node_deps_list"), outcome("nonzero", 2))).toBe(
+    "IMPLEMENTATION_FAILURE",
+  );
 });

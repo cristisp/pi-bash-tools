@@ -4,5 +4,10 @@
     "unresolved-imports": "error",
     "unlisted-dependencies": "error",
     "unused-exports": "warn"
+  },
+  "health": {
+    "ignore": [
+      "test/**"
+    ]
   }
 }

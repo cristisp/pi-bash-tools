@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
-import { validateVerifyInput } from "../../src/tools/verify/schema.ts";
+
 import { validateProjectCommandInput } from "../../src/tools/project-command/schema.ts";
+import { validateVerifyInput } from "../../src/tools/verify/schema.ts";
 
 it("accepts only the catalog command IDs and supported package-script options", () => {
   for (const commandId of [

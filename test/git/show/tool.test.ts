@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createGitShowTool } from "../../../src/tools/git/show/tool.ts";
+
 import type { GitExec } from "../../../src/tools/git/execution.ts";
+import { createGitShowTool } from "../../../src/tools/git/show/tool.ts";
 import type { GitToolContext } from "../../../src/tools/git/tool.ts";
 
 const cwd = process.cwd();

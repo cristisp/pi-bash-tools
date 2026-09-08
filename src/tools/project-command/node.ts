@@ -1,13 +1,13 @@
+import type { ProjectCommandDefinition } from "./definitions.ts";
+import { resolveNodeProjectCommandInternal as resolveNodeProjectCommandImpl } from "./node/command-resolution.ts";
 import {
   canonicalizeNodeScriptsInternal as canonicalizeNodeScriptsImpl,
   hashNodeScriptsInternal as hashNodeScriptsImpl,
   readNodeProjectInfoInternal as readNodeProjectInfoImpl,
 } from "./node/project-state.ts";
-import { resolveNodeProjectCommandInternal as resolveNodeProjectCommandImpl } from "./node/command-resolution.ts";
-import type { ProjectCommandDefinition } from "./definitions.ts";
+import type { NodeFileSystem } from "./node/types.ts";
 import type { DetectedPackageManager, PackageManager } from "./package-manager.ts";
 import type { ResolvedProjectCommand } from "./resolution/types.ts";
-import type { NodeFileSystem } from "./node/types.ts";
 
 export interface NodePackageManagerInfo {
   readonly manager: PackageManager;

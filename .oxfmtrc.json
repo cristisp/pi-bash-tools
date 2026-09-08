@@ -12,5 +12,7 @@
     "docs/handoffs/**",
     "package-lock.json",
     "README.md"
-  ]
+  ],
+  "sortImports": true,
+  "sortPackageJson": true
 }

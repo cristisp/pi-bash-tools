@@ -1,5 +1,6 @@
 import { readFile, realpath, stat, lstat } from "node:fs/promises";
 import { basename, isAbsolute, join, relative } from "node:path";
+
 import { ProjectCommandResolutionError, type ResolutionErrorDetails } from "./errors.ts";
 import { nearestExistingPaths, withNearestExistingPaths } from "./resolution-nearest-paths.ts";
 

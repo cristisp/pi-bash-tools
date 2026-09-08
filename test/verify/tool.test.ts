@@ -1,24 +1,26 @@
 import { mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+
 import { afterEach, expect, it, vi } from "vitest";
+
 import type { PolicyDecisionRequest, PolicyStore } from "../../src/tools/policy/types.ts";
 import { createProjectCommandExecutor } from "../../src/tools/project-command/execution.ts";
 import type { ProjectCommandExecutionOutcome } from "../../src/tools/project-command/execution.ts";
-import type { ProjectCommandExecutor } from "../../src/tools/project-command/runner.ts";
-import type { ProjectCommandRepositoryStateReader } from "../../src/tools/project-command/repository-state.ts";
-import type { ProjectCommandResolver } from "../../src/tools/project-command/resolution.ts";
 import {
   readNodeProjectInfo,
   resolveNodeProjectCommand,
 } from "../../src/tools/project-command/node.ts";
+import type { ProjectCommandRepositoryStateReader } from "../../src/tools/project-command/repository-state.ts";
+import type { ProjectCommandResolver } from "../../src/tools/project-command/resolution.ts";
+import type { ProjectCommandExecutor } from "../../src/tools/project-command/runner.ts";
 import {
   createVerifyEvidenceCache,
   isVerifyEvidenceCacheRecord,
   isVerifyEvidenceRecord,
 } from "../../src/tools/verify/cache.ts";
-import { createVerifyToolForTesting } from "../../src/tools/verify/tool.ts";
 import { validateVerifyInput } from "../../src/tools/verify/schema.ts";
+import { createVerifyToolForTesting } from "../../src/tools/verify/tool.ts";
 import type { VerifyToolContext } from "../../src/tools/verify/tool.ts";
 import type { VerifyEvidenceRecord, VerifyPhase } from "../../src/tools/verify/types.ts";
 
@@ -628,6 +630,51 @@ it("rejects contradictory persisted evidence", () => {
         ...record,
         perStep: [
           { ...step("format"), executed: false },
+          step("lint"),
+          step("typecheck"),
+          step("test"),
+        ],
+      },
+      record.key,
+    ),
+  ).toBe(false);
+  expect(
+    isVerifyEvidenceRecord(
+      {
+        ...record,
+        repositoryState: {
+          ...record.repositoryState,
+          workingDirectory: "/tmp/other-project",
+        },
+      },
+      record.key,
+    ),
+  ).toBe(false);
+  expect(
+    isVerifyEvidenceRecord(
+      {
+        ...record,
+        perStep: [
+          {
+            ...step("format"),
+            stdout: { ...chunk, totalBytes: 50 * 1024 + 1 },
+          },
+          step("lint"),
+          step("typecheck"),
+          step("test"),
+        ],
+      },
+      record.key,
+    ),
+  ).toBe(false);
+  expect(
+    isVerifyEvidenceRecord(
+      {
+        ...record,
+        verdict: "failed",
+        failureTail: `${String.fromCodePoint(0x1b)}[31munsafe`,
+        perStep: [
+          { ...step("format"), status: "failed", verdict: "failed" },
           step("lint"),
           step("typecheck"),
           step("test"),

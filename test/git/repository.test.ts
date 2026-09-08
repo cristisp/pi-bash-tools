@@ -1,8 +1,10 @@
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
+
 import { afterEach, expect, it } from "vitest";
-import { resolveRepository } from "../../src/tools/git/repository.ts";
+
 import type { GitExec } from "../../src/tools/git/execution.ts";
+import { resolveRepository } from "../../src/tools/git/repository.ts";
 import { createGitIntegrationFixtures, gitIntegration } from "./integration-fixtures.ts";
 
 const cwd = process.cwd();

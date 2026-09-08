@@ -1,12 +1,13 @@
 import { mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
 import type { CommandIdentity } from "../../src/tools/policy/types.ts";
 import type { BuiltInProjectCommandDefinitions } from "../../src/tools/project-command/definitions.ts";
 import type { ProjectCommandInputFor } from "../../src/tools/project-command/schema.ts";
 import type { ProjectCommandToolDefinition } from "../../src/tools/project-command/tool.ts";
-import { createTestScope, type TestScope } from "./test-scope.ts";
 import { createNodeProjectIntegrationFixture } from "./node-project.integration-fixtures.ts";
+import { createTestScope, type TestScope } from "./test-scope.ts";
 
 export type ProjectCommandIntegrationScope = TestScope;
 

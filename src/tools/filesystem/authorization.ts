@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+
 import { authorizeOrPrompt, type AuthorizationErrorKind } from "../authorization.ts";
 import { displayPath } from "../path-display.ts";
 import { findFilesystemPolicyDecision } from "../policy/decisions.ts";

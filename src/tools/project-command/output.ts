@@ -7,20 +7,20 @@ import {
 } from "../errors.ts";
 import { displayPath } from "../path-display.ts";
 import type { CommandIdentity } from "../policy/types.ts";
-import type { ProjectCommandRelevantInputs } from "./relevant-inputs.ts";
-import { definedObjectProperties } from "./defined-properties.ts";
-import { projectCommandResultCategory } from "./categories.ts";
-import type { ProjectCommandExecutionOutcome, ProjectCommandOutput } from "./execution.ts";
 import type { ProjectCommandCacheDecision } from "./cache.ts";
-import type { ProjectCommandRepositoryState } from "./repository-state.ts";
+import { projectCommandResultCategory } from "./categories.ts";
+import { projectCommandIdGuidance } from "./command-id-guidance.ts";
+import { definedObjectProperties } from "./defined-properties.ts";
+import { getProjectCommandDefinitions, type ProjectCommandDefinition } from "./definitions.ts";
+import { boundProjectCommandText, projectCommandDiagnostic } from "./diagnostics.ts";
+import type { ProjectCommandResolutionError } from "./errors.ts";
 import type {
   ProjectCommandEvidenceProvenance,
   ProjectCommandEvidencePublication,
 } from "./evidence.ts";
-import { boundProjectCommandText, projectCommandDiagnostic } from "./diagnostics.ts";
-import type { ProjectCommandResolutionError } from "./errors.ts";
-import { getProjectCommandDefinitions, type ProjectCommandDefinition } from "./definitions.ts";
-import { projectCommandIdGuidance } from "./command-id-guidance.ts";
+import type { ProjectCommandExecutionOutcome, ProjectCommandOutput } from "./execution.ts";
+import type { ProjectCommandRelevantInputs } from "./relevant-inputs.ts";
+import type { ProjectCommandRepositoryState } from "./repository-state.ts";
 import type { ResolvedProjectCommand } from "./resolution/types.ts";
 import { ProjectCommandToolError } from "./schema.ts";
 

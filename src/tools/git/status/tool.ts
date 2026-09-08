@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
+
 import { Type } from "typebox";
-import { renderCallLine, renderStringArgument } from "../../call-render.ts";
+
 import { booleanInputSchema } from "../../boolean.ts";
+import { renderCallLine, renderStringArgument } from "../../call-render.ts";
+import { normalizeGitBoolean, runGit, validateGitRequestKeys, type GitExec } from "../execution.ts";
 import {
   countStatusRecords,
   MAX_RECORDS,
@@ -10,10 +13,9 @@ import {
   STRUCTURED_OUTPUT_LIMIT,
   truncateUtf8,
 } from "../output.ts";
-import type { GitStatusChangedOutput, GitStatusOutput } from "./output.ts";
 import { resolvePath, resolveRepository } from "../repository.ts";
-import { normalizeGitBoolean, runGit, validateGitRequestKeys, type GitExec } from "../execution.ts";
 import { defineGitTool, type GitToolDefinition } from "../tool.ts";
+import type { GitStatusChangedOutput, GitStatusOutput } from "./output.ts";
 
 const gitStatusParameters = Type.Object(
   {

@@ -1,19 +1,26 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
 import { expect, it } from "vitest";
-import { createGitDiffTool, DEFAULT_GIT_DIFF_MAX_BYTES } from "../../../src/tools/git/diff/tool.ts";
+
+import type { RenderTheme } from "../../../src/tools/call-render.ts";
 import type {
   GitDiffOutput,
   GitDiffPatchOutput,
   GitDiffSummaryOutput,
 } from "../../../src/tools/git/diff/output.ts";
 import {
+  createGitDiffTool,
+  DEFAULT_GIT_DIFF_MAX_BYTES,
+  renderGitDiffCall,
+} from "../../../src/tools/git/diff/tool.ts";
+import type { GitExec } from "../../../src/tools/git/execution.ts";
+import {
   MAX_CONTENT_BYTES,
   MAX_RECORDS,
   STRUCTURED_OUTPUT_LIMIT,
 } from "../../../src/tools/git/output.ts";
-import type { GitExec } from "../../../src/tools/git/execution.ts";
 import type { GitToolContext } from "../../../src/tools/git/tool.ts";
 
 const cwd = process.cwd();
@@ -30,6 +37,11 @@ function summaryDetails(details: GitDiffOutput): GitDiffSummaryOutput {
   return details;
 }
 
+const renderTheme: RenderTheme = {
+  fg: (color: string, text: string) => `[${color}]${text}`,
+  bold: (text: string) => `**${text}**`,
+};
+
 function patchExec(stdout = ""): { exec: GitExec; calls: string[][] } {
   const calls: string[][] = [];
   const exec: GitExec = async (_command, args) => {
@@ -38,6 +50,29 @@ function patchExec(stdout = ""): { exec: GitExec; calls: string[][] } {
   };
   return { exec, calls };
 }
+
+it("renders summary, staged, path, and byte-limit call variants", () => {
+  const wholeRepository = renderGitDiffCall({}, renderTheme).render(200).join("");
+  const stagedPath = renderGitDiffCall(
+    { mode: "patch", staged: true, path: "src/file name.ts", maxBytes: 1024 },
+    renderTheme,
+  )
+    .render(200)
+    .join("");
+  const multiplePaths = renderGitDiffCall({ paths: ["src", "README.md"] }, renderTheme)
+    .render(200)
+    .join("");
+
+  expect(wholeRepository).toContain("mode=summary");
+  expect(wholeRepository).toContain("(whole repository)");
+  expect(wholeRepository).toContain("maxBytes=16384");
+  expect(stagedPath).toContain("mode=patch");
+  expect(stagedPath).toContain("--staged");
+  expect(stagedPath).toContain("src/file name.ts");
+  expect(stagedPath).toContain("maxBytes=1024");
+  expect(multiplePaths).toContain("src");
+  expect(multiplePaths).toContain("README.md");
+});
 
 it("supports explicit staged patches and paths containing spaces", async () => {
   const { exec, calls } = patchExec("diff --git a/file name.txt b/file name.txt\n");

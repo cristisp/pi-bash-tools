@@ -4,8 +4,8 @@ import {
   nodeDependencyListArgsForManager as nodeDependencyListArgsImpl,
   supportsNodeDependencyListForManager as supportsNodeDependencyListImpl,
 } from "./package-manager/detection.ts";
-import { detectProjectPackageManagerImpl } from "./package-manager/project.ts";
 import { findPackageManagerExecutableImpl } from "./package-manager/executable.ts";
+import { detectProjectPackageManagerImpl } from "./package-manager/project.ts";
 
 export type PackageManager = "npm" | "pnpm" | "bun" | "yarn";
 

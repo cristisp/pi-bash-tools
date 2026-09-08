@@ -1,5 +1,6 @@
-import { dirname } from "node:path";
 import { homedir } from "node:os";
+import { dirname } from "node:path";
+
 import type { ProjectCommandDefinition } from "../definitions.ts";
 
 const STATIC_ENVIRONMENT: NodeJS.ProcessEnv = Object.freeze({

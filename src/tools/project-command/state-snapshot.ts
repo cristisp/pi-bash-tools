@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import { lstat, readFile, readlink, stat } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
+
 import { hashCanonicalJson } from "../../observability/canonical-json.ts";
 import type { NodeFileSystem } from "./node/types.ts";
 import type { ProjectCommandRelevantInputs } from "./relevant-inputs.ts";
+import { safeRelativePath as normalizeSafeRelativePath } from "./safe-relative-path.ts";
 
 const PROJECT_COMMAND_STATE_SNAPSHOT_VERSION = 1 as const;
 
@@ -44,21 +46,6 @@ const defaultFileSystem: NodeFileSystem = {
 
 function compareStrings(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function safeRelativePath(path: string): string | undefined {
-  const normalized = path.split("\\").join("/");
-  if (
-    normalized.length === 0 ||
-    /^[A-Za-z]:\//u.test(normalized) ||
-    isAbsolute(normalized) ||
-    normalized
-      .split("/")
-      .some((segment) => segment.length === 0 || segment === "." || segment === "..")
-  ) {
-    return undefined;
-  }
-  return normalized;
 }
 
 function isMissing(error: unknown): boolean {
@@ -170,7 +157,7 @@ export async function snapshotProjectCommandRelevantInputs(
   inputs: ProjectCommandRelevantInputs,
   fileSystem: NodeFileSystem = defaultFileSystem,
 ): Promise<ProjectCommandStateSnapshotResult> {
-  const paths = inputs.files.map((file) => safeRelativePath(file.path));
+  const paths = inputs.files.map((file) => normalizeSafeRelativePath(file.path));
   const validPaths = paths.filter((path): path is string => path !== undefined);
   if (validPaths.length !== paths.length) {
     return { status: "incomplete", reason: "invalid-relevant-input-path" };

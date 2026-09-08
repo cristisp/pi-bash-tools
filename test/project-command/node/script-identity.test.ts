@@ -1,6 +1,8 @@
-import { join } from "node:path";
 import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { afterEach, describe, expect, it } from "vitest";
+
 import {
   getProjectCommandDefinition,
   projectCommandIdentity,

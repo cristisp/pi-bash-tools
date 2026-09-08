@@ -1,6 +1,7 @@
 import { Type } from "typebox";
+
 import { renderCallLine, renderStringArgument } from "../../call-render.ts";
-import type { GitShowOutput } from "./output.ts";
+import { runGit, validateRevision, type GitExec } from "../execution.ts";
 import {
   MAX_CONTENT_BYTES,
   makeToolResult,
@@ -8,8 +9,8 @@ import {
   validateIntegerLimit,
 } from "../output.ts";
 import { resolvePath, resolveRepository } from "../repository.ts";
-import { runGit, validateRevision, type GitExec } from "../execution.ts";
 import { defineGitTool, type GitToolDefinition } from "../tool.ts";
+import type { GitShowOutput } from "./output.ts";
 
 const gitShowParameters = Type.Object({
   revision: Type.String({ description: "Git revision, not a REV:path expression" }),

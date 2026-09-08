@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+
 import { isProjectCommandResolutionError } from "../../src/tools/project-command/resolution.ts";
 
 describe("project command resolution facade", () => {

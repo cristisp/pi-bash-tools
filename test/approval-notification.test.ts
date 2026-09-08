@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+
 import { notifySubagentApproval } from "../src/tools/approval-notification.ts";
 
 function output() {

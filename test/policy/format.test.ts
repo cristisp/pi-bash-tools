@@ -1,15 +1,16 @@
 import { expect, it } from "vitest";
+
 import {
   applyEnvironmentPolicyDecision,
   applyProjectCommandPolicyDecision,
   findEnvironmentPolicyDecision,
 } from "../../src/tools/policy/decisions.ts";
+import { parsePolicyDocument, serializePolicyDocument } from "../../src/tools/policy/document.ts";
 import {
   DEFAULT_CONFIRMATION_TIMEOUT_MS,
   parseEnvironmentPolicy,
   policyError,
 } from "../../src/tools/policy/format.ts";
-import { parsePolicyDocument, serializePolicyDocument } from "../../src/tools/policy/document.ts";
 
 it("parses version one environment policies and applies precedence", () => {
   const projectPath = "/tmp/environment-project";

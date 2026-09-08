@@ -1,12 +1,12 @@
-import { promptWithTimeout } from "./confirmation-prompt.ts";
 import { notifySubagentApproval } from "./approval-notification.ts";
-import { readProjectCommandOrchestrationContext } from "./project-command/orchestration.ts";
+import { promptWithTimeout } from "./confirmation-prompt.ts";
 import type {
   LoadedPolicy,
   PolicyAuthorization,
   PolicyDecision,
   PolicyDecisionRequest,
 } from "./policy/types.ts";
+import { readProjectCommandOrchestrationContext } from "./project-command/orchestration.ts";
 
 const AUTHORIZATION_CHOICES = [
   "Deny once",

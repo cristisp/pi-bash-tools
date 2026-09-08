@@ -1,8 +1,5 @@
 import { createHash } from "node:crypto";
 
-export type JsonPrimitive = null | boolean | number | string;
-export type JsonValue = JsonPrimitive | JsonValue[] | { readonly [key: string]: JsonValue };
-
 function unsupported(path: string): TypeError {
   return new TypeError(`Unsupported JSON value at ${path}`);
 }
@@ -116,6 +113,3 @@ export function hashCanonicalJson(value: unknown): string {
 export function hashToolParameters(parameters: unknown): string {
   return hashCanonicalJson(parameters);
 }
-
-export const canonicalJson = serializeCanonicalJson;
-export const hashJson = hashCanonicalJson;

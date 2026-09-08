@@ -1,11 +1,13 @@
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
 import { afterEach, describe, expect, it } from "vitest";
-import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
+
 import {
   getProjectCommandDefinitions,
   projectCommandIdentity,
 } from "../../src/tools/project-command/definitions.ts";
+import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
 import {
   createIntegrationDirectory,
   createProjectCommandIntegrationScope,

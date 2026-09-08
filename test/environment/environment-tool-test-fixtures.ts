@@ -1,8 +1,9 @@
 import { mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDirectoryTestFixtures } from "../directory-test-fixtures.ts";
+
 import type { EnvironmentToolContext } from "../../src/tools/environment/environment-tool.ts";
+import { createDirectoryTestFixtures } from "../directory-test-fixtures.ts";
 
 export function createEnvironmentToolTestFixtures() {
   const directoryFixtures = createDirectoryTestFixtures();

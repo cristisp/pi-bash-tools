@@ -1,7 +1,9 @@
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
 import { afterEach, describe, expect, it } from "vitest";
+
 import {
   normalizeNodeTestParameters,
   PROJECT_COMMAND_MAX_FORWARDED_ARGUMENT_BYTES,
@@ -67,12 +69,75 @@ describe("project command parameters", () => {
   });
 
   it("validates safe Fallow audit revisions", () => {
-    for (const revision of ["HEAD", "HEAD~1", "origin/main", "v1.2.3", "feature/name"] as const) {
+    for (const revision of [
+      "H",
+      "HEAD",
+      "HEAD~1",
+      "HEAD^{commit}",
+      "origin/main",
+      "refs/heads/main@{upstream}",
+      "v1.2.3-rc+1",
+      "feature/name",
+    ] as const) {
       expect(validateProjectCommandRevision(revision)).toBe(revision);
     }
-    for (const revision of ["", "--help", "HEAD:secret", "HEAD main", "HEAD*", "HEAD\\n"]) {
+    for (const revision of [
+      undefined,
+      null,
+      42,
+      "",
+      "-",
+      "--help",
+      "HEAD--parent",
+      "HEAD:secret",
+      "HEAD main",
+      "HEAD\tmain",
+      "HEAD*",
+      "HEAD?",
+      "HEAD[0]",
+      "HEAD\\n",
+      "HEAD!",
+      "HEAD\u2028main",
+      "HEAD\u2029main",
+    ]) {
       expect(() => validateProjectCommandRevision(revision)).toThrow();
     }
+  });
+
+  it("accepts workspace-relative path boundaries and rejects every unsafe form", () => {
+    expect(validateWorkspacePathParameter("test.ts")).toBe("test.ts");
+    expect(validateWorkspacePathParameter("packages/tool/test.spec.ts")).toBe(
+      "packages/tool/test.spec.ts",
+    );
+    expect(validateNodeTestPaths(["test.ts", "packages/tool/test.spec.ts"])).toEqual([
+      "test.ts",
+      "packages/tool/test.spec.ts",
+    ]);
+
+    for (const value of [
+      undefined,
+      null,
+      42,
+      "",
+      "-test.ts",
+      "../test.ts",
+      "src/../test.ts",
+      "src/./test.ts",
+      "src//test.ts",
+      "src/test.ts/",
+      "src\\test.ts",
+      "src/*.ts",
+      "src/{unit}.ts",
+      "/tmp/test.ts",
+      "C:/tmp/test.ts",
+      "test\u0000.ts",
+      "test\u007f.ts",
+    ]) {
+      expect(() => validateWorkspacePathParameter(value)).toThrow();
+    }
+    expect(() =>
+      validateNodeTestPaths(Array(PROJECT_COMMAND_MAX_PARAMETER_ITEMS + 1).fill("test.ts")),
+    ).toThrow();
   });
 
   it("normalizes existing paths and rejects symlink escapes", async () => {

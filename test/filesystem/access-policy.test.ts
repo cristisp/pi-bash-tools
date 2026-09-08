@@ -1,7 +1,9 @@
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { afterEach, expect, it, vi } from "vitest";
+
 import {
   createFilesystemAccessPolicyInterceptor,
   type FilesystemAccessPolicyContext,
@@ -314,6 +316,9 @@ it("reports empty, overlapping, and capped edit diagnostics", () => {
 it("matches the host edit normalization for line endings and fuzzy text", () => {
   expect(
     diagnoseFilesystemEdits("target\r\n", [{ oldText: "target", newText: "new" }]),
+  ).toBeUndefined();
+  expect(
+    diagnoseFilesystemEdits("\uFEFFtarget\n", [{ oldText: "target", newText: "new" }]),
   ).toBeUndefined();
   expect(
     diagnoseFilesystemEdits('const value = "target";', [

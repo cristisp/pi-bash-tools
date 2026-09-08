@@ -1,17 +1,13 @@
 import { expect, it } from "vitest";
-import type { ProjectCommandDefinition } from "../../src/tools/project-command/definitions.ts";
+
 import {
   PROJECT_COMMAND_MAX_PARAMETER_ITEMS,
   PROJECT_COMMAND_MAX_PATH_LENGTH,
   PROJECT_COMMAND_MAX_SCRIPT_VARIANT_LENGTH,
   PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN,
 } from "../../src/tools/project-command/parameters.ts";
+import { projectCommandInputSchema } from "../../src/tools/project-command/schema.ts";
 import { schemaVariants } from "./schema-test-fixtures.ts";
-import {
-  createProjectCommandInputSchema,
-  projectCommandInputSchema,
-  validateProjectCommandInput,
-} from "../../src/tools/project-command/schema.ts";
 
 it("generates one canonical schema variant per command and aliases for script variants", () => {
   const variants = schemaVariants(projectCommandInputSchema);
@@ -110,32 +106,4 @@ it("keeps schema variants strict and preserves command-specific fields", () => {
   expect(JSON.stringify(projectCommandInputSchema)).toContain('"pattern":"^[A-Za-z0-9_-]{1,64}$"');
   expect(variants.every((variant) => JSON.stringify(variant).includes('"force"'))).toBe(true);
   expect(variants.every((variant) => JSON.stringify(variant).includes('"true"'))).toBe(true);
-});
-
-it("uses the supplied definitions for schema and validation", () => {
-  const customDefinition = {
-    namespace: "bash-tools.project-command",
-    commandId: "custom_command",
-    description: "Run the custom command.",
-    executable: "/bin/echo",
-    args: ["custom"],
-    cwdStrategy: "canonical-project",
-    sanitizedEnvironmentProfile: "minimal-static-v1",
-    processTimeoutMs: 30_000,
-    outputLimitBytes: 50 * 1024,
-    risk: "workspace-observation",
-    globalSafe: true,
-  } satisfies ProjectCommandDefinition<"custom_command">;
-  const definitions = [customDefinition] as const;
-  const schema = createProjectCommandInputSchema(definitions);
-
-  expect(JSON.stringify(schema)).toContain('"const":"custom_command"');
-  expect(JSON.stringify(schema)).toContain("Run the custom command.");
-  expect(validateProjectCommandInput({ commandId: "custom_command" }, definitions)).toEqual({
-    commandId: "custom_command",
-  });
-  expect(() => validateProjectCommandInput({ commandId: "workspace_path" }, definitions)).toThrow(
-    /invalid/iu,
-  );
-  expect(() => validateProjectCommandInput({ commandId: "custom_command" })).toThrow(/invalid/iu);
 });

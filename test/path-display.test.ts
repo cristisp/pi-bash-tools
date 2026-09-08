@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+
 import { displayPath } from "../src/tools/path-display.ts";
 
 describe("displayPath", () => {

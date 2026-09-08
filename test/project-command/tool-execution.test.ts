@@ -1,44 +1,29 @@
-import { realpath, writeFile } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
+
 import { afterEach, expect, it, vi } from "vitest";
+
 import type { ProjectCommandInvocationRecord } from "../../src/observability/project-command-invocation.ts";
-import {
-  getProjectCommandDefinition,
-  projectCommandIdentity,
-} from "../../src/tools/project-command/definitions.ts";
-import { cleanupProjectCommandFixtures, context, fixture } from "./tool-test-fixtures.ts";
+import { displayPath } from "../../src/tools/path-display.ts";
+import { getProjectCommandDefinition } from "../../src/tools/project-command/definitions.ts";
+import { PROJECT_COMMAND_DIAGNOSTIC_MAX_CHARS } from "../../src/tools/project-command/diagnostics.ts";
+import type {
+  ProjectCommandEvidenceRecord,
+  ProjectCommandEvidenceStore,
+} from "../../src/tools/project-command/evidence.ts";
+import type { ProjectCommandExecutionOutcome } from "../../src/tools/project-command/execution.ts";
+import type { ProjectCommandRepositoryState } from "../../src/tools/project-command/repository-state.ts";
 import { resolveFixedProjectCommand } from "../../src/tools/project-command/resolution.ts";
 import type { ResolvedProjectCommand } from "../../src/tools/project-command/resolution/types.ts";
-import { PROJECT_COMMAND_DIAGNOSTIC_MAX_CHARS } from "../../src/tools/project-command/diagnostics.ts";
-import type { ProjectCommandExecutionOutcome } from "../../src/tools/project-command/execution.ts";
 import { ProjectCommandToolError } from "../../src/tools/project-command/schema.ts";
 import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
-import { displayPath } from "../../src/tools/path-display.ts";
-import type { ProjectCommandRepositoryState } from "../../src/tools/project-command/repository-state.ts";
+import {
+  authorize,
+  executeInjectedOutcome,
+  expectInvocationMetadata,
+} from "./tool-execution-helpers.ts";
+import { cleanupProjectCommandFixtures, context, fixture } from "./tool-test-fixtures.ts";
 
 afterEach(cleanupProjectCommandFixtures);
-
-async function authorize(
-  fixtureData: { readonly directory: string; readonly configPath: string },
-  definition: NonNullable<ReturnType<typeof getProjectCommandDefinition>>,
-  resolved: ResolvedProjectCommand,
-): Promise<string> {
-  const projectPath = await realpath(fixtureData.directory);
-  await writeFile(
-    fixtureData.configPath,
-    JSON.stringify({
-      version: 2,
-      environment: { version: 1 },
-      projectCommands: {
-        version: 1,
-        global: { allow: [], deny: [] },
-        projects: {
-          [projectPath]: { allow: [projectCommandIdentity(definition, resolved)], deny: [] },
-        },
-      },
-    }),
-  );
-  return projectPath;
-}
 
 function hasEscapeOrC1Control(text: string): boolean {
   for (const character of text) {
@@ -48,66 +33,6 @@ function hasEscapeOrC1Control(text: string): boolean {
     }
   }
   return false;
-}
-
-async function executeInjectedOutcome(
-  outcome: ProjectCommandExecutionOutcome,
-  abortBeforeResolve: boolean,
-): Promise<ProjectCommandToolError> {
-  const fixtureData = await fixture();
-  const definition = getProjectCommandDefinition("workspace_path");
-  if (definition === undefined) throw new Error("missing workspace_path definition");
-  const resolved = resolveFixedProjectCommand(definition);
-  await authorize(fixtureData, definition, resolved);
-  const controller = new AbortController();
-  const tool = createProjectCommandToolForTesting({
-    configPath: fixtureData.configPath,
-    executor: async (_resolved, _cwd, signal) => {
-      if (abortBeforeResolve) {
-        if (signal !== controller.signal) throw new Error("missing request signal");
-        controller.abort();
-      }
-      return outcome;
-    },
-  });
-  const error = await tool
-    .execute(
-      "returned-outcome-cancellation",
-      { commandId: "workspace_path" },
-      abortBeforeResolve ? controller.signal : undefined,
-      undefined,
-      context(fixtureData.directory),
-    )
-    .catch((rejection: unknown) => rejection);
-  if (!(error instanceof ProjectCommandToolError)) {
-    throw new Error("expected a ProjectCommandToolError");
-  }
-  return error;
-}
-
-function expectInvocationMetadata(details: unknown, toolCallId: string): void {
-  expect(details).toMatchObject({
-    toolCallId,
-    reused: false,
-    durationMs: expect.any(Number),
-    executionDurationMs: expect.any(Number),
-  });
-  if (typeof details !== "object" || details === null) {
-    throw new Error("expected invocation metadata details");
-  }
-  if (
-    !("durationMs" in details) ||
-    !("executionDurationMs" in details) ||
-    typeof details.durationMs !== "number" ||
-    typeof details.executionDurationMs !== "number"
-  ) {
-    throw new Error("invalid invocation metadata values");
-  }
-  expect(Number.isFinite(details.durationMs)).toBe(true);
-  expect(Number.isFinite(details.executionDurationMs)).toBe(true);
-  expect(details.durationMs).toBeGreaterThanOrEqual(0);
-  expect(details.executionDurationMs).toBeGreaterThanOrEqual(0);
-  expect(details.durationMs).toBeGreaterThanOrEqual(details.executionDurationMs);
 }
 
 it("adds invocation metadata to an invalid request without resolved scope or output", async () => {
@@ -246,6 +171,76 @@ it("shares one non-mutating evidence execution across overlapping identical requ
   });
   expect(secondResult.details.ref).toBe(firstResult.details.ref);
 }, 15_000);
+
+it("looks up stored evidence and rejects missing references", async () => {
+  const fixtureData = await fixture();
+  const definition = getProjectCommandDefinition("workspace_path");
+  if (definition === undefined) throw new Error("missing workspace_path definition");
+  const resolved = resolveFixedProjectCommand(definition);
+  await authorize(fixtureData, definition, resolved);
+  let storedRecord: ProjectCommandEvidenceRecord | undefined;
+  const evidence: ProjectCommandEvidenceStore = {
+    getByRef: (ref) => (storedRecord?.ref === ref ? storedRecord : undefined),
+    set: (record) => {
+      storedRecord = record;
+      return true;
+    },
+    publish: () => false,
+    clear: () => {
+      storedRecord = undefined;
+    },
+  };
+  const tool = createProjectCommandToolForTesting({
+    configPath: fixtureData.configPath,
+    evidence,
+    executor: async () => ({
+      status: "success" as const,
+      exit: { code: 0, signal: null },
+      timedOut: false,
+      cancelled: false,
+      stdout: { text: "workspace", truncated: false, totalBytes: 9, totalLines: 1 },
+      stderr: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
+    }),
+  });
+  const executed = await tool.execute(
+    "lookup-producer",
+    { commandId: "workspace_path" },
+    undefined,
+    undefined,
+    context(fixtureData.directory),
+  );
+  const ref = executed.details.ref;
+  if (typeof ref !== "string") throw new Error("expected an evidence reference");
+
+  const lookedUp = await tool.execute(
+    "lookup-consumer",
+    { ref },
+    undefined,
+    undefined,
+    context(fixtureData.directory),
+  );
+  expect(lookedUp.details).toMatchObject({
+    commandId: "workspace_path",
+    ref,
+    executed: true,
+    reused: false,
+  });
+
+  const missing = await tool
+    .execute(
+      "lookup-missing",
+      { ref: "pc_missing" },
+      undefined,
+      undefined,
+      context(fixtureData.directory),
+    )
+    .catch((error: unknown) => error);
+  expect(missing).toBeInstanceOf(ProjectCommandToolError);
+  expect(missing).toMatchObject({
+    contract: { code: "project-command-error", category: "IMPLEMENTATION_FAILURE" },
+  });
+  expect(missing).toHaveProperty("message", expect.stringContaining("pc_missing"));
+});
 
 it("reports repository state drift after an execution moves the tree", async () => {
   const fixtureData = await fixture();

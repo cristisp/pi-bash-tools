@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+
 import { createEnvironmentToolForTesting } from "../../src/tools/environment/environment-tool.ts";
 import { createEnvironmentToolTestFixtures } from "./environment-tool-test-fixtures.ts";
 

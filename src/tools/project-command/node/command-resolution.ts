@@ -1,18 +1,19 @@
 import { realpath } from "node:fs/promises";
+
 import { type ProjectCommandDefinition, type ResolvedCommandLine } from "../definitions.ts";
 import { ProjectCommandResolutionError, type ResolutionErrorDetails } from "../errors.ts";
-import { nearestExistingPaths, withNearestExistingPaths } from "../resolution-nearest-paths.ts";
+import type { NodeProjectResolutionOptions } from "../node.ts";
 import { nodeDependencyListArgsForManager } from "../package-manager/detection.ts";
 import { normalizeNodeTestParametersInternal } from "../parameters/normalization.ts";
 import { validateNodeTestPaths } from "../parameters/validation.ts";
+import { nearestExistingPaths, withNearestExistingPaths } from "../resolution-nearest-paths.ts";
 import type { ResolvedProjectCommand } from "../resolution/types.ts";
-import { readNodeProjectState } from "./project-state.ts";
 import {
   isValidNodePackageScriptVariant,
   nodePackageScriptKey,
   nodePackageScriptVariantKey,
 } from "./package-script.ts";
-import type { NodeProjectResolutionOptions } from "../node.ts";
+import { readNodeProjectState } from "./project-state.ts";
 import type { NodeProjectState } from "./types.ts";
 
 function resolutionError(

@@ -1,8 +1,8 @@
-import type { ProjectCommandOutput } from "./execution.ts";
-import type { ProjectCommandCacheDecision } from "./cache.ts";
 import type { ResultCategory } from "../errors.ts";
+import type { ProjectCommandCacheDecision } from "./cache.ts";
 import { definedObjectProperties } from "./defined-properties.ts";
 import { sanitizeProjectCommandText } from "./diagnostics.ts";
+import type { ProjectCommandOutput } from "./execution.ts";
 import type { ProjectCommandOutputDetails } from "./output.ts";
 
 /**

@@ -1,32 +1,50 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { renderCallLine, renderStringArgument, truncateRenderText } from "../call-render.ts";
+
 import { hashToolParameters } from "../../observability/canonical-json.ts";
+import type { ProjectCommandInvocationRecorder } from "../../observability/project-command-invocation.ts";
+import { renderCallLine, renderStringArgument, truncateRenderText } from "../call-render.ts";
 import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
 import type { PolicyStore, PolicyStoreTestOptions } from "../policy/types.ts";
+import type { ProjectCommandResultCache } from "./cache.ts";
 import {
   getProjectCommandDefinitions,
   type BuiltInProjectCommandDefinitions,
   type ProjectCommandDefinition,
 } from "./definitions.ts";
+import { createProjectCommandEvidenceStore, type ProjectCommandEvidenceStore } from "./evidence.ts";
 import { createProjectCommandExecutor } from "./execution.ts";
-import { resolveProjectCommand, type ProjectCommandResolver } from "./resolution.ts";
-import {
-  createProjectCommandInputSchema,
-  ProjectCommandToolError,
-  type ProjectCommandInputSchema,
-} from "./schema.ts";
 import type { ProjectCommandOutputDetails } from "./output.ts";
 import type { ProjectCommandRelevantInputDiscovery } from "./relevant-inputs.ts";
-import type { ProjectCommandStateSnapshotter } from "./state-snapshot.ts";
 import type { ProjectCommandRepositoryStateReader } from "./repository-state.ts";
-import type { ProjectCommandResultCache } from "./cache.ts";
-import { createProjectCommandEvidenceStore, type ProjectCommandEvidenceStore } from "./evidence.ts";
+import { resolveProjectCommand, type ProjectCommandResolver } from "./resolution.ts";
 import {
   createProjectCommandExecute,
   type ProjectCommandExecute,
   type ProjectCommandExecutor,
 } from "./runner.ts";
-import type { ProjectCommandInvocationRecorder } from "../../observability/project-command-invocation.ts";
+import {
+  createProjectCommandInputSchema,
+  ProjectCommandToolError,
+  type ProjectCommandInputSchema,
+} from "./schema.ts";
+import type { ProjectCommandStateSnapshotter } from "./state-snapshot.ts";
+
+const PROJECT_COMMAND_DESCRIPTION =
+  "Run one fixed Node dependency listing or package script, six fixed Fallow analyses, or the existing workspace_path, node_version, and node_project_info observations. node_project_info reports project state in process; node_deps_list uses a detected package manager's fixed read-only list form; supported Node script commands run only exact package.json scripts or validated existing lint:<variant>, test:<variant>, and format:<variant> family forms. Variants use bounded package-script-safe names and select the exact script configured by the project. Fallow commands run only the project-local Fallow binary with fixed machine-readable arguments. Executing evidence requests may include opaque covers and publish: { flowId }; lookup-only requests accept only ref, optional flowId, and covers and never execute a command. Evidence refs are non-replayable and process-scoped unless explicitly published to an authorized flow. Do not use this tool for dependency installation, Git inspection, file access, arbitrary commands, environment inspection, or project mutation outside the project-controlled package scripts exposed by this catalog.";
+
+const PROJECT_COMMAND_PROMPT_GUIDELINES = [
+  "Use project_command with commandId workspace_path when you need the current project workspace path.",
+  "Use project_command with commandId node_version when you need the active Node.js runtime version.",
+  "Use project_command with commandId node_project_info before selecting an applicable Node command.",
+  "Use node_deps_list to inspect top-level dependencies when node_project_info reports it as applicable.",
+  "Use node_test with optional workspace-relative paths only when package.json has the exact test script; its optional variant selects an existing validated test:<variant> script, including project-defined coverage or E2E scripts.",
+  "Use node_build or node_typecheck only when package.json has the exact corresponding script; node_lint accepts an optional variant selecting an existing validated lint:<variant> script, including project-defined fix scripts.",
+  "Use node_format with an optional variant only when package.json has the exact format or format:<variant> script; formatting scripts may modify project files.",
+  "Use fallow_dead_code, fallow_dupes, fallow_health, fallow_audit, fallow_list_entry_points, or fallow_list_boundaries only with their fixed machine-readable Fallow forms.",
+  "Use project_command with ref and optional flowId only to look up stored non-replayable evidence; lookup parameters cannot be combined with publish or other execution options.",
+  "Executing project_command requests may include covers and publish: { flowId } to preserve or explicitly publish evidence.",
+  "Do not use project_command for dependency installation, Git inspection, file inspection, arbitrary commands, environment access, or project mutation outside the project-controlled package scripts exposed by this catalog.",
+] as const;
 
 export type { ProjectCommandOutputDetails } from "./output.ts";
 export type { ProjectCommandExecutor, ProjectCommandToolContext } from "./runner.ts";
@@ -108,23 +126,10 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
   return {
     name: "project_command",
     label: "Project command",
-    description:
-      "Run one fixed Node dependency listing or package script, six fixed Fallow analyses, or the existing workspace_path, node_version, and node_project_info observations. node_project_info reports project state in process; node_deps_list uses a detected package manager's fixed read-only list form; supported Node script commands run only exact package.json scripts or validated existing lint:<variant>, test:<variant>, and format:<variant> family forms. Variants use bounded package-script-safe names and select the exact script configured by the project. Fallow commands run only the project-local Fallow binary with fixed machine-readable arguments. Executing evidence requests may include opaque covers and publish: { flowId }; lookup-only requests accept only ref, optional flowId, and covers and never execute a command. Evidence refs are non-replayable and process-scoped unless explicitly published to an authorized flow. Do not use this tool for dependency installation, Git inspection, file access, arbitrary commands, environment inspection, or project mutation outside the project-controlled package scripts exposed by this catalog.",
+    description: PROJECT_COMMAND_DESCRIPTION,
     promptSnippet:
       "Inspect Node project state, list top-level dependencies, run one exact Node package script or validated variant including lint fixes and formatting, or run one fixed Fallow analysis",
-    promptGuidelines: [
-      "Use project_command with commandId workspace_path when you need the current project workspace path.",
-      "Use project_command with commandId node_version when you need the active Node.js runtime version.",
-      "Use project_command with commandId node_project_info before selecting an applicable Node command.",
-      "Use node_deps_list to inspect top-level dependencies when node_project_info reports it as applicable.",
-      "Use node_test with optional workspace-relative paths only when package.json has the exact test script; its optional variant selects an existing validated test:<variant> script, including project-defined coverage or E2E scripts.",
-      "Use node_build or node_typecheck only when package.json has the exact corresponding script; node_lint accepts an optional variant selecting an existing validated lint:<variant> script, including project-defined fix scripts.",
-      "Use node_format with an optional variant only when package.json has the exact format or format:<variant> script; formatting scripts may modify project files.",
-      "Use fallow_dead_code, fallow_dupes, fallow_health, fallow_audit, fallow_list_entry_points, or fallow_list_boundaries only with their fixed machine-readable Fallow forms.",
-      "Use project_command with ref and optional flowId only to look up stored non-replayable evidence; lookup parameters cannot be combined with publish or other execution options.",
-      "Executing project_command requests may include covers and publish: { flowId } to preserve or explicitly publish evidence.",
-      "Do not use project_command for dependency installation, Git inspection, file inspection, arbitrary commands, environment access, or project mutation outside the project-controlled package scripts exposed by this catalog.",
-    ],
+    promptGuidelines: [...PROJECT_COMMAND_PROMPT_GUIDELINES],
     parameters,
     executionMode: "sequential",
     renderCall(args, theme) {

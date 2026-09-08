@@ -1,12 +1,7 @@
 import { readFile, realpath, writeFile } from "node:fs/promises";
+
 import { afterEach, expect, it } from "vitest";
-import {
-  cleanupProjectCommandFixtures,
-  context,
-  fixture,
-  successExecutor,
-} from "./tool-test-fixtures.ts";
-import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
+
 import {
   getProjectCommandDefinition,
   projectCommandIdentity,
@@ -14,6 +9,13 @@ import {
 import { ProjectCommandResolutionError } from "../../src/tools/project-command/errors.ts";
 import { resolveFixedProjectCommand } from "../../src/tools/project-command/resolution.ts";
 import type { ResolvedProjectCommand } from "../../src/tools/project-command/resolution/types.ts";
+import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
+import {
+  cleanupProjectCommandFixtures,
+  context,
+  fixture,
+  successExecutor,
+} from "./tool-test-fixtures.ts";
 
 afterEach(cleanupProjectCommandFixtures);
 

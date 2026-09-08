@@ -1,12 +1,14 @@
 import type { Stats } from "node:fs";
+
 import { describe, expect, it } from "vitest";
+
 import { createProjectCommandResultFingerprint } from "../../src/tools/project-command/fingerprint.ts";
+import type { NodeFileSystem } from "../../src/tools/project-command/node/types.ts";
 import { canonicalProjectCommandRelevantInputs } from "../../src/tools/project-command/relevant-inputs.ts";
 import {
   projectCommandStateSnapshotDigest,
   snapshotProjectCommandRelevantInputs,
 } from "../../src/tools/project-command/state-snapshot.ts";
-import type { NodeFileSystem } from "../../src/tools/project-command/node/types.ts";
 
 const inputs = canonicalProjectCommandRelevantInputs([{ kind: "file", path: "input.bin" }]);
 

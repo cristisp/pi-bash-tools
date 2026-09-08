@@ -1,4 +1,5 @@
 import { join } from "node:path";
+
 import { resolveProjectBinary } from "../../binary.ts";
 import { ProjectCommandResolutionError } from "../../errors.ts";
 import type { ProjectResolutionFileSystem } from "../../resolution.ts";

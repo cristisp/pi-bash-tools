@@ -1,7 +1,9 @@
 import { chmod, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { afterEach, expect, it } from "vitest";
+
 import { createNodePolicyFileSystem } from "../../src/tools/policy/filesystem.ts";
 import { createPolicyStore, createPolicyStoreForTesting } from "../../src/tools/policy/store.ts";
 import { createPolicyTestFixtures } from "./test-fixtures.ts";

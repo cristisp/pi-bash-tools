@@ -1,6 +1,7 @@
 import type { ToolInfo } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
+
 import {
   hashToolParameters,
   serializeCanonicalJson,

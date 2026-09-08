@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+
 import {
   NODE_TEST_PATH_PATTERN,
   PROJECT_COMMAND_MAX_PARAMETER_ITEMS,
@@ -6,6 +7,8 @@ import {
   PROJECT_COMMAND_MAX_SCRIPT_VARIANT_LENGTH,
   PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN,
 } from "../project-command/parameters.ts";
+import { parseJsonStringArray } from "../project-command/schema/validation.ts";
+import { isRecord, isValidPublishValue } from "../value-validation.ts";
 import { VERIFY_PHASES, type VerifyPhase } from "./types.ts";
 
 const packageScriptNamePattern = PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN;
@@ -126,10 +129,6 @@ export class VerifyToolError extends Error {
   }
 }
 
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function isPhase(value: unknown): value is VerifyPhase {
   return typeof value === "string" && (VERIFY_PHASES as readonly string[]).includes(value);
 }
@@ -143,44 +142,14 @@ function isSafeScriptName(value: unknown): value is string {
   );
 }
 
-function jsonStringArray(value: unknown, field: string): readonly string[] | undefined {
-  if (typeof value !== "string") return undefined;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
-      return parsed;
-    }
-  } catch {
-    // Fall through to the actionable validation error below.
-  }
-  throw new VerifyToolError(
-    "invalid-request",
-    `verify field ${field} must be an array or a JSON array string; expected string[], for example ["src/index.ts"]`,
-  );
+interface VerifyExecutionFields {
+  readonly paths: readonly string[];
+  readonly omit: readonly VerifyPhase[];
+  readonly scripts: Partial<Record<VerifyPhase, string>>;
+  readonly continueOnFailure: boolean;
 }
 
-export function validateVerifyInput(value: unknown): NormalizedVerifyInput {
-  if (!isRecord(value))
-    throw new VerifyToolError("invalid-request", "verify input must be an object");
-  const allowedKeys = new Set([
-    "paths",
-    "omit",
-    "scripts",
-    "continueOnFailure",
-    "ref",
-    "flowId",
-    "fresh",
-    "publish",
-    "covers",
-  ]);
-  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
-    throw new VerifyToolError("invalid-request", "verify input contains an unsupported field");
-  }
-  const coercions: string[] = [];
-  const rawPaths = value.paths;
-  const coercedPaths = jsonStringArray(rawPaths, "paths");
-  if (coercedPaths !== undefined) coercions.push("paths:string-json-array");
-  const paths = coercedPaths ?? rawPaths;
+function validateVerifyPathArray(paths: unknown): readonly string[] {
   if (
     paths !== undefined &&
     (!Array.isArray(paths) ||
@@ -198,6 +167,26 @@ export function validateVerifyInput(value: unknown): NormalizedVerifyInput {
       'verify field paths must be safe workspace-relative paths; expected string[], for example ["src/index.ts"]',
     );
   }
+  return (paths ?? []) as readonly string[];
+}
+
+function validateVerifyPaths(
+  value: Readonly<Record<string, unknown>>,
+  coercions: string[],
+): readonly string[] {
+  const rawPaths = value.paths;
+  const coercedPaths = parseJsonStringArray(rawPaths, PROJECT_COMMAND_MAX_PARAMETER_ITEMS);
+  if (typeof rawPaths === "string" && coercedPaths === undefined) {
+    throw new VerifyToolError(
+      "invalid-request",
+      'verify field paths must be an array or a JSON array string; expected string[], for example ["src/index.ts"]',
+    );
+  }
+  if (coercedPaths !== undefined) coercions.push("paths:string-json-array");
+  return validateVerifyPathArray(coercedPaths?.value ?? rawPaths);
+}
+
+function validateVerifyOmit(value: Readonly<Record<string, unknown>>): readonly VerifyPhase[] {
   const omit = value.omit;
   if (
     omit !== undefined &&
@@ -208,84 +197,161 @@ export function validateVerifyInput(value: unknown): NormalizedVerifyInput {
   ) {
     throw new VerifyToolError("invalid-request", "verify omit must contain unique known phases");
   }
-  const normalizedOmit = (omit ?? []).filter(isPhase);
-  const scriptsValue = value.scripts;
+  return (omit ?? []).filter(isPhase);
+}
+
+function validateVerifyScripts(
+  value: Readonly<Record<string, unknown>>,
+): Partial<Record<VerifyPhase, string>> {
   const scripts: Partial<Record<VerifyPhase, string>> = {};
-  if (scriptsValue !== undefined) {
-    if (!isRecord(scriptsValue)) {
-      throw new VerifyToolError("invalid-request", "verify scripts must be an object");
-    }
-    for (const [phase, script] of Object.entries(scriptsValue)) {
-      if (!isPhase(phase) || !isSafeScriptName(script)) {
-        throw new VerifyToolError(
-          "invalid-request",
-          "verify scripts must name exact package scripts",
-        );
-      }
-      scripts[phase] = script;
-    }
+  if (value.scripts === undefined) return scripts;
+  if (!isRecord(value.scripts)) {
+    throw new VerifyToolError("invalid-request", "verify scripts must be an object");
   }
+  for (const [phase, script] of Object.entries(value.scripts)) {
+    if (!isPhase(phase) || !isSafeScriptName(script)) {
+      throw new VerifyToolError(
+        "invalid-request",
+        "verify scripts must name exact package scripts",
+      );
+    }
+    scripts[phase] = script;
+  }
+  return scripts;
+}
+
+function validateContinueOnFailure(value: Readonly<Record<string, unknown>>): boolean {
   if (value.continueOnFailure !== undefined && typeof value.continueOnFailure !== "boolean") {
     throw new VerifyToolError("invalid-request", "continueOnFailure must be a boolean");
   }
-  if (normalizedOmit.some((phase) => scripts[phase] !== undefined)) {
+  return value.continueOnFailure === true;
+}
+
+function validateVerifyExecutionFields(
+  value: Readonly<Record<string, unknown>>,
+  coercions: string[],
+): VerifyExecutionFields {
+  const paths = validateVerifyPaths(value, coercions);
+  const omit = validateVerifyOmit(value);
+  const scripts = validateVerifyScripts(value);
+  const continueOnFailure = validateContinueOnFailure(value);
+  if (omit.some((phase) => scripts[phase] !== undefined)) {
     throw new VerifyToolError("invalid-request", "omitted verify phases cannot select a script");
   }
-  const ref = value.ref;
-  if (ref !== undefined && (typeof ref !== "string" || !/^[A-Za-z0-9_-]{8,128}$/u.test(ref))) {
+  return { paths, omit, scripts, continueOnFailure };
+}
+
+interface VerifyEvidenceFields {
+  readonly ref?: string;
+  readonly flowId?: string;
+  readonly fresh: boolean;
+  readonly publish?: { readonly flowId: string };
+  readonly covers: readonly string[];
+}
+
+function validateVerifyRef(value: unknown): string | undefined {
+  if (
+    value !== undefined &&
+    (typeof value !== "string" || !/^[A-Za-z0-9_-]{8,128}$/u.test(value))
+  ) {
     throw new VerifyToolError(
       "invalid-request",
       'verify field ref must be a bounded reference string; expected string, for example "vr_example"',
     );
   }
-  const flowId = value.flowId;
-  if (
-    flowId !== undefined &&
-    (typeof flowId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/u.test(flowId))
-  ) {
+  return value;
+}
+
+function validateVerifyFlowId(value: unknown): string | undefined {
+  if (value !== undefined && (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,64}$/u.test(value))) {
     throw new VerifyToolError(
       "invalid-request",
       'verify field flowId must be a bounded lookup scope and requires ref; expected string, for example "flow-1"',
     );
   }
-  const fresh = value.fresh;
-  if (fresh !== undefined && typeof fresh !== "boolean") {
+  return value;
+}
+
+function validateVerifyFresh(value: unknown): boolean {
+  if (value !== undefined && typeof value !== "boolean") {
     throw new VerifyToolError(
       "invalid-request",
       "verify field fresh must be boolean; expected boolean, for example true",
     );
   }
-  const publishValue = value.publish;
-  let publish: { readonly flowId: string } | undefined;
-  if (publishValue !== undefined) {
-    if (
-      !isRecord(publishValue) ||
-      typeof publishValue.flowId !== "string" ||
-      !/^[A-Za-z0-9_-]{1,64}$/u.test(publishValue.flowId) ||
-      Object.keys(publishValue).some((key) => key !== "flowId")
-    ) {
-      throw new VerifyToolError(
-        "invalid-request",
-        'verify field publish must be {flowId: string}; expected object, for example {flowId: "flow-1"}',
-      );
-    }
-    publish = { flowId: publishValue.flowId };
+  return value === true;
+}
+
+function validateVerifyPublish(value: unknown): { readonly flowId: string } | undefined {
+  if (value === undefined) return undefined;
+  if (!isValidPublishValue(value)) {
+    throw new VerifyToolError(
+      "invalid-request",
+      'verify field publish must be {flowId: string}; expected object, for example {flowId: "flow-1"}',
+    );
   }
-  const covers = value.covers;
+  return { flowId: value.flowId };
+}
+
+function validateVerifyCovers(value: unknown): readonly string[] {
   if (
-    covers !== undefined &&
-    (!Array.isArray(covers) ||
-      covers.length > 64 ||
-      covers.some((cover) => typeof cover !== "string" || cover.length === 0 || cover.length > 512))
+    value !== undefined &&
+    (!Array.isArray(value) ||
+      value.length > 64 ||
+      value.some((cover) => typeof cover !== "string" || cover.length === 0 || cover.length > 512))
   ) {
     throw new VerifyToolError(
       "invalid-request",
       'verify field covers must be bounded strings; expected string[], for example ["AC-001"]',
     );
   }
+  return (value ?? []) as readonly string[];
+}
+
+function validateVerifyEvidenceFields(
+  value: Readonly<Record<string, unknown>>,
+): VerifyEvidenceFields {
+  const ref = validateVerifyRef(value.ref);
+  const flowId = validateVerifyFlowId(value.flowId);
+  const fresh = validateVerifyFresh(value.fresh);
+  const publish = validateVerifyPublish(value.publish);
+  const covers = validateVerifyCovers(value.covers);
+  return {
+    ...(ref === undefined ? {} : { ref }),
+    ...(flowId === undefined ? {} : { flowId }),
+    fresh,
+    ...(publish === undefined ? {} : { publish }),
+    covers,
+  };
+}
+
+const VERIFY_INPUT_KEYS = new Set([
+  "paths",
+  "omit",
+  "scripts",
+  "continueOnFailure",
+  "ref",
+  "flowId",
+  "fresh",
+  "publish",
+  "covers",
+]);
+
+function validateVerifyInputKeys(value: Readonly<Record<string, unknown>>): void {
+  if (Object.keys(value).some((key) => !VERIFY_INPUT_KEYS.has(key))) {
+    throw new VerifyToolError("invalid-request", "verify input contains an unsupported field");
+  }
+}
+
+function validateVerifyLookupRestrictions(
+  value: Readonly<Record<string, unknown>>,
+  evidence: VerifyEvidenceFields,
+  omit: readonly VerifyPhase[],
+): void {
+  const { ref, flowId, fresh, publish } = evidence;
   if (
     ref !== undefined &&
-    (fresh === true ||
+    (fresh ||
       publish !== undefined ||
       Object.keys(value).some((key) => !["ref", "flowId", "covers"].includes(key)))
   ) {
@@ -300,19 +366,30 @@ export function validateVerifyInput(value: unknown): NormalizedVerifyInput {
       'verify field flowId is lookup-only and requires ref; expected {ref,flowId}, for example {ref: "vr_example", flowId: "flow-1"}',
     );
   }
-  if (ref === undefined && normalizedOmit.length === VERIFY_PHASES.length) {
+  if (ref === undefined && omit.length === VERIFY_PHASES.length) {
     throw new VerifyToolError("invalid-request", "verify must run at least one phase");
   }
+}
+
+export function validateVerifyInput(value: unknown): NormalizedVerifyInput {
+  if (!isRecord(value))
+    throw new VerifyToolError("invalid-request", "verify input must be an object");
+  validateVerifyInputKeys(value);
+  const coercions: string[] = [];
+  const executionFields = validateVerifyExecutionFields(value, coercions);
+  const { paths, omit, scripts, continueOnFailure } = executionFields;
+  const evidence = validateVerifyEvidenceFields(value);
+  validateVerifyLookupRestrictions(value, evidence, omit);
   return {
-    paths: (paths ?? []) as readonly string[],
-    omit: normalizedOmit,
+    paths,
+    omit,
     scripts,
-    continueOnFailure: value.continueOnFailure === true,
-    ...(ref === undefined ? {} : { ref }),
-    ...(flowId === undefined ? {} : { flowId }),
-    fresh: fresh === true,
-    ...(publish === undefined ? {} : { publish }),
-    covers: (covers ?? []) as readonly string[],
+    continueOnFailure,
+    ...(evidence.ref === undefined ? {} : { ref: evidence.ref }),
+    ...(evidence.flowId === undefined ? {} : { flowId: evidence.flowId }),
+    fresh: evidence.fresh ?? false,
+    ...(evidence.publish === undefined ? {} : { publish: evidence.publish }),
+    covers: evidence.covers,
     coercions,
   };
 }

@@ -1,19 +1,21 @@
 import { readFile, realpath, writeFile } from "node:fs/promises";
+
 import { afterEach, expect, it, vi } from "vitest";
+
+import { createPolicyStoreForTesting } from "../../src/tools/policy/store.ts";
+import type { PolicyStore } from "../../src/tools/policy/types.ts";
 import {
   getProjectCommandDefinition,
   projectCommandIdentity,
 } from "../../src/tools/project-command/definitions.ts";
 import { resolveFixedProjectCommand } from "../../src/tools/project-command/resolution.ts";
-import { createPolicyStoreForTesting } from "../../src/tools/policy/store.ts";
-import type { PolicyStore } from "../../src/tools/policy/types.ts";
+import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
 import {
   cleanupProjectCommandFixtures,
   context,
   fixture,
   successExecutor,
 } from "./tool-test-fixtures.ts";
-import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
 
 afterEach(cleanupProjectCommandFixtures);
 

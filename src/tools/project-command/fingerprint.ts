@@ -1,5 +1,5 @@
-import { EXTENSION_VERSION } from "../../version.ts";
 import { hashCanonicalJson } from "../../observability/canonical-json.ts";
+import { EXTENSION_VERSION } from "../../version.ts";
 import type { LoadedPolicy } from "../policy/types.ts";
 import {
   canonicalProjectCommandRelevantInputs,

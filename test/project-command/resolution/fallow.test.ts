@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+
 import { getProjectCommandDefinition } from "../../../src/tools/project-command/definitions.ts";
 import { resolveProjectCommand } from "../../../src/tools/project-command/resolution.ts";
 import { createResolutionTestScope } from "./test-fixtures.ts";

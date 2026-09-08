@@ -3,15 +3,15 @@ import {
   environmentVariableNamePattern,
 } from "./format/constants.ts";
 import {
-  assertPolicyAllowedKeysInternal,
-  isPolicyRecordInternal,
-  policyErrorInternal,
-} from "./format/errors.ts";
-import {
   createEmptyEnvironmentPolicyInternal,
   parseEnvironmentPolicyInternal,
   serializePolicyInternal,
 } from "./format/environment.ts";
+import {
+  assertPolicyAllowedKeysInternal,
+  isPolicyRecordInternal,
+  policyErrorInternal,
+} from "./format/errors.ts";
 import {
   createEmptyFilesystemPolicyInternal,
   parseFilesystemPolicyInternal,

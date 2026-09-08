@@ -1,4 +1,4 @@
-import { isAbsolute, relative, sep } from "node:path";
+import { isPathWithin } from "../path-containment.ts";
 import { displayPath } from "../path-display.ts";
 import {
   commandIdentityKey,
@@ -212,13 +212,6 @@ export function applyEnvironmentPolicyDecision(
   const list = decision.startsWith("allow") ? target.allow : target.deny;
   list.push(key);
   return copyEnvironmentIntoPolicyDocument(document, next);
-}
-
-function isPathWithin(parent: string, child: string): boolean {
-  const suffix = relative(parent, child);
-  return (
-    suffix === "" || (!isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(`..${sep}`))
-  );
 }
 
 function pathsOverlap(left: string, right: string): boolean {

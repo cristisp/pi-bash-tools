@@ -2,7 +2,9 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmod, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
 import { describe } from "vitest";
+
 import type { GitExec, GitExecResult } from "../../src/tools/git/execution.ts";
 import type { GitToolContext } from "../../src/tools/git/tool.ts";
 import { createDirectoryTestFixtures } from "../directory-test-fixtures.ts";

@@ -1,6 +1,8 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
 import { afterEach, describe, expect, it } from "vitest";
+
 import { detectProjectPackageManager } from "../../../src/tools/project-command/resolution.ts";
 import { createProjectDirectory, createResolutionTestScope } from "./test-fixtures.ts";
 

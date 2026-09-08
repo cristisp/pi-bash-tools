@@ -1,5 +1,5 @@
 import { dirname, parse } from "node:path";
-import type { OpenedPolicyDirectory, PolicyDirectoryOperations, SecureDirectory } from "./types.ts";
+
 import {
   isMissingPolicyFileError,
   isPolicyFileAlreadyExistsError,
@@ -8,6 +8,7 @@ import {
   type PolicyFileSystem,
 } from "../filesystem.ts";
 import { policyError } from "../format.ts";
+import type { OpenedPolicyDirectory, PolicyDirectoryOperations, SecureDirectory } from "./types.ts";
 
 let policyCwdTail = Promise.resolve();
 

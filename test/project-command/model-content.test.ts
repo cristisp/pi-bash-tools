@@ -1,13 +1,15 @@
+import { writeFile, realpath } from "node:fs/promises";
+
 import { afterEach, describe, expect, it } from "vitest";
-import type { ProjectCommandOutputDetails } from "../../src/tools/project-command/output.ts";
+
+import { projectCommandIdentity } from "../../src/tools/project-command/definitions.ts";
 import {
   PROJECT_COMMAND_MODEL_OUTPUT_MAX_CHARS,
   projectCommandModelContent,
 } from "../../src/tools/project-command/model-content.ts";
-import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
-import { projectCommandIdentity } from "../../src/tools/project-command/definitions.ts";
+import type { ProjectCommandOutputDetails } from "../../src/tools/project-command/output.ts";
 import { resolveFixedProjectCommand } from "../../src/tools/project-command/resolution.ts";
-import { writeFile, realpath } from "node:fs/promises";
+import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
 import { cleanupProjectCommandFixtures, context, fixture } from "./tool-test-fixtures.ts";
 
 afterEach(cleanupProjectCommandFixtures);

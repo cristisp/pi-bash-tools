@@ -1,26 +1,30 @@
-import { performance } from "node:perf_hooks";
 import { isAbsolute } from "node:path";
+import { performance } from "node:perf_hooks";
+
 import type {
   AgentToolResult,
   AgentToolUpdateCallback,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+
+import {
+  createProjectCommandInvocationMeasurements,
+  recordProjectCommandInvocation,
+  redactProjectCommandParameters,
+  type ProjectCommandInvocationOutputMetadata,
+  type ProjectCommandInvocationReason,
+  type ProjectCommandInvocationRecorder,
+} from "../../observability/project-command-invocation.ts";
+import { authorizeOrPrompt, type AuthorizationErrorKind } from "../authorization.ts";
+import { awaitWithAbort } from "../await-with-abort.ts";
 import {
   createToolErrorContract,
   withToolErrorContract,
   type ResultCategory,
   type ToolErrorContract,
 } from "../errors.ts";
-import { authorizeOrPrompt, type AuthorizationErrorKind } from "../authorization.ts";
 import { findProjectCommandPolicyDecision } from "../policy/decisions.ts";
 import type { CommandIdentity, PolicyStore } from "../policy/types.ts";
-import {
-  getProjectCommandReusePolicy,
-  projectCommandIdentity,
-  type ProjectCommandDefinition,
-} from "./definitions.ts";
-import type { ProjectCommandExecutionOutcome } from "./execution.ts";
-import { definedObjectProperties } from "./defined-properties.ts";
 import {
   createProjectCommandDiskResultCache,
   createProjectCommandResultCache,
@@ -28,26 +32,34 @@ import {
   type ProjectCommandResultCache,
   type ProjectCommandResultCacheEntry,
 } from "./cache.ts";
+import { projectCommandResultCategory } from "./categories.ts";
+import { definedObjectProperties } from "./defined-properties.ts";
+import {
+  getProjectCommandReusePolicy,
+  projectCommandIdentity,
+  type ProjectCommandDefinition,
+} from "./definitions.ts";
+import {
+  createProjectCommandEvidenceRecord,
+  type ProjectCommandEvidenceProvenance,
+  type ProjectCommandEvidencePublication,
+  type ProjectCommandEvidenceRecord,
+  type ProjectCommandEvidenceStore,
+} from "./evidence.ts";
+import type { ProjectCommandExecutionOutcome } from "./execution.ts";
 import {
   createProjectCommandLogicalRequestKey,
   createProjectCommandResultFingerprint,
   projectCommandPolicyId,
   PROJECT_COMMAND_RESULT_FINGERPRINT_VERSION,
 } from "./fingerprint.ts";
+import { projectCommandModelContent } from "./model-content.ts";
+import { projectCommandMutatesWorkspace } from "./mutability.ts";
 import { createNodeProjectRelevantInputDiscovery } from "./node/relevant-inputs.ts";
 import {
-  canonicalProjectCommandRelevantInputs,
-  type ProjectCommandRelevantInputDiscovery,
-  type ProjectCommandRelevantInputDiscoveryRequest,
-  type ProjectCommandRelevantInputs,
-} from "./relevant-inputs.ts";
-import {
-  equalProjectCommandStateSnapshots,
-  projectCommandStateSnapshotDigest,
-  snapshotProjectCommandRelevantInputs,
-  type ProjectCommandStateSnapshot,
-  type ProjectCommandStateSnapshotter,
-} from "./state-snapshot.ts";
+  readProjectCommandOrchestrationContext,
+  type ProjectCommandOrchestrationContext,
+} from "./orchestration.ts";
 import {
   createExecutionFailure,
   createResolutionFailure,
@@ -58,34 +70,18 @@ import {
   type ProjectCommandOutputDetails,
   type ProjectCommandRequestParameters,
 } from "./output.ts";
-import { projectCommandResultCategory } from "./categories.ts";
-import { projectCommandModelContent } from "./model-content.ts";
 import {
-  createProjectCommandInvocationMeasurements,
-  recordProjectCommandInvocation,
-  redactProjectCommandParameters,
-  type ProjectCommandInvocationOutputMetadata,
-  type ProjectCommandInvocationReason,
-  type ProjectCommandInvocationRecorder,
-} from "../../observability/project-command-invocation.ts";
-import { ProjectCommandResolutionError, isProjectCommandResolutionError } from "./resolution.ts";
-import type { ProjectCommandResolver, ResolvedProjectCommand } from "./resolution/types.ts";
+  canonicalProjectCommandRelevantInputs,
+  type ProjectCommandRelevantInputDiscovery,
+  type ProjectCommandRelevantInputDiscoveryRequest,
+  type ProjectCommandRelevantInputs,
+} from "./relevant-inputs.ts";
 import type {
   ProjectCommandRepositoryState,
   ProjectCommandRepositoryStateReader,
 } from "./repository-state.ts";
-import {
-  createProjectCommandEvidenceRecord,
-  type ProjectCommandEvidenceProvenance,
-  type ProjectCommandEvidencePublication,
-  type ProjectCommandEvidenceRecord,
-  type ProjectCommandEvidenceStore,
-} from "./evidence.ts";
-import {
-  readProjectCommandOrchestrationContext,
-  type ProjectCommandOrchestrationContext,
-} from "./orchestration.ts";
-import { projectCommandMutatesWorkspace } from "./mutability.ts";
+import { ProjectCommandResolutionError, isProjectCommandResolutionError } from "./resolution.ts";
+import type { ProjectCommandResolver, ResolvedProjectCommand } from "./resolution/types.ts";
 import {
   cancellationError,
   invalidRequest,
@@ -93,6 +89,13 @@ import {
   type ProjectCommandInputFor,
   validateProjectCommandInput,
 } from "./schema.ts";
+import {
+  equalProjectCommandStateSnapshots,
+  projectCommandStateSnapshotDigest,
+  snapshotProjectCommandRelevantInputs,
+  type ProjectCommandStateSnapshot,
+  type ProjectCommandStateSnapshotter,
+} from "./state-snapshot.ts";
 
 export type ProjectCommandToolContext = Omit<
   Pick<ExtensionContext, "cwd" | "signal" | "hasUI" | "mode" | "ui">,
@@ -1156,6 +1159,81 @@ function setCachedInvocationState(
   state.output = details.output;
 }
 
+function cachedProjectCommandResult(
+  inspection: CacheInspection,
+  toolCallId: string,
+  state: ProjectCommandInvocationState,
+): AgentToolResult<ProjectCommandOutputDetails> | undefined {
+  if (inspection.entry === undefined || inspection.beforeSnapshot === undefined) {
+    return undefined;
+  }
+  setCachedInvocationState(state, inspection.entry.details);
+  return result({
+    ...inspection.entry.details,
+    ...invocationMetadataForState(toolCallId, state, {
+      cacheDecision: "hit",
+      reused: true,
+      forced: false,
+      producerInvocationId: inspection.entry.producerInvocationId,
+      producerScope: inspection.entry.provenance === undefined ? undefined : "flow",
+    }),
+  });
+}
+
+async function reconcileRepositoryState(
+  repositoryStateReader: ProjectCommandRepositoryStateReader | undefined,
+  projectPath: string,
+  signal: AbortSignal | undefined,
+  state: ProjectCommandInvocationState,
+): Promise<void> {
+  if (repositoryStateReader === undefined) return;
+  try {
+    state.currentRepositoryState = await repositoryStateReader(projectPath, signal);
+  } catch {
+    if (signal?.aborted) throw commandCancellationError();
+    state.currentRepositoryState = undefined;
+  }
+  state.repositoryStateStatus = repositoryStateStatus(
+    state.repositoryState,
+    state.currentRepositoryState,
+  );
+  state.stateDrift =
+    state.repositoryState !== undefined &&
+    state.currentRepositoryState !== undefined &&
+    !repositoryStatesEqual(state.repositoryState, state.currentRepositoryState);
+}
+
+function finalizeExecutedProjectCommand(
+  cache: ProjectCommandResultCache,
+  evidence: ProjectCommandEvidenceStore | undefined,
+  inspection: CacheInspection,
+  resultFingerprint: string | undefined,
+  executed: ExecutedWithCache,
+  prepared: PreparedProjectCommand,
+  toolCallId: string,
+  state: ProjectCommandInvocationState,
+): ProjectCommandOutputDetails {
+  if (executed.canStore) state.producerInvocationId = toolCallId;
+  const metadata = invocationMetadataForState(toolCallId, state);
+  const details = outputDetails(
+    prepared.identity,
+    prepared.projectPath,
+    prepared.resolved,
+    executed.outcome,
+    metadata,
+  );
+  storeResult(
+    cache,
+    inspection,
+    resultFingerprint,
+    executed,
+    details,
+    prepared.projectPath,
+    toolCallId,
+  );
+  return storeEvidence(evidence, details, state, toolCallId);
+}
+
 const EARLY_FAILURE_REASONS: Partial<Record<ResultCategory, ProjectCommandInvocationReason>> = {
   INVALID_REQUEST: "invalid-request",
   RESOLUTION_FAILURE: "resolution-failure",
@@ -1170,38 +1248,6 @@ interface ProjectCommandSingleFlight {
 }
 
 const PROJECT_COMMAND_SINGLE_FLIGHTS = new Map<string, ProjectCommandSingleFlight>();
-
-function awaitWithCancellation<T>(
-  promise: Promise<T>,
-  signal: AbortSignal | undefined,
-): Promise<T> {
-  if (signal === undefined) return promise;
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const cleanup = () => signal.removeEventListener("abort", onAbort);
-    const onAbort = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(commandCancellationError());
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve(value);
-      },
-      (error: unknown) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(error);
-      },
-    );
-  });
-}
 
 function projectCommandSingleFlightKey(
   prepared: PreparedProjectCommand,
@@ -1640,19 +1686,8 @@ async function executePreparedProjectCommandCore(
   );
   state.cacheDecision = inspection.decision;
 
-  if (inspection.entry !== undefined && inspection.beforeSnapshot !== undefined) {
-    setCachedInvocationState(state, inspection.entry.details);
-    return result({
-      ...inspection.entry.details,
-      ...invocationMetadataForState(toolCallId, state, {
-        cacheDecision: "hit",
-        reused: true,
-        forced: false,
-        producerInvocationId: inspection.entry.producerInvocationId,
-        producerScope: inspection.entry.provenance === undefined ? undefined : "flow",
-      }),
-    });
-  }
+  const cachedResult = cachedProjectCommandResult(inspection, toolCallId, state);
+  if (cachedResult !== undefined) return cachedResult;
 
   state.executionStartedAt = performance.now();
   const executed = await executeWithCache(
@@ -1668,44 +1703,22 @@ async function executePreparedProjectCommandCore(
   );
   state.cacheDecision = executed.decision;
   setOutcomeInvocationState(state, prepared.definition, executed.outcome);
-  if (repositoryStateReader !== undefined) {
-    try {
-      state.currentRepositoryState = await repositoryStateReader(
-        prepared.projectPath,
-        prepared.requestSignal,
-      );
-    } catch {
-      if (prepared.requestSignal?.aborted) throw commandCancellationError();
-      state.currentRepositoryState = undefined;
-    }
-    state.repositoryStateStatus = repositoryStateStatus(
-      state.repositoryState,
-      state.currentRepositoryState,
-    );
-    state.stateDrift =
-      state.repositoryState !== undefined &&
-      state.currentRepositoryState !== undefined &&
-      !repositoryStatesEqual(state.repositoryState, state.currentRepositoryState);
-  }
-  if (executed.canStore) state.producerInvocationId = toolCallId;
-  const metadata = invocationMetadataForState(toolCallId, state);
-  const details = outputDetails(
-    prepared.identity,
+  await reconcileRepositoryState(
+    repositoryStateReader,
     prepared.projectPath,
-    prepared.resolved,
-    executed.outcome,
-    metadata,
+    prepared.requestSignal,
+    state,
   );
-  storeResult(
+  const evidencedDetails = finalizeExecutedProjectCommand(
     cache,
+    evidence,
     inspection,
     state.resultFingerprint,
     executed,
-    details,
-    prepared.projectPath,
+    prepared,
     toolCallId,
+    state,
   );
-  const evidencedDetails = storeEvidence(evidence, details, state, toolCallId);
   if (isAbortedOutcome(executed.outcome, prepared.requestSignal)) {
     throw cancellationError(cancellationOutputDetails(evidencedDetails));
   }
@@ -1752,7 +1765,11 @@ async function executePreparedProjectCommand(
     state.sharedExecution = true;
     state.concurrentExecutions = existing.active;
     try {
-      const shared = await awaitWithCancellation(existing.promise, prepared.requestSignal);
+      const shared = await awaitWithAbort(
+        existing.promise,
+        prepared.requestSignal,
+        commandCancellationError,
+      );
       state.cacheDecision = shared.cacheDecision;
       state.resultCategory = shared.category;
       state.status = shared.status;

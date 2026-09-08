@@ -1,5 +1,6 @@
 import { lstat as nodeLstat, realpath as nodeRealpath } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+
 import { validatePolicyPath } from "../policy/format.ts";
 
 export interface CanonicalPathFileSystem {

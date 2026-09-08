@@ -1,6 +1,8 @@
 import { lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
 import { afterEach, expect, it, vi } from "vitest";
+
 import { getProjectCommandDefinition } from "../../../src/tools/project-command/definitions.ts";
 import { resolveNodeProjectCommand } from "../../../src/tools/project-command/node.ts";
 import { createNodeProject, createNodeTestScope } from "./test-fixtures.ts";

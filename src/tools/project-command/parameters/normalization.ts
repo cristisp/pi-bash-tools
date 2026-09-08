@@ -1,8 +1,9 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
+
 import { ProjectCommandResolutionError } from "../errors.ts";
-import { validateNodeTestPaths } from "./validation.ts";
 import type { NodeTestParameters } from "./types.ts";
+import { validateNodeTestPaths } from "./validation.ts";
 
 function pathResolutionError(): ProjectCommandResolutionError {
   return new ProjectCommandResolutionError("probe", "test-path-outside-workspace");

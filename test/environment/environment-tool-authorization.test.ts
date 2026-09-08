@@ -1,9 +1,11 @@
 import { readFile, realpath } from "node:fs/promises";
+
 import { afterEach, expect, it, vi } from "vitest";
-import { createEnvironmentToolForTesting } from "../../src/tools/environment/environment-tool.ts";
+
 import { EnvironmentToolError } from "../../src/tools/environment/environment-schema.ts";
-import { createEnvironmentToolTestFixtures } from "./environment-tool-test-fixtures.ts";
+import { createEnvironmentToolForTesting } from "../../src/tools/environment/environment-tool.ts";
 import type { PolicyStore } from "../../src/tools/policy/types.ts";
+import { createEnvironmentToolTestFixtures } from "./environment-tool-test-fixtures.ts";
 
 const fixtures = createEnvironmentToolTestFixtures();
 

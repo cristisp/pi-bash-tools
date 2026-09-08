@@ -2,8 +2,9 @@ import { mkdirSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:f
 import { mkdtemp, realpath, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
 import { afterEach, expect, it, vi } from "vitest";
-import type { ProjectCommandOutputDetails } from "../../src/tools/project-command/output.ts";
+
 import {
   createProjectCommandDiskJsonCache,
   createProjectCommandDiskResultCache,
@@ -11,11 +12,12 @@ import {
   type ProjectCommandResultCache,
   type ProjectCommandResultCacheEntry,
 } from "../../src/tools/project-command/cache.ts";
-import type { ProjectCommandRepositoryState } from "../../src/tools/project-command/repository-state.ts";
 import {
   projectCommandIdentity,
   type ProjectCommandDefinition,
 } from "../../src/tools/project-command/definitions.ts";
+import type { ProjectCommandOutputDetails } from "../../src/tools/project-command/output.ts";
+import type { ProjectCommandRepositoryState } from "../../src/tools/project-command/repository-state.ts";
 import { resolveFixedProjectCommand } from "../../src/tools/project-command/resolution.ts";
 import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
 import { cleanupProjectCommandFixtures, context, fixture } from "./tool-test-fixtures.ts";
@@ -424,6 +426,29 @@ it("rejects persisted records with oversized numeric output metadata", async () 
   }
 });
 
+it("preserves cache-specific fractional duration validation", async () => {
+  authorizeFlow("flow-a");
+  const root = await mkdtemp(join(tmpdir(), "bash-tools-flow-cache-"));
+  try {
+    const cache = createProjectCommandDiskResultCache({ rootDirectory: root, scopeKey: "flow-a" });
+    cache.set("flow-a", {
+      ...cacheEntry(),
+      details: { ...cacheDetails, durationMs: 1.5, executionDurationMs: 1.5 },
+    });
+
+    const reloaded = createProjectCommandDiskResultCache({
+      rootDirectory: root,
+      scopeKey: "flow-a",
+    });
+    expect(reloaded.get("flow-a", "request-a")?.details).toMatchObject({
+      durationMs: 1.5,
+      executionDurationMs: 1.5,
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 it("treats a syntactically valid envelope with malformed details as a miss", async () => {
   authorizeFlow("flow-a");
   const root = await mkdtemp(join(tmpdir(), "bash-tools-flow-cache-"));
@@ -436,6 +461,56 @@ it("treats a syntactically valid envelope with malformed details as a miss", asy
     await writeFile(path, JSON.stringify({ ...persisted, details: {} }));
 
     expect(cache.get("flow-a", "request-a")).toBeUndefined();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("validates persisted error contracts and their optional fields", async () => {
+  authorizeFlow("flow-a");
+  const root = await mkdtemp(join(tmpdir(), "bash-tools-flow-cache-"));
+  try {
+    const cache = createProjectCommandDiskResultCache({ rootDirectory: root, scopeKey: "flow-a" });
+    cache.set("flow-a", cacheEntry());
+    const path = await cacheFile(root, "flow-a");
+    const persisted: unknown = JSON.parse(await readFile(path, "utf8"));
+    if (!isRecord(persisted)) throw new Error("cache entry is not an object");
+    const validError = {
+      code: "failed",
+      category: "FAILED",
+      explanation: "the command failed",
+      invalidField: "commandId",
+      suggestedAction: "retry",
+      retryable: true,
+      executed: true,
+    };
+    await writeFile(
+      path,
+      JSON.stringify({
+        ...persisted,
+        details: { ...cacheDetails, error: validError },
+      }),
+    );
+    expect(cache.get("flow-a", "request-a")?.details.error).toEqual(validError);
+
+    for (const [field, value] of [
+      ["code", 1],
+      ["category", 1],
+      ["explanation", 1],
+      ["invalidField", 1],
+      ["suggestedAction", 1],
+      ["retryable", "true"],
+      ["executed", "true"],
+    ] as const) {
+      writeFileSync(
+        path,
+        JSON.stringify({
+          ...persisted,
+          details: { ...cacheDetails, error: { ...validError, [field]: value } },
+        }),
+      );
+      expect(cache.get("flow-a", "request-a"), field).toBeUndefined();
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

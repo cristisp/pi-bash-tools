@@ -1,6 +1,8 @@
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
 import { expect, it } from "vitest";
+
 import type { GitExec, GitExecResult } from "../../src/tools/git/execution.ts";
 import { createProjectCommandRepositoryStateReader } from "../../src/tools/project-command/repository-state.ts";
 

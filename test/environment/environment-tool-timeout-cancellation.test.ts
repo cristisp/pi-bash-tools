@@ -1,7 +1,9 @@
 import { readFile, realpath, rename, writeFile as writeFileToDisk } from "node:fs/promises";
+
 import { afterEach, expect, it } from "vitest";
-import type { PolicyFileSystem } from "../../src/tools/policy/types.ts";
+
 import { createEnvironmentToolForTesting } from "../../src/tools/environment/environment-tool.ts";
+import type { PolicyFileSystem } from "../../src/tools/policy/types.ts";
 import { createEnvironmentToolTestFixtures } from "./environment-tool-test-fixtures.ts";
 
 const fixtures = createEnvironmentToolTestFixtures();

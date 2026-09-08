@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+
 import { normalizeBooleanInput } from "../boolean.ts";
 import {
+  buildToolErrorContract,
   createToolErrorContract,
   suggestedActionForCategory,
   withToolErrorContract,
@@ -180,14 +182,13 @@ function gitContract(
   executed: boolean,
   invalidField?: string,
 ): ToolErrorContract {
-  return createToolErrorContract({
+  return buildToolErrorContract({
     code,
     category,
     explanation,
-    ...(invalidField === undefined ? {} : { invalidField }),
-    suggestedAction: suggestedActionForCategory(category),
     retryable,
     executed,
+    invalidField,
   });
 }
 

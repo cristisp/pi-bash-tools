@@ -1,6 +1,7 @@
 import { Type } from "typebox";
+
 import { renderCallLine, renderStringArgument } from "../../call-render.ts";
-import type { GitLogOutput } from "./output.ts";
+import { runGit, validateGitRequestKeys, validateRevision, type GitExec } from "../execution.ts";
 import {
   MAX_RECORDS,
   makeToolResult,
@@ -10,8 +11,8 @@ import {
   validateIntegerLimit,
 } from "../output.ts";
 import { resolvePath, resolveRepository } from "../repository.ts";
-import { runGit, validateGitRequestKeys, validateRevision, type GitExec } from "../execution.ts";
 import { defineGitTool, type GitToolDefinition } from "../tool.ts";
+import type { GitLogOutput } from "./output.ts";
 
 const gitLogParameters = Type.Object(
   {

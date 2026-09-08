@@ -1,3 +1,5 @@
+import { editDistance } from "../edit-distance.ts";
+
 const MAX_MATCH_COUNT = 10;
 const MAX_CANDIDATES = 4;
 const MAX_CANDIDATE_LINES = 2_048;
@@ -27,6 +29,10 @@ export interface EditDiagnostic {
 
 function normalizeToLf(text: string): string {
   return text.replace(/\r\n/gu, "\n").replace(/\r/gu, "\n");
+}
+
+function stripUtf8Bom(text: string): string {
+  return text.startsWith("\uFEFF") ? text.slice(1) : text;
 }
 
 function normalizeForFuzzyMatch(text: string): string {
@@ -66,27 +72,6 @@ function withoutWhitespace(text: string): string {
   return text.replace(/\s/gu, "");
 }
 
-function editDistance(left: string, right: string): number {
-  const boundedLeft = left.slice(0, MAX_TEXT_LENGTH);
-  const boundedRight = right.slice(0, MAX_TEXT_LENGTH);
-  const previous = Array.from({ length: boundedRight.length + 1 }, (_, index) => index);
-  for (let leftIndex = 1; leftIndex <= boundedLeft.length; leftIndex += 1) {
-    let diagonal = previous[0] ?? 0;
-    previous[0] = leftIndex;
-    for (let rightIndex = 1; rightIndex <= boundedRight.length; rightIndex += 1) {
-      const above = previous[rightIndex] ?? 0;
-      const cost = boundedLeft[leftIndex - 1] === boundedRight[rightIndex - 1] ? 0 : 1;
-      previous[rightIndex] = Math.min(
-        (previous[rightIndex - 1] ?? 0) + 1,
-        above + 1,
-        diagonal + cost,
-      );
-      diagonal = above;
-    }
-  }
-  return previous[boundedRight.length] ?? 0;
-}
-
 function nearestCandidates(content: string, oldText: string): readonly EditDiagnosticCandidate[] {
   const anchor = normalizeForFuzzyMatch(oldText).split("\n")[0]?.trim() ?? "";
   if (anchor.length === 0) return [];
@@ -95,7 +80,7 @@ function nearestCandidates(content: string, oldText: string): readonly EditDiagn
     .slice(0, MAX_CANDIDATE_LINES)
     .map((line, index) => ({
       line: index + 1,
-      distance: editDistance(anchor, normalizeForFuzzyMatch(line).trim()),
+      distance: editDistance(anchor, normalizeForFuzzyMatch(line).trim(), MAX_TEXT_LENGTH),
     }));
   candidates.sort((left, right) => left.distance - right.distance || left.line - right.line);
   return Object.freeze(candidates.slice(0, MAX_CANDIDATES).map(({ line }) => ({ line })));
@@ -138,8 +123,9 @@ export function diagnoseFilesystemEdits(
   content: string,
   edits: readonly FilesystemEditInput[],
 ): EditDiagnostic | undefined {
+  const contentWithoutBom = stripUtf8Bom(content);
   if (
-    content.length > MAX_CONTENT_LENGTH ||
+    contentWithoutBom.length > MAX_CONTENT_LENGTH ||
     edits.length > MAX_EDITS ||
     edits.some(
       (edit) =>
@@ -161,7 +147,7 @@ export function diagnoseFilesystemEdits(
     };
   }
 
-  const normalizedContent = normalizeToLf(content);
+  const normalizedContent = normalizeToLf(contentWithoutBom);
   const initialMatches = normalizedEdits.map((edit) => {
     const exactIndex = normalizedContent.indexOf(edit.oldText);
     if (exactIndex >= 0) return { index: exactIndex, fuzzy: false };
@@ -178,7 +164,7 @@ export function diagnoseFilesystemEdits(
     if (edit === undefined) continue;
     const oldText = usedFuzzy ? normalizeForFuzzyMatch(edit.oldText) : edit.oldText;
     const index = baseContent.indexOf(oldText);
-    if (index < 0) return noMatchDiagnostic(content, edit.oldText, editIndex);
+    if (index < 0) return noMatchDiagnostic(contentWithoutBom, edit.oldText, editIndex);
     const occurrences = countOccurrences(baseContent, oldText);
     if (occurrences > 1) {
       return {

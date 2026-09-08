@@ -5,9 +5,10 @@ const sequentialTestFiles = ["test/policy/directory/security.test.ts"];
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["test/**/*.test.ts"],
     coverage: {
       provider: "v8",
+      include: ["src/**/*.ts"],
+      exclude: ["src/**/*.d.ts"],
       thresholds: {
         lines: 75,
         functions: 75,

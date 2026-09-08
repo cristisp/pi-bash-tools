@@ -52,5 +52,3 @@ export function projectCommandResultCategory(
   }
   return "IMPLEMENTATION_FAILURE";
 }
-
-export const resultCategoryForProjectCommand = projectCommandResultCategory;

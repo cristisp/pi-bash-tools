@@ -9,6 +9,7 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
+
 import { policyError } from "./format.ts";
 
 export interface PolicyFileStats {

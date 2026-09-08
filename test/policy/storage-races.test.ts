@@ -1,8 +1,10 @@
 import { mkdir, readFile, realpath, rename, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
 import { afterEach, expect, it, vi } from "vitest";
-import { createPolicyStoreForTesting } from "../../src/tools/policy/store.ts";
+
 import { findEnvironmentPolicyDecision } from "../../src/tools/policy/decisions.ts";
+import { createPolicyStoreForTesting } from "../../src/tools/policy/store.ts";
 import { createPolicyTestFixtures } from "./test-fixtures.ts";
 
 const fixtures = createPolicyTestFixtures();

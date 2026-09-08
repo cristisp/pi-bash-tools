@@ -1,12 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+
 import { afterEach, describe, expect, it } from "vitest";
-import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
+
 import {
   getProjectCommandDefinition,
   projectCommandIdentity,
 } from "../../src/tools/project-command/definitions.ts";
 import { resolveNodeProjectCommand } from "../../src/tools/project-command/node.ts";
+import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
 import {
   createCommandContext,
   createIntegrationFixture,

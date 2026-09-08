@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
+
 import type {
   PackageManagerExecutableResolutionOptionsInternal,
   PackageManagerFileSystemInternal,

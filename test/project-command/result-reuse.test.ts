@@ -1,16 +1,18 @@
 import { realpath, writeFile } from "node:fs/promises";
+
 import { afterEach, expect, it, vi } from "vitest";
+
 import { hashToolParameters } from "../../src/observability/canonical-json.ts";
 import type { ProjectCommandInvocationRecord } from "../../src/observability/project-command-invocation.ts";
-import { cleanupProjectCommandFixtures, context, fixture } from "./tool-test-fixtures.ts";
 import {
   projectCommandIdentity,
   type ProjectCommandDefinition,
 } from "../../src/tools/project-command/definitions.ts";
-import { resolveFixedProjectCommand } from "../../src/tools/project-command/resolution.ts";
 import type { ProjectCommandRelevantInputDiscovery } from "../../src/tools/project-command/relevant-inputs.ts";
-import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
+import { resolveFixedProjectCommand } from "../../src/tools/project-command/resolution.ts";
 import { validateProjectCommandInput } from "../../src/tools/project-command/schema.ts";
+import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
+import { cleanupProjectCommandFixtures, context, fixture } from "./tool-test-fixtures.ts";
 
 const cacheDefinition = {
   namespace: "bash-tools.project-command",

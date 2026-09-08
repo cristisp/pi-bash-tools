@@ -1,8 +1,9 @@
 import { dirname } from "node:path";
+
 import { displayPath } from "../path-display.ts";
 
-export const PROJECT_COMMAND_MAX_NEAREST_PATHS = 4;
-export const PROJECT_COMMAND_MAX_NEAREST_PATH_LENGTH = 512;
+const PROJECT_COMMAND_MAX_NEAREST_PATHS = 4;
+const PROJECT_COMMAND_MAX_NEAREST_PATH_LENGTH = 512;
 
 export interface ResolutionPathFileSystem {
   readonly realpath: (path: string) => Promise<string>;

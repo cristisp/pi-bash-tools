@@ -1,4 +1,4 @@
-import { Type, type Static } from "typebox";
+import { Type } from "typebox";
 
 /** Boolean values accepted at the JSON tool boundary. */
 export type BooleanInput = boolean | "true" | "false";
@@ -18,5 +18,3 @@ export const booleanInputSchema = Type.Union(
   [Type.Boolean(), Type.Literal("true"), Type.Literal("false")],
   { description: 'Boolean value or the literal string "true" or "false".' },
 );
-
-export type BooleanInputSchema = Static<typeof booleanInputSchema>;

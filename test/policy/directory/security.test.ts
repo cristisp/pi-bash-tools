@@ -2,7 +2,9 @@ import { execFile as execFileCallback } from "node:child_process";
 import { mkdir, realpath, rename, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+
 import { afterEach, expect, it, vi } from "vitest";
+
 import { createPolicyStoreForTesting } from "../../../src/tools/policy/store.ts";
 import { createPolicyTestFixtures } from "../test-fixtures.ts";
 

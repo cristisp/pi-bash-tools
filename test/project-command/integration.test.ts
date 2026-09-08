@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
+
 import { afterEach, describe, expect, it } from "vitest";
+
 import {
   createIntegrationFixture,
   createProjectCommandIntegrationScope,

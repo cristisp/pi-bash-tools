@@ -1,12 +1,15 @@
+import { open, type FileHandle } from "node:fs/promises";
+
 import {
   isToolCallEventType,
   type ToolCallEvent,
   type ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { open, type FileHandle } from "node:fs/promises";
+
 import { type AuthorizationErrorKind } from "../authorization.ts";
 import type { ToolErrorContract } from "../errors.ts";
 import { displayPath } from "../path-display.ts";
+import { filesystemPolicyDenialMetadata } from "../policy/decisions.ts";
 import { createPolicyStore } from "../policy/store.ts";
 import type {
   FilesystemAccess,
@@ -19,7 +22,6 @@ import {
   loadFilesystemPolicyForRequest,
   type FilesystemAuthorizationContext,
 } from "./authorization.ts";
-import { filesystemPolicyDenialMetadata } from "../policy/decisions.ts";
 import { diagnoseFilesystemEdits, type FilesystemEditInput } from "./edit-diagnostics.ts";
 import {
   filesystemAuthorizationContract,

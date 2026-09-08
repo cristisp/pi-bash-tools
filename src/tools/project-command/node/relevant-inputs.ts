@@ -1,10 +1,13 @@
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { hasControlCharacter } from "../parameters/text-validation.ts";
+
 import {
   isProjectCommandWorkspaceSnapshotApproved,
   type ProjectCommandDefinition,
 } from "../definitions.ts";
+import type { NodeProjectResolutionOptions } from "../node.ts";
+import { validateNodeTestPaths } from "../parameters.ts";
+import { hasControlCharacter } from "../parameters/text-validation.ts";
 import {
   canonicalProjectCommandRelevantInputs,
   PROJECT_COMMAND_MAX_RELEVANT_INPUT_CONFIG_PATHS,
@@ -16,13 +19,11 @@ import {
   type ProjectCommandRelevantInputFile,
   type ProjectCommandRelevantInputValue,
 } from "../relevant-inputs.ts";
-import { validateNodeTestPaths } from "../parameters.ts";
-import { readNodeProjectState } from "./project-state/reader.ts";
-import { hashNodeScriptInternal } from "./project-state/manifest.ts";
 import { nodePackageScriptKey } from "./package-script.ts";
-import type { NodeFileSystem } from "./types.ts";
-import type { NodeProjectResolutionOptions } from "../node.ts";
 import { isMissingFileError } from "./project-state/errors.ts";
+import { hashNodeScriptInternal } from "./project-state/manifest.ts";
+import { readNodeProjectState } from "./project-state/reader.ts";
+import type { NodeFileSystem } from "./types.ts";
 
 const defaultNodeFileSystem: NodeFileSystem = {
   readFile: (path, encoding) => readFile(path, encoding),

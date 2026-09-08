@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+
 import { parseDiffHunkHeaders } from "../../../src/tools/git/diff/summary.ts";
 
 it("decodes quoted Git path headers and octal UTF-8 escapes", () => {

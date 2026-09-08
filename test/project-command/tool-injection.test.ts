@@ -1,17 +1,19 @@
 import { realpath, writeFile } from "node:fs/promises";
+
 import { afterEach, expect, it } from "vitest";
+
 import {
   getProjectCommandDefinitions,
   projectCommandIdentity,
   type ProjectCommandDefinition,
 } from "../../src/tools/project-command/definitions.ts";
+import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
 import {
   cleanupProjectCommandFixtures,
   context,
   fixture,
   successExecutor,
 } from "./tool-test-fixtures.ts";
-import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
 
 afterEach(cleanupProjectCommandFixtures);
 
