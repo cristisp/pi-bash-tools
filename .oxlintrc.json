@@ -3,7 +3,7 @@
   "env": {
     "node": true
   },
-  "ignorePatterns": ["node_modules/**", "coverage/**", "docs/handoffs/**"],
+  "ignorePatterns": ["node_modules/**", "coverage/**"],
   "categories": {
     "correctness": "error",
     "suspicious": "warn",

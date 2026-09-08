@@ -6,13 +6,7 @@
   "semi": true,
   "singleQuote": false,
   "trailingComma": "all",
-  "ignorePatterns": [
-    "node_modules/**",
-    "coverage/**",
-    "docs/handoffs/**",
-    "package-lock.json",
-    "README.md"
-  ],
+  "ignorePatterns": ["node_modules/**", "coverage/**", "package-lock.json", "README.md"],
   "sortImports": true,
   "sortPackageJson": true
 }

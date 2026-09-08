@@ -6,8 +6,6 @@
     "unused-exports": "warn"
   },
   "health": {
-    "ignore": [
-      "test/**"
-    ]
+    "ignore": ["test/**"]
   }
 }
