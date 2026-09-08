@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_ROLE_BUDGETS } from './config.ts';
+import { compositionRulesText } from './types.ts';
 import type { RoleBudget } from './types.ts';
 
 /** Name of the orchestration guide written next to the agent definition files. */
@@ -13,6 +14,7 @@ const TEMPLATE_PATH = path.join(
 );
 
 const ROLE_BUDGET_PLACEHOLDER = '{{role_budgets}}';
+const COMPOSITION_RULES_PLACEHOLDER = '{{composition_rules}}';
 
 interface GuideRole {
 	/** Agent name the budget is looked up under. */
@@ -96,6 +98,14 @@ export function roleBudgetLines(budgets: OrchestrationGuideBudgets): string {
 	return [freshness, ...lines].join('\n');
 }
 
+/** Composition checks are generated from the same definitions used by the boundary and tool text. */
+export function compositionPolicyLines(): string {
+	return [
+		'Composition policy: `warn` by default, `enforce` refuses, and `off` disables these checks; overlapping-scope safety remains active.',
+		compositionRulesText(),
+	].join('\n');
+}
+
 /** Path of the guide template shipped inside the package. */
 export function orchestrationGuideTemplatePath(): string {
 	return TEMPLATE_PATH;
@@ -112,5 +122,12 @@ export function renderOrchestrationGuide(budgets: OrchestrationGuideBudgets): st
 			`${TEMPLATE_PATH} is missing the ${ROLE_BUDGET_PLACEHOLDER} placeholder - the orchestration guide cannot state the budgets in effect`,
 		);
 	}
-	return template.replace(ROLE_BUDGET_PLACEHOLDER, roleBudgetLines(budgets));
+	if (!template.includes(COMPOSITION_RULES_PLACEHOLDER)) {
+		throw new Error(
+			`${TEMPLATE_PATH} is missing the ${COMPOSITION_RULES_PLACEHOLDER} placeholder - the orchestration guide cannot state composition rules`,
+		);
+	}
+	return template
+		.replace(ROLE_BUDGET_PLACEHOLDER, roleBudgetLines(budgets))
+		.replace(COMPOSITION_RULES_PLACEHOLDER, compositionPolicyLines());
 }

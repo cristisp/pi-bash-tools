@@ -58,6 +58,7 @@ describe('getConfig - overrides', () => {
 			scopeCallAllowancePerPath: 3,
 			scopeCallAllowanceMax: 64,
 			reportContractPolicy: 'reject',
+			compositionPolicy: 'enforce',
 			ledgerMaxRevisions: 25,
 			ledgerPointers: false,
 			registryLockTimeoutMs: 2000,
@@ -77,6 +78,20 @@ describe('getConfig - overrides', () => {
 		};
 		writeConfigFile(overrides);
 		expect(getConfig()).toEqual(overrides);
+	});
+
+	it('parses composition policies and safely falls back for invalid values', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		expect(DEFAULT_CONFIG.compositionPolicy).toBe('warn');
+		for (const policy of ['warn', 'enforce', 'off'] as const) {
+			writeConfigFile({ compositionPolicy: policy });
+			expect(getConfig().compositionPolicy).toBe(policy);
+		}
+		writeConfigFile({ compositionPolicy: 'ignore' });
+		expect(getConfig().compositionPolicy).toBe('warn');
+		writeConfigFile({ compositionPolicy: 42 });
+		expect(getConfig().compositionPolicy).toBe('warn');
 	});
 
 	it('falls back to defaults for invalid report contract values', () => {

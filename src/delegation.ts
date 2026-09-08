@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
+import { getConfig } from './config.ts';
 import type {
 	DelegationContext,
 	EvidenceScope,
@@ -162,6 +163,12 @@ export function resolveDelegation(options: {
 	if (typeof orchestration.tier === 'number') delegation.tier = orchestration.tier;
 	if (orchestration.workflowMode) delegation.workflowMode = orchestration.workflowMode;
 	if (orchestration.reviewMode) delegation.reviewMode = orchestration.reviewMode;
+	// Always record the effective policy, even when the caller did not supply an override.
+	delegation.compositionPolicy = orchestration.compositionPolicy ?? getConfig().compositionPolicy;
+	if (orchestration.compositionPolicyOverride)
+		delegation.compositionPolicyOverride = orchestration.compositionPolicyOverride;
+	if (orchestration.compositionVerdicts?.length)
+		delegation.compositionVerdicts = orchestration.compositionVerdicts;
 	if (orchestration.acceptanceCriteria?.length)
 		delegation.acceptanceCriteria = sanitizeCriteria(orchestration.acceptanceCriteria);
 	const scope = sanitizeReviewScope(orchestration.scope);

@@ -91,6 +91,83 @@ export interface BudgetSummary {
 
 export type EvidenceScope = 'session' | 'flow';
 
+/** How standard-role composition violations are handled before children are spawned. */
+export type CompositionPolicy = 'warn' | 'enforce' | 'off';
+
+export type CompositionRuleId = 'R1' | 'R2' | 'R3' | 'R4';
+export type CompositionMode = 'single' | 'parallel' | 'chain';
+export type CompositionAction = 'warn' | 'refuse';
+export type CompositionVerdictKind = 'warning' | 'refusal';
+
+export interface CompositionRuleDefinition {
+	id: CompositionRuleId;
+	role: 'validator' | 'reviewer' | 'worker';
+	title: string;
+	description: string;
+	alternative: string;
+}
+
+/** The single source of truth used by enforcement, tool guidance, and the guide. */
+export const COMPOSITION_RULES: readonly CompositionRuleDefinition[] = [
+	{
+		id: 'R1',
+		role: 'validator',
+		title: 'First validator',
+		description: 'Use the worker verify ref.',
+		alternative: 'Delegate later only when independent execution is needed.',
+	},
+	{
+		id: 'R2',
+		role: 'reviewer',
+		title: 'Reviewer scopes',
+		description: 'parallel fan-out reviewers need non-empty, disjoint scope.paths.',
+		alternative: 'Assign disjoint paths or use one reviewer.',
+	},
+	{
+		id: 'R3',
+		role: 'validator',
+		title: 'Validator scope',
+		description: 'A second-tier or lower validator needs evidenceScope: "session".',
+		alternative: 'Pass session scope or omit the validator.',
+	},
+	{
+		id: 'R4',
+		role: 'worker',
+		title: 'Worker ordering',
+		description: 'A third-tier worker needs a preceding planner.',
+		alternative:
+			'Use a sequential chain with a completed planner before the worker or use a lower tier.',
+	},
+];
+
+export function compositionRulesText(compact = false): string {
+	return COMPOSITION_RULES.map((rule) =>
+		compact
+			? `- ${rule.id} ${rule.title}`
+			: `- ${rule.id} ${rule.title}: ${rule.description} ${rule.alternative}`,
+	).join('\n');
+}
+
+export function compositionToolSummary(): string {
+	return `Composition policy (default warn; per-call override warn|enforce|off): enforce refuses violations, warn reports them and still spawns, and off disables these standard-role checks.\n${compositionRulesText()}`;
+}
+
+export interface CompositionVerdict {
+	rule: CompositionRuleId;
+	/** Machine action taken at the boundary. */
+	action: CompositionAction;
+	/** Human-readable equivalent of action for telemetry consumers. */
+	verdict: CompositionVerdictKind;
+	policy: CompositionPolicy;
+	mode: CompositionMode;
+	agent?: string;
+	role?: string;
+	tier?: number;
+	scope?: ReviewScope;
+	reason: string;
+	compliantAlternative: string;
+}
+
 export type WorkflowMode = 'initial' | 'remediation';
 
 export type ReviewMode = 'primary' | 'security' | 'validation' | 'remediation';
@@ -141,6 +218,12 @@ export interface OrchestrationContext {
 	acceptanceCriteria?: string[];
 	/** Requested evidence scope; may only narrow the configured scope. */
 	evidenceScope?: EvidenceScope;
+	/** Effective standard-role composition policy for this delegation. */
+	compositionPolicy?: CompositionPolicy;
+	/** Explicit per-call composition policy override, when supplied by the parent. */
+	compositionPolicyOverride?: CompositionPolicy;
+	/** Composition warnings that were checked before this child was spawned. */
+	compositionVerdicts?: CompositionVerdict[];
 	/** Files and hunks assigned to this delegation for focused review. */
 	scope?: ReviewScope;
 	/** Flow-owned snapshot of the review surface. */
@@ -407,6 +490,18 @@ export interface TelemetryRecord {
 	parentSession?: string;
 	/** Explicit root session attribution; normally the same as parentSession. */
 	rootSession?: string;
+	compositionPolicy?: CompositionPolicy;
+	compositionPolicyOverride?: CompositionPolicy;
+	/** Legacy child-context alias; boundary events use the singular compositionVerdict field below. */
+	compositionVerdicts?: CompositionVerdict[];
+	/** Discriminates a typed composition event from an ordinary child delegation record. */
+	event?: 'composition';
+	/** One composition decision checked at one subagent boundary. */
+	compositionVerdict?: CompositionVerdict;
+	/** Groups the per-rule event records emitted for one subagent boundary. */
+	compositionBoundaryId?: string;
+	/** Action-specific status for typed composition boundary events; these are not child turns. */
+	compositionBoundaryStatus?: 'warning' | 'refusal';
 	/** Pane that directly launched this child. */
 	parentPaneId?: string;
 	childModel?: string;

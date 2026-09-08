@@ -8,6 +8,7 @@ import type { AgentConfig, AgentScope } from './agents.ts';
 import { getConfig } from './config.ts';
 import {
 	deriveFlowId,
+	evidenceScopeForRole,
 	sanitizeCriteria,
 	sanitizeReviewScope,
 	sanitizeTaskId,
@@ -25,9 +26,13 @@ import { listSubagents } from './registry.ts';
 import { runReusedAgent, runSingleAgent } from './run.ts';
 import { ensureReviewSurface } from './scope.ts';
 import { REUSE_WORKFLOW_GUIDANCE } from './templates.ts';
+import { appendCompositionTelemetry } from './telemetry.ts';
 import { makeEmptyUsage } from './types.ts';
+import { COMPOSITION_RULES } from './types.ts';
 import type {
 	BlockEventInfo,
+	CompositionPolicy,
+	CompositionVerdict,
 	OnUpdateCallback,
 	OrchestrationContext,
 	ReviewScope,
@@ -170,6 +175,12 @@ export const SubagentParams = Type.Object({
 				'How independence is requested for this delegation. The default scope is flow for every role, so a child resolves sibling refs; narrowing to session stops the child resolving sibling refs, so it must execute its own checks. May only narrow the scope configured for the role, never widen it.',
 		}),
 	),
+	compositionPolicy: Type.Optional(
+		StringEnum(['warn', 'enforce', 'off'] as const, {
+			description:
+				'Per-call composition policy override. Default: warn. warn reports standard-role composition violations and still spawns; enforce refuses them; off disables those checks.',
+		}),
+	),
 	reuseLabel: Type.Optional(
 		Type.String({
 			description: `${REUSE_WORKFLOW_GUIDANCE} Continue the selected session in place (preserving its context); send task as the next message.`,
@@ -228,8 +239,18 @@ function makeDetailsFor(ctx: ExecuteContext) {
 		});
 }
 
-function orchestrationFromParams(params: SubagentParams): OrchestrationContext {
-	const orchestration: OrchestrationContext = {};
+function isCompositionPolicy(value: unknown): value is CompositionPolicy {
+	return value === 'warn' || value === 'enforce' || value === 'off';
+}
+
+function orchestrationFromParams(
+	params: SubagentParams,
+	compositionPolicy: CompositionPolicy,
+	compositionPolicyOverride?: CompositionPolicy,
+): OrchestrationContext {
+	const orchestration: OrchestrationContext = compositionPolicyOverride
+		? { compositionPolicy, compositionPolicyOverride }
+		: { compositionPolicy };
 	if (params.taskId) {
 		const taskId = sanitizeTaskId(params.taskId);
 		if (taskId) orchestration.taskId = taskId;
@@ -251,6 +272,10 @@ function buildExecuteContext(
 	ctx: ExtensionContext,
 ): { executeCtx: ExecuteContext; makeDetails: ReturnType<typeof makeDetailsFor> } {
 	const cfg = getConfig();
+	const compositionPolicyOverride = isCompositionPolicy(params.compositionPolicy)
+		? params.compositionPolicy
+		: undefined;
+	const compositionPolicy = compositionPolicyOverride ?? cfg.compositionPolicy;
 	const agentScope: AgentScope = params.agentScope ?? cfg.defaultAgentScope;
 	const sessionFile = ctx.sessionManager.getSessionFile() ?? undefined;
 	const discovery = discoverAgents(ctx.cwd, agentScope);
@@ -270,7 +295,7 @@ function buildExecuteContext(
 		signal,
 		onUpdate,
 		onBlocked: buildOnBlocked(ctx),
-		orchestration: orchestrationFromParams(params),
+		orchestration: orchestrationFromParams(params, compositionPolicy, compositionPolicyOverride),
 	};
 	return { executeCtx, makeDetails: makeDetailsFor(executeCtx) };
 }
@@ -350,9 +375,12 @@ async function executeChainMode(
 				content: [
 					{
 						type: 'text',
-						text: appendChainReuseLabels(
-							`Chain stopped at step ${i + 1} (${step.agent}): ${errorMsg}`,
-							results,
+						text: withCompositionWarnings(
+							appendChainReuseLabels(
+								`Chain stopped at step ${i + 1} (${step.agent}): ${errorMsg}`,
+								results,
+							),
+							ctx,
 						),
 					},
 				],
@@ -365,7 +393,10 @@ async function executeChainMode(
 		content: [
 			{
 				type: 'text',
-				text: appendChainReuseLabels(deliverableText(results[results.length - 1]), results),
+				text: withCompositionWarnings(
+					appendChainReuseLabels(deliverableText(results[results.length - 1]), results),
+					ctx,
+				),
 			},
 		],
 		details: makeDetails('chain')(results),
@@ -516,6 +547,188 @@ function disjointScopeError(scopes: (ReviewScope | undefined)[]): string | undef
 	return undefined;
 }
 
+interface CompositionEvaluation {
+	warnings: CompositionVerdict[];
+	refusals: CompositionVerdict[];
+}
+
+function compositionRule(id: CompositionVerdict['rule']) {
+	return COMPOSITION_RULES.find((rule) => rule.id === id)!;
+}
+
+function makeCompositionVerdict(
+	policy: CompositionPolicy,
+	mode: 'single' | 'parallel' | 'chain',
+	ruleId: CompositionVerdict['rule'],
+	input: Pick<CompositionVerdict, 'agent' | 'role' | 'tier' | 'scope'>,
+	reason: string,
+): CompositionVerdict {
+	const action = policy === 'enforce' ? 'refuse' : 'warn';
+	const rule = compositionRule(ruleId);
+	return {
+		rule: ruleId,
+		action,
+		verdict: action === 'refuse' ? 'refusal' : 'warning',
+		policy,
+		mode,
+		...input,
+		reason,
+		compliantAlternative: rule.alternative,
+	};
+}
+
+function evaluateComposition(
+	ctx: ExecuteContext,
+	mode: 'single' | 'parallel' | 'chain',
+	input:
+		| { agent: string; scope?: ReviewScope }
+		| { tasks: Static<typeof TaskItem>[] }
+		| { chain: Static<typeof ChainItem>[] },
+): CompositionEvaluation {
+	const policy = ctx.orchestration.compositionPolicy ?? getConfig().compositionPolicy;
+	if (policy === 'off') return { warnings: [], refusals: [] };
+	const tier = ctx.orchestration.tier;
+	const verdicts: CompositionVerdict[] = [];
+	const add = (
+		rule: CompositionVerdict['rule'],
+		agent: string,
+		scope: ReviewScope | undefined,
+		reason: string,
+	) => {
+		const item = makeCompositionVerdict(
+			policy,
+			mode,
+			rule,
+			{ agent, role: agent, ...(tier !== undefined ? { tier } : {}), ...(scope ? { scope } : {}) },
+			reason,
+		);
+		verdicts.push(item);
+	};
+	const checkAgent = (agent: string, scope: ReviewScope | undefined, completedPlanner: boolean) => {
+		if (agent !== 'validator' && agent !== 'worker') return;
+		if (agent === 'validator' && tier === 1) {
+			add(
+				'R1',
+				agent,
+				scope,
+				'Tier 1 validation is already covered by the worker verify ref; delegating another validator duplicates the deterministic gate.',
+			);
+		}
+		if (agent === 'validator' && tier !== undefined && tier <= 2 && tier !== 1) {
+			const cfg = getConfig();
+			const configuredScope = evidenceScopeForRole('validator', {
+				evidenceScopeDefault: cfg.evidenceScopeDefault,
+				evidenceScopeByRole: cfg.evidenceScopeByRole,
+			});
+			const effectiveScope =
+				ctx.orchestration.evidenceScope === 'session' ? 'session' : configuredScope;
+			if (effectiveScope !== 'session') {
+				add(
+					'R3',
+					agent,
+					scope,
+					`Validator tier ${tier} without evidenceScope: "session" resolves the flow/default lookup instead of independently executing the gate; use the session alternative.`,
+				);
+			}
+		}
+		if (agent === 'worker' && tier === 3 && !completedPlanner) {
+			add(
+				'R4',
+				agent,
+				scope,
+				mode === 'parallel'
+					? 'Tier 3 worker in a parallel fan-out has no completed planner from an earlier sequential composition; array order does not establish planner precedence.'
+					: 'Tier 3 worker has no preceding planner in this composition, so the required investigation plan is missing.',
+			);
+		}
+	};
+
+	if ('agent' in input) {
+		checkAgent(input.agent, sanitizeReviewScope(input.scope ?? ctx.orchestration.scope), false);
+	} else {
+		const items = 'tasks' in input ? input.tasks : input.chain;
+		for (let i = 0; i < items.length; i++) {
+			const item = items[i];
+			const scope = sanitizeReviewScope(item.scope ?? ctx.orchestration.scope);
+			// Parallel items execute concurrently: array order cannot establish a completed
+			// planner. Only a prior step in a sequential chain satisfies R4.
+			const completedPlanner =
+				'chain' in input && items.slice(0, i).some((previous) => previous.agent === 'planner');
+			checkAgent(item.agent, scope, completedPlanner);
+		}
+		if ('tasks' in input) {
+			const reviewers = input.tasks.filter((task) => task.agent === 'reviewer');
+			if (reviewers.length > 1) {
+				// Reviewer independence must be explicit: an inherited parent scope does not
+				// satisfy the per-reviewer declaration required by R2.
+				const scopes = reviewers.map((task) => sanitizeReviewScope(task.scope));
+				const missing = scopes.some((scope) => !scope?.paths || scope.paths.length === 0);
+				const overlap = disjointScopeError(scopes) !== undefined;
+				if (missing || overlap) {
+					const detail = missing
+						? 'one or more reviewers is missing a non-empty scope.paths list'
+						: 'reviewer scope.paths overlap';
+					add(
+						'R2',
+						'reviewer',
+						scopes.find((scope) => scope !== undefined),
+						`Parallel fan-out has more than one reviewer and ${detail}; pairwise disjoint reviewer paths are required before independent review.`,
+					);
+				}
+			}
+		}
+	}
+	return {
+		warnings: verdicts.filter((verdict) => verdict.action === 'warn'),
+		refusals: verdicts.filter((verdict) => verdict.action === 'refuse'),
+	};
+}
+
+function compositionWarningText(verdicts: CompositionVerdict[]): string {
+	return verdicts
+		.map(
+			(verdict) =>
+				`Composition warning [${verdict.rule}] ${verdict.agent ?? verdict.role ?? 'delegation'}: ${verdict.reason} Compliant alternative: ${verdict.compliantAlternative}`,
+		)
+		.join('\n');
+}
+
+function withCompositionWarnings(text: string, ctx: ExecuteContext): string {
+	const warnings = ctx.orchestration.compositionVerdicts?.filter(
+		(verdict) => verdict.action === 'warn',
+	);
+	return warnings?.length ? `${compositionWarningText(warnings)}\n\n${text}` : text;
+}
+
+function compositionRefusalResponse(
+	ctx: ExecuteContext,
+	mode: 'single' | 'parallel' | 'chain',
+	refusals: CompositionVerdict[],
+	makeDetails: ReturnType<typeof makeDetailsFor>,
+): AgentToolResult<SubagentDetails> {
+	appendCompositionTelemetry({
+		verdicts: refusals,
+		workspace: ownWorkspaceId(),
+		parentSession: ctx.sessionFile,
+		flowId: deriveFlowId(ctx.sessionFile),
+		policy:
+			ctx.orchestration.compositionPolicy ?? refusals[0]?.policy ?? getConfig().compositionPolicy,
+		policyOverride: ctx.orchestration.compositionPolicyOverride,
+	});
+	return {
+		content: [
+			{
+				type: 'text',
+				text: compositionWarningText(refusals).replaceAll(
+					'Composition warning',
+					'Composition refusal',
+				),
+			},
+		],
+		details: makeDetails(mode)([]),
+	};
+}
+
 async function executeParallelMode(
 	ctx: ExecuteContext,
 	tasks: Static<typeof TaskItem>[],
@@ -568,7 +781,9 @@ async function executeParallelMode(
 		),
 	);
 	return {
-		content: [{ type: 'text', text: parallelSummaryText(results) }],
+		content: [
+			{ type: 'text', text: withCompositionWarnings(parallelSummaryText(results), fanOutContext) },
+		],
 		details: makeDetails('parallel')(results),
 	};
 }
@@ -602,9 +817,9 @@ async function executeSingleMode(
 			content: [
 				{
 					type: 'text',
-					text: appendReuseLabel(
-						`Agent ${result.stopReason || 'failed'}: ${errorMsg}`,
-						result.label,
+					text: withCompositionWarnings(
+						appendReuseLabel(`Agent ${result.stopReason || 'failed'}: ${errorMsg}`, result.label),
+						ctx,
 					),
 				},
 			],
@@ -615,7 +830,7 @@ async function executeSingleMode(
 		content: [
 			{
 				type: 'text',
-				text: appendReuseLabel(deliverableText(result), result.label),
+				text: withCompositionWarnings(appendReuseLabel(deliverableText(result), result.label), ctx),
 			},
 		],
 		details: makeDetails('single')([result]),
@@ -842,6 +1057,29 @@ export async function executeSubagent(
 	if (mode === 'reuse') {
 		if (!params.task) return reuseWithoutTaskResponse(makeDetails);
 		return executeReuseMode(executeCtx, params.reuseLabel!, params.task);
+	}
+	const composition =
+		mode === 'single'
+			? evaluateComposition(executeCtx, mode, {
+					agent: params.agent!,
+					scope: params.scope,
+				})
+			: mode === 'parallel'
+				? evaluateComposition(executeCtx, mode, { tasks: params.tasks! })
+				: evaluateComposition(executeCtx, mode, { chain: params.chain! });
+	if (composition.refusals.length > 0) {
+		return compositionRefusalResponse(executeCtx, mode, composition.refusals, makeDetails);
+	}
+	if (composition.warnings.length > 0) {
+		executeCtx.orchestration.compositionVerdicts = composition.warnings;
+		appendCompositionTelemetry({
+			verdicts: composition.warnings,
+			workspace: ownWorkspaceId(),
+			parentSession: executeCtx.sessionFile,
+			flowId: deriveFlowId(executeCtx.sessionFile),
+			policy: executeCtx.orchestration.compositionPolicy ?? composition.warnings[0].policy,
+			policyOverride: executeCtx.orchestration.compositionPolicyOverride,
+		});
 	}
 	const confirmProjectAgents = params.confirmProjectAgents ?? getConfig().confirmProjectAgents;
 	if (

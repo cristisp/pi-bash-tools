@@ -5,6 +5,7 @@ import { DEFAULT_CONFIG, DEFAULT_ROLE_BUDGETS, roleBudgetFor } from '../src/conf
 import {
 	ORCHESTRATION_GUIDE_FILENAME,
 	orchestrationGuideTemplatePath,
+	compositionPolicyLines,
 	renderOrchestrationGuide,
 	roleBudgetLines,
 } from '../src/guide.ts';
@@ -90,6 +91,34 @@ describe('roleBudgetLines', () => {
 			'Resolve the refs in the ledger before executing anything, up to 3 full validation passes',
 		);
 		expect(lines).toContain('execute only what no live ref covers');
+	});
+});
+
+describe('composition policy guidance', () => {
+	it('uses real line breaks and includes every actionable shared rule', () => {
+		const lines = compositionPolicyLines();
+		expect(lines).toContain('\n- R1 ');
+		expect(lines).toContain('\n- R2 ');
+		expect(lines).toContain('\n- R3 ');
+		expect(lines).toContain('\n- R4 ');
+		expect(lines).toContain('worker verify ref');
+		expect(lines).toContain('parallel fan-out reviewers need non-empty, disjoint scope.paths');
+		expect(lines).toContain('evidenceScope: "session"');
+		expect(lines).toContain('preceding planner');
+		expect(lines).toContain('Delegate later only when independent execution is needed.');
+		expect(lines).toContain('Assign disjoint paths or use one reviewer.');
+		expect(lines).toContain('Pass session scope or omit the validator.');
+		expect(lines).toContain(
+			'Use a sequential chain with a completed planner before the worker or use a lower tier.',
+		);
+		expect(lines).not.toContain('\\n');
+	});
+
+	it('renders composition guidance into the generated guide with real line breaks', () => {
+		const guide = renderOrchestrationGuide(BUDGETS);
+		expect(guide).toContain('## Composition policy\n\n');
+		expect(guide).toContain('\n- R1 ');
+		expect(guide).not.toContain('\\n- R1');
 	});
 });
 

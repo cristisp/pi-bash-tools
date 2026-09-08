@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { SubagentParams } from '../src/execute.ts';
+import { deriveFlowId } from '../src/delegation.ts';
 import { makeRegistryEntry, makeTempDir, stubEnv, writeAgentFile } from './helpers.ts';
 
 let dir: string;
@@ -47,6 +48,13 @@ function writeProjectAgent(name: string, description: string): void {
 	const agentsDir = path.join(dir, '.pi', 'agents');
 	fs.mkdirSync(agentsDir, { recursive: true });
 	writeAgentFile(agentsDir, `${name}.md`, 'project prompt', { name, description });
+}
+
+function writeUserAgents(...names: string[]): void {
+	const agentsDir = path.join(dir, 'agents');
+	fs.mkdirSync(agentsDir, { recursive: true });
+	for (const name of names)
+		writeAgentFile(agentsDir, `${name}.md`, `${name} prompt`, { name, description: name });
 }
 
 function writeConfig(partial: Record<string, unknown>): void {
@@ -591,6 +599,211 @@ describe('executeSubagent - parallel and chain', () => {
 	});
 });
 
+describe('executeSubagent - composition policy', () => {
+	beforeEach(() => {
+		writeUserAgents('validator', 'reviewer', 'worker', 'planner');
+		mockSuccessfulRuns();
+	});
+
+	it('warns once for a tier 1 validator and names the worker verify ref', async () => {
+		const result = await execSubagent(
+			{ agent: 'validator', task: 'check', tier: 1 },
+			{ sessionManager: { getSessionFile: () => '/sess/current.jsonl' } as never },
+		);
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain('Composition warning [R1]');
+		expect(text).toContain('worker verify ref');
+		expect(text.match(/Composition warning \[R1\]/g)).toHaveLength(1);
+		expect((await import('../src/run.ts')).runSingleAgent).toHaveBeenCalledTimes(1);
+		const telemetry = (await import('../src/telemetry.ts')).readTelemetryRecords();
+		expect(telemetry.filter((record) => record.event === 'composition')).toHaveLength(1);
+		expect(telemetry.at(-1)).toMatchObject({
+			event: 'composition',
+			flowId: deriveFlowId('/sess/current.jsonl'),
+			compositionPolicy: 'warn',
+			compositionVerdict: { rule: 'R1', action: 'warn', policy: 'warn' },
+		});
+	});
+
+	it('enforces tier 1 validator refusal before a child exists', async () => {
+		writeConfig({ compositionPolicy: 'enforce' });
+		const result = await execSubagent(
+			{ agent: 'validator', task: 'check', tier: 1 },
+			{ sessionManager: { getSessionFile: () => '/sess/current.jsonl' } as never },
+		);
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain('Composition refusal [R1]');
+		expect(text).toContain('worker verify ref');
+		expect((await import('../src/run.ts')).runSingleAgent).not.toHaveBeenCalled();
+		expect(result.details).toMatchObject({ mode: 'single', results: [] });
+		const telemetry = (await import('../src/telemetry.ts')).readTelemetryRecords();
+		expect(telemetry.at(-1)).toMatchObject({
+			event: 'composition',
+			flowId: deriveFlowId('/sess/current.jsonl'),
+			compositionPolicy: 'enforce',
+			compositionVerdict: { rule: 'R1', action: 'refuse', policy: 'enforce' },
+		});
+	});
+
+	it('uses a per-call override and supports off without emitting a composition event', async () => {
+		writeConfig({ compositionPolicy: 'off' });
+		const overridden = await execSubagent({
+			agent: 'validator',
+			task: 'check',
+			tier: 1,
+			compositionPolicy: 'enforce',
+		});
+		expect((overridden.content[0] as { text: string }).text).toContain('Composition refusal [R1]');
+		expect((await import('../src/run.ts')).runSingleAgent).not.toHaveBeenCalled();
+		const telemetry = (await import('../src/telemetry.ts')).readTelemetryRecords();
+		expect(telemetry).toHaveLength(1);
+		expect(telemetry[0]).toMatchObject({
+			compositionPolicy: 'enforce',
+			compositionPolicyOverride: 'enforce',
+			compositionVerdict: { action: 'refuse' },
+		});
+		const off = await execSubagent({ agent: 'validator', task: 'check', tier: 1 });
+		expect((off.content[0] as { text: string }).text).not.toContain('Composition');
+		expect((await import('../src/run.ts')).runSingleAgent).toHaveBeenCalledTimes(1);
+		expect((await import('../src/telemetry.ts')).readTelemetryRecords()).toHaveLength(1);
+	});
+
+	it('warns a tier 2 validator without session evidence and accepts session evidence', async () => {
+		const warned = await execSubagent({ agent: 'validator', task: 'check', tier: 2 });
+		expect((warned.content[0] as { text: string }).text).toContain('Composition warning [R3]');
+		const clean = await execSubagent({
+			agent: 'validator',
+			task: 'check',
+			tier: 2,
+			evidenceScope: 'session',
+		});
+		expect((clean.content[0] as { text: string }).text).not.toContain('Composition warning [R3]');
+		expect((await import('../src/run.ts')).runSingleAgent).toHaveBeenCalledTimes(2);
+	});
+
+	it('warns a tier 3 worker without a preceding planner, once in a chain', async () => {
+		const result = await execSubagent({
+			chain: [{ agent: 'worker', task: 'work' }],
+			tier: 3,
+		});
+		const text = (result.content[0] as { text: string }).text;
+		expect(text.match(/Composition warning \[R4\]/g)).toHaveLength(1);
+		expect(text).toContain('preceding planner');
+		expect((await import('../src/run.ts')).runSingleAgent).toHaveBeenCalledTimes(1);
+	});
+
+	it('does not warn for a worker after a planner in a chain', async () => {
+		const result = await execSubagent({
+			chain: [
+				{ agent: 'planner', task: 'plan' },
+				{ agent: 'worker', task: 'work' },
+			],
+			tier: 3,
+		});
+		expect((result.content[0] as { text: string }).text).not.toContain('Composition warning [R4]');
+		expect((await import('../src/run.ts')).runSingleAgent).toHaveBeenCalledTimes(2);
+	});
+
+	it('diagnoses both planner orderings in a tier 3 parallel fan-out', async () => {
+		const runSingleAgent = (await import('../src/run.ts')).runSingleAgent;
+		for (const tasks of [
+			[
+				{ agent: 'planner', task: 'plan' },
+				{ agent: 'worker', task: 'work' },
+			],
+			[
+				{ agent: 'worker', task: 'work' },
+				{ agent: 'planner', task: 'plan' },
+			],
+		]) {
+			const result = await execSubagent({ tasks, tier: 3 });
+			const text = (result.content[0] as { text: string }).text;
+			expect(text).toContain('Composition warning [R4]');
+			expect(text).toContain('Tier 3');
+			expect(text).toContain('parallel fan-out');
+			expect(text).toContain('completed planner');
+			expect(text).toContain('Compliant alternative:');
+		}
+		expect(runSingleAgent).toHaveBeenCalledTimes(4);
+	});
+
+	it('refuses both tier 3 parallel planner orderings before spawning any child', async () => {
+		writeConfig({ compositionPolicy: 'enforce' });
+		const runSingleAgent = (await import('../src/run.ts')).runSingleAgent;
+		for (const tasks of [
+			[
+				{ agent: 'planner', task: 'plan' },
+				{ agent: 'worker', task: 'work' },
+			],
+			[
+				{ agent: 'worker', task: 'work' },
+				{ agent: 'planner', task: 'plan' },
+			],
+		]) {
+			const result = await execSubagent({ tasks, tier: 3 });
+			const text = (result.content[0] as { text: string }).text;
+			expect(text).toContain('Composition refusal [R4]');
+			expect(text).toContain('Tier 3');
+			expect(text).toContain('parallel fan-out');
+			expect(text).toContain('completed planner');
+			expect(text).toContain('Compliant alternative:');
+			expect(result.details).toMatchObject({ mode: 'parallel', results: [] });
+		}
+		expect(runSingleAgent).not.toHaveBeenCalled();
+	});
+
+	it('warns once for missing parallel reviewer scopes and allows disjoint scopes', async () => {
+		const missing = await execSubagent({
+			tasks: [
+				{ agent: 'reviewer', task: 'a' },
+				{ agent: 'reviewer', task: 'b' },
+			],
+		});
+		expect(
+			(missing.content[0] as { text: string }).text.match(/Composition warning \[R2\]/g),
+		).toHaveLength(1);
+		expect((await import('../src/run.ts')).runSingleAgent).toHaveBeenCalledTimes(2);
+		const disjoint = await execSubagent({
+			tasks: [
+				{ agent: 'reviewer', task: 'a', scope: { paths: ['src/a.ts'] } },
+				{ agent: 'reviewer', task: 'b', scope: { paths: ['src/b.ts'] } },
+			],
+		});
+		expect((disjoint.content[0] as { text: string }).text).not.toContain(
+			'Composition warning [R2]',
+		);
+		expect((await import('../src/run.ts')).runSingleAgent).toHaveBeenCalledTimes(4);
+	});
+
+	it('refuses overlapping reviewer scopes under enforce but keeps general overlap safety under off', async () => {
+		writeConfig({ compositionPolicy: 'enforce' });
+		const refused = await execSubagent({
+			tasks: [
+				{ agent: 'reviewer', task: 'a', scope: { paths: ['src'] } },
+				{ agent: 'reviewer', task: 'b', scope: { paths: ['src/a.ts'] } },
+			],
+		});
+		expect((refused.content[0] as { text: string }).text).toContain('Composition refusal [R2]');
+		expect((await import('../src/run.ts')).runSingleAgent).not.toHaveBeenCalled();
+		writeConfig({ compositionPolicy: 'off' });
+		const safe = await execSubagent({
+			tasks: [
+				{ agent: 'reviewer', task: 'a', scope: { paths: ['src'] } },
+				{ agent: 'reviewer', task: 'b', scope: { paths: ['src/a.ts'] } },
+			],
+		});
+		expect((safe.content[0] as { text: string }).text).toContain('Parallel review scopes overlap');
+	});
+
+	it('leaves unknown agent names untouched', async () => {
+		const result = await execSubagent({ agent: 'ghost', task: 'x', tier: 1 });
+		const runSingleAgent = (await import('../src/run.ts')).runSingleAgent;
+		expect(runSingleAgent).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(runSingleAgent).mock.calls[0][2]).toBe('ghost');
+		expect((result.content[0] as { text: string }).text).not.toContain('Composition');
+	});
+});
+
 describe('executeSubagent - project agents', () => {
 	it('cancels when project agents are not approved', async () => {
 		writeProjectAgent('scout', 'project scout');
@@ -676,13 +889,31 @@ describe('executeSubagent - delegation context', () => {
 			reviewMode: 'security',
 			acceptanceCriteria: ['F-001'],
 			evidenceScope: 'session',
+			compositionPolicy: 'warn',
+			compositionVerdicts: [
+				{
+					rule: 'R4',
+					action: 'warn',
+					verdict: 'warning',
+					policy: 'warn',
+					mode: 'single',
+					agent: 'worker',
+					role: 'worker',
+					tier: 3,
+					reason:
+						'Tier 3 worker has no preceding planner in this composition, so the required investigation plan is missing.',
+					compliantAlternative:
+						'Use a sequential chain with a completed planner before the worker or use a lower tier.',
+				},
+			],
 		});
+		expect(runSingleAgent.mock.calls[0][12].compositionVerdicts[0]).not.toHaveProperty('scope');
 	});
 
 	it('passes an empty context when nothing is declared', async () => {
 		const { runSingleAgent } = await mockedRuns();
 		await execSubagent({ agent: 'worker', task: 'x' });
-		expect(runSingleAgent.mock.calls[0][12]).toEqual({});
+		expect(runSingleAgent.mock.calls[0][12]).toEqual({ compositionPolicy: 'warn' });
 	});
 
 	it('applies the context to every chain delegation', async () => {
@@ -694,7 +925,10 @@ describe('executeSubagent - delegation context', () => {
 			],
 			tier: 1,
 		});
-		expect(runSingleAgent.mock.calls.map((call) => call[12])).toEqual([{ tier: 1 }, { tier: 1 }]);
+		expect(runSingleAgent.mock.calls.map((call) => call[12])).toEqual([
+			{ tier: 1, compositionPolicy: 'warn' },
+			{ tier: 1, compositionPolicy: 'warn' },
+		]);
 	});
 
 	it('applies the context to every parallel delegation', async () => {
@@ -708,8 +942,8 @@ describe('executeSubagent - delegation context', () => {
 			evidenceScope: 'session',
 		});
 		expect(runSingleAgent.mock.calls.map((call) => call[12])).toEqual([
-			{ tier: 2, evidenceScope: 'session' },
-			{ tier: 2, evidenceScope: 'session' },
+			{ tier: 2, evidenceScope: 'session', compositionPolicy: 'warn' },
+			{ tier: 2, evidenceScope: 'session', compositionPolicy: 'warn' },
 		]);
 	});
 
@@ -719,7 +953,10 @@ describe('executeSubagent - delegation context', () => {
 			{ reuseLabel: 'worker-1', task: 'next task', workflowMode: 'remediation' },
 			{ sessionManager: { getSessionFile: () => '/sess/current.jsonl' } as never },
 		);
-		expect(runReusedAgent.mock.calls[0][10]).toEqual({ workflowMode: 'remediation' });
+		expect(runReusedAgent.mock.calls[0][10]).toEqual({
+			workflowMode: 'remediation',
+			compositionPolicy: 'warn',
+		});
 	});
 });
 

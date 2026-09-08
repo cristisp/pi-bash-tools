@@ -536,6 +536,15 @@ export interface ValidationEvidence {
 	lockContentionRefusals: number;
 }
 
+export interface CompositionMeasurement {
+	events: number;
+	warnings: number;
+	refusals: number;
+	byRule: Record<string, number>;
+	byPolicy: Record<string, number>;
+	byOverride: Record<string, number>;
+}
+
 export interface Measurement {
 	agentDir: string;
 	windowFrom: number;
@@ -564,6 +573,7 @@ export interface Measurement {
 	rootReportReadsBefore: number;
 	rootReportReadsAfter: number;
 	guide: GuideMeasurement;
+	composition: CompositionMeasurement;
 	validation: {
 		overall: ValidationEvidence;
 		byRole: ValidationEvidence[];
@@ -580,6 +590,8 @@ export interface Measurement {
 		cost: number;
 	}[];
 	unattributedChildren: number;
+	/** Number of ordinary child delegation records, excluding typed composition boundary events. */
+	ordinaryDelegationRecords: number;
 	/** Sum of child spend from telemetry. Root spend is not in telemetry and stays analyzer-side. */
 	childrenCost: number;
 }
@@ -590,6 +602,36 @@ function tokensOf(list: DeliveredResult[]): number[] {
 
 function carryOf(list: DeliveredResult[]): number {
 	return list.reduce((acc, r) => acc + r.carryTokens, 0);
+}
+
+function isCompositionRecord(record: TelemetryRecord): boolean {
+	return record.event === 'composition' || record.compositionVerdict !== undefined;
+}
+
+function tallyComposition(records: TelemetryRecord[]): CompositionMeasurement {
+	const byRule: Record<string, number> = {};
+	const byPolicy: Record<string, number> = {};
+	const byOverride: Record<string, number> = {};
+	let warnings = 0;
+	let refusals = 0;
+	for (const record of records.filter(isCompositionRecord)) {
+		const verdict = record.compositionVerdict;
+		if (!verdict) continue;
+		if (verdict.action === 'warn') warnings++;
+		if (verdict.action === 'refuse') refusals++;
+		byRule[verdict.rule] = (byRule[verdict.rule] ?? 0) + 1;
+		byPolicy[verdict.policy] = (byPolicy[verdict.policy] ?? 0) + 1;
+		const override = record.compositionPolicyOverride ?? 'none';
+		byOverride[override] = (byOverride[override] ?? 0) + 1;
+	}
+	return {
+		events: warnings + refusals,
+		warnings,
+		refusals,
+		byRule,
+		byPolicy,
+		byOverride,
+	};
 }
 
 function perRoot(tokens: number, roots: number): number {
@@ -823,6 +865,7 @@ export function measure(
 	producerInvocationPath?: string,
 ): Measurement {
 	const records = readTelemetry(agentDir);
+	const delegationRecords = records.filter((record) => !isCompositionRecord(record));
 	const producerStreamPath = resolveProducerInvocationPath(agentDir, producerInvocationPath);
 	const producerInvocations = readProducerInvocations(agentDir, producerStreamPath);
 	const producerExecutionInvocations = readProducerExecutionInvocations(
@@ -848,7 +891,7 @@ export function measure(
 	let rootGuideReadsBefore = 0;
 	let rootGuideReadsAfter = 0;
 	const telemetryChildFiles = new Set(
-		records.map((r) => r.sessionFile).filter((f): f is string => Boolean(f)),
+		delegationRecords.map((r) => r.sessionFile).filter((f): f is string => Boolean(f)),
 	);
 	for (const file of files) {
 		const scan = scanSession(file.path, file.child);
@@ -888,7 +931,7 @@ export function measure(
 		if (result.reportPath && byReportPath.has(result.reportPath)) joined++;
 	}
 
-	const reportTurns = records.filter((r) => r.report);
+	const reportTurns = delegationRecords.filter((r) => r.report);
 	const roles = new Map<string, TelemetryRecord[]>();
 	for (const record of reportTurns) {
 		const list = roles.get(record.role) ?? [];
@@ -907,7 +950,7 @@ export function measure(
 		.toSorted((a, b) => b.turns - a.turns);
 
 	const validationRoles = new Map<string, TelemetryRecord[]>();
-	for (const record of records) {
+	for (const record of delegationRecords) {
 		const list = validationRoles.get(record.role) ?? [];
 		list.push(record);
 		validationRoles.set(record.role, list);
@@ -963,9 +1006,10 @@ export function measure(
 			renderedChars: guideSize.chars,
 			renderedTokens: guideSize.tokens,
 		},
+		composition: tallyComposition(records),
 		validation: {
 			overall: tallyValidation(
-				records,
+				delegationRecords,
 				'overall',
 				producerInvocations,
 				producerExecutionInvocations,
@@ -977,14 +1021,14 @@ export function measure(
 				.toSorted((a, b) => b.delegations - a.delegations || a.scope.localeCompare(b.scope)),
 			byFlow: [
 				...new Set([
-					...records.map((record) => record.flowId ?? '-'),
+					...delegationRecords.map((record) => record.flowId ?? '-'),
 					...producerInvocations.map((invocation) => invocation.flowId ?? '-'),
 					...producerExecutionInvocations.map((invocation) => invocation.flowId ?? '-'),
 				]),
 			]
 				.map((flow) =>
 					tallyValidation(
-						records.filter((record) => (record.flowId ?? '-') === flow),
+						delegationRecords.filter((record) => (record.flowId ?? '-') === flow),
 						`flow:${flow}`,
 						producerInvocations,
 						producerExecutionInvocations,
@@ -995,12 +1039,23 @@ export function measure(
 		byRole,
 		childrenInTelemetryWindow: childrenInWindow,
 		unattributedChildren,
-		childrenCost: Number(records.reduce((acc, r) => acc + (r.usage?.cost ?? 0), 0).toFixed(4)),
+		ordinaryDelegationRecords: delegationRecords.length,
+		childrenCost: Number(
+			delegationRecords.reduce((acc, r) => acc + (r.usage?.cost ?? 0), 0).toFixed(4),
+		),
 	};
 }
 
 function row(cells: (string | number)[]): string {
 	return `| ${cells.join(' | ')} |`;
+}
+
+function formatCounts(values: Record<string, number>): string {
+	return (
+		Object.entries(values)
+			.map(([key, value]) => `${key}:${value}`)
+			.join(', ') || '-'
+	);
 }
 
 /** Duplicate execution measured before this workstream existed, quoted from the plan it came from. */
@@ -1160,7 +1215,19 @@ export function renderMarkdown(m: Measurement): string {
 	);
 	lines.push('');
 	lines.push(
-		`Child spend recorded in telemetry: $${m.childrenCost.toFixed(4)} across ${m.telemetryRecords} turns.`,
+		`Child spend recorded in telemetry: $${m.childrenCost.toFixed(4)} across ${m.ordinaryDelegationRecords} ordinary delegation turns.`,
+	);
+	lines.push('');
+	lines.push('## Composition policy events');
+	lines.push('');
+	lines.push(
+		`Typed composition events: ${m.composition.events} (${m.composition.warnings} warnings, ${m.composition.refusals} refusals).`,
+	);
+	lines.push(`By rule: ${formatCounts(m.composition.byRule)}.`);
+	lines.push(`By policy: ${formatCounts(m.composition.byPolicy)}.`);
+	lines.push(`By per-call override: ${formatCounts(m.composition.byOverride)}.`);
+	lines.push(
+		'Composition events are excluded from ordinary delegation, validation, and child-spend metrics.',
 	);
 	lines.push('');
 	lines.push('## Validation evidence (the W7 target)');

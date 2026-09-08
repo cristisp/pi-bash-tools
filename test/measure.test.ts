@@ -131,6 +131,34 @@ function fixture(): string {
 	return dir;
 }
 
+function compositionFixture(): string {
+	const dir = mkdtempSync(join(tmpdir(), 'orchestration-measure-composition-'));
+	writeFileSync(
+		join(dir, 'subagent-herdr.telemetry.jsonl'),
+		[
+			telemetryRecord({ label: 'worker-1', role: 'worker', usage: { cost: 0.25 } }),
+			telemetryRecord({
+				event: 'composition',
+				label: 'composition-boundary',
+				role: 'validator',
+				compositionPolicy: 'enforce',
+				compositionPolicyOverride: 'enforce',
+				compositionVerdict: {
+					rule: 'R1',
+					action: 'refuse',
+					verdict: 'refusal',
+					policy: 'enforce',
+					mode: 'single',
+					agent: 'validator',
+					reason: 'worker verify ref',
+					compliantAlternative: 'worker verify ref',
+				},
+			}),
+		].join('\n'),
+	);
+	return dir;
+}
+
 function guideFixture(renderedGuide?: string): string {
 	const dir = mkdtempSync(join(tmpdir(), 'orchestration-measure-guide-'));
 	const sessions = join(dir, 'sessions');
@@ -291,6 +319,24 @@ describe('session scanning', () => {
 });
 
 describe('measure', () => {
+	it('counts composition events separately from ordinary delegation metrics', () => {
+		const m = measure(compositionFixture());
+		expect(m.composition).toEqual({
+			events: 1,
+			warnings: 0,
+			refusals: 1,
+			byRule: { R1: 1 },
+			byPolicy: { enforce: 1 },
+			byOverride: { enforce: 1 },
+		});
+		expect(m.validation.overall.delegations).toBe(1);
+		expect(m.ordinaryDelegationRecords).toBe(1);
+		expect(m.childrenCost).toBe(0.25);
+		expect(renderMarkdown(m)).toContain(
+			'Child spend recorded in telemetry: $0.2500 across 1 ordinary delegation turns.',
+		);
+	});
+
 	it('cuts the sample at the first turn that produced a report', () => {
 		const dir = fixture();
 		const records = readTelemetry(dir);

@@ -21,6 +21,12 @@ produced nine review rounds, twenty-five findings, and standing fail-open caveat
 This plan acts on that asymmetry: fix the hot write path, repair the one real cache bug, constrain
 the delegation decision space, and resolve the lock question on evidence rather than on taste.
 
+Current status: S1, S3, and S5 are shipped; S2's deletion gate has been evaluated and retains the
+repository lock; S4 is implemented in warn mode in the current working tree and its final validation
+and post-fix independent review both pass; S7 remains conditional.
+The current working tree is not committed. S4's independent review found four issues in total; all
+four are remediated, covered by the latest validation, and verified by the final remediation review.
+
 Provenance update: the producer's consumer-aligned evidence handoff landed in bash-tools 0.11.7,
 verified against the installed package README, the producer repository's PLAN.md, and live lookup
 probes.
@@ -80,7 +86,7 @@ and it is the one place where a stalled lock wedges every session at once.
 
 Changes:
 
-- [ ] Persist budget state to the registry only on transitions the parent acts on: a breach being
+- [x] Persist budget state to the registry only on transitions the parent acts on: a breach being
       added, an outcome change (`within` / `steered` / `report_only` / `aborted`), `turn_end`, and
       `agent_settled`.
       The root reads live budget state for two reasons: to detect `outcome === 'aborted'` during
@@ -88,13 +94,13 @@ Changes:
       Both are served by transition-time writes, because the abort outcome is itself a transition.
       Live per-event counters visible mid-turn are the only thing dropped, and `turn_end` persistence
       keeps those current to within one turn.
-- [ ] Stop pretty-printing the registry: `JSON.stringify(reg)` without an indent.
+- [x] Stop pretty-printing the registry: `JSON.stringify(reg)` without an indent.
       The file is machine-read on every poll; the human-readable form costs bytes and write time on
       every mutation and is available on demand through `listVerbose`.
-- [ ] Memoize the poll-side read: `findEntry` in the poll loop stats the registry first and reparses
+- [x] Memoize the poll-side read: `findEntry` in the poll loop stats the registry first and reparses
       only when mtime or size changed.
       Four concurrent children currently each trigger a full read+parse every `pollIntervalMs`.
-- [ ] Count persists per delegation in the budget state and record the count in the telemetry
+- [x] Count persists per delegation in the budget state and record the count in the telemetry
       record's budget summary, so the reduction is measured rather than asserted.
 
 Acceptance:
@@ -127,6 +133,17 @@ What changes is that the deletion question becomes measurable for the first time
 invocation stream now records `concurrentExecutions` and `stateDrift` per call, and our telemetry can
 record contention refusals, so "does the lock ever fire" is a number rather than an argument.
 
+Measurement result for the representative producer-capable window:
+
+- Stream: `/tmp/bash-tools-child-invocations.jsonl`, 15 valid records and 8 verify records.
+- The representative flow `f09091d37c4540e11` included a worker, reviewer, and validator.
+- The worker and validator each ran at 1.00 executions per digest.
+- The reviewer performed two successful lookups without validation re-execution.
+- The window recorded zero repository-lock refusals and one drift-flagged producer execution.
+- The drift occurred during the worker's mutating `node_format` command; the final validator reported
+  `stateDrift: false`, but that does not erase the earlier window event.
+- The deletion gate therefore fails for this window, and the repository write lock remains retained.
+
 Changes:
 
 - [x] Freeze: no new features and no review rounds on `src/repo-lock.ts`; defects fixed only on a
@@ -136,10 +153,12 @@ Changes:
       re-executes, which is the same discipline the lock's contention refusal already prints.
 - [x] Record contention in telemetry: `stateDrift` and `concurrentExecutions` extracted from `verify`
       and `project_command` payloads (lands with the S5 metrics work), plus our own lock refusals.
-- [ ] Deletion gate, consumer-side and measurable: delete the module when a full measurement window
-      shows zero contention refusals and zero drift-flagged executions across flows, because then the
-      guide's ownership rule alone is doing the work and the lock is insurance with no claims.
-      If it fires, it is earning its keep and stays.
+- [x] Evaluate the deletion gate against a full representative producer-capable window.
+      The window showed zero contention refusals but one drift-flagged execution, so deletion was not
+      authorized and the lock remains retained.
+- [ ] Delete the module only after a later complete measurement window shows zero contention refusals
+      and zero drift-flagged executions across flows.
+      If the gate fires again, the lock continues earning its keep.
 
 Acceptance:
 
@@ -161,16 +180,16 @@ a natural home.
 
 Changes:
 
-- [ ] Fingerprint the snapshot inputs: hash the `git status --short` and `git diff --stat` output
+- [x] Fingerprint the snapshot inputs: hash the `git status --short` and `git diff --stat` output
       already computed for the snapshot, store the hex in the document header, and rewrite the
       snapshot when a later delegation computes a different fingerprint.
       Two bounded git calls per delegation is the entire cost.
-- [ ] Stamp each snapshot with a monotonically increasing `snapshotRevision`, and record the revision
+- [x] Stamp each snapshot with a monotonically increasing `snapshotRevision`, and record the revision
       plus a `refreshed` flag on the delegation context and in telemetry, so "children saw different
       surfaces" is answerable without diffing files.
-- [ ] Keep the write under the existing per-flow lock and the fail-soft posture: an unwritable store
+- [x] Keep the write under the existing per-flow lock and the fail-soft posture: an unwritable store
       means no snapshot, exactly as today.
-- [ ] Absorb the v2 deferred item: the spawner passes its own dirty path list into the delegation and
+- [x] Absorb the v2 deferred item: the spawner passes its own dirty path list into the delegation and
       the read manifest, so a worker's in-flight paths are visible to its siblings and a reviewer
       starts from a list rather than a search.
       The fingerprint computation already runs `git status`, so the list is free at the same moment.
@@ -197,9 +216,14 @@ same "enforce, do not instruct" thesis one level up.
 This item adds a small amount of code to remove a large amount of behavioral variance; it belongs in
 a simplification plan because what it simplifies is the effective workflow.
 
+Implementation status: the S4 boundary, policy configuration, typed telemetry, analyzer filtering,
+shared guide/tool wording, and focused regression coverage are implemented in the current working tree.
+The policy remains warn-first; no enforce rollout decision has been made. The final validation gate and
+post-fix independent review both pass; the review status is recorded in the plan status above.
+
 Changes:
 
-- [ ] Add a composition check in `src/execute.ts` at the `subagent` boundary, evaluated per call
+- [x] Add a composition check in `src/execute.ts` at the `subagent` boundary, evaluated per call
       before any spawn, over the standard role names only (unknown agent names pass through
       untouched):
   - Tier 1 refuses a `validator` delegation: the worker's `verify` ref is the evidence by design.
@@ -207,14 +231,14 @@ Changes:
   - A `validator` delegation at tier 2 or below without `evidenceScope: "session"` warns: resolving
     the worker ref is the default.
   - A `worker` delegation with no preceding `planner` at tier 3 warns.
-- [ ] Gate enforcement behind `compositionPolicy: "warn" | "enforce" | "off"` in `src/config.ts`,
+- [x] Gate enforcement behind `compositionPolicy: "warn" | "enforce" | "off"` in `src/config.ts`,
       default `"warn"` for one measurement window, flipping to `"enforce"` only after the warn data
       shows the rules fire on delegations that should have been refused.
       A per-call override parameter remains available for the exceptional case, and its use is
       recorded in telemetry.
-- [ ] Emit every refusal and warning as a telemetry field (`compositionVerdict`), so tuning comes
+- [x] Emit every refusal and warning as a typed telemetry field (`compositionVerdict`), so tuning comes
       from the analyzer rather than from anecdote.
-- [ ] Generate the guide's composition rules and the tool description's summary from the same source
+- [x] Generate the guide's composition rules and the tool description's summary from the same source
       as the check, per the W8 single-source rule: the prose and the enforcement cannot drift.
 
 Acceptance:
@@ -222,7 +246,7 @@ Acceptance:
 - Validator delegations per Tier 1 flow trend to zero in the analyzer's validation-evidence section,
   with no rise in unresolved or abandoned tasks (the quality guardrail from plan v1 applies).
 - Warn-mode telemetry from the first window justifies or refutes each rule before `"enforce"` ships.
-- A refusal message names the rule, the tier, and the compliant alternative, so the caller's next
+- [x] A refusal message names the rule, the tier, and the compliant alternative, so the caller's next
   call succeeds on the first retry.
 
 Dependencies: none to start in warn mode; S1 keeps the added telemetry field cheap.
@@ -230,8 +254,9 @@ Risk: over-restriction strangles legitimate work, which is exactly why the rollo
 
 ## S5: make evidence reuse observable and its failures loud
 
-The reuse machinery exists and is correctly wired; the measured reuse is zero.
-The original framing of this item blamed mostly producer-side gaps, and that framing is now obsolete:
+The reuse machinery exists and is correctly wired; the early baseline measured reuse at zero.
+The representative producer-capable window now records successful reviewer lookups, so the original
+framing of this item blamed mostly producer-side gaps is obsolete:
 the producer's consumer-aligned handoff landed in 0.11.7 and every F-item shipped, including the two
 that were expected to be the long poles - the F5 freshness pair on successful lookups
 (`repositoryStateStatus: matches | mismatch | unreadable`, carrying both the recorded and the current
@@ -239,26 +264,30 @@ state) and F9 (`paths` removed from the authorization identity, one composite fl
 for flow-scoped callers, and refusals that name the shape, project, scope, and whether execution or
 publication was missing).
 Nothing this item needs remains producer-side.
+The consumer-side instrumentation, guidance, report contracts, producer join, and collection tooling
+are shipped.
+The remaining S5 tracking item is semantic producer-join coverage for duplicate records and
+time-window filtering; cross-flow, malformed, missing, and empty-stream behavior is covered.
 The consumer side now holds all of the work, most of it scheduled by the follow-ups file's own rule:
 guidance widens in the release that ships the parameters, and that release is the installed one.
-The consumer side also cannot yet see a failed lookup as a failed lookup, which makes the difference
-between "refs are unused" and "refs are unusable" invisible.
+The consumer side now distinguishes failed lookups from successful zero-reuse flows, making the
+difference between "refs are unused" and "refs are unusable" visible.
 
 Changes:
 
-- [ ] Record failed `verify` lookups in `src/metrics.ts`: a `verify` tool result with `isError` is
+- [x] Record failed `verify` lookups in `src/metrics.ts`: a `verify` tool result with `isError` is
       extracted as a `lookupFailed` entry alongside `validationRefs`, with the error class
       (`denied`, `timeout`, `not-found`) parsed from the payload where present.
-- [ ] Absorb the two v2 deferred report-contract items: make `## Files Reviewed` mandatory and parse
+- [x] Absorb the two v2 deferred report-contract items: make `## Files Reviewed` mandatory and parse
       it into the ledger's `changed_files`, so a reviewer's inspected set is visible to
       `codegraph_affected` and to S4's scope-compliance check; and stop flattening phase-level
       `omitted` into `verdict: passed` in ledger evidence, keeping `covers` a scope list rather than
       a quality signal.
-- [ ] Extend the analyzer's validation-evidence section with per-flow reuse rate and lookup-failure
+- [x] Extend the analyzer's validation-evidence section with per-flow reuse rate and lookup-failure
       counts, so the producer fixes show up as movement in our measurement.
-- [ ] Surface an unresolved-ref outcome in `subagent_stats` for the last run, next to the existing
+- [x] Surface an unresolved-ref outcome in `subagent_stats` for the last run, next to the existing
       `verify:N ran:M` line.
-- [ ] Widen the role-prompt guidance in `src/templates.ts` and the guide to the shipped producer
+- [x] Widen the role-prompt guidance in `src/templates.ts` and the guide to the shipped producer
       surface, replacing the bare-`{ ref }` text, and move the test pins in the same change:
   - `{ ref, flowId }` lookups and the worker's `publish: { flowId }` at mint, closing the
     child-to-root resolution hop that root-minted refs could not make.
@@ -268,28 +297,30 @@ Changes:
   - The lookup vocabulary `repositoryStateStatus`: `matches` means cite the ref, `mismatch` means
     re-execute, `unreadable` means report `NOT_RUN` with the reason - the F-033 close that removes
     the last "re-execute just to learn staleness" driver.
-- [ ] Align the D9 classifier with the shipped lookup contract: the producer admits `covers` on a
+- [x] Align the D9 classifier with the shipped lookup contract: the producer admits `covers` on a
       lookup as opaque and non-executing, so `VERIFY_LOOKUP_PARAMS` gains it; `{ ref, publish }` and
       `{ ref, fresh }` stay refused, matching the producer's own rejection, and the shipped-role
       sweeps assert all three.
-- [ ] Update the one refusal sentence in `src/budget.ts` that quotes only `vr_` to name the `pc_`
+- [x] Update the one refusal sentence in `src/budget.ts` that quotes only `vr_` to name the `pc_`
       prefix too, with its test pins - the D1 carry-over that unblocked when the prefix shipped.
-- [ ] Extend `src/metrics.ts` to extract the new payload fields into telemetry:
+- [x] Extend `src/metrics.ts` to extract the new payload fields into telemetry:
       `repositoryStateStatus` per lookup, `stateDrift` and `concurrentExecutions` per execution,
       `mutating` per command, and the `forced` decision on fresh runs.
       This is the instrumentation S2's deletion gate reads.
-- [ ] Join the producer's invocation stream in the analyzer: the recorder now writes one aggregate
+- [x] Join the producer's invocation stream in the analyzer: the recorder now writes one aggregate
       record per `verify` call carrying `flowId`, `delegationId`, `role`, `ref`, and repository
       state (D4), which closes the "analyzer reads only the consumer side" gap in
       `analysis/MEASUREMENT.md` and makes executions-per-digest computable from both sides.
-- [ ] Document the authorization reality in the README's setup section: one composite operator grant
+- [x] Document the authorization reality in the README's setup section: one composite operator grant
       per project now covers flow-scoped child seats for the default gate, because `paths` left the
       authorization identity.
       The extension does not write the producer's policy file itself: D3's ownership boundary stands.
 - [ ] Run the follow-ups file's own verification checklist, now executable end to end: fan-out
       dedup, concurrent single-flight, invalidation on tracked writes, `fresh` re-execution,
       cross-flow isolation and poisoning, no-env fallback, and the telemetry join.
-- [ ] Refresh the status banners in `analysis/BASH_TOOLS_FOLLOWUPS.md`: every F-item is landed in
+      The core live checklist is exercised; duplicate-record and time-window semantic coverage remain
+      tracked as the final S5 edge cases.
+- [x] Refresh the status banners in `analysis/BASH_TOOLS_FOLLOWUPS.md`: every F-item is landed in
       the installed build, and the follow-ups file becomes a verification checklist instead of an
       ask list.
 
@@ -362,12 +393,11 @@ that the other stores reference by path, not a merge of the stores themselves.
 
 ## Rollout order
 
-1. S1 (registry write path) and S3 (review surface) - independent, low-risk, land first in either
-   order.
-2. S5 (observability, guidance widening, classifier alignment, analyzer join) - fully unblocked
-   producer-side, and it instruments the baselines S2's deletion gate and S4 will be judged against.
-3. S2's instrumentation half (drift vocabulary, contention telemetry) lands inside S5; the lock
-   itself is frozen, with deletion decided by the first clean measurement window.
+1. S1 (registry write path) and S3 (review surface) are shipped.
+2. S5 (observability, guidance widening, classifier alignment, analyzer join) is shipped, with
+   only semantic producer-join edge coverage still tracked.
+3. S2's instrumentation and representative measurement window are complete; the lock is frozen and
+   retained because the window recorded one drift-flagged execution.
 4. S4 in warn mode, one measurement window, then the enforce decision from data.
 5. S7 only on evidence.
 

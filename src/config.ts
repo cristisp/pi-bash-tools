@@ -2,7 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { isValidModelSpec, normalizeModelSpec } from './model-spec.ts';
-import type { EvidenceScope, RoleBudget, BudgetPolicy } from './types.ts';
+import type { EvidenceScope, RoleBudget, BudgetPolicy, CompositionPolicy } from './types.ts';
+export type { CompositionPolicy } from './types.ts';
 
 export type ConfigAgentScope = 'user' | 'project' | 'both';
 
@@ -28,6 +29,8 @@ export interface SubagentHerdrConfig {
 	/** Ceiling on the scope-derived allowance added to the tool and discovery budgets. */
 	scopeCallAllowanceMax: number;
 	reportContractPolicy: ReportContractPolicy;
+	/** How standard-role composition violations are handled before children are spawned. */
+	compositionPolicy: CompositionPolicy;
 	/** Ledger revisions kept per flow; the oldest are dropped when appending past this count. */
 	ledgerMaxRevisions: number;
 	/** Whether children receive ledger pointers in their prompts at all. */
@@ -129,6 +132,7 @@ export const DEFAULT_CONFIG: SubagentHerdrConfig = {
 	scopeCallAllowancePerPath: 2,
 	scopeCallAllowanceMax: 32,
 	reportContractPolicy: 'flag',
+	compositionPolicy: 'warn',
 	ledgerMaxRevisions: 60,
 	ledgerPointers: true,
 	registryLockTimeoutMs: 10_000,
@@ -153,6 +157,7 @@ const DEFAULT_EVIDENCE_SCOPE_BY_ROLE: Record<string, EvidenceScope> = {};
 const EVIDENCE_SCOPES = new Set<EvidenceScope>(['session', 'flow']);
 
 const REPORT_CONTRACT_POLICIES = new Set<ReportContractPolicy>(['flag', 'reject']);
+const COMPOSITION_POLICIES = new Set<CompositionPolicy>(['warn', 'enforce', 'off']);
 const BUDGET_POLICIES = new Set<BudgetPolicy>(['steer', 'abort']);
 const BUDGET_KEYS = [
 	'toolCalls',
@@ -292,6 +297,9 @@ export function getConfig(filePath?: string): SubagentHerdrConfig {
 	}
 	if (REPORT_CONTRACT_POLICIES.has(overrides.reportContractPolicy as ReportContractPolicy)) {
 		cfg.reportContractPolicy = overrides.reportContractPolicy as ReportContractPolicy;
+	}
+	if (COMPOSITION_POLICIES.has(overrides.compositionPolicy as CompositionPolicy)) {
+		cfg.compositionPolicy = overrides.compositionPolicy as CompositionPolicy;
 	}
 	cfg.evidenceScopeByRole = {
 		...DEFAULT_EVIDENCE_SCOPE_BY_ROLE,

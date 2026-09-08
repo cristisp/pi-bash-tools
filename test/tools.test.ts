@@ -19,6 +19,7 @@ import {
 	registerSubagentStatsTool,
 	registerSubagentTool,
 } from '../src/tools.ts';
+import { COMPOSITION_RULES, compositionToolSummary } from '../src/types.ts';
 
 /**
  * Coverage for the registration surface of src/tools.ts. The tools registered here are the only
@@ -193,6 +194,7 @@ describe('subagent parameter schema', () => {
 			'agentScope',
 			'agents',
 			'chain',
+			'compositionPolicy',
 			'confirmProjectAgents',
 			'cwd',
 			'evidenceScope',
@@ -294,6 +296,14 @@ describe('registered description text is composed, not paraphrased', () => {
 		expect(properties(toolByName('subagent_close').parameters).label.description).toBe(
 			SUBAGENT_CLOSE_LABEL_PARAM_DESCRIPTION,
 		);
+	});
+
+	it('embeds composition rules with real line breaks in the tool description', () => {
+		const description = toolByName('subagent').description;
+		for (const rule of ['R1', 'R2', 'R3', 'R4']) expect(description).toContain(`\n- ${rule} `);
+		expect(description).not.toContain('\\n');
+		expect(description).toContain('worker verify ref');
+		expect(description).toContain('parallel fan-out');
 	});
 
 	it('embeds the shared reuse guidance verbatim in the subagent description', () => {
@@ -433,6 +443,11 @@ describe('registered description text is composed, not paraphrased', () => {
 describe('description prose lives in one source', () => {
 	const source = readFileSync(new URL('../src/tools.ts', import.meta.url), 'utf8');
 	const templatesSource = readFileSync(new URL('../src/templates.ts', import.meta.url), 'utf8');
+	const sharedRuleSource = readFileSync(new URL('../src/types.ts', import.meta.url), 'utf8');
+	const compositionSourceFragments = [
+		'Composition policy (default warn;',
+		...COMPOSITION_RULES.flatMap((rule) => [rule.description, rule.alternative]),
+	];
 
 	/** Sentences the child reads, taken from the registered tools. */
 	const sentences = () => {
@@ -448,11 +463,23 @@ describe('description prose lives in one source', () => {
 		);
 	};
 
+	function isCompositionSentence(sentence: string): boolean {
+		return compositionSourceFragments.some((fragment) => sentence.includes(fragment));
+	}
+
 	it('composes the descriptions from the templates source instead of restating them', () => {
 		expect(source).toMatch(/from '\.\/templates\.ts'/);
-		// Every sentence a child reads lives in src/templates.ts, not in the registration site, so a
-		// description change has one place to happen and one test that notices it.
-		for (const sentence of sentences()) expect(templatesSource).toContain(sentence);
+		// Every sentence a child reads lives in the shared description sources, not in the
+		// registration site, so a description change has one place to happen and one test that notices it.
+		const descriptionSources = `${templatesSource}\n${sharedRuleSource}`;
+		expect(templatesSource).toContain('compositionToolSummary()');
+		expect(sharedRuleSource).toContain('COMPOSITION_RULES');
+		for (const sentence of sentences()) {
+			const canonicalSource = isCompositionSentence(sentence)
+				? compositionToolSummary()
+				: descriptionSources;
+			expect(canonicalSource).toContain(sentence);
+		}
 	});
 
 	it('leaves no sentence of child-facing prose authored in src/tools.ts', () => {

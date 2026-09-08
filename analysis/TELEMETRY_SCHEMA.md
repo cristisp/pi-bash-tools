@@ -51,6 +51,8 @@ Each entry carries the attempted ref when available and an error class of `denie
 
 `readManifest` records the child-visible artifact paths, allowed paths, prior reports, established evidence, do-not-reread paths, and its persisted flow artifact reference.
 
+Composition boundary events use `event: "composition"` and carry exactly one `compositionVerdict` object with the rule, action (`warn` or `refuse`), effective policy, mode, role/agent, tier, scope, reason, and compliant alternative. `compositionBoundaryStatus` repeats the action as `warning` or `refusal` for consumers that do not inspect the verdict; these are boundary statuses, not child outcomes. `compositionPolicyOverride` is present when a per-call override selected the effective policy, and `compositionBoundaryId` groups multiple rule events from one subagent boundary. These records have zero execution metrics and are excluded from ordinary delegation, validation, child-count, and spend aggregates by `analysis/measure.ts`; use the analyzer's `composition` result for event counts by rule, policy, and override.
+
 Analyzer guidance:
 
 - Group by `rootSession` for root-owned activity.

@@ -1,5 +1,6 @@
 import { getConfig, roleBudgetFor } from './config.ts';
 import { ledgerShapeBlock } from './ledger.ts';
+import { compositionToolSummary } from './types.ts';
 
 export const REUSE_WORKFLOW_GUIDANCE =
 	'For safe reuse, first call subagent with listSubagents: true, select an exact active-session entry, copy its bare reuseLabel, call subagent_stats with that label, and reuse only when the stats and task history show it is appropriate. Reuse is for same-role worker continuation and narrowly scoped remediation; prefer fresh sessions for planning, scouting, review, validation, security, audit, changed scope, or independent reasoning. Start fresh for high context, many turns, repeated reuse, mismatched task history, changed evidence, or when independence is required. Never infer or increment labels, use labels from another workspace, or pass workspace:label to reuseLabel or subagent_stats.';
@@ -35,6 +36,7 @@ export function subagentToolDescription(values: SubagentToolDescriptionValues): 
 		'Labels are scoped per herdr workspace: each workspace has its own worker-1, worker-2, ... numbering and session files; visibility and reuse are scoped to the active Pi session.',
 		'reuseLabel and subagent_stats accept the bare label shown by the active Pi session list (e.g. worker-1); qualified workspace:label values and sessions from other Pi sessions are not reusable from the current session.',
 		'Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder), agents (list available agents).',
+		compositionToolSummary(),
 		'Before choosing an agent name, call subagent with agents: true to see the available agents (name, description, source); pick the exact name that fits the task - never invent or modify agent names, unknown names fail.',
 		'A session becomes read-only once its result is delivered to the main agent; reuseLabel + task makes it interactive again for a new task.',
 		"Steers typed into a running subagent's tab are folded into its final outcome and marked [steered] in the result.",
@@ -91,7 +93,7 @@ uncertainty, impact, or validation requirements exceed it.
 
 ## Orchestration ledger
 
-The delegating session supplies the current flow ledger through a pointer in the appended system prompt on a fresh launch or in the task prefix on a reuse turn. Read the ledger at the pointer you were given with the \`read\` tool before your first substantive action. It is the source of truth for the current task, acceptance criteria, scope, evidence, and prior verdicts. Do not expect the task text to contain the full ledger or reconstruct its state from memory. If no pointer is supplied, report that the ledger context is unavailable rather than inventing prior state.
+The delegating session supplies the current flow ledger through the pointer in the appended system prompt on a fresh launch or in the task prefix on a reuse turn. Read the ledger at the pointer you were given with the \`read\` tool before your first substantive action. It is the source of truth for the current task, acceptance criteria, scope, evidence, and prior verdicts. Do not expect the task text to contain the full ledger or reconstruct its state from memory. If no pointer is supplied, report that the ledger context is unavailable rather than inventing prior state.
 
 The ledger is append-only and parent-owned. Never write to it. Preserve the current task and criterion identities from the ledger, and record any unresolved evidence gap or transition in your own response.
 

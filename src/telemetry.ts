@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
@@ -9,6 +10,8 @@ import type {
 	LedgerRunInfo,
 	ReportSummary,
 	SingleResult,
+	CompositionPolicy,
+	CompositionVerdict,
 	TelemetryRecord,
 } from './types.ts';
 
@@ -75,6 +78,11 @@ export function buildTelemetryRecord(input: TelemetryInput, now = Date.now()): T
 		record.acceptanceCriteria = delegation.acceptanceCriteria;
 	if (input.parentSession) record.parentSession = input.parentSession;
 	if (delegation.rootSession) record.rootSession = delegation.rootSession;
+	if (delegation.compositionPolicy) record.compositionPolicy = delegation.compositionPolicy;
+	if (delegation.compositionPolicyOverride)
+		record.compositionPolicyOverride = delegation.compositionPolicyOverride;
+	// Composition decisions are emitted as typed boundary events, not copied into every child
+	// delegation record. This keeps ordinary child metrics and counts free of duplicate warnings.
 	if (delegation.parentPaneId) record.parentPaneId = delegation.parentPaneId;
 	if (delegation.scope) record.scope = delegation.scope;
 	if (delegation.reviewSurfacePath) record.reviewSurfacePath = delegation.reviewSurfacePath;
@@ -107,6 +115,79 @@ export function buildTelemetryRecord(input: TelemetryInput, now = Date.now()): T
 	return record;
 }
 
+export interface CompositionTelemetryInput {
+	verdicts: CompositionVerdict[];
+	workspace: string;
+	parentSession?: string;
+	flowId?: string;
+	policy: CompositionPolicy;
+	policyOverride?: CompositionPolicy;
+	boundaryId?: string;
+}
+
+/**
+ * Builds a boundary-only record for one composition verdict. It intentionally uses zero execution
+ * metrics and a fresh delegation id so it cannot be mistaken for a completed child turn.
+ */
+export function buildCompositionTelemetryRecord(
+	input: CompositionTelemetryInput,
+	now = Date.now(),
+): TelemetryRecord {
+	const first = input.verdicts[0];
+	const role = first?.role ?? first?.agent ?? 'composition';
+	const delegation: DelegationContext = {
+		delegationId: randomUUID(),
+		role,
+		evidenceScope: 'flow',
+		...(input.flowId ? { flowId: input.flowId } : {}),
+		compositionPolicy: input.policy,
+		...(input.policyOverride ? { compositionPolicyOverride: input.policyOverride } : {}),
+	};
+	const isRefusal = first?.action === 'refuse';
+	const result: SingleResult = {
+		agent: first?.agent ?? role,
+		agentSource: 'unknown',
+		task: isRefusal ? 'composition boundary refusal' : 'composition boundary warning',
+		exitCode: 0,
+		messages: [],
+		stderr: '',
+		usage: makeEmptyUsage(),
+		metrics: {
+			durationMs: 0,
+			toolCalls: 0,
+			failedToolCalls: 0,
+			repeatedReads: 0,
+			messageCount: 0,
+			taskChars: 0,
+			outputChars: 0,
+			maxContextTokens: 0,
+			turns: 0,
+			blockEvents: 0,
+			approvalMs: 0,
+			steerMs: 0,
+		},
+	};
+	const record = buildTelemetryRecord(
+		{
+			delegation,
+			workspace: input.workspace,
+			label: 'composition-boundary',
+			agent: result.agent,
+			reused: false,
+			reuseCount: 0,
+			outcome: 'settled',
+			parentSession: input.parentSession,
+			result,
+		},
+		now,
+	);
+	record.event = 'composition';
+	record.compositionVerdict = first;
+	record.compositionBoundaryId = input.boundaryId;
+	record.compositionBoundaryStatus = isRefusal ? 'refusal' : 'warning';
+	return record;
+}
+
 /** Appends one JSONL record. Telemetry must never break a delegation. */
 export function appendTelemetryRecord(record: TelemetryRecord): void {
 	const file = telemetryPath();
@@ -117,6 +198,16 @@ export function appendTelemetryRecord(record: TelemetryRecord): void {
 			fs.appendFileSync(file, `${JSON.stringify(record)}\n`, { encoding: 'utf-8', mode: 0o600 });
 		});
 	} catch {}
+}
+
+export function appendCompositionTelemetry(input: CompositionTelemetryInput): void {
+	if (input.verdicts.length === 0) return;
+	const boundaryId = input.boundaryId ?? randomUUID();
+	for (const verdict of input.verdicts) {
+		appendTelemetryRecord(
+			buildCompositionTelemetryRecord({ ...input, verdicts: [verdict], boundaryId }, Date.now()),
+		);
+	}
 }
 
 export function readTelemetryRecords(limit?: number): TelemetryRecord[] {
