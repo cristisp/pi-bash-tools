@@ -81,7 +81,7 @@ const AgentScopeSchema = StringEnum(['user', 'project', 'both'] as const, {
 	default: 'user',
 });
 
-export const SubagentParams = Type.Object({
+const SUBAGENT_PARAMETER_PROPERTIES = {
 	agent: Type.Optional(
 		Type.String({ description: 'Name of the agent to invoke (for single mode)' }),
 	),
@@ -175,20 +175,30 @@ export const SubagentParams = Type.Object({
 				'How independence is requested for this delegation. The default scope is flow for every role, so a child resolves sibling refs; narrowing to session stops the child resolving sibling refs, so it must execute its own checks. May only narrow the scope configured for the role, never widen it.',
 		}),
 	),
-	compositionPolicy: Type.Optional(
-		StringEnum(['warn', 'enforce', 'off'] as const, {
-			description:
-				'Per-call composition policy override. Default: warn. warn reports standard-role composition violations and still spawns; enforce refuses them; off disables those checks.',
-		}),
-	),
 	reuseLabel: Type.Optional(
 		Type.String({
 			description: `${REUSE_WORKFLOW_GUIDANCE} Continue the selected session in place (preserving its context); send task as the next message.`,
 		}),
 	),
+};
+
+export const SubagentParams = Type.Object(SUBAGENT_PARAMETER_PROPERTIES);
+
+const CompositionPolicyOverride = StringEnum(['warn', 'enforce', 'off'] as const, {
+	description:
+		'Deliberate per-call composition policy override. Use this only through subagent_override; normal subagent delegations use the configured policy.',
+});
+
+export const SubagentOverrideParams = Type.Object({
+	...SUBAGENT_PARAMETER_PROPERTIES,
+	compositionPolicy: CompositionPolicyOverride,
 });
 
 export type SubagentParams = Static<typeof SubagentParams>;
+export type SubagentOverrideParams = Static<typeof SubagentOverrideParams>;
+export type SubagentExecutionParams = SubagentParams & {
+	compositionPolicy?: CompositionPolicy;
+};
 
 type SubagentMode = 'single' | 'parallel' | 'chain' | 'reuse' | 'list' | 'agents';
 
@@ -244,7 +254,7 @@ function isCompositionPolicy(value: unknown): value is CompositionPolicy {
 }
 
 function orchestrationFromParams(
-	params: SubagentParams,
+	params: SubagentExecutionParams,
 	compositionPolicy: CompositionPolicy,
 	compositionPolicyOverride?: CompositionPolicy,
 ): OrchestrationContext {
@@ -266,7 +276,7 @@ function orchestrationFromParams(
 }
 
 function buildExecuteContext(
-	params: SubagentParams,
+	params: SubagentExecutionParams,
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	ctx: ExtensionContext,
@@ -1030,7 +1040,7 @@ function sessionOwnerUnavailableResponse(
 
 // fallow-ignore-next-line complexity
 export async function executeSubagent(
-	params: SubagentParams,
+	params: SubagentExecutionParams,
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	ctx: ExtensionContext,

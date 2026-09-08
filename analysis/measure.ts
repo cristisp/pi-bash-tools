@@ -266,6 +266,8 @@ export function readTelemetry(agentDir: string): TelemetryRecord[] {
 }
 
 export interface ProducerInvocation {
+	/** Stable producer-side identity used to ignore a duplicated stream line. */
+	recordId?: string;
 	at?: number;
 	commandId?: string;
 	flowId?: string;
@@ -310,6 +312,10 @@ export function resolveProducerInvocationPath(
 	const file =
 		filePath ?? producerInvocationFiles(agentDir).find((candidate) => existsSync(candidate));
 	return file && existsSync(file) ? file : undefined;
+}
+
+function firstString(...values: unknown[]): string | undefined {
+	return values.find((value): value is string => typeof value === 'string' && value.length > 0);
 }
 
 function invocationStateDigest(value: unknown): string | undefined {
@@ -415,14 +421,30 @@ function producerInvocationOf(
 		const value = raw[name] ?? payload[name] ?? execution[name];
 		return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 	};
-	const atValue = raw.at ?? payload.at;
+	const sessionId = firstString(raw.sessionId, payload.sessionId);
+	const toolCallId = firstString(raw.toolCallId, payload.toolCallId);
+	const recordId =
+		firstString(
+			raw.invocationId,
+			payload.invocationId,
+			raw.recordId,
+			payload.recordId,
+			raw.id,
+			payload.id,
+		) ?? (sessionId && toolCallId ? `${sessionId}:${toolCallId}` : undefined);
+	const atValue = raw.at ?? payload.at ?? raw.timestamp ?? payload.timestamp;
 	const at =
-		typeof atValue === 'number'
+		typeof atValue === 'number' && Number.isFinite(atValue)
 			? atValue
 			: typeof atValue === 'string'
-				? Date.parse(atValue) || undefined
+				? Number.isFinite(Number(atValue))
+					? Number(atValue)
+					: Number.isFinite(Date.parse(atValue))
+						? Date.parse(atValue)
+						: undefined
 				: undefined;
 	return {
+		...(recordId === undefined ? {} : { recordId }),
 		...(at === undefined ? {} : { at }),
 		...(commandId ? { commandId } : {}),
 		...(flowId ? { flowId } : {}),
@@ -460,11 +482,17 @@ function readProducerRecords(
 		return [];
 	}
 	const records: ProducerInvocation[] = [];
+	const seenRecordIds = new Set<string>();
 	for (const line of contents.split('\n')) {
 		if (!line.trim()) continue;
 		try {
 			const invocation = producerInvocationOf(JSON.parse(line), validationOnly);
-			if (invocation) records.push(invocation);
+			if (!invocation) continue;
+			if (invocation.recordId) {
+				if (seenRecordIds.has(invocation.recordId)) continue;
+				seenRecordIds.add(invocation.recordId);
+			}
+			records.push(invocation);
 		} catch {
 			// Ignore torn invocation records just as telemetry ignores torn lines.
 		}
@@ -482,6 +510,19 @@ export function readProducerExecutionInvocations(
 	filePath?: string,
 ): ProducerInvocation[] {
 	return readProducerRecords(agentDir, filePath, false);
+}
+
+function producerInvocationsInTelemetryWindow(
+	invocations: ProducerInvocation[],
+	records: TelemetryRecord[],
+): ProducerInvocation[] {
+	const timestamps = records.map((record) => record.at).filter(Number.isFinite);
+	if (!timestamps.length) return invocations;
+	const from = Math.min(...timestamps);
+	const to = Math.max(...timestamps);
+	return invocations.filter(
+		(invocation) => invocation.at === undefined || (invocation.at >= from && invocation.at <= to),
+	);
 }
 
 export function defaultCutoff(records: TelemetryRecord[]): number {
@@ -608,13 +649,16 @@ function isCompositionRecord(record: TelemetryRecord): boolean {
 	return record.event === 'composition' || record.compositionVerdict !== undefined;
 }
 
-function tallyComposition(records: TelemetryRecord[]): CompositionMeasurement {
+function tallyComposition(records: TelemetryRecord[], cutoff: number): CompositionMeasurement {
 	const byRule: Record<string, number> = {};
 	const byPolicy: Record<string, number> = {};
 	const byOverride: Record<string, number> = {};
 	let warnings = 0;
 	let refusals = 0;
-	for (const record of records.filter(isCompositionRecord)) {
+	const compositionFrom = Number.isFinite(cutoff) ? cutoff : Number.NEGATIVE_INFINITY;
+	for (const record of records.filter(
+		(candidate) => isCompositionRecord(candidate) && candidate.at >= compositionFrom,
+	)) {
 		const verdict = record.compositionVerdict;
 		if (!verdict) continue;
 		if (verdict.action === 'warn') warnings++;
@@ -867,10 +911,13 @@ export function measure(
 	const records = readTelemetry(agentDir);
 	const delegationRecords = records.filter((record) => !isCompositionRecord(record));
 	const producerStreamPath = resolveProducerInvocationPath(agentDir, producerInvocationPath);
-	const producerInvocations = readProducerInvocations(agentDir, producerStreamPath);
-	const producerExecutionInvocations = readProducerExecutionInvocations(
-		agentDir,
-		producerStreamPath,
+	const producerInvocations = producerInvocationsInTelemetryWindow(
+		readProducerInvocations(agentDir, producerStreamPath),
+		records,
+	);
+	const producerExecutionInvocations = producerInvocationsInTelemetryWindow(
+		readProducerExecutionInvocations(agentDir, producerStreamPath),
+		records,
 	);
 	const files = sessionFiles(agentDir);
 	const telemetryFrom = firstTelemetryAt(records);
@@ -1006,7 +1053,7 @@ export function measure(
 			renderedChars: guideSize.chars,
 			renderedTokens: guideSize.tokens,
 		},
-		composition: tallyComposition(records),
+		composition: tallyComposition(records, cutoff),
 		validation: {
 			overall: tallyValidation(
 				delegationRecords,

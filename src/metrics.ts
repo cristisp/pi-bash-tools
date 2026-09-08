@@ -234,11 +234,84 @@ function omittedPhasesOf(payload: Record<string, unknown>): string[] {
 	return [...omitted];
 }
 
+interface ProducerFields {
+	decision?: string;
+	cacheDecision?: string;
+	flowId?: string;
+	flowIdConflict?: boolean;
+}
+
+/**
+ * Reads producer metadata from both the direct result and nested diagnostic objects. Flow identity is
+ * deliberately narrower than the decision fields: only a direct flowId or flowId under provenance or
+ * publication is producer provenance. In particular, producerScope is not a flow identifier.
+ */
+function producerFieldsOf(payload: Record<string, unknown>): ProducerFields {
+	let decision: string | undefined;
+	let cacheDecision: string | undefined;
+	const flowIds = new Set<string>();
+	const directFlowId = stringValue(payload, 'flowId', 'flow_id');
+	if (directFlowId !== undefined) flowIds.add(directFlowId);
+
+	function visit(value: unknown, path: string[], depth: number): void {
+		const object = jsonPayloadOf(value);
+		if (!object) return;
+		decision ??= stringValue(object, 'decision', 'producerDecision', 'producer_decision');
+		cacheDecision ??= stringValue(object, 'cacheDecision', 'cache_decision');
+		const parent = path[path.length - 1];
+		if (parent === 'provenance' || parent === 'publication') {
+			const nestedFlowId = stringValue(object, 'flowId', 'flow_id');
+			if (nestedFlowId !== undefined) flowIds.add(nestedFlowId);
+		}
+		if (depth >= 4) return;
+		for (const [key, nested] of Object.entries(object)) visit(nested, [...path, key], depth + 1);
+	}
+
+	visit(payload, [], 0);
+	const flowIdConflict = flowIds.size > 1;
+	const flowId = flowIds.size === 1 ? [...flowIds][0] : undefined;
+	return {
+		...(decision === undefined ? {} : { decision }),
+		...(cacheDecision === undefined ? {} : { cacheDecision }),
+		...(flowIdConflict ? { flowIdConflict: true } : {}),
+		...(flowIdConflict || flowId === undefined ? {} : { flowId }),
+	};
+}
+
+function producerFieldsOfMessage(message: Message): ProducerFields {
+	let fields: ProducerFields = {};
+	let flowId: string | undefined;
+	let flowIdConflict = false;
+	for (const payload of payloadCandidates(message)) {
+		const candidate = producerFieldsOf(payload);
+		if (candidate.flowIdConflict) flowIdConflict = true;
+		if (candidate.flowId !== undefined) {
+			if (flowId !== undefined && flowId !== candidate.flowId) flowIdConflict = true;
+			flowId ??= candidate.flowId;
+		}
+		fields = {
+			...(fields.decision === undefined && candidate.decision === undefined
+				? {}
+				: { decision: fields.decision ?? candidate.decision }),
+			...(fields.cacheDecision === undefined && candidate.cacheDecision === undefined
+				? {}
+				: { cacheDecision: fields.cacheDecision ?? candidate.cacheDecision }),
+		};
+	}
+	return {
+		...fields,
+		...(flowIdConflict ? { flowIdConflict: true } : {}),
+		...(flowIdConflict || flowId === undefined ? {} : { flowId }),
+	};
+}
+
 function validationFieldsOf(
 	payload: Record<string, unknown>,
+	messageFlowIdConflict = false,
 ): Omit<ValidationReference, 'ref' | 'reused' | 'lookup'> {
 	const state = stateOf(payload);
 	const execution = jsonPayloadOf(payload.execution) ?? {};
+	const producer = producerFieldsOf(payload);
 	const head = shortHash(state?.head);
 	const stateDigest = shortHash(state?.dirtyFilesDigest ?? state?.dirty_digest);
 	const stateDrift =
@@ -251,7 +324,7 @@ function validationFieldsOf(
 	const forced =
 		booleanValue(payload, 'forced') ??
 		booleanValue(execution, 'forced') ??
-		(payload.decision === 'forced' ? true : undefined);
+		(producer.decision === 'forced' ? true : undefined);
 	const repositoryStateStatus = repositoryStateStatusOf(payload);
 	const omitted = omittedPhasesOf(payload);
 	return {
@@ -262,6 +335,12 @@ function validationFieldsOf(
 		...(concurrentExecutions === undefined ? {} : { concurrentExecutions }),
 		...(mutating === undefined ? {} : { mutating }),
 		...(forced === undefined ? {} : { forced }),
+		...(producer.decision === undefined ? {} : { decision: producer.decision }),
+		...(producer.cacheDecision === undefined ? {} : { cacheDecision: producer.cacheDecision }),
+		...(messageFlowIdConflict || producer.flowIdConflict ? { flowIdConflict: true } : {}),
+		...(messageFlowIdConflict || producer.flowIdConflict || producer.flowId === undefined
+			? {}
+			: { flowId: producer.flowId }),
 		...(omitted.length > 0 ? { omitted } : {}),
 	};
 }
@@ -277,6 +356,7 @@ export function verifyReferenceOf(
 ): ValidationReference | undefined {
 	if (message.role !== 'toolResult' || message.toolName !== 'verify' || message.isError)
 		return undefined;
+	const producer = producerFieldsOfMessage(message);
 	for (const payload of payloadCandidates(message)) {
 		if (typeof payload.ref !== 'string' || payload.ref.length === 0) continue;
 		const omitted = omittedPhasesOf(payload);
@@ -290,7 +370,7 @@ export function verifyReferenceOf(
 				: {}),
 			reused: payload.reused === true,
 			lookup: lookup ?? payload.reused === true,
-			...validationFieldsOf(payload),
+			...validationFieldsOf(payload, producer.flowIdConflict === true),
 			...(forcedHint !== undefined && payload.forced === undefined ? { forced: forcedHint } : {}),
 		};
 	}
@@ -350,10 +430,15 @@ function errorMessageOf(message: Message): string | undefined {
 }
 
 export function verifyLookupFailureOf(message: Message, ref?: string): ValidationLookupFailure {
+	const producer = producerFieldsOfMessage(message);
 	return {
 		...(ref ? { ref } : {}),
 		errorClass: errorClassOf(message),
 		...(errorMessageOf(message) ? { message: errorMessageOf(message) } : {}),
+		...(producer.decision === undefined ? {} : { decision: producer.decision }),
+		...(producer.cacheDecision === undefined ? {} : { cacheDecision: producer.cacheDecision }),
+		...(producer.flowId === undefined ? {} : { flowId: producer.flowId }),
+		...(producer.flowIdConflict ? { flowIdConflict: true } : {}),
 	};
 }
 
@@ -363,6 +448,7 @@ function validationExecutionOf(
 ): ValidationExecution {
 	const payload = payloadCandidates(message)[0];
 	const fields = payload ? validationFieldsOf(payload) : {};
+	const producer = producerFieldsOfMessage(message);
 	return {
 		tool: call.tool,
 		...(call.ref ? { ref: call.ref } : {}),
@@ -375,6 +461,10 @@ function validationExecutionOf(
 		...(fields.forced === undefined && call.forced === undefined
 			? {}
 			: { forced: fields.forced ?? call.forced }),
+		...(producer.decision === undefined ? {} : { decision: producer.decision }),
+		...(producer.cacheDecision === undefined ? {} : { cacheDecision: producer.cacheDecision }),
+		...(producer.flowId === undefined ? {} : { flowId: producer.flowId }),
+		...(producer.flowIdConflict ? { flowIdConflict: true } : {}),
 	};
 }
 

@@ -8,7 +8,7 @@ import {
 	type ExtensionContext,
 	type Theme,
 } from '@earendil-works/pi-coding-agent';
-import { executeSubagent, SubagentParams } from './execute.ts';
+import { executeSubagent, SubagentOverrideParams, SubagentParams } from './execute.ts';
 import { ORCHESTRATION_GUIDE_FILENAME } from './guide.ts';
 import { closeSubagentFlow, sessionLinkedEntries } from './registry.ts';
 import { REGISTRY_PATH } from './registry-store.ts';
@@ -16,6 +16,7 @@ import { renderSubagentCall, renderSubagentResult } from './render.ts';
 import {
 	SUBAGENT_CLOSE_LABEL_PARAM_DESCRIPTION,
 	SUBAGENT_CLOSE_TOOL_DESCRIPTION,
+	SUBAGENT_OVERRIDE_TOOL_DESCRIPTION,
 	SUBAGENT_STATS_LABEL_PARAM_DESCRIPTION,
 	SUBAGENT_STATS_TOOL_DESCRIPTION,
 	subagentToolDescription,
@@ -43,10 +44,45 @@ export function registerSubagentTool(pi: ExtensionAPI) {
 			onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
 			ctx: ExtensionContext,
 		): Promise<AgentToolResult<SubagentDetails>> {
-			return executeSubagent(params, signal, onUpdate, ctx);
+			const { compositionPolicy: _ignoredPolicy, ...standardParams } = params as SubagentParams & {
+				compositionPolicy?: unknown;
+			};
+			return executeSubagent(standardParams, signal, onUpdate, ctx);
 		},
 
 		renderCall(args: SubagentParams, theme: Theme, _context: unknown) {
+			return renderSubagentCall(args, theme);
+		},
+
+		renderResult(
+			result: AgentToolResult<SubagentDetails>,
+			{ expanded }: { expanded: boolean },
+			theme: Theme,
+			_context: unknown,
+		) {
+			return renderSubagentResult(result, expanded, theme);
+		},
+	});
+}
+
+export function registerSubagentOverrideTool(pi: ExtensionAPI) {
+	pi.registerTool({
+		name: 'subagent_override',
+		label: 'Subagent Policy Override',
+		description: SUBAGENT_OVERRIDE_TOOL_DESCRIPTION,
+		parameters: SubagentOverrideParams,
+
+		async execute(
+			_toolCallId: string,
+			params: SubagentOverrideParams,
+			signal: AbortSignal | undefined,
+			onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
+			ctx: ExtensionContext,
+		): Promise<AgentToolResult<SubagentDetails>> {
+			return executeSubagent(params, signal, onUpdate, ctx);
+		},
+
+		renderCall(args: SubagentOverrideParams, theme: Theme, _context: unknown) {
 			return renderSubagentCall(args, theme);
 		},
 

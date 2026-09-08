@@ -21,18 +21,47 @@ produced nine review rounds, twenty-five findings, and standing fail-open caveat
 This plan acts on that asymmetry: fix the hot write path, repair the one real cache bug, constrain
 the delegation decision space, and resolve the lock question on evidence rather than on taste.
 
-Current status: S1, S3, and S5 are shipped; S2's deletion gate has been evaluated and retains the
-repository lock; S4 is implemented in warn mode in the current working tree and its final validation
-and post-fix independent review both pass; S7 remains conditional.
-The current working tree is not committed. S4's independent review found four issues in total; all
-four are remediated, covered by the latest validation, and verified by the final remediation review.
+Current status: S1 and S3 are shipped; S5's implementation, instrumentation, and producer-capable evidence are complete;
+S2's deletion gate has been evaluated and retains the repository lock; S4 is implemented in warn mode and still
+needs the remaining quality guardrails and a final policy decision; S7 remains conditional.
+The initial S4 probe recorded four typed warnings, one per rule, and zero policy refusals, but every event used an explicit
+per-call `warn` override, so it does not qualify as evidence for changing the configured default.
+A later clean default-policy window, flow `fcb7b5447b11b875a` with cutoff `1788908340848`, recorded four delegations,
+two warnings (R1 and R4), zero refusals, and no per-call overrides. R3 was exercised compliantly with session evidence;
+R2 was intentionally not rerun because its overlap safety boundary is already confirmed.
+The independent rollout review accepts the clean provenance but recommends retaining `warn`: the four S4 quality
+guardrails remain unmeasured, and the clean window is too small to justify `enforce`.
+The current working tree is not committed. The earlier S4 implementation review found four issues in total; all four
+are remediated, covered by the latest validation, and verified by the final remediation review.
 
-Provenance update: the producer's consumer-aligned evidence handoff landed in bash-tools 0.11.7,
-verified against the installed package README, the producer repository's PLAN.md, and live lookup
-probes.
-Every F-item from `analysis/BASH_TOOLS_FOLLOWUPS.md` is shipped, which rewrites two sections of this
-plan: S2's gate is evaluated below against what actually shipped, and S5's blockers moved entirely
-to the consumer side.
+Provenance update: the consumer-aligned producer handoff is released and loaded in `@ztc/bash-tools` 1.0.2.
+Its process-local single-flight boundary is now explicit: flow publication shares completed evidence but does not
+coordinate active executions across separate child/session processes.
+
+## Next-session handoff
+
+The S5 evidence window is complete.
+The final flow-published probe used four identical non-mutating calls, returned one ref and one repository-state
+digest, and recorded four independent executions because each child used a separate producer process.
+The producer's v1.0.2 deterministic integration coverage validates single-flight within one producer process.
+The analyzer retains the live flow result in `analysis/MEASUREMENT.md`.
+
+Continue the remaining work in this order:
+
+1. Clean and reconcile the producer handoff documentation, including the v1.0.2 version and the process-local
+   F7 scope. Keep only open work and the newly discovered digest and coordination boundaries.
+2. Preserve the clean S4 warn-mode evidence window using the configured default and without per-call composition-policy
+   overrides. The window is flow `fcb7b5447b11b875a`, cutoff `1788908340848`: four delegations, two default-policy
+   warnings (R1 and R4), zero refusals, and no overrides. R3 was compliant with session evidence; R2 was intentionally
+   omitted because its overlap safety boundary is already confirmed.
+3. Establish the outstanding quality-guardrail measurements: unresolved or abandoned tasks, regressions after
+   reviewer PASS, escalation by tier, and Tier 1 worker discovery failures before deciding on `enforce`. Treat
+   unobserved guardrails as evidence gaps, not as zero rates.
+4. Keep S2's repository lock frozen.
+   Consider deletion only after a complete later window records both zero lock refusals and zero drift-flagged
+   executions.
+5. Commit the documentation and implementation changes after the S4 evidence is recorded.
+6. Leave S7 deferred unless S1 telemetry shows identity writes are still a material delegation overhead.
 
 ## Relationship to v2
 
@@ -115,17 +144,19 @@ Dependencies: none.
 
 ## S2: the repository write lock - F7 gate evaluated, verdict is retain-frozen
 
-Revised position after the producer's F7 build landed in bash-tools 0.11.7.
-F7 shipped in its alternative shape: single-flight coordination for identical non-mutating requests,
-`concurrentExecutions` counts, and `stateDrift` reporting when the tree moved mid-execution.
-The per-repository execution mutex was deliberately not built; the producer's README states the
-consumer-owned write lock remains the authority for writer-versus-reader coordination.
+Revised position after the producer's F7 build landed in `@ztc/bash-tools` 1.0.2.
+The producer implements single-flight coordination within one process, exposes `concurrentExecutions`, and
+reports `stateDrift` when the tree moves mid-execution.
+The final flow-scoped probe validated cache eligibility and publication, but its four separate child processes
+recorded four independent misses and executions. That is expected under the process-local F7 contract and is not
+evidence of a cross-process coordination failure.
+The per-repository execution mutex was deliberately not built; the producer's README states the consumer-owned
+write lock remains the authority for writer-versus-reader coordination.
 This plan's original gate asked whether single-flight plus drift reporting are sufficient together.
-Evaluated honestly: they close evidence honesty (a gate over a moving tree now reports
-`stateDrift: true` instead of silently attesting to a half-written tree) and duplicate read-side
-execution, but they do not cover the writer side - two concurrent mutating commands are not
-single-flight deduped and would interleave writes - and they do not prevent paying for a doomed gate,
-they only mark it after the fact.
+Evaluated honestly: drift reporting closes evidence honesty, while process-local single-flight does not cover
+separate producer processes or the writer side. Two concurrent mutating commands are not single-flight deduped
+and would interleave writes, and neither mechanism prevents paying for a doomed gate; they only mark it after the
+fact.
 That is not sufficient for deletion, and the producer's own documentation says the same.
 
 So the lock stays, frozen at its current converged and review-passed state.
@@ -167,7 +198,7 @@ Acceptance:
   rule.
 - The delete-or-keep decision is an analyzer readout, not a judgement call.
 
-Dependencies: none. The producer half landed in 0.11.7; the rest is instrumentation.
+Dependencies: none. The producer half landed in 1.0.2; the rest is instrumentation.
 
 ## S3: invalidate the review surface
 
@@ -218,8 +249,12 @@ a simplification plan because what it simplifies is the effective workflow.
 
 Implementation status: the S4 boundary, policy configuration, typed telemetry, analyzer filtering,
 shared guide/tool wording, and focused regression coverage are implemented in the current working tree.
-The policy remains warn-first; no enforce rollout decision has been made. The final validation gate and
-post-fix independent review both pass; the review status is recorded in the plan status above.
+The policy remains warn-first; no enforce rollout decision has been made.
+The initial live window is insufficient because all four events used explicit `warn` overrides. The later clean window
+establishes default-policy provenance for R1 and R4, but R2 was omitted, R3 was compliant rather than violating, and
+the quality guardrails remain unmeasured.
+The final validation gate and post-fix independent review both pass; the independent rollout review recommends retaining
+`warn` until the remaining guardrails and representative rule denominators are available.
 
 Changes:
 
@@ -234,8 +269,8 @@ Changes:
 - [x] Gate enforcement behind `compositionPolicy: "warn" | "enforce" | "off"` in `src/config.ts`,
       default `"warn"` for one measurement window, flipping to `"enforce"` only after the warn data
       shows the rules fire on delegations that should have been refused.
-      A per-call override parameter remains available for the exceptional case, and its use is
-      recorded in telemetry.
+      The standard `subagent` tool always uses the configured policy; the separate `subagent_override`
+      tool is available for exceptional per-call overrides, and its use is recorded in telemetry.
 - [x] Emit every refusal and warning as a typed telemetry field (`compositionVerdict`), so tuning comes
       from the analyzer rather than from anecdote.
 - [x] Generate the guide's composition rules and the tool description's summary from the same source
@@ -245,7 +280,8 @@ Acceptance:
 
 - Validator delegations per Tier 1 flow trend to zero in the analyzer's validation-evidence section,
   with no rise in unresolved or abandoned tasks (the quality guardrail from plan v1 applies).
-- Warn-mode telemetry from the first window justifies or refutes each rule before `"enforce"` ships.
+- A representative default-policy warn-mode window and the quality guardrails justify or refute each rule before
+  `"enforce"` ships.
 - [x] A refusal message names the rule, the tier, and the compliant alternative, so the caller's next
   call succeeds on the first retry.
 
@@ -255,23 +291,17 @@ Risk: over-restriction strangles legitimate work, which is exactly why the rollo
 ## S5: make evidence reuse observable and its failures loud
 
 The reuse machinery exists and is correctly wired; the early baseline measured reuse at zero.
-The representative producer-capable window now records successful reviewer lookups, so the original
-framing of this item blamed mostly producer-side gaps is obsolete:
-the producer's consumer-aligned handoff landed in 0.11.7 and every F-item shipped, including the two
-that were expected to be the long poles - the F5 freshness pair on successful lookups
-(`repositoryStateStatus: matches | mismatch | unreadable`, carrying both the recorded and the current
-state) and F9 (`paths` removed from the authorization identity, one composite flow grant per project
-for flow-scoped callers, and refusals that name the shape, project, scope, and whether execution or
-publication was missing).
-Nothing this item needs remains producer-side.
-The consumer-side instrumentation, guidance, report contracts, producer join, and collection tooling
-are shipped.
-The remaining S5 tracking item is semantic producer-join coverage for duplicate records and
-time-window filtering; cross-flow, malformed, missing, and empty-stream behavior is covered.
-The consumer side now holds all of the work, most of it scheduled by the follow-ups file's own rule:
-guidance widens in the release that ships the parameters, and that release is the installed one.
-The consumer side now distinguishes failed lookups from successful zero-reuse flows, making the
-difference between "refs are unused" and "refs are unusable" visible.
+The representative producer-capable windows record successful reviewer lookups, so the original framing of this
+item as mostly producer-side work is obsolete.
+The consumer-aligned handoff is released in `@ztc/bash-tools` 1.0.2, including freshness, flow publication and
+lookup, repository-state and drift reporting, mutating metadata, authorization, and process-local single-flight.
+The consumer-side instrumentation, guidance, report contracts, producer join, and collection tooling are shipped.
+The analyzer's duplicate-record and time-window semantics are covered, as are cross-flow, malformed, missing, and
+empty-stream behaviors.
+The final flow-published probe returned one ref and one digest from four separate producer processes and recorded
+four independent executions, which is expected under the process-local F7 contract.
+The consumer side now distinguishes failed lookups from successful zero-reuse flows, making the difference between
+"refs are unused" and "refs are unusable" visible.
 
 Changes:
 
@@ -315,11 +345,11 @@ Changes:
       per project now covers flow-scoped child seats for the default gate, because `paths` left the
       authorization identity.
       The extension does not write the producer's policy file itself: D3's ownership boundary stands.
-- [ ] Run the follow-ups file's own verification checklist, now executable end to end: fan-out
-      dedup, concurrent single-flight, invalidation on tracked writes, `fresh` re-execution,
-      cross-flow isolation and poisoning, no-env fallback, and the telemetry join.
-      The core live checklist is exercised; duplicate-record and time-window semantic coverage remain
-      tracked as the final S5 edge cases.
+- [x] Run the follow-ups file's verification checklist against the released producer contract.
+      The producer's deterministic integration coverage validates process-local single-flight.
+      The fresh flow-published consumer probe validates cache eligibility, publication, provenance, and telemetry
+      joining; its four independent executions are expected because the workers use separate producer processes.
+      Cross-process single-flight is not part of the current contract.
 - [x] Refresh the status banners in `analysis/BASH_TOOLS_FOLLOWUPS.md`: every F-item is landed in
       the installed build, and the follow-ups file becomes a verification checklist instead of an
       ask list.
@@ -338,9 +368,9 @@ Acceptance:
 
 Dependencies: none. Every producer item this workstream waited on is in the installed build.
 
-## Producer dependency map (bash-tools) - all landed in 0.11.7
+## Producer dependency map (bash-tools) - all landed in 1.0.2
 
-Verified against the installed package README (0.11.7), the producer repository's PLAN.md, and live
+Verified against the installed package README (1.0.2), the producer repository's PLAN.md, and live
 lookup probes (a `vr_` lookup and a `pc_` lookup with an explicit `flowId`, both correctly not-found
 and side-effect free).
 Every ask from `analysis/BASH_TOOLS_FOLLOWUPS.md` shipped in the producer's consumer-aligned evidence
@@ -395,10 +425,11 @@ that the other stores reference by path, not a merge of the stores themselves.
 
 1. S1 (registry write path) and S3 (review surface) are shipped.
 2. S5 (observability, guidance widening, classifier alignment, analyzer join) is shipped, with
-   only semantic producer-join edge coverage still tracked.
+   the producer-capable verification evidence recorded against the process-local F7 contract.
 3. S2's instrumentation and representative measurement window are complete; the lock is frozen and
    retained because the window recorded one drift-flagged execution.
-4. S4 in warn mode, one measurement window, then the enforce decision from data.
+4. S4 remains in warn mode until a representative default-policy window and the quality guardrails support an
+   enforce decision.
 5. S7 only on evidence.
 
 Each item ships independently with its own measurement gate, matching the sequencing discipline of
@@ -503,7 +534,7 @@ Its thesis: stop paying per-agent for repository state, and give every mandate a
   Per-delegation manifests replace mandated reads; rereads of do-not-reread paths are telemetry.
 - W7 validation ownership and the `verify` handoff: shipped after fifteen review rounds.
   The mint-and-resolve contract, the mutating-command and `verify`-shape enforcement, and the
-  repository write lock all landed; the producer's side completed in bash-tools 0.11.7 (see the
+  repository write lock all landed; the producer's side completed in bash-tools 1.0.2 (see the
   producer dependency map in the active plan).
   Its acceptance ratios (one execution per repository state per flow; no validator delegations in
   Tier 1) are measurement windows carried into v3's S4 and S5.

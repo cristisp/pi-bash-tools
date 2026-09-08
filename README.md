@@ -21,7 +21,7 @@ pi install npm:@ztc/subagent-herdr
 
 ## Usage
 
-The extension registers two tools, `subagent` and `subagent_stats`. `subagent` modes:
+The extension registers `subagent`, `subagent_override`, and `subagent_stats` tools. `subagent` modes:
 
 - `subagent(agent, task)` - single task in a fresh session
 - `subagent(tasks: [{agent, task}, ...])` - parallel, up to `maxParallelTasks` (default 8)
@@ -34,6 +34,11 @@ The extension registers two tools, `subagent` and `subagent_stats`. `subagent` m
   for the current agentScope; the agent should check this before picking an
   agent name. Unknown agent names fail with the available list, a
   "did you mean" suggestion, and a pointer to this mode.
+- `subagent_override(...)` - the explicit opt-in path for a deliberate per-call
+  composition-policy override. It accepts the same delegation shapes as
+  `subagent` and requires `compositionPolicy` (`warn` | `enforce` | `off`).
+  Normal delegations must use `subagent`, which always uses the configured
+  policy and does not expose the override field.
 - `subagent_stats(label)` - compact reuse-relevant stats for one session: context size,
   turns, input/output usage, cost, reuse count, recent task history, the last
   error or the path of the last role report, delegation identity, the spend of
@@ -92,9 +97,10 @@ multi-worker fan-out, a remediation round, or any task the guide classifies abov
 worker. An unconditional system-prompt read costs the whole guide before the first delegation. When an older hand-maintained copy such as `~/.pi/agent/SUBAGENTS_GUIDE.md` still
 exists, the command reports it as superseded - delete it, because two copies of one contract drift.
 
-The installed `bash-tools` 0.11.7 producer grants one composite operator per project for flow-scoped child seats by default; `paths` are no longer part of that authorization identity.
+The installed `bash-tools` 1.0.2 producer grants one composite operator per project for flow-scoped child seats by default; `paths` are no longer part of that authorization identity.
 The extension consumes that policy but does not write the producer policy file.
 Workers publish reusable evidence with `publish: { flowId }`, consumers resolve with `{ ref, flowId?, covers? }`, and `fresh: true` is an execution request rather than a lookup.
+Single-flight coordination is process-local; flow publication shares completed evidence but does not coordinate active executions across child processes.
 
 ## Model presets
 
@@ -515,9 +521,10 @@ inside a flow resolves for every sibling in that flow, observed: a worker minted
 resolved both by bare `{ ref }` lookup without executing anything. A ref minted by a root session lives only
 in that process, so refs travel from child to parent and never the other way round. Two caveats stay true.
 Minting depends on the exact `verify` call shape being authorized without a prompt, because a child cannot
-answer one (`F9` in `analysis/BASH_TOOLS_FOLLOWUPS.md`), and a lookup does not re-report the current tree, so
-staleness has to be judged from the state the ref carries rather than assumed (`F5`). A sibling ref you cannot
-resolve is still a capability gap to report, not evidence to trust.
+answer one (`F9` in `analysis/BASH_TOOLS_FOLLOWUPS.md`). A lookup reports the recorded and current repository
+state through `repositoryStateStatus`: `matches` can be cited, `mismatch` requires re-execution, and `unreadable`
+must be reported as `NOT_RUN` (`F5`). A sibling ref you cannot resolve is still a capability gap to report, not
+evidence to trust.
 For workers, `implementationDiscoveryCalls` limits discovery before the first implementation tool call.
 After that allowance, the runtime blocks further non-report tools until the worker attempts an implementation tool call.
 
@@ -532,7 +539,7 @@ Two mechanical guards back the prose while `repositoryWriteLock` is on. A comman
 
 The details that decide whether this helps or wedges the work: a session is identified by label *and* flow, so two flows sharing one checkout contend even when both allocate a `worker-1`, and a session never blocks on its own hold. A `{ ref }` lookup is never blocked. A refusal costs a tool call and no validation pass, because the command did not run, and the block reason says to report the contention after three retries. The hold is taken only once the call has cleared every other refusal, so a budget-refused command cannot exclude its siblings for a write that never happened. The key is the nearest ancestor holding `.git`, or the working directory itself outside any checkout, so unrelated directories never contend, and each key is the first 32 hex characters of the SHA-256 of that path stored as `<agent directory>/subagent-herdr/repo-locks/<hash>.lock`, which is the file to inspect or delete when a hold looks stuck. A hold left behind by a killed child expires after 5 minutes, an entry that cannot be decoded stops excluding anyone after 2 seconds, and an unusable lock store allows the call rather than blocking every write in the flow. An entry this session cannot *read* is the one case it will not clear on your behalf: it is held until it is older than the TTL plus a minute of clock headroom, and only then removed by whoever finds it, because a reader that cannot inspect a hold is not entitled to free it. A hold that is genuinely stuck is the operator's to delete, and the refusal names the holder, the command and the age, so nobody has to guess which session to interrupt.
 
-Classification is by command family and script-name shape, because the producer does not yet report whether an executed script writes (`F6` in `analysis/BASH_TOOLS_FOLLOWUPS.md`). A project script that writes through an unrecognised name is therefore not excluded, and an unrecognised variant of a family that has a writing form is excluded conservatively; the guide rule about who owns the gate is what covers the remainder.
+Classification is conservative before execution because the consumer must decide whether a command may run before the producer returns its result. `bash-tools` 1.0.2 also reports `mutating` on execution and decision records. A project script that writes through an unrecognised name is therefore not excluded, and an unrecognised variant of a family that has a writing form is excluded conservatively; the guide rule about who owns the gate is what covers the remainder.
 
 ### Upgrading from an earlier configuration
 

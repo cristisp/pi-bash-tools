@@ -149,7 +149,7 @@ export function compositionRulesText(compact = false): string {
 }
 
 export function compositionToolSummary(): string {
-	return `Composition policy (default warn; per-call override warn|enforce|off): enforce refuses violations, warn reports them and still spawns, and off disables these standard-role checks.\n${compositionRulesText()}`;
+	return `Composition policy uses the configured policy for the standard subagent tool. Deliberate per-call overrides are available only through subagent_override, where compositionPolicy is required. enforce refuses violations, warn reports them and still spawns, and off disables these standard-role checks.\n${compositionRulesText()}`;
 }
 
 export interface CompositionVerdict {
@@ -430,6 +430,14 @@ export interface ValidationLookupFailure {
 	ref?: string;
 	errorClass: ValidationLookupFailureClass;
 	message?: string;
+	/** Producer decision for the failed lookup, when emitted by the validation tool. */
+	decision?: string;
+	/** Producer cache decision for the failed lookup, when emitted by the validation tool. */
+	cacheDecision?: string;
+	/** Producer flow provenance; this is not inferred from producerScope. */
+	flowId?: string;
+	/** True when multiple distinct producer flow IDs made provenance ambiguous. */
+	flowIdConflict?: boolean;
 }
 
 export interface ValidationExecution {
@@ -440,6 +448,14 @@ export interface ValidationExecution {
 	concurrentExecutions?: number;
 	mutating?: boolean;
 	forced?: boolean;
+	/** Producer decision for the execution, when emitted by the validation tool. */
+	decision?: string;
+	/** Producer cache decision for the execution, when emitted by the validation tool. */
+	cacheDecision?: string;
+	/** Producer flow provenance; this is not inferred from producerScope. */
+	flowId?: string;
+	/** True when multiple distinct producer flow IDs made provenance ambiguous. */
+	flowIdConflict?: boolean;
 }
 
 export interface ValidationReference {
@@ -468,6 +484,14 @@ export interface ValidationReference {
 	mutating?: boolean;
 	/** Whether the producer was forced to execute instead of reusing evidence. */
 	forced?: boolean;
+	/** Producer decision for this ref, when emitted by the validation tool. */
+	decision?: string;
+	/** Producer cache decision for this ref, when emitted by the validation tool. */
+	cacheDecision?: string;
+	/** Producer flow provenance; this is not inferred from producerScope. */
+	flowId?: string;
+	/** True when multiple distinct producer flow IDs made provenance ambiguous. */
+	flowIdConflict?: boolean;
 	/** Validation phases reported as omitted rather than passed. */
 	omitted?: string[];
 }

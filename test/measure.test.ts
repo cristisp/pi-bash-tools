@@ -337,6 +337,18 @@ describe('measure', () => {
 		);
 	});
 
+	it('filters composition events before the explicit measurement cutoff', () => {
+		const m = measure(compositionFixture(), 1001);
+		expect(m.composition).toEqual({
+			events: 0,
+			warnings: 0,
+			refusals: 0,
+			byRule: {},
+			byPolicy: {},
+			byOverride: {},
+		});
+	});
+
 	it('cuts the sample at the first turn that produced a report', () => {
 		const dir = fixture();
 		const records = readTelemetry(dir);
@@ -553,6 +565,68 @@ describe('producer validation invocations', () => {
 			{ ref: 'vr_1', executed: true },
 			{ ref: 'vr_1', executed: false },
 		]);
+	});
+
+	it('deduplicates repeated producer stream records by stable call identity', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'orchestration-producer-dedup-'));
+		const file = join(dir, 'invocations.jsonl');
+		const first = {
+			toolName: 'verify',
+			sessionId: 'session-1',
+			toolCallId: 'call-1',
+			flowId: 'f1',
+			ref: 'vr_1',
+			executed: true,
+		};
+		writeFileSync(
+			file,
+			[
+				JSON.stringify(first),
+				JSON.stringify(first),
+				JSON.stringify({ ...first, toolCallId: 'call-2', ref: 'vr_2' }),
+			].join('\n'),
+		);
+
+		expect(readProducerInvocations(dir, file)).toMatchObject([
+			{ recordId: 'session-1:call-1', ref: 'vr_1' },
+			{ recordId: 'session-1:call-2', ref: 'vr_2' },
+		]);
+	});
+
+	it('counts only timestamped producer records inside the telemetry window', () => {
+		const dir = validationFixture();
+		const file = join(dir, 'invocations.jsonl');
+		writeFileSync(
+			file,
+			[
+				JSON.stringify({
+					toolName: 'verify',
+					flowId: 'f1',
+					ref: 'vr_old',
+					at: 999,
+					executed: true,
+				}),
+				JSON.stringify({
+					toolName: 'verify',
+					flowId: 'f1',
+					ref: 'vr_current',
+					at: 1000,
+					executed: true,
+				}),
+				JSON.stringify({
+					toolName: 'verify',
+					flowId: 'f1',
+					ref: 'vr_future',
+					at: 1001,
+					executed: true,
+				}),
+			].join('\n'),
+		);
+
+		expect(measure(dir, undefined, file).validation.overall).toMatchObject({
+			producerInvocations: 1,
+			producerExecutions: 1,
+		});
 	});
 
 	it('includes non-verify producer drift in execution diagnostics without counting it as validation', () => {

@@ -13,6 +13,7 @@ import { registerInputHandler } from './src/input.ts';
 import { reconcileRegistry } from './src/registry.ts';
 import {
 	registerSubagentCloseTool,
+	registerSubagentOverrideTool,
 	registerSubagentStatsTool,
 	registerSubagentTool,
 } from './src/tools.ts';
@@ -41,6 +42,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	registerSubagentTool(pi);
+	registerSubagentOverrideTool(pi);
 	registerSubagentStatsTool(pi);
 	registerInputHandler(pi);
 }

@@ -3,19 +3,21 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { DEFAULT_ROLE_BUDGETS } from '../src/config.ts';
-import { SubagentParams } from '../src/execute.ts';
+import { SubagentOverrideParams, SubagentParams } from '../src/execute.ts';
 import { ORCHESTRATION_GUIDE_FILENAME } from '../src/guide.ts';
 import { REGISTRY_PATH } from '../src/registry-store.ts';
 import {
 	REUSE_WORKFLOW_GUIDANCE,
 	SUBAGENT_CLOSE_LABEL_PARAM_DESCRIPTION,
 	SUBAGENT_CLOSE_TOOL_DESCRIPTION,
+	SUBAGENT_OVERRIDE_TOOL_DESCRIPTION,
 	SUBAGENT_STATS_LABEL_PARAM_DESCRIPTION,
 	SUBAGENT_STATS_TOOL_DESCRIPTION,
 	subagentToolDescription,
 } from '../src/templates.ts';
 import {
 	registerSubagentCloseTool,
+	registerSubagentOverrideTool,
 	registerSubagentStatsTool,
 	registerSubagentTool,
 } from '../src/tools.ts';
@@ -47,6 +49,7 @@ function registerAllTools(): RegisteredTool[] {
 		},
 	} as unknown as ExtensionAPI;
 	registerSubagentTool(pi);
+	registerSubagentOverrideTool(pi);
 	registerSubagentStatsTool(pi);
 	registerSubagentCloseTool(pi);
 	return registered;
@@ -136,12 +139,14 @@ const DYNAMIC_VALUES = {
  */
 function authoredToolProse(): string {
 	const tool = toolByName('subagent');
+	const override = toolByName('subagent_override');
 	const stats = toolByName('subagent_stats');
 	const close = toolByName('subagent_close');
 	const statsParams = properties(stats.parameters);
 	const closeParams = properties(close.parameters);
 	const corpus = [
 		tool.description,
+		override.description,
 		stats.description,
 		close.description,
 		statsParams.label?.description,
@@ -155,14 +160,16 @@ function authoredToolProse(): string {
 }
 
 describe('subagent tool registration', () => {
-	it('registers the three tool names in order with their labels', () => {
+	it('registers the four tool names in order with their labels', () => {
 		expect(registerAllTools().map((t) => t.name)).toEqual([
 			'subagent',
+			'subagent_override',
 			'subagent_stats',
 			'subagent_close',
 		]);
 		expect(registerAllTools().map((t) => t.label)).toEqual([
 			'Subagent',
+			'Subagent Policy Override',
 			'Subagent Session Stats',
 			'Close Subagents',
 		]);
@@ -175,8 +182,9 @@ describe('subagent tool registration', () => {
 		expect(typeof subagent.renderResult).toBe('function');
 	});
 
-	it('registers the exported SubagentParams schema object itself for subagent', () => {
+	it('registers the standard and override schemas on separate tools', () => {
 		expect(toolByName('subagent').parameters).toBe(SubagentParams);
+		expect(toolByName('subagent_override').parameters).toBe(SubagentOverrideParams);
 	});
 });
 
@@ -194,7 +202,6 @@ describe('subagent parameter schema', () => {
 			'agentScope',
 			'agents',
 			'chain',
-			'compositionPolicy',
 			'confirmProjectAgents',
 			'cwd',
 			'evidenceScope',
@@ -261,6 +268,18 @@ describe('subagent parameter schema', () => {
 		expect(props().confirmProjectAgents.default).toBe(true);
 	});
 
+	it('keeps composition policy out of the standard schema', () => {
+		expect(props()).not.toHaveProperty('compositionPolicy');
+	});
+
+	it('requires composition policy on the explicit override schema', () => {
+		const override = jsonSchema(toolByName('subagent_override').parameters);
+		expect(properties(override).compositionPolicy.description).toContain(
+			'Deliberate per-call composition policy override',
+		);
+		expect(requiredFields(override)).toEqual(['compositionPolicy']);
+	});
+
 	it('bounds the recorded tier to the orchestration tier range', () => {
 		expect(props().tier.type).toBe('integer');
 		expect(props().tier.minimum).toBe(0);
@@ -288,6 +307,7 @@ describe('subagent_stats and subagent_close parameter schemas', () => {
 describe('registered description text is composed, not paraphrased', () => {
 	it('composes the subagent description from the shared templates source', () => {
 		expect(toolByName('subagent').description).toBe(subagentToolDescription(DYNAMIC_VALUES));
+		expect(toolByName('subagent_override').description).toBe(SUBAGENT_OVERRIDE_TOOL_DESCRIPTION);
 		expect(toolByName('subagent_stats').description).toBe(SUBAGENT_STATS_TOOL_DESCRIPTION);
 		expect(toolByName('subagent_close').description).toBe(SUBAGENT_CLOSE_TOOL_DESCRIPTION);
 		expect(properties(toolByName('subagent_stats').parameters).label.description).toBe(
@@ -445,7 +465,7 @@ describe('description prose lives in one source', () => {
 	const templatesSource = readFileSync(new URL('../src/templates.ts', import.meta.url), 'utf8');
 	const sharedRuleSource = readFileSync(new URL('../src/types.ts', import.meta.url), 'utf8');
 	const compositionSourceFragments = [
-		'Composition policy (default warn;',
+		'Composition policy uses the configured policy by default.',
 		...COMPOSITION_RULES.flatMap((rule) => [rule.description, rule.alternative]),
 	];
 

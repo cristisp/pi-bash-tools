@@ -379,6 +379,21 @@ describe('renderAgentFile', () => {
 			'project_command',
 		);
 	});
+	it('requires producer flow provenance for flow-scoped reviewer lookups', () => {
+		const reviewer = AGENT_TEMPLATES.find((t) => t.name === 'reviewer')!;
+		const evidence = section(reviewer.body, '## Validation Evidence');
+
+		expect(evidence).toContain(
+			'`{ ref, flowId?, covers? }` is classification only and is not authorization',
+		);
+		expect(evidence).toContain(
+			'missing or mismatched producer flow provenance is unverified and must fail closed',
+		);
+		expect(evidence).toContain(
+			'This local review guidance does not fix or replace the external producer',
+		);
+	});
+
 	it('sends refs upward through the ledger validation_refs field', () => {
 		for (const name of ['worker', 'validator']) {
 			const role = AGENT_TEMPLATES.find((t) => t.name === name)!;

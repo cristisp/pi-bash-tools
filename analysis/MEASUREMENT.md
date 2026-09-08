@@ -1,27 +1,27 @@
 # Orchestration measurement
 
-Agent dir `/Users/cristian.spissack/.pi/agent`. Window 2026-07-13T15:15 .. 2026-09-07T15:37. 383 root sessions, 924 child sessions, 144 telemetry records. Report cutoff 2026-09-03T10:06.
+Agent dir `/Users/cristian.spissack/.pi/agent`. Window 2026-07-13T15:15 .. 2026-09-08T23:01. 401 root sessions, 1046 child sessions, 289 telemetry records. Report cutoff 2026-09-08T22:59.
 
 ## Delivered `subagent` result size (estimated tokens, chars / 4)
 
 | window | n | avg | p50 | p95 | p99 | max |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| before cutoff | 1171 | 1514 | 1145 | 5294 | 8698 | 19559 |
-| at or after cutoff | 182 | 499 | 541 | 960 | 1966 | 2102 |
-| all | 1353 | 1378 | 955 | 4712 | 8559 | 19559 |
+| before cutoff | 1468 | 1306 | 856 | 4480 | 8512 | 19559 |
+| at or after cutoff | 4 | 288 | 330 | 354 | 354 | 354 |
+| all | 1472 | 1303 | 850 | 4480 | 8512 | 19559 |
 | baseline 2026-08-26..09-02 | 285 | 1821 | 900 | - | 6099 | - |
 
 ## Report digest fidelity (telemetry turns carrying a report)
 
-Delivered results joined to a telemetry report by report path: 5 / 129.
+Delivered results joined to a telemetry report by report path: 5 / 247.
 
 | role | turns | median full | median digest | digest/full | ledger | cost |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| reviewer | 62 | 2451 | 635 | 26% | 60/62 | $2.8480 |
-| worker | 47 | 1639 | 581 | 35% | 43/47 | $3.0137 |
-| validator | 14 | 1566 | 589 | 38% | 13/14 | $0.1614 |
-| planner | 5 | 2353 | 484 | 21% | 5/5 | $0.1532 |
-| scout | 1 | 2636 | 600 | 23% | 1/1 | $0.0243 |
+| worker | 115 | 1151 | 444 | 39% | 108/115 | $5.0001 |
+| reviewer | 81 | 2323 | 608 | 26% | 79/81 | $3.4865 |
+| validator | 41 | 675 | 257 | 38% | 37/41 | $0.3475 |
+| planner | 8 | 2293 | 484 | 21% | 8/8 | $0.2548 |
+| scout | 2 | 2636 | 600 | 23% | 2/2 | $0.0671 |
 
 ## Root report reads (the W3 Slice D signal)
 
@@ -29,9 +29,9 @@ These are root-session read requests targeting files under `flows/*/reports/*.md
 
 | window | report reads |
 | --- | ---: |
-| before cutoff | 0 |
-| at or after cutoff | 90 |
-| all | 90 |
+| before cutoff | 140 |
+| at or after cutoff | 0 |
+| all | 140 |
 
 ## Root carry (the W3 target)
 
@@ -39,48 +39,72 @@ Carry is result tokens x the number of later assistant turns in the same root se
 
 | window | results | delegating roots | carry (token-times) | carry per root |
 | --- | ---: | ---: | ---: | ---: |
-| before cutoff | 1171 | 66 | 281,043,046 | 4,258,228 |
-| at or after cutoff | 182 | 13 | 41,357,280 | 3,181,329 |
-| all | 1353 | 78 | 322,368,976 | 4,132,936 |
+| before cutoff | 1468 | 95 | 329,068,181 | 3,463,876 |
+| at or after cutoff | 4 | 1 | 4,407 | 4,407 |
+| all | 1472 | 95 | 329,041,238 | 3,463,592 |
 
-Root sessions received 1,863,781 estimated tokens of subagent results in total.
+Root sessions received 1,917,680 estimated tokens of subagent results in total.
 
-Child sessions created since telemetry began (2026-09-03T09:14): 127, of which 0 have no telemetry record. Historic children cannot be attributed and are excluded.
+Child sessions created since telemetry began (2026-09-03T09:14): 249, of which 0 have no telemetry record. Historic children cannot be attributed and are excluded.
 
-Child spend recorded in telemetry: $6.2240 across 144 turns.
+Child spend recorded in telemetry: $9.2088 across 268 ordinary delegation turns.
+
+## Composition policy events
+
+Typed composition events: 2 (2 warnings, 0 refusals).
+By rule: R1:1, R4:1.
+By policy: warn:2.
+By per-call override: none:2.
+Composition events are excluded from ordinary delegation, validation, and child-spend metrics.
 
 ## Validation evidence (the W7 target)
 
 Per role, flow, and overall: delegations carrying a `verify` ref, refs minted, refs executed rather than reused, refs resolved by lookup, failed lookups, reuse rate, full validation passes charged, and executions per distinct repository-state digest. Deduplication means grouping records by `flowId`, counting the distinct `stateDigest` values across the refs minted in that flow, and dividing executed mints by that count, because a ratio above 1 is the duplicate execution this workstream exists to remove. When the producer invocation stream is present, its one-record-per-call execution decision refines the consumer-side telemetry; otherwise the report says only what the extension observed.
 
-Producer invocation stream: `/tmp/bash-tools-child-invocations.jsonl` (8 verify records).
+Producer invocation stream: unavailable; producer execution columns are not zero-event evidence.
 
 | scope | delegations | delegations with refs | refs minted | refs executed | refs reused | refs by lookup | full validation passes | distinct state digests | executions per digest |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| overall | 144 | 16 | 6 | 6 | 0 | 2 | 147 | 5 | 1.20 |
-| reviewer | 65 | 5 | 0 | 0 | 0 | 2 | 1 | 2 | 0.00 |
-| worker | 55 | 6 | 3 | 3 | 0 | 0 | 120 | 3 | 1.00 |
-| validator | 18 | 5 | 3 | 3 | 0 | 0 | 26 | 3 | 1.00 |
-| planner | 5 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | - |
-| scout | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | - |
+| overall | 268 | 56 | 47 | 47 | 0 | 14 | 302 | 30 | 1.57 |
+| worker | 128 | 32 | 36 | 36 | 0 | 0 | 249 | 20 | 1.80 |
+| reviewer | 84 | 12 | 0 | 0 | 0 | 12 | 1 | 0 | - |
+| validator | 46 | 12 | 11 | 11 | 0 | 2 | 52 | 11 | 1.00 |
+| planner | 8 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | - |
+| scout | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | - |
 
 Per-flow reuse and lookup outcomes:
 
 | scope | lookup failures | failure classes | reuse rate | producer invocations | producer executions | state drift | max concurrent |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| flow:- | 0 | - | - | 0 | 0 | 0 | 1 |
-| flow:f09091d37c4540e11 | 0 | - | 33% | 6 | 4 | 1 | 1 |
+| flow:f09091d37c4540e11 | 0 | - | 33% | 0 | 0 | 1 | 1 |
+| flow:f16669aa7f2438a52 | 0 | - | 0% | 0 | 0 | 1 | 1 |
+| flow:f20f50475abc7acad | 1 | not-found:1 | 25% | 0 | 0 | 0 | 1 |
 | flow:f24b7aa13a9fddecf | 0 | - | - | 0 | 0 | 0 | 0 |
+| flow:f31c8fe9cb5d4dec4 | 0 | - | 0% | 0 | 0 | 0 | 1 |
+| flow:f337ad2fbb0e26406 | 0 | - | 0% | 0 | 0 | 0 | 1 |
 | flow:f4a7c827e86180efe | 0 | - | - | 0 | 0 | 0 | 0 |
 | flow:f5c2642cf9a782025 | 0 | - | - | 0 | 0 | 0 | 0 |
-| flow:f65373a6532523635 | 0 | - | 0% | 1 | 1 | 0 | 1 |
+| flow:f5e81af71dca45d34 | 0 | - | - | 0 | 0 | 0 | 0 |
+| flow:f65373a6532523635 | 0 | - | 0% | 0 | 0 | 0 | 1 |
 | flow:f66830a6253edf355 | 0 | - | - | 0 | 0 | 0 | 0 |
-| flow:f747a9848ce3654b8 | 0 | - | 0% | 1 | 1 | 0 | 1 |
+| flow:f7308b0f341bb4075 | 0 | - | 0% | 0 | 0 | 0 | 1 |
+| flow:f747a9848ce3654b8 | 0 | - | 0% | 0 | 0 | 0 | 1 |
 | flow:f780b529fc311e206 | 0 | - | 38% | 0 | 0 | 0 | 0 |
 | flow:f85f194e1b61c28e3 | 0 | - | - | 0 | 0 | 0 | 0 |
 | flow:f87aead9c5444bde2 | 0 | - | 0% | 0 | 0 | 0 | 1 |
+| flow:f925c085324674d3f | 0 | - | 0% | 0 | 0 | 0 | 1 |
+| flow:fa8b7d2bc8ba5e61a | 0 | - | 0% | 0 | 0 | 0 | 1 |
+| flow:fac2339cdccb79935 | 0 | - | - | 0 | 0 | 0 | 1 |
+| flow:fada4ffe1f42949b8 | 0 | - | - | 0 | 0 | 0 | 0 |
+| flow:fb880c07ca4f96ec0 | 0 | - | 0% | 0 | 0 | 0 | 1 |
+| flow:fc5b4d20cb2c6f2e4 | 1 | not-found:1 | 33% | 0 | 0 | 1 | 1 |
 | flow:fc9799eb401af8d25 | 0 | - | - | 0 | 0 | 0 | 0 |
+| flow:fcb7b5447b11b875a | 0 | - | - | 0 | 0 | 0 | 0 |
+| flow:fcee3a892487e3206 | 1 | not-found:1 | 50% | 0 | 0 | 0 | 0 |
+| flow:fd8404bb9633d5631 | 1 | not-found:1 | 30% | 0 | 0 | 0 | 1 |
+| flow:fe112d2ad387834db | 0 | - | - | 0 | 0 | 0 | 0 |
 | flow:fecffe2687f7928ba | 0 | - | - | 0 | 0 | 0 | 1 |
+| flow:ff0a1a4ae1003aed1 | 0 | - | 0% | 0 | 0 | 0 | 1 |
 | flow:ff8106728ab056c4b | 0 | - | 100% | 0 | 0 | 0 | 0 |
 | baseline 2026-09-05 plan: 1,075 duplicate project_command calls, 49.7% of them | - | - | - | - | - | - | - | - | - |
 
@@ -90,25 +114,41 @@ Counts consumer-enforced refusals while a sibling held the repository write lock
 
 | scope | lock refusals |
 | --- | ---: |
-| overall | 0 |
+| overall | 1 |
+| worker | 1 |
 | reviewer | 0 |
-| worker | 0 |
 | validator | 0 |
 | planner | 0 |
 | scout | 0 |
-| flow:- | 0 |
 | flow:f09091d37c4540e11 | 0 |
+| flow:f16669aa7f2438a52 | 0 |
+| flow:f20f50475abc7acad | 0 |
 | flow:f24b7aa13a9fddecf | 0 |
+| flow:f31c8fe9cb5d4dec4 | 0 |
+| flow:f337ad2fbb0e26406 | 0 |
 | flow:f4a7c827e86180efe | 0 |
 | flow:f5c2642cf9a782025 | 0 |
+| flow:f5e81af71dca45d34 | 0 |
 | flow:f65373a6532523635 | 0 |
 | flow:f66830a6253edf355 | 0 |
+| flow:f7308b0f341bb4075 | 0 |
 | flow:f747a9848ce3654b8 | 0 |
 | flow:f780b529fc311e206 | 0 |
 | flow:f85f194e1b61c28e3 | 0 |
 | flow:f87aead9c5444bde2 | 0 |
+| flow:f925c085324674d3f | 0 |
+| flow:fa8b7d2bc8ba5e61a | 0 |
+| flow:fac2339cdccb79935 | 0 |
+| flow:fada4ffe1f42949b8 | 0 |
+| flow:fb880c07ca4f96ec0 | 0 |
+| flow:fc5b4d20cb2c6f2e4 | 0 |
 | flow:fc9799eb401af8d25 | 0 |
+| flow:fcb7b5447b11b875a | 0 |
+| flow:fcee3a892487e3206 | 0 |
+| flow:fd8404bb9633d5631 | 0 |
+| flow:fe112d2ad387834db | 0 |
 | flow:fecffe2687f7928ba | 0 |
+| flow:ff0a1a4ae1003aed1 | 1 |
 | flow:ff8106728ab056c4b | 0 |
 
 Every ref counted here was minted by a delegated child seat, because root spend is not in telemetry. Minting works and is authorized per `verify` call shape, so a zero here after children ran the gate means the shape was refused (`F9` in `analysis/BASH_TOOLS_FOLLOWUPS.md`) rather than that validation was deduplicated.
@@ -119,9 +159,9 @@ The `subagent` tool description and the child prompts now carry what used to req
 
 | window | guide reads | reads per delegating root |
 | --- | ---: | ---: |
-| before cutoff | 80 | 1.21 |
-| at or after cutoff | 21 | 1.62 |
-| all | 101 | 1.29 |
+| before cutoff | 116 | 1.22 |
+| at or after cutoff | 1 | 1.00 |
+| all | 117 | 1.23 |
 | rendered guide (est. tokens) | 5819 | - |
 
 Rendered guide source `agents/subagent_orchestration.md` at 23277 chars; the size reads `-` when that file is absent from the agent dir, which is a missing artifact rather than a cost of zero.

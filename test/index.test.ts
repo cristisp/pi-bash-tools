@@ -77,7 +77,12 @@ describe('extension registration', () => {
 		register(pi as never);
 
 		const toolNames = pi.registerTool.mock.calls.map((c) => c[0].name);
-		expect(toolNames.toSorted()).toEqual(['subagent', 'subagent_close', 'subagent_stats']);
+		expect(toolNames.toSorted()).toEqual([
+			'subagent',
+			'subagent_close',
+			'subagent_override',
+			'subagent_stats',
+		]);
 
 		const commandNames = pi.registerCommand.mock.calls.map((c) => c[0]);
 		expect(commandNames).toEqual([
@@ -99,8 +104,10 @@ describe('extension registration', () => {
 		register(pi as never);
 
 		const subagent = pi.registerTool.mock.calls.find((c) => c[0].name === 'subagent')![0];
+		const override = pi.registerTool.mock.calls.find((c) => c[0].name === 'subagent_override')![0];
 		const stats = pi.registerTool.mock.calls.find((c) => c[0].name === 'subagent_stats')![0];
 		expect(subagent.description).toContain('call subagent with listSubagents: true');
+		expect(override.description).toContain('explicit per-call composition policy override');
 		expect(subagent.description).toContain('call subagent_stats with that label');
 		expect(subagent.description).toContain('Never infer or increment labels');
 		expect(subagent.description).toContain('another workspace');

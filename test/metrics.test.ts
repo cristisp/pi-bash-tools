@@ -142,6 +142,183 @@ describe('measureExecutionMetrics', () => {
 		]);
 	});
 
+	it('preserves producer decisions and provenance for hits, forced runs, and denied lookups', () => {
+		const messages = [
+			assistantMsg('producer metadata', {
+				toolCalls: [
+					{
+						id: 'hit',
+						name: 'verify',
+						args: { ref: 'vr_hit', flowId: 'flow-hit', covers: ['AC-009'] },
+					},
+					{ id: 'forced', name: 'verify', args: { fresh: true } },
+					{
+						id: 'denied',
+						name: 'verify',
+						args: { ref: 'vr_denied', flowId: 'flow-requested', covers: ['AC-009'] },
+					},
+				],
+			}),
+			toolResultMsg(
+				'hit',
+				JSON.stringify({
+					ref: 'vr_hit',
+					verdict: 'passed',
+					reused: true,
+					decision: 'hit',
+					cacheDecision: 'reused',
+					provenance: { flowId: 'flow-hit' },
+					producerScope: 'scope-is-not-a-flow-id',
+				}),
+				'verify',
+			),
+			toolResultMsg(
+				'forced',
+				JSON.stringify({
+					ref: 'vr_forced',
+					verdict: 'passed',
+					reused: false,
+					execution: {
+						decision: 'forced',
+						cacheDecision: 'miss',
+						publication: { flowId: 'flow-forced' },
+					},
+					producerScope: 'scope-is-not-a-flow-id',
+				}),
+				'verify',
+			),
+			{
+				...toolResultMsg(
+					'denied',
+					JSON.stringify({
+						code: 'FORBIDDEN',
+						message: 'flow provenance denied',
+						error: 'permission denied',
+						decision: 'denied',
+						cacheDecision: 'miss',
+						publication: { flowId: 'flow-requested' },
+						producerScope: 'scope-is-not-a-flow-id',
+					}),
+					'verify',
+				),
+				isError: true,
+			},
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+		expect(metrics.validationRefs).toEqual([
+			expect.objectContaining({
+				ref: 'vr_hit',
+				decision: 'hit',
+				cacheDecision: 'reused',
+				flowId: 'flow-hit',
+			}),
+			expect.objectContaining({
+				ref: 'vr_forced',
+				forced: true,
+				decision: 'forced',
+				cacheDecision: 'miss',
+				flowId: 'flow-forced',
+			}),
+		]);
+		expect(metrics.validationExecutions).toEqual([
+			expect.objectContaining({
+				tool: 'verify',
+				forced: true,
+				decision: 'forced',
+				cacheDecision: 'miss',
+				flowId: 'flow-forced',
+			}),
+		]);
+		expect(metrics.lookupFailures).toEqual([
+			{
+				ref: 'vr_denied',
+				errorClass: 'denied',
+				message: 'flow provenance denied',
+				decision: 'denied',
+				cacheDecision: 'miss',
+				flowId: 'flow-requested',
+			},
+		]);
+	});
+
+	it('fails closed when producer flow provenance conflicts', () => {
+		const messages = [
+			assistantMsg('conflicting producer provenance', {
+				toolCalls: [
+					{ id: 'direct-provenance', name: 'verify', args: { ref: 'vr_direct_provenance' } },
+					{ id: 'direct-publication', name: 'verify', args: { ref: 'vr_direct_publication' } },
+					{ id: 'nested', name: 'verify', args: { fresh: true } },
+					{ id: 'lookup', name: 'verify', args: { ref: 'vr_lookup' } },
+				],
+			}),
+			toolResultMsg(
+				'direct-provenance',
+				JSON.stringify({
+					ref: 'vr_direct_provenance',
+					verdict: 'passed',
+					reused: true,
+					flowId: 'flow-direct',
+					provenance: { flowId: 'flow-provenance' },
+				}),
+				'verify',
+			),
+			toolResultMsg(
+				'direct-publication',
+				JSON.stringify({
+					ref: 'vr_direct_publication',
+					verdict: 'passed',
+					reused: true,
+					flowId: 'flow-direct',
+					publication: { flowId: 'flow-publication' },
+				}),
+				'verify',
+			),
+			toolResultMsg(
+				'nested',
+				JSON.stringify({
+					ref: 'vr_nested',
+					verdict: 'passed',
+					reused: false,
+					provenance: { flowId: 'flow-nested-provenance' },
+					publication: { flowId: 'flow-nested-publication' },
+				}),
+				'verify',
+			),
+			{
+				...toolResultMsg(
+					'lookup',
+					JSON.stringify({
+						code: 'FORBIDDEN',
+						message: 'conflicting flow provenance denied',
+						provenance: { flowId: 'flow-lookup-provenance' },
+						publication: { flowId: 'flow-lookup-publication' },
+					}),
+					'verify',
+				),
+				isError: true,
+			},
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+		expect(metrics.validationRefs).toHaveLength(3);
+		for (const reference of metrics.validationRefs ?? []) {
+			expect(reference.flowIdConflict).toBe(true);
+			expect(reference).not.toHaveProperty('flowId');
+		}
+		expect(metrics.validationExecutions).toEqual([
+			expect.objectContaining({ tool: 'verify', flowIdConflict: true }),
+		]);
+		expect(metrics.validationExecutions?.[0]).not.toHaveProperty('flowId');
+		expect(metrics.lookupFailures).toEqual([
+			expect.objectContaining({
+				errorClass: 'denied',
+				flowIdConflict: true,
+			}),
+		]);
+		expect(metrics.lookupFailures?.[0]).not.toHaveProperty('flowId');
+	});
+
 	it('separates report prose from output spent on tool arguments', () => {
 		const messages = [
 			assistantMsg('reading', {

@@ -46,6 +46,13 @@ export function subagentToolDescription(values: SubagentToolDescriptionValues): 
 	].join(' ');
 }
 
+export const SUBAGENT_OVERRIDE_TOOL_DESCRIPTION = [
+	'Deliberately delegate with an explicit per-call composition policy override.',
+	'Use the standard subagent tool for normal delegations; it always uses the configured composition policy.',
+	'This tool requires compositionPolicy and is the only supported per-call override path.',
+	compositionToolSummary(),
+].join(' ');
+
 export const SUBAGENT_STATS_TOOL_DESCRIPTION = [
 	`${REUSE_WORKFLOW_GUIDANCE} This tool is the stats step and must run before reuse.`,
 	'Reports compact reuse-relevant stats: context size, turns, input/output usage, cost, reuse count, recent task history, the last error or the path of the last role report, and only relevant warnings.',
@@ -482,7 +489,7 @@ Write None when there are no findings.
 
 - command or supplied evidence - Result, the ref cited for it, that ref's \`covers\` ids, and whether it is sufficient.
 
-The reviewer audits refs and never re-executes them. Resolve a supplied ref by calling \`verify\` with \`{ ref }\` and nothing else for the default flow; add \`flowId\` or \`covers\` only when needed; a lookup executes nothing and is not a validation pass; do not add \`publish\` or \`fresh\` to a lookup; those shapes are refused by enforcement. Confirm \`repositoryStateStatus: matches\`; a mismatch, unreadable state, refusal, timeout, or not-found lookup is unresolved evidence. A required check with no live ref is a finding, and so is a ref cited with a freshness of \`resolved\` for a check that needed execution. A ref that returns nothing is reported unverified rather than trusted or re-run, because you cannot establish a freshness you did not observe. The mandatory \`## Files Reviewed\` section is the inspected set: list every reviewed path and relevant line range, and do not treat \`covers\` as a substitute for inspection.
+The reviewer audits refs and never re-executes them. Resolve a supplied ref by calling \`verify\` with \`{ ref }\` and nothing else for the default flow; add \`flowId\` or \`covers\` only when needed; a lookup executes nothing and is not a validation pass; do not add \`publish\` or \`fresh\` to a lookup; those shapes are refused by enforcement. The lookup shape \`{ ref, flowId?, covers? }\` is classification only and is not authorization. When a lookup requests a flow, the returned producer provenance flow ID must exactly match that requested flow; missing or mismatched producer flow provenance is unverified and must fail closed. This local review guidance does not fix or replace the external producer's flow-ownership checks. Confirm \`repositoryStateStatus: matches\`; a mismatch, unreadable state, refusal, timeout, or not-found lookup is unresolved evidence. A required check with no live ref is a finding, and so is a ref cited with a freshness of \`resolved\` for a check that needed execution. A ref that returns nothing is reported unverified rather than trusted or re-run, because you cannot establish a freshness you did not observe. The mandatory \`## Files Reviewed\` section is the inspected set: list every reviewed path and relevant line range, and do not treat \`covers\` as a substitute for inspection.
 
 ## Unverified Checks
 

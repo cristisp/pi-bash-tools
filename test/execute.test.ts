@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
-import type { SubagentParams } from '../src/execute.ts';
+import type { SubagentExecutionParams } from '../src/execute.ts';
 import { deriveFlowId } from '../src/delegation.ts';
 import { makeRegistryEntry, makeTempDir, stubEnv, writeAgentFile } from './helpers.ts';
 
@@ -34,7 +34,10 @@ async function loadExecute() {
 	return import('../src/execute.ts');
 }
 
-async function execSubagent(params: SubagentParams, overrides: Partial<ExtensionContext> = {}) {
+async function execSubagent(
+	params: SubagentExecutionParams,
+	overrides: Partial<ExtensionContext> = {},
+) {
 	const { executeSubagent } = await loadExecute();
 	return executeSubagent(params, undefined, undefined, ctx(overrides));
 }
@@ -623,6 +626,7 @@ describe('executeSubagent - composition policy', () => {
 			compositionPolicy: 'warn',
 			compositionVerdict: { rule: 'R1', action: 'warn', policy: 'warn' },
 		});
+		expect(telemetry.at(-1)).not.toHaveProperty('compositionPolicyOverride');
 	});
 
 	it('enforces tier 1 validator refusal before a child exists', async () => {
