@@ -17,6 +17,7 @@ The extension registers exactly these custom tools:
 - `environment` reads only explicitly requested environment variables after policy authorization.
 - `read_batch` reads up to 32 authorized repository-relative files with optional bounded line ranges and per-path errors.
 - `project_command` runs the fixed `workspace_path` and `node_version` observations, discovers Node project state with `node_project_info`, lists top-level dependencies with `node_deps_list`, runs exact package scripts from the supported Node command families, and runs six fixed Fallow analyses after policy authorization.
+- `verify` runs the configured format, lint, typecheck, and test phases in a fixed order with bounded output and evidence.
 - `move` moves or renames one authorized regular file.
 - `delete` deletes one authorized regular file.
 
@@ -297,12 +298,13 @@ The tools are read-only and do not reset, checkout, write, stage, commit, push, 
 
 ## Development
 
-```bash
-npm install
-npm run check
-```
+The package requires Node.js 24 or newer.
 
-Use `npm run test:watch` while developing.
+Install the package dependencies with the project's package manager.
+
+Use the `verify` tool for final validation, omitting `typecheck` because this project has no standalone typecheck script and TypeScript checking is included in lint through the Oxlint TypeScript plugin.
+
+Use `project_command` for focused format, lint, and test runs, and use its coverage test variant when coverage-sensitive changes are made.
 
 ## Loading into pi
 

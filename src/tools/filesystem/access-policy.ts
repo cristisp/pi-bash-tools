@@ -142,6 +142,17 @@ function blockedResult(
 
 const MAX_EDIT_PREFLIGHT_BYTES = 256_000;
 
+async function readPreflightBytes(
+  handle: FileHandle,
+  buffer: Buffer,
+  offset = 0,
+): Promise<number> {
+  if (offset >= buffer.length) return offset;
+  const result = await handle.read(buffer, offset, buffer.length - offset, offset);
+  if (result.bytesRead === 0) return offset;
+  return readPreflightBytes(handle, buffer, offset + result.bytesRead);
+}
+
 async function readEditPreflightContent(path: string): Promise<string | undefined> {
   let handle: FileHandle | undefined;
   try {
@@ -149,8 +160,10 @@ async function readEditPreflightContent(path: string): Promise<string | undefine
     const stats = await handle.stat();
     if (!stats.isFile() || stats.size > MAX_EDIT_PREFLIGHT_BYTES) return undefined;
     const buffer = Buffer.alloc(MAX_EDIT_PREFLIGHT_BYTES + 1);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    const bytesRead = await readPreflightBytes(handle, buffer);
     if (bytesRead > MAX_EDIT_PREFLIGHT_BYTES) return undefined;
+    const finalStats = await handle.stat();
+    if (!finalStats.isFile() || finalStats.size !== bytesRead) return undefined;
     return buffer.subarray(0, bytesRead).toString("utf8");
   } catch {
     return undefined;
