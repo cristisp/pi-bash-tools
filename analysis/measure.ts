@@ -1,6 +1,18 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import type { TelemetryRecord } from '../src/types.ts';
+import type {
+	CompositionRuleId,
+	S4CompositionAction,
+	S4CompositionObservation,
+	S4DecisionSource,
+	S4DirectionCounts,
+	S4GuardrailStatus,
+	S4Lifecycle,
+	S4Quality,
+	S4QualitySignals,
+	S4Preflight,
+	TelemetryRecord,
+} from '../src/types.ts';
 
 /** Same estimator `analysis-0903-full.md` used, so numbers stay comparable to the baseline. */
 export const CHARS_PER_TOKEN = 4;
@@ -645,8 +657,19 @@ function carryOf(list: DeliveredResult[]): number {
 	return list.reduce((acc, r) => acc + r.carryTokens, 0);
 }
 
+function isS4Record(record: TelemetryRecord): boolean {
+	return (
+		record.event === 's4_preflight' ||
+		record.s4Preflight !== undefined ||
+		record.s4Outcome !== undefined
+	);
+}
+
 function isCompositionRecord(record: TelemetryRecord): boolean {
-	return record.event === 'composition' || record.compositionVerdict !== undefined;
+	return (
+		!isS4Record(record) &&
+		(record.event === 'composition' || record.compositionVerdict !== undefined)
+	);
 }
 
 function tallyComposition(records: TelemetryRecord[], cutoff: number): CompositionMeasurement {
@@ -909,7 +932,11 @@ export function measure(
 	producerInvocationPath?: string,
 ): Measurement {
 	const records = readTelemetry(agentDir);
-	const delegationRecords = records.filter((record) => !isCompositionRecord(record));
+	// S4 preflight and nested outcome records are additive evidence, never ordinary
+	// delegation turns. Composition events remain counted by tallyComposition.
+	const delegationRecords = records.filter(
+		(record) => !isCompositionRecord(record) && !isS4Record(record),
+	);
 	const producerStreamPath = resolveProducerInvocationPath(agentDir, producerInvocationPath);
 	const producerInvocations = producerInvocationsInTelemetryWindow(
 		readProducerInvocations(agentDir, producerStreamPath),
@@ -1091,6 +1118,892 @@ export function measure(
 			delegationRecords.reduce((acc, r) => acc + (r.usage?.cost ?? 0), 0).toFixed(4),
 		),
 	};
+}
+
+export interface S4Policy {
+	version: 1;
+	minimumPreflights: number;
+	minimumWindowMs: number;
+	minimumEligibleObservationsPerRule: number;
+	minimumIndependentReviews: number;
+	maxUnknownRate: number;
+	maxUnresolvedOrAbandonedRate: number;
+	maxRegressionAfterReviewPassRate: number;
+	maxEscalationRate: number;
+	maxTier1DiscoveryFailureRate: number;
+}
+
+export type S4MachineStatus = 'ENFORCE_CANDIDATE' | 'RETAIN_WARN' | 'INSUFFICIENT_EVIDENCE';
+export type S4LegacyDecision = 'pass' | 'fail' | 'incomplete';
+
+export interface S4RuleStatistics {
+	observed: number;
+	eligible: number;
+	ineligible: number;
+	compliant: number;
+	noncompliant: number;
+	unknown: number;
+	byAction: Record<S4CompositionAction, number>;
+	byDecisionSource: Record<S4DecisionSource, number>;
+	minimumDenominator: {
+		required: number;
+		eligible: number;
+		status: 'pass' | 'fail' | 'insufficient' | 'disabled';
+	};
+	minimumDenominatorStatus: 'pass' | 'fail' | 'insufficient' | 'disabled';
+}
+
+export interface S4RateGuardrail {
+	numerator: number;
+	denominator: number;
+	rate: number | null;
+	threshold: number;
+	status: S4GuardrailStatus;
+	direction?: S4DirectionCounts;
+	directionByTier?: Record<string, S4DirectionCounts>;
+}
+
+export interface S4AnalysisWindow {
+	from?: number;
+	to?: number;
+	independentReview?: 'pass' | 'fail' | 'pending';
+}
+
+export interface S4DecisionArtifact {
+	v: 1;
+	status: S4MachineStatus;
+	decision: S4LegacyDecision;
+	policy: S4Policy;
+	window: {
+		from: number;
+		to: number;
+		durationMs: number;
+		minimumMs: number;
+		status: S4GuardrailStatus;
+	};
+	preflights: number;
+	outcomes: number;
+	boundaries: number;
+	ruleStatistics: Record<CompositionRuleId, S4RuleStatistics>;
+	guardrails: {
+		unresolvedOrAbandoned: S4RateGuardrail;
+		regressionAfterReviewPass: S4RateGuardrail;
+		escalation: S4RateGuardrail;
+		tier1DiscoveryFailure: S4RateGuardrail;
+	};
+	independentReview: {
+		requested: 'pass' | 'fail' | 'pending';
+		observedPasses: number;
+		minimum: number;
+		status: S4GuardrailStatus;
+	};
+	unknownRate: {
+		numerator: number;
+		denominator: number;
+		rate: number | null;
+		threshold: number;
+		status: S4GuardrailStatus;
+	};
+	overrideRate: {
+		numerator: number;
+		denominator: number;
+		rate: number | null;
+		status: S4GuardrailStatus;
+	};
+	reasons: string[];
+}
+
+const S4_RULES: CompositionRuleId[] = ['R1', 'R2', 'R3', 'R4'];
+const S4_ACTIONS = new Set<S4CompositionAction>([
+	'not_applicable',
+	'allow',
+	'warn',
+	'refuse',
+	'disabled',
+]);
+const S4_SOURCES = new Set<S4DecisionSource>(['default', 'override']);
+const S4_LIFECYCLES = new Set<S4Lifecycle>([
+	'settled',
+	'failed',
+	'aborted',
+	'blocked',
+	'abandoned',
+	'unknown',
+]);
+const S4_QUALITY = new Set<S4Quality>(['pass', 'fail', 'incomplete', 'not_run', 'unknown']);
+
+function loadS4Policy(): { policy: S4Policy; valid: boolean } {
+	try {
+		const parsed = JSON.parse(
+			readFileSync(new URL('./s4-policy.json', import.meta.url), 'utf8'),
+		) as Partial<S4Policy>;
+		const keys: (keyof S4Policy)[] = [
+			'minimumPreflights',
+			'minimumWindowMs',
+			'minimumEligibleObservationsPerRule',
+			'minimumIndependentReviews',
+			'maxUnknownRate',
+			'maxUnresolvedOrAbandonedRate',
+			'maxRegressionAfterReviewPassRate',
+			'maxEscalationRate',
+			'maxTier1DiscoveryFailureRate',
+		];
+		const valid =
+			parsed.version === 1 &&
+			keys.every(
+				(key) =>
+					typeof parsed[key] === 'number' && Number.isFinite(parsed[key]) && parsed[key] >= 0,
+			);
+		return { policy: parsed as S4Policy, valid };
+	} catch {
+		return { policy: {} as S4Policy, valid: false };
+	}
+}
+
+function blankRuleStats(): S4RuleStatistics {
+	return {
+		observed: 0,
+		eligible: 0,
+		ineligible: 0,
+		compliant: 0,
+		noncompliant: 0,
+		unknown: 0,
+		byAction: { not_applicable: 0, allow: 0, warn: 0, refuse: 0, disabled: 0 },
+		byDecisionSource: { default: 0, override: 0 },
+		minimumDenominator: { required: 0, eligible: 0, status: 'insufficient' },
+		minimumDenominatorStatus: 'insufficient',
+	};
+}
+
+function finiteTimestamp(value: unknown): value is number {
+	return typeof value === 'number' && Number.isFinite(value);
+}
+
+function validS4Preflight(
+	record: TelemetryRecord,
+): record is TelemetryRecord & { s4Preflight: S4Preflight } {
+	const preflight = record.s4Preflight;
+	if (
+		!preflight ||
+		record.event !== 's4_preflight' ||
+		preflight.v !== 1 ||
+		!preflight.compositionBoundaryId ||
+		!record.flowId ||
+		!record.taskId
+	)
+		return false;
+	if (
+		!['single', 'parallel', 'chain'].includes(preflight.mode) ||
+		!['warn', 'enforce', 'off'].includes(preflight.policy)
+	)
+		return false;
+	if (
+		preflight.policyOverride !== undefined &&
+		!['warn', 'enforce', 'off'].includes(preflight.policyOverride)
+	)
+		return false;
+	if (
+		!Number.isSafeInteger(preflight.expectedChildCount) ||
+		preflight.expectedChildCount < 0 ||
+		!Array.isArray(preflight.observations) ||
+		preflight.observations.length < S4_RULES.length
+	)
+		return false;
+	const byRule = new Map<CompositionRuleId, S4CompositionObservation[]>();
+	for (const observation of preflight.observations) {
+		if (
+			!observation ||
+			!S4_RULES.includes(observation.ruleId) ||
+			!S4_ACTIONS.has(observation.action) ||
+			!S4_SOURCES.has(observation.decisionSource) ||
+			typeof observation.eligible !== 'boolean' ||
+			(observation.compliant !== null && typeof observation.compliant !== 'boolean') ||
+			!observation.reason ||
+			observation.compositionBoundaryId !== preflight.compositionBoundaryId ||
+			observation.mode !== preflight.mode ||
+			observation.policy !== preflight.policy ||
+			observation.expectedChildCount !== preflight.expectedChildCount
+		)
+			return false;
+		if (
+			observation.ruleId === 'R2' &&
+			observation.eligible &&
+			(preflight.mode !== 'parallel' || preflight.expectedChildCount <= 1)
+		)
+			return false;
+		const list = byRule.get(observation.ruleId) ?? [];
+		list.push(observation);
+		byRule.set(observation.ruleId, list);
+	}
+	if (byRule.size !== S4_RULES.length) return false;
+	for (const rule of S4_RULES) {
+		const list = byRule.get(rule)!;
+		if (
+			!list.some((observation) => observation.eligible) &&
+			(list.length !== 1 || list[0].action !== 'not_applicable' || list[0].compliant !== null)
+		)
+			return false;
+		if (
+			list.some((observation) => !observation.eligible && observation.action !== 'not_applicable')
+		)
+			return false;
+	}
+	return record.compositionBoundaryId === preflight.compositionBoundaryId;
+}
+
+function validS4Outcome(record: TelemetryRecord): boolean {
+	const outcome = record.s4Outcome;
+	if (
+		!outcome ||
+		(record.event !== undefined && record.event !== 's4_outcome') ||
+		outcome.v !== 1 ||
+		!S4_LIFECYCLES.has(outcome.lifecycle) ||
+		!S4_QUALITY.has(outcome.quality) ||
+		!S4_QUALITY.has(outcome.validationStatus) ||
+		!S4_QUALITY.has(outcome.reviewStatus) ||
+		!S4_QUALITY.has(outcome.budgetStatus)
+	)
+		return false;
+	const correlation = outcome.correlation;
+	if (
+		!correlation ||
+		!correlation.flowId ||
+		!correlation.taskId ||
+		!correlation.delegationId ||
+		!correlation.compositionBoundaryId ||
+		!Number.isSafeInteger(correlation.ledgerRevision) ||
+		correlation.ledgerRevision <= 0
+	)
+		return false;
+	if (
+		record.flowId !== correlation.flowId ||
+		record.taskId !== correlation.taskId ||
+		record.delegationId !== correlation.delegationId ||
+		record.ledgerRevision !== correlation.ledgerRevision ||
+		record.compositionBoundaryId !== correlation.compositionBoundaryId
+	)
+		return false;
+	if (correlation.tier !== undefined && record.tier !== correlation.tier) return false;
+	if (
+		!outcome.qualitySignals ||
+		outcome.qualitySignals.componentStatusConsistent !== true ||
+		typeof outcome.qualitySignals.unresolvedOrAbandoned !== 'boolean'
+	)
+		return false;
+	if (record.role === 'reviewer' && typeof outcome.qualitySignals.reviewerPass !== 'boolean')
+		return false;
+	if (!['pass', 'fail', 'pending', 'unknown'].includes(outcome.independentReviewStatus))
+		return false;
+	if (
+		outcome.quality === 'pass' &&
+		(outcome.lifecycle !== 'settled' ||
+			[outcome.validationStatus, outcome.reviewStatus, outcome.budgetStatus].some((status) =>
+				['fail', 'incomplete', 'unknown'].includes(status),
+			) ||
+			outcome.qualitySignals?.unresolvedOrAbandoned === true)
+	)
+		return false;
+	return true;
+}
+
+function s4DecisionWindow(
+	records: TelemetryRecord[],
+	requested?: S4AnalysisWindow,
+): { window?: { from: number; to: number }; error?: string } {
+	const hasFrom = requested?.from !== undefined;
+	const hasTo = requested?.to !== undefined;
+	if (hasFrom !== hasTo) return { error: 'explicit S4 windows require both from and to' };
+	if (hasFrom || hasTo) {
+		if (
+			!finiteTimestamp(requested?.from) ||
+			!finiteTimestamp(requested?.to) ||
+			(requested!.from as number) > (requested!.to as number)
+		)
+			return { error: 'S4 window must be finite and inclusive with from <= to' };
+		return { window: { from: requested!.from!, to: requested!.to! } };
+	}
+	const timestamps = records.map((record) => record.at).filter(finiteTimestamp);
+	if (!timestamps.length) return { error: 'no observed S4 telemetry window' };
+	return { window: { from: Math.min(...timestamps), to: Math.max(...timestamps) } };
+}
+
+function s4Bool(record: TelemetryRecord, key: keyof S4QualitySignals): boolean | null {
+	const value = record.s4Outcome?.qualitySignals?.[key];
+	return typeof value === 'boolean' ? value : null;
+}
+
+function s4Rate(
+	numerator: number,
+	denominator: number,
+	threshold: number,
+	unknown = false,
+	emptyPass = false,
+	direction?: S4DirectionCounts,
+	directionByTier?: Record<string, S4DirectionCounts>,
+): S4RateGuardrail {
+	const rate = denominator > 0 ? numerator / denominator : emptyPass ? 0 : null;
+	const status: S4GuardrailStatus = unknown
+		? 'unknown'
+		: rate === null
+			? 'insufficient'
+			: rate <= threshold
+				? 'pass'
+				: 'fail';
+	return {
+		numerator,
+		denominator,
+		rate,
+		threshold,
+		status,
+		...(direction ? { direction } : {}),
+		...(directionByTier ? { directionByTier } : {}),
+	};
+}
+
+/** Strict S4 gate analysis. It treats malformed, missing, unknown, and uncorrelated evidence as denial. */
+export function analyzeS4(
+	records: TelemetryRecord[],
+	requested: S4AnalysisWindow = {},
+): S4DecisionArtifact {
+	const loaded = loadS4Policy();
+	const policy = loaded.policy;
+	const reasons: string[] = loaded.valid ? [] : ['invalid S4 policy artifact'];
+	const selected = records.filter(
+		(record) =>
+			record.event === 's4_preflight' ||
+			record.s4Preflight !== undefined ||
+			record.s4Outcome !== undefined ||
+			record.event === 's4_outcome',
+	);
+	const resolved = s4DecisionWindow(selected, requested);
+	if (resolved.error) reasons.push(resolved.error);
+	const window = resolved.window ?? { from: 0, to: 0 };
+	const inWindow = selected.filter(
+		(record) => finiteTimestamp(record.at) && record.at >= window.from && record.at <= window.to,
+	);
+	const preflights = inWindow.filter(
+		(record) => record.event === 's4_preflight' || record.s4Preflight !== undefined,
+	);
+	const outcomes = inWindow.filter(
+		(record) => record.s4Outcome !== undefined || record.event === 's4_outcome',
+	);
+	const stats = Object.fromEntries(S4_RULES.map((rule) => [rule, blankRuleStats()])) as Record<
+		CompositionRuleId,
+		S4RuleStatistics
+	>;
+	const boundaries = new Map<
+		string,
+		{
+			preflights: (TelemetryRecord & { s4Preflight: S4Preflight })[];
+			outcomes: TelemetryRecord[];
+			invalid: boolean;
+		}
+	>();
+	let invalid = 0;
+	for (const record of preflights) {
+		const id = record.s4Preflight?.compositionBoundaryId ?? record.compositionBoundaryId ?? '';
+		const entry = boundaries.get(id) ?? { preflights: [], outcomes: [], invalid: false };
+		if (!validS4Preflight(record)) {
+			entry.invalid = true;
+			invalid++;
+			reasons.push(`invalid S4 preflight or catalog coverage at boundary ${id || '(missing)'}`);
+		} else {
+			entry.preflights.push(record as TelemetryRecord & { s4Preflight: S4Preflight });
+			for (const observation of record.s4Preflight.observations) {
+				const rule = stats[observation.ruleId];
+				rule.observed++;
+				rule.byAction[observation.action]++;
+				rule.byDecisionSource[observation.decisionSource]++;
+				if (observation.eligible) {
+					rule.eligible++;
+					if (observation.compliant === true) rule.compliant++;
+					else if (observation.compliant === false) rule.noncompliant++;
+					else rule.unknown++;
+				} else rule.ineligible++;
+			}
+		}
+		if (entry.preflights.length > 1) {
+			entry.invalid = true;
+			invalid++;
+			reasons.push(`duplicate S4 preflight boundary ${id || '(missing)'}`);
+		}
+		boundaries.set(id, entry);
+	}
+	for (const record of outcomes) {
+		const id =
+			record.s4Outcome?.correlation?.compositionBoundaryId ?? record.compositionBoundaryId ?? '';
+		const entry = boundaries.get(id) ?? { preflights: [], outcomes: [], invalid: false };
+		entry.outcomes.push(record);
+		if (!validS4Outcome(record)) {
+			entry.invalid = true;
+			invalid++;
+			reasons.push(`invalid or mismatched S4 outcome correlation at boundary ${id || '(missing)'}`);
+		}
+		if (record.s4Outcome?.correlation?.compositionBoundaryId !== record.compositionBoundaryId) {
+			entry.invalid = true;
+			invalid++;
+			reasons.push(
+				`outer and nested S4 outcome boundary IDs differ at boundary ${id || '(missing)'}`,
+			);
+		}
+		boundaries.set(id, entry);
+	}
+	const seen = new Set<string>();
+	for (const record of outcomes.filter(validS4Outcome)) {
+		const outcome = record.s4Outcome!;
+		const key = `${outcome.correlation.compositionBoundaryId}:${outcome.correlation.delegationId}`;
+		if (seen.has(key)) {
+			invalid++;
+			reasons.push(`duplicate child delegation ID ${outcome.correlation.delegationId}`);
+			boundaries.get(outcome.correlation.compositionBoundaryId)!.invalid = true;
+		}
+		seen.add(key);
+	}
+	for (const [id, entry] of boundaries) {
+		if (!entry.preflights.length) {
+			invalid++;
+			reasons.push(`S4 outcomes have no matching preflight for boundary ${id || '(missing)'}`);
+			continue;
+		}
+		const preflight = entry.preflights[0].s4Preflight;
+		if (entry.outcomes.length !== preflight.expectedChildCount) {
+			invalid++;
+			entry.invalid = true;
+			reasons.push(
+				`S4 boundary ${id} expected ${preflight.expectedChildCount} outcomes but observed ${entry.outcomes.length}`,
+			);
+		}
+		for (const outcomeRecord of entry.outcomes) {
+			const outcome = outcomeRecord.s4Outcome;
+			if (!outcome) continue;
+			const owner = entry.preflights[0];
+			if (
+				(owner.flowId && outcomeRecord.flowId !== owner.flowId) ||
+				(owner.taskId && outcomeRecord.taskId !== owner.taskId)
+			) {
+				invalid++;
+				entry.invalid = true;
+				reasons.push(`S4 outcome identity differs from its preflight at boundary ${id}`);
+			}
+		}
+	}
+	const validOutcomes = outcomes.filter(validS4Outcome).toSorted((a, b) => a.at - b.at);
+	const byTask = new Map<string, TelemetryRecord[]>();
+	for (const record of validOutcomes) {
+		const key = `${record.flowId ?? ''}:${record.taskId ?? ''}`;
+		byTask.set(key, [...(byTask.get(key) ?? []), record]);
+	}
+	const independentPasses = validOutcomes.filter(
+		(record) =>
+			record.s4Outcome!.independentReviewStatus === 'pass' ||
+			record.s4Outcome!.qualitySignals.independentReviewStatus === 'pass',
+	).length;
+	let unresolved = 0;
+	let unresolvedUnknown = 0;
+	for (const record of validOutcomes) {
+		const outcome = record.s4Outcome!;
+		const signal = outcome.qualitySignals.unresolvedOrAbandoned;
+		if (
+			signal === true ||
+			['failed', 'aborted', 'blocked', 'abandoned'].includes(outcome.lifecycle)
+		)
+			unresolved++;
+		else if (signal !== false) unresolvedUnknown++;
+	}
+	let regressions = 0;
+	let reviewPasses = 0;
+	for (const list of byTask.values())
+		for (let i = 0; i < list.length; i++) {
+			const current = list[i].s4Outcome!;
+			const reviewPass =
+				current.independentReviewStatus === 'pass' ||
+				current.qualitySignals?.reviewerPass === true ||
+				(list[i].role === 'reviewer' && current.reviewStatus === 'pass');
+			if (!reviewPass) continue;
+			reviewPasses++;
+			if (
+				current.qualitySignals?.regressionAfterReviewPass === true ||
+				list
+					.slice(i + 1)
+					.some(
+						(later) =>
+							later.s4Outcome!.quality !== 'pass' || later.s4Outcome!.lifecycle !== 'settled',
+					)
+			)
+				regressions++;
+		}
+	let escalations = 0;
+	let transitions = 0;
+	const direction: S4DirectionCounts = { up: 0, down: 0, same: 0, unknown: 0 };
+	const directionByTier: Record<string, S4DirectionCounts> = {};
+	for (const list of byTask.values())
+		for (let i = 1; i < list.length; i++) {
+			const prior = list[i - 1];
+			const current = list[i];
+			const explicit = current.s4Outcome!.qualitySignals.escalation?.direction;
+			const value =
+				explicit ??
+				(prior.tier !== undefined && current.tier !== undefined
+					? current.tier > prior.tier
+						? 'up'
+						: current.tier < prior.tier
+							? 'down'
+							: 'same'
+					: 'unknown');
+			const tierKey = `${prior.tier ?? 'unknown'}->${current.tier ?? 'unknown'}`;
+			const tierDirection =
+				directionByTier[tierKey] ??
+				(directionByTier[tierKey] = { up: 0, down: 0, same: 0, unknown: 0 });
+			transitions++;
+			direction[value]++;
+			tierDirection[value]++;
+			if (value === 'up') escalations++;
+		}
+	let tier1Failures = 0;
+	let tier1Workers = 0;
+	for (const record of validOutcomes)
+		if (record.role === 'worker' && record.tier === 1) {
+			tier1Workers++;
+			const explicit = s4Bool(record, 'tier1DiscoveryFailure');
+			if (
+				explicit === true ||
+				(explicit !== false &&
+					!(byTask.get(`${record.flowId ?? ''}:${record.taskId ?? ''}`) ?? []).some(
+						(prior) => prior.at < record.at && prior.role === 'scout',
+					))
+			)
+				tier1Failures++;
+		}
+	for (const ruleId of S4_RULES) {
+		const rule = stats[ruleId];
+		const disabled = rule.eligible > 0 && rule.byAction.disabled === rule.eligible;
+		const status = disabled
+			? 'disabled'
+			: rule.eligible < policy.minimumEligibleObservationsPerRule
+				? 'insufficient'
+				: rule.unknown > 0
+					? 'insufficient'
+					: rule.noncompliant > 0
+						? 'fail'
+						: 'pass';
+		rule.minimumDenominator = {
+			required: policy.minimumEligibleObservationsPerRule,
+			eligible: rule.eligible,
+			status,
+		};
+		rule.minimumDenominatorStatus = status;
+	}
+	const qualityFailure = validOutcomes.some((record) => record.s4Outcome!.quality === 'fail');
+	const qualityIncomplete = validOutcomes.some((record) => record.s4Outcome!.quality !== 'pass');
+	const unknownDenominator =
+		validOutcomes.length + S4_RULES.reduce((sum, rule) => sum + stats[rule].eligible, 0);
+	const unknownNumerator =
+		invalid +
+		unresolvedUnknown +
+		S4_RULES.reduce((sum, rule) => sum + stats[rule].unknown, 0) +
+		(qualityIncomplete ? 1 : 0);
+	const unknownRate = s4Rate(unknownNumerator, unknownDenominator, policy.maxUnknownRate);
+	const guardrails = {
+		unresolvedOrAbandoned: s4Rate(
+			unresolved,
+			validOutcomes.length,
+			policy.maxUnresolvedOrAbandonedRate,
+			unresolvedUnknown > 0,
+		),
+		regressionAfterReviewPass: s4Rate(
+			regressions,
+			reviewPasses,
+			policy.maxRegressionAfterReviewPassRate,
+			false,
+			true,
+		),
+		escalation: s4Rate(
+			escalations,
+			transitions,
+			policy.maxEscalationRate,
+			direction.unknown > 0,
+			true,
+			direction,
+			directionByTier,
+		),
+		tier1DiscoveryFailure: s4Rate(
+			tier1Failures,
+			tier1Workers,
+			policy.maxTier1DiscoveryFailureRate,
+			false,
+			true,
+		),
+	};
+	const overrideNumerator = preflights.filter(
+		(record) => record.s4Preflight?.policyOverride !== undefined,
+	).length;
+	const overrideRate = s4Rate(overrideNumerator, preflights.length, 0);
+	const requestedReview = requested.independentReview ?? 'pending';
+	const independentEvidencePasses = independentPasses + (requestedReview === 'pass' ? 1 : 0);
+	const independentStatus: S4GuardrailStatus =
+		independentEvidencePasses < policy.minimumIndependentReviews
+			? 'insufficient'
+			: requestedReview === 'pass'
+				? 'pass'
+				: requestedReview === 'pending'
+					? 'unknown'
+					: 'fail';
+	if (preflights.length < policy.minimumPreflights)
+		reasons.push(`minimum preflights not met (${preflights.length}/${policy.minimumPreflights})`);
+	if (window.to - window.from < policy.minimumWindowMs)
+		reasons.push(
+			`minimum representative window not met (${window.to - window.from}/${policy.minimumWindowMs}ms)`,
+		);
+	if (
+		preflights.some(
+			(record) =>
+				record.s4Preflight?.policy !== 'warn' || record.s4Preflight.policyOverride !== undefined,
+		)
+	)
+		reasons.push('S4 evidence contains a non-default policy or override');
+	if (independentEvidencePasses < policy.minimumIndependentReviews)
+		reasons.push('minimum independent review passes not met');
+	if (requestedReview !== 'pass') reasons.push(`independent review handoff is ${requestedReview}`);
+	const policyMismatch = preflights.some(
+		(record) =>
+			record.s4Preflight?.policy !== 'warn' || record.s4Preflight.policyOverride !== undefined,
+	);
+	const guardrailFailure =
+		qualityFailure || Object.values(guardrails).some((guardrail) => guardrail.status === 'fail');
+	const insufficient =
+		!loaded.valid ||
+		Boolean(resolved.error) ||
+		invalid > 0 ||
+		policyMismatch ||
+		qualityIncomplete ||
+		preflights.length < policy.minimumPreflights ||
+		window.to - window.from < policy.minimumWindowMs ||
+		unknownRate.status !== 'pass' ||
+		Object.values(guardrails).some(
+			(guardrail) => guardrail.status === 'unknown' || guardrail.status === 'insufficient',
+		) ||
+		independentStatus === 'unknown' ||
+		independentStatus === 'insufficient' ||
+		overrideRate.status === 'insufficient';
+	const ruleFailure = S4_RULES.some((rule) =>
+		['fail', 'disabled'].includes(stats[rule].minimumDenominatorStatus),
+	);
+	const candidate =
+		!insufficient &&
+		!guardrailFailure &&
+		!ruleFailure &&
+		overrideNumerator === 0 &&
+		requestedReview === 'pass' &&
+		preflights.every(
+			(record) =>
+				record.s4Preflight?.policy === 'warn' && record.s4Preflight.policyOverride === undefined,
+		);
+	const status: S4MachineStatus = candidate
+		? 'ENFORCE_CANDIDATE'
+		: insufficient
+			? 'INSUFFICIENT_EVIDENCE'
+			: 'RETAIN_WARN';
+	const decision: S4LegacyDecision = candidate
+		? 'pass'
+		: status === 'RETAIN_WARN'
+			? 'fail'
+			: 'incomplete';
+	return {
+		v: 1,
+		status,
+		decision,
+		policy,
+		window: {
+			from: window.from,
+			to: window.to,
+			durationMs: window.to - window.from,
+			minimumMs: policy.minimumWindowMs,
+			status: window.to - window.from >= policy.minimumWindowMs ? 'pass' : 'insufficient',
+		},
+		preflights: preflights.length,
+		outcomes: outcomes.length,
+		boundaries: boundaries.size,
+		ruleStatistics: stats,
+		guardrails,
+		independentReview: {
+			requested: requestedReview,
+			observedPasses: independentEvidencePasses,
+			minimum: policy.minimumIndependentReviews,
+			status: independentStatus,
+		},
+		unknownRate,
+		overrideRate,
+		reasons: [
+			...new Set(
+				reasons.concat(
+					guardrailFailure ? ['one or more S4 guardrails exceeded its threshold'] : [],
+					ruleFailure ? ['one or more rule denominators or compliance checks failed'] : [],
+				),
+			),
+		],
+	};
+}
+
+/** Legacy implementation retained only as a private compatibility reference. */
+export function analyzeS4Legacy(records: TelemetryRecord[], requested?: S4AnalysisWindow): unknown {
+	const selected = records.filter(
+		(record) => record.event === 's4_preflight' || record.event === 's4_outcome',
+	);
+	const resolved = s4DecisionWindow(selected, requested);
+	const reasons: string[] = [];
+	if (resolved.error) reasons.push(resolved.error);
+	const window = resolved.window ?? { from: 0, to: 0 };
+	const inWindow = selected.filter((record) => record.at >= window.from && record.at <= window.to);
+	const preflights = inWindow.filter((record) => record.event === 's4_preflight');
+	const outcomes = inWindow.filter((record) => record.event === 's4_outcome');
+	const byBoundary = new Map<
+		string,
+		{ preflight?: TelemetryRecord & { s4Preflight: S4Preflight }; outcomes: TelemetryRecord[] }
+	>();
+	for (const record of preflights) {
+		const id = record.s4Preflight?.compositionBoundaryId ?? record.compositionBoundaryId ?? '';
+		const entry = byBoundary.get(id) ?? { outcomes: [] };
+		if (entry.preflight) reasons.push(`duplicate S4 preflight boundary ${id || '(missing)'}`);
+		if (!validS4Preflight(record))
+			reasons.push(`invalid S4 preflight boundary ${id || '(missing)'}`);
+		else entry.preflight = record as TelemetryRecord & { s4Preflight: S4Preflight };
+		byBoundary.set(id, entry);
+	}
+	for (const record of outcomes) {
+		const id =
+			record.s4Outcome?.correlation?.compositionBoundaryId ?? record.compositionBoundaryId ?? '';
+		const entry = byBoundary.get(id) ?? { outcomes: [] };
+		entry.outcomes.push(record);
+		byBoundary.set(id, entry);
+		const outcome = record.s4Outcome;
+		if (
+			record.event !== 's4_outcome' ||
+			!outcome ||
+			outcome.v !== 1 ||
+			!S4_LIFECYCLES.has(outcome.lifecycle) ||
+			!S4_QUALITY.has(outcome.quality) ||
+			!S4_QUALITY.has(outcome.validationStatus) ||
+			!S4_QUALITY.has(outcome.reviewStatus) ||
+			!S4_QUALITY.has(outcome.budgetStatus) ||
+			!outcome.correlation ||
+			!outcome.correlation.flowId ||
+			!outcome.correlation.taskId ||
+			!outcome.correlation.delegationId ||
+			!Number.isSafeInteger(outcome.correlation.ledgerRevision) ||
+			outcome.correlation.ledgerRevision <= 0 ||
+			!outcome.correlation.compositionBoundaryId
+		)
+			reasons.push(`invalid or incomplete S4 outcome correlation ${id || '(missing)'}`);
+	}
+	let hardFailure = false;
+	for (const [boundary, entry] of byBoundary) {
+		if (!entry.preflight) {
+			reasons.push(`S4 outcome has no matching preflight for boundary ${boundary || '(missing)'}`);
+			continue;
+		}
+		const preflight = entry.preflight.s4Preflight;
+		for (const observation of preflight.observations) {
+			const expected = !observation.eligible
+				? preflight.policy === 'off'
+					? 'disabled'
+					: 'not_applicable'
+				: observation.compliant === true
+					? preflight.policy === 'off'
+						? 'disabled'
+						: 'allow'
+					: preflight.policy === 'off'
+						? 'disabled'
+						: preflight.policy === 'enforce'
+							? 'refuse'
+							: 'warn';
+			if (observation.action !== expected) {
+				reasons.push(`S4 action mismatch ${observation.ruleId} at boundary ${boundary}`);
+				hardFailure = true;
+			}
+			if (observation.eligible && observation.compliant === false) {
+				reasons.push(
+					`S4 composition rule ${observation.ruleId} is noncompliant at boundary ${boundary}`,
+				);
+				hardFailure = true;
+			}
+		}
+		const expectedChildren = preflight.expectedChildCount;
+		if (entry.outcomes.length !== expectedChildren) {
+			reasons.push(
+				`S4 boundary ${boundary} expected ${expectedChildren} outcomes but observed ${entry.outcomes.length}`,
+			);
+			continue;
+		}
+		for (const record of entry.outcomes) {
+			const outcome = record.s4Outcome;
+			if (!outcome || outcome.correlation.compositionBoundaryId !== boundary) continue;
+			if (outcome.lifecycle !== 'settled') {
+				reasons.push(`S4 child at boundary ${boundary} did not settle (${outcome.lifecycle})`);
+				hardFailure = true;
+			}
+			if (outcome.quality === 'fail') {
+				reasons.push(`S4 child at boundary ${boundary} failed quality checks`);
+				hardFailure = true;
+			} else if (outcome.quality !== 'pass') {
+				reasons.push(
+					`S4 child at boundary ${boundary} has non-passing quality (${outcome.quality})`,
+				);
+			}
+		}
+	}
+	if (preflights.length === 0) reasons.push('no S4 preflight evidence in the requested window');
+	const decision = hardFailure ? 'fail' : reasons.length ? 'incomplete' : 'pass';
+	return {
+		v: 1,
+		decision,
+		window,
+		preflights: preflights.length,
+		outcomes: outcomes.length,
+		boundaries: byBoundary.size,
+		reasons: [...new Set(reasons)],
+	};
+}
+
+export function renderS4Markdown(decision: S4DecisionArtifact): string {
+	const lines = [
+		'# S4 automation decision',
+		'',
+		`- Status: **${decision.status}**`,
+		`- Decision (legacy alias): **${decision.decision}**`,
+		`- Window: ${new Date(decision.window.from).toISOString()} .. ${new Date(decision.window.to).toISOString()} (${decision.window.durationMs}ms)`,
+		`- Preflights: ${decision.preflights}`,
+		`- Outcomes: ${decision.outcomes}`,
+		`- Boundaries: ${decision.boundaries}`,
+		'',
+		'## Rule statistics',
+		'',
+		'| Rule | Observed | Eligible | Ineligible | Compliant | Noncompliant | Unknown | Minimum denominator | Actions | Sources |',
+		'| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |',
+	];
+	for (const rule of S4_RULES) {
+		const stats = decision.ruleStatistics[rule];
+		lines.push(
+			`| ${rule} | ${stats.observed} | ${stats.eligible} | ${stats.ineligible} | ${stats.compliant} | ${stats.noncompliant} | ${stats.unknown} | ${stats.minimumDenominatorStatus} (${stats.eligible}/${stats.minimumDenominator.required}) | ${JSON.stringify(stats.byAction)} | ${JSON.stringify(stats.byDecisionSource)} |`,
+		);
+	}
+	lines.push(
+		'',
+		'## Guardrails',
+		'',
+		...Object.entries(decision.guardrails).map(
+			([name, guardrail]) =>
+				`- ${name}: **${guardrail.status}** ${guardrail.numerator}/${guardrail.denominator} = ${guardrail.rate ?? 'unknown'} (threshold ${guardrail.threshold})`,
+		),
+		'',
+		`- Unknown evidence: **${decision.unknownRate.status}** ${decision.unknownRate.numerator}/${decision.unknownRate.denominator}`,
+		`- Independent review: **${decision.independentReview.status}** ${decision.independentReview.observedPasses}/${decision.independentReview.minimum}`,
+		'',
+		'## Reasons',
+		'',
+		...(decision.reasons.length ? decision.reasons.map((reason) => `- ${reason}`) : ['- none']),
+		'',
+	);
+	return lines.join('\n');
 }
 
 function row(cells: (string | number)[]): string {

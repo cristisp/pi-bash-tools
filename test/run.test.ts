@@ -43,10 +43,14 @@ import { pollSubagent } from '../src/poll.ts';
 import { runReusedAgent, runSingleAgent } from '../src/run.ts';
 import { registerEntry } from '../src/registry.ts';
 import { readRegistry } from '../src/registry-store.ts';
-import { readTelemetryRecords, telemetryPath } from '../src/telemetry.ts';
+import {
+	appendS4PreflightTelemetry,
+	readTelemetryRecords,
+	telemetryPath,
+} from '../src/telemetry.ts';
 import { flowReportsDir, flowsRoot } from '../src/flow.ts';
 import type { AgentConfig } from '../src/agents.ts';
-import type { SingleResult, SubagentDetails } from '../src/types.ts';
+import type { S4Preflight, SingleResult, SubagentDetails } from '../src/types.ts';
 import { assistantMsg, makeRegistryEntry, toolResultMsg } from './helpers.ts';
 
 const agent: AgentConfig = {
@@ -575,6 +579,95 @@ describe('runReusedAgent - flow ledger', () => {
 		} finally {
 			fs.rmSync(configPath(), { force: true });
 		}
+	});
+
+	it('emits a correlated S4 outcome for a reused turn', async () => {
+		registerEntry(
+			makeRegistryEntry({
+				status: 'done',
+				parentSession: '/sess/parent.jsonl',
+				flowId: 'flow-reuse',
+				taskId: 'entry-task',
+			}),
+		);
+		appendS4PreflightTelemetry({
+			preflight: {
+				v: 1,
+				compositionBoundaryId: 'boundary-reuse',
+				mode: 'single',
+				policy: 'warn',
+				expectedChildCount: 1,
+				observations: (['R1', 'R2', 'R3', 'R4'] as const).map((ruleId) => ({
+					ruleId,
+					eligible: false,
+					compliant: null,
+					action: 'not_applicable' as const,
+					decisionSource: 'default' as const,
+					reason: 'not applicable',
+					compositionBoundaryId: 'boundary-reuse',
+					mode: 'single' as const,
+					policy: 'warn' as const,
+					expectedChildCount: 1,
+				})),
+			} as S4Preflight,
+			workspace: 'ws1',
+			parentSession: '/sess/parent.jsonl',
+			flowId: 'flow-reuse',
+			taskId: 'reuse-task',
+		});
+		const result = await runReusedAgent(
+			'/tmp',
+			[agent],
+			'worker-1',
+			'next task',
+			undefined,
+			undefined,
+			makeDetails,
+			undefined,
+			'/sess/parent.jsonl',
+			undefined,
+			{ taskId: 'reuse-task' },
+			'boundary-reuse',
+			'reuse-task',
+		);
+		expect(result.exitCode).toBe(0);
+		const records = readTelemetryRecords();
+		expect(records.filter((record) => record.event === 's4_preflight')).toHaveLength(1);
+		const outcome = records.find((record) => record.s4Outcome !== undefined);
+		expect(outcome).toMatchObject({
+			flowId: 'flow-reuse',
+			taskId: 'reuse-task',
+			compositionBoundaryId: 'boundary-reuse',
+			s4Outcome: {
+				correlation: {
+					flowId: 'flow-reuse',
+					taskId: 'reuse-task',
+					compositionBoundaryId: 'boundary-reuse',
+					ledgerRevision: expect.any(Number),
+				},
+			},
+		});
+		expect(outcome?.s4Outcome?.correlation.ledgerRevision).toBeGreaterThan(0);
+	});
+
+	it('omits S4 outcomes when flow identity is unavailable', async () => {
+		registerEntry(makeRegistryEntry({ status: 'done', flowId: undefined }));
+		await runReusedAgent(
+			'/tmp',
+			[agent],
+			'worker-1',
+			'next task',
+			undefined,
+			undefined,
+			makeDetails,
+			undefined,
+			undefined,
+			undefined,
+			{ taskId: 'reuse-task' },
+			'boundary-reuse',
+			'reuse-task',
+		);
+		expect(readTelemetryRecords().some((record) => record.s4Outcome !== undefined)).toBe(false);
 	});
 
 	it('writes a dispatch revision and points the launch prompt at it', async () => {

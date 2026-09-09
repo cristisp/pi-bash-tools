@@ -12,6 +12,8 @@ import type {
 	SingleResult,
 	CompositionPolicy,
 	CompositionVerdict,
+	S4Preflight,
+	S4Outcome,
 	TelemetryRecord,
 } from './types.ts';
 
@@ -32,6 +34,7 @@ export interface TelemetryInput {
 	result: SingleResult;
 	report?: ReportSummary;
 	ledger?: LedgerRunInfo;
+	s4Outcome?: S4Outcome;
 }
 
 function metricsFallback(result: SingleResult): ExecutionMetrics {
@@ -81,6 +84,8 @@ export function buildTelemetryRecord(input: TelemetryInput, now = Date.now()): T
 	if (delegation.compositionPolicy) record.compositionPolicy = delegation.compositionPolicy;
 	if (delegation.compositionPolicyOverride)
 		record.compositionPolicyOverride = delegation.compositionPolicyOverride;
+	if (delegation.compositionBoundaryId)
+		record.compositionBoundaryId = delegation.compositionBoundaryId;
 	// Composition decisions are emitted as typed boundary events, not copied into every child
 	// delegation record. This keeps ordinary child metrics and counts free of duplicate warnings.
 	if (delegation.parentPaneId) record.parentPaneId = delegation.parentPaneId;
@@ -98,6 +103,12 @@ export function buildTelemetryRecord(input: TelemetryInput, now = Date.now()): T
 	if (input.ledger?.revision !== undefined) record.ledgerRevision = input.ledger.revision;
 	if (input.ledger?.injection) record.ledgerInjection = input.ledger.injection;
 	if (result.budget) record.budget = result.budget;
+	if (input.s4Outcome) {
+		// Keep ordinary child event semantics additive: S4 quality is nested on the
+		// existing delegation record rather than relabeling every child turn.
+		record.s4Outcome = input.s4Outcome;
+		record.compositionBoundaryId = input.s4Outcome.correlation.compositionBoundaryId;
+	}
 	const report = input.report;
 	if (report) {
 		const summary: ReportSummary = {
@@ -208,6 +219,66 @@ export function appendCompositionTelemetry(input: CompositionTelemetryInput): vo
 			buildCompositionTelemetryRecord({ ...input, verdicts: [verdict], boundaryId }, Date.now()),
 		);
 	}
+}
+
+/** Builds one additive S4 preflight event; it never changes legacy composition events. */
+export function buildS4PreflightTelemetryRecord(
+	input: {
+		preflight: S4Preflight;
+		workspace: string;
+		parentSession?: string;
+		flowId?: string;
+		taskId?: string;
+		tier?: number;
+	},
+	now = Date.now(),
+): TelemetryRecord {
+	const delegation: DelegationContext = {
+		delegationId: randomUUID(),
+		role: 'preflight',
+		evidenceScope: 'flow',
+		...(input.flowId ? { flowId: input.flowId } : {}),
+		...(input.taskId ? { taskId: input.taskId } : {}),
+		...(input.tier !== undefined ? { tier: input.tier } : {}),
+	};
+	const result: SingleResult = {
+		agent: 'preflight',
+		agentSource: 'unknown',
+		task: 'S4 composition preflight',
+		exitCode: 0,
+		messages: [],
+		stderr: '',
+		usage: makeEmptyUsage(),
+	};
+	const record = buildTelemetryRecord(
+		{
+			delegation,
+			workspace: input.workspace,
+			label: 's4-preflight',
+			agent: 'preflight',
+			reused: false,
+			reuseCount: 0,
+			outcome: 'settled',
+			parentSession: input.parentSession,
+			result,
+		},
+		now,
+	);
+	record.event = 's4_preflight';
+	record.compositionBoundaryId = input.preflight.compositionBoundaryId;
+	record.s4Preflight = input.preflight;
+	return record;
+}
+
+export function appendS4PreflightTelemetry(input: {
+	preflight: S4Preflight;
+	workspace: string;
+	parentSession?: string;
+	flowId?: string;
+	taskId?: string;
+	tier?: number;
+}): void {
+	appendTelemetryRecord(buildS4PreflightTelemetryRecord(input));
 }
 
 export function readTelemetryRecords(limit?: number): TelemetryRecord[] {

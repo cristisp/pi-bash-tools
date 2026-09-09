@@ -6,6 +6,13 @@ This guide is read on demand rather than before every delegation. Trigger: a tie
 
 {{composition_rules}}
 
+## S4 gate
+
+Use ordinary `subagent` calls for default evidence.
+R2 needs disjoint multi-reviewer scopes; synthetic probes do not count.
+Unknown or uncorrelated evidence fails closed.
+Independent review requires explicit handoff; `ENFORCE_CANDIDATE` never changes policy.
+
 ## Workflow classification
 
 Classify the task before delegating, using the smallest workflow that preserves independence and safety. A multi-file task alone does not require a scout. Before the first delegation, record the tier and reason, behavior risk, architecture uncertainty, validation complexity, package/persistence/trust-boundary/public-API crossings, and whether current repository evidence is sufficient. Use **Low** for deterministic local work, known architecture, or one focused check; **Medium** for coordinated files/dependencies/checks; and **High** for release-sensitive behavior, unfamiliar architecture, shared APIs, or integration/security validation.

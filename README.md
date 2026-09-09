@@ -68,6 +68,48 @@ strategy and reason in the orchestration ledger. The TUI shows the reused
 session's state on the `reuse` call line (context, reuse count), in warning
 color when context is large, so the choice is visible.
 
+## S4 composition evidence gate
+
+Composition checks use the configured `compositionPolicy`, which defaults to `warn`.
+The standard `subagent` tool records the default policy, while `subagent_override` records deliberate per-call overrides separately.
+
+The S4 analyzer evaluates additive preflight and child-outcome telemetry without changing legacy composition or delegation counts.
+It emits `ENFORCE_CANDIDATE`, `RETAIN_WARN`, or `INSUFFICIENT_EVIDENCE`.
+A human release owner must still approve any manual change from `warn` to `enforce`.
+
+Run the gate with:
+
+```bash
+npm run s4:gate -- ~/.pi/agent \
+  --independent-review pending \
+  --from 2026-01-01 --to 2026-01-08 \
+  --json /tmp/s4-decision.json \
+  --markdown /tmp/s4-decision.md
+```
+
+The `--from` and `--to` options must be supplied together when an explicit window is required.
+The independent-review option defaults to `pending`.
+An ordinary reviewer `PASS` does not count as independent-review evidence without an explicit handoff and passing independent-review status.
+
+By default, the gate writes `subagent-herdr.s4-decision.json` and `subagent-herdr.s4-decision.md` under the selected agent directory.
+Explicit `--json` and `--markdown` paths are recommended for release artifacts.
+The S4 path never rewrites `analysis/MEASUREMENT.md`.
+The normal `npm run test:analyze` path remains the command that generates that legacy measurement report.
+
+The fixed version-1 policy is stored in `analysis/s4-policy.json` and requires:
+
+- at least 8 valid preflights;
+- a representative window of at least 7 days;
+- at least 2 eligible observations for every composition rule;
+- at least 1 independent review pass;
+- zero unknown evidence, unresolved or abandoned outcomes, and regressions after reviewer pass;
+- escalation at or below 25%; and
+- zero Tier 1 discovery failures without a scout.
+
+Missing, malformed, uncorrelated, or unknown evidence is insufficient evidence rather than a zero-rate pass.
+The gate exits with status `0` only for `ENFORCE_CANDIDATE`, status `1` for a non-candidate decision, and status `2` for invalid CLI options.
+See [analysis/TELEMETRY_SCHEMA.md](analysis/TELEMETRY_SCHEMA.md) for the record contract.
+
 Setting up the standard agents:
 
 - `/setup-subagents` - creates or updates the `planner`, `reviewer`, `scout`, `worker`, and
@@ -325,11 +367,12 @@ append-only telemetry log:
 - `~/.pi/agent/subagent-herdr/flows/<flowId>/predigest/` - the shared review-surface snapshot and persisted read manifests
 - `~/.pi/agent/subagent-herdr/flows/<flowId>/ledger.md` - the flow ledger, one
   machine-readable revision per delegation boundary
-- `~/.pi/agent/subagent-herdr.telemetry.jsonl` - one record per delegation turn:
-  identity, outcome (`settled` / `failed` / `aborted`), usage, tool-call and
-  failed-tool-call counts, repeated reads, turns, and time spent waiting on
-  approvals or steers. `reuseCount` is the session's reuse count after this turn,
-  recorded from the registry, so `reused: true` implies `reuseCount > 0`
+- `~/.pi/agent/subagent-herdr.telemetry.jsonl` - append-only records for composition boundaries,
+  S4 preflights, and delegation turns. Ordinary delegation records contain identity,
+  outcome (`settled` / `failed` / `aborted`), usage, tool-call and failed-tool-call counts,
+  repeated reads, turns, and time spent waiting on approvals or steers.
+  `reuseCount` is the session's reuse count after this turn, recorded from the registry,
+  so `reused: true` implies `reuseCount > 0`
 
 A scoped fan-out receives one flow-level review-surface snapshot containing working-tree status, diff stat, and hunk headers at `predigest/review-surface.md`.
 Each child also receives a temporary read manifest containing its allowed paths, prior report paths, established evidence, and do-not-reread paths.
@@ -441,6 +484,7 @@ file is re-read on every use, so edits take effect without a restart. Running
   "scopeCallAllowancePerPath": 2,
   "scopeCallAllowanceMax": 32,
   "reportContractPolicy": "flag",
+  "compositionPolicy": "warn",
   "ledgerMaxRevisions": 60,
   "ledgerPointers": true,
   "registryLockTimeoutMs": 10000,
@@ -479,6 +523,7 @@ file is re-read on every use, so edits take effect without a restart. Running
 | `perTaskOutputCap` | 51200 | Per-task byte cap in parallel summaries (bytes) |
 | `reportDigestTokens` | 250 | Token budget for the digest a child's report is reduced to |
 | `reportContractPolicy` | `"flag"` | `"flag"` or `"reject"` a report that omits its ledger block |
+| `compositionPolicy` | `"warn"` | Composition handling for standard delegations: `warn`, `enforce`, or `off` |
 | `ledgerMaxRevisions` | 60 | Ledger revisions kept per flow before the oldest are dropped |
 | `ledgerPointers` | true | Whether children receive ledger pointers (and the ledger is written at all) |
 | `registryLockTimeoutMs` | 10000 | Max wait for the registry lock |

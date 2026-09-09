@@ -660,8 +660,8 @@ describe('executeSubagent - composition policy', () => {
 		expect((overridden.content[0] as { text: string }).text).toContain('Composition refusal [R1]');
 		expect((await import('../src/run.ts')).runSingleAgent).not.toHaveBeenCalled();
 		const telemetry = (await import('../src/telemetry.ts')).readTelemetryRecords();
-		expect(telemetry).toHaveLength(1);
-		expect(telemetry[0]).toMatchObject({
+		expect(telemetry.filter((record) => record.event === 'composition')).toHaveLength(1);
+		expect(telemetry.find((record) => record.event === 'composition')).toMatchObject({
 			compositionPolicy: 'enforce',
 			compositionPolicyOverride: 'enforce',
 			compositionVerdict: { action: 'refuse' },
@@ -669,7 +669,22 @@ describe('executeSubagent - composition policy', () => {
 		const off = await execSubagent({ agent: 'validator', task: 'check', tier: 1 });
 		expect((off.content[0] as { text: string }).text).not.toContain('Composition');
 		expect((await import('../src/run.ts')).runSingleAgent).toHaveBeenCalledTimes(1);
-		expect((await import('../src/telemetry.ts')).readTelemetryRecords()).toHaveLength(1);
+		const offPreflight = (await import('../src/telemetry.ts'))
+			.readTelemetryRecords()
+			.find((record) => record.event === 's4_preflight' && record.s4Preflight?.policy === 'off');
+		expect(offPreflight?.s4Preflight?.observations).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ ruleId: 'R1', eligible: true, action: 'disabled' }),
+				expect.objectContaining({ ruleId: 'R2', eligible: false, action: 'not_applicable' }),
+				expect.objectContaining({ ruleId: 'R3', eligible: false, action: 'not_applicable' }),
+				expect.objectContaining({ ruleId: 'R4', eligible: false, action: 'not_applicable' }),
+			]),
+		);
+		expect(
+			(await import('../src/telemetry.ts'))
+				.readTelemetryRecords()
+				.filter((record) => record.event === 'composition'),
+		).toHaveLength(1);
 	});
 
 	it('warns a tier 2 validator without session evidence and accepts session evidence', async () => {
@@ -961,6 +976,8 @@ describe('executeSubagent - delegation context', () => {
 			workflowMode: 'remediation',
 			compositionPolicy: 'warn',
 		});
+		expect(runReusedAgent.mock.calls[0][11]).toEqual(expect.any(String));
+		expect(runReusedAgent.mock.calls[0][12]).toMatch(/^s4-/);
 	});
 });
 

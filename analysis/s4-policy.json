@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "minimumPreflights": 8,
+  "minimumWindowMs": 604800000,
+  "minimumEligibleObservationsPerRule": 2,
+  "minimumIndependentReviews": 1,
+  "maxUnknownRate": 0,
+  "maxUnresolvedOrAbandonedRate": 0,
+  "maxRegressionAfterReviewPassRate": 0,
+  "maxEscalationRate": 0.25,
+  "maxTier1DiscoveryFailureRate": 0
+}

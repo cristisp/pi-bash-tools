@@ -50,6 +50,7 @@
     "format:check": "oxfmt --check index.ts src test analysis/*.ts vitest.config.ts",
     "test": "vitest run",
     "test:analyze": "node analysis/cli.ts",
+    "s4:gate": "node analysis/cli.ts --s4",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   }

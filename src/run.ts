@@ -21,7 +21,6 @@ import {
 	ledgerTurnLine,
 	type LedgerPointer,
 } from './ledger.ts';
-import { parseLedgerBlock } from './report.ts';
 import {
 	buildRunSummary,
 	completionPatch,
@@ -29,6 +28,7 @@ import {
 	getResultOutput,
 	isFailedResult,
 } from './format.ts';
+import { normalizeS4Outcome, parseLedgerBlock } from './report.ts';
 import {
 	closeTab,
 	createTaskTab,
@@ -288,6 +288,7 @@ interface DelegationFinishContext {
 	reused: boolean;
 	reuseCount: number;
 	aborted: boolean;
+	compositionBoundaryId?: string;
 }
 
 /**
@@ -386,6 +387,36 @@ function emitDelegationTelemetry(
 	});
 	if (revision) currentResult.ledgerRevision = revision.revision;
 	if (!currentResult.ledgerInjection) currentResult.ledgerInjection = 'none';
+	const normalized = normalizeS4Outcome(
+		childFields,
+		delegation.role,
+		currentResult.report,
+		currentResult.budget,
+		outcome,
+	);
+	const s4LedgerRevision = currentResult.ledgerRevision ?? revision?.revision;
+	const s4CorrelationAvailable = Boolean(
+		context.compositionBoundaryId &&
+		delegation.flowId &&
+		delegation.taskId &&
+		typeof s4LedgerRevision === 'number' &&
+		Number.isSafeInteger(s4LedgerRevision) &&
+		s4LedgerRevision > 0,
+	);
+	const s4Outcome = s4CorrelationAvailable
+		? {
+				v: 1 as const,
+				...normalized,
+				correlation: {
+					flowId: delegation.flowId!,
+					taskId: delegation.taskId!,
+					delegationId: delegation.delegationId,
+					ledgerRevision: s4LedgerRevision!,
+					compositionBoundaryId: context.compositionBoundaryId!,
+					...(delegation.tier !== undefined ? { tier: delegation.tier } : {}),
+				},
+			}
+		: undefined;
 	appendTelemetryRecord(
 		buildTelemetryRecord({
 			delegation,
@@ -403,6 +434,7 @@ function emitDelegationTelemetry(
 				revision: currentResult.ledgerRevision,
 				injection: currentResult.ledgerInjection,
 			},
+			s4Outcome,
 		}),
 	);
 	if (!context.label) return;
@@ -939,6 +971,8 @@ export async function runSingleAgent(
 	onBlocked?: (info: BlockEventInfo) => void,
 	presetModels?: Record<string, string>,
 	orchestration?: OrchestrationContext,
+	s4BoundaryId?: string,
+	s4TaskId?: string,
 ): Promise<SingleResult> {
 	const startedAt = Date.now();
 	const found = findAgentOrFail(agents, agentName, task, step);
@@ -947,6 +981,7 @@ export async function runSingleAgent(
 		return found;
 	}
 	const agent = found;
+	const childOrchestration = s4TaskId ? { ...orchestration, taskId: s4TaskId } : orchestration;
 	const delegation = resolveDelegation({
 		role: agentName,
 		policy: scopePolicy(),
@@ -954,7 +989,7 @@ export async function runSingleAgent(
 		rootSession: process.env[ENV_ROOT_SESSION] ?? parentSession,
 		parentPaneId: HERDR_PANE_ID,
 		flowId: process.env[ENV_FLOW],
-		orchestration,
+		orchestration: childOrchestration,
 	});
 	const model =
 		presetModels && Object.hasOwn(presetModels, agentName) ? presetModels[agentName] : undefined;
@@ -1048,6 +1083,7 @@ export async function runSingleAgent(
 			reused: false,
 			reuseCount: 0,
 			aborted: abortedRun,
+			compositionBoundaryId: s4BoundaryId,
 		});
 		if (tmpFiles) {
 			removeTempFiles(tmpFiles.promptDir, tmpFiles.promptPath);
@@ -1077,6 +1113,8 @@ export async function runReusedAgent(
 	parentSession?: string,
 	presetModels?: Record<string, string>,
 	orchestration?: OrchestrationContext,
+	s4BoundaryId?: string,
+	s4TaskId?: string,
 ): Promise<SingleResult> {
 	const startedAt = Date.now();
 	const init = initReusedSession(agents, label, task, parentSession);
@@ -1085,9 +1123,10 @@ export async function runReusedAgent(
 		return init;
 	}
 	const { entry, agent, currentResult } = init;
+	const childOrchestration = s4TaskId ? { ...orchestration, taskId: s4TaskId } : orchestration;
 	const delegation = delegationFromEntry(entry, {
 		policy: scopePolicy(),
-		orchestration,
+		orchestration: childOrchestration,
 		rootSession: entry.rootSession ?? parentSession,
 		parentPaneId: HERDR_PANE_ID,
 	});
@@ -1230,6 +1269,7 @@ export async function runReusedAgent(
 			reused: true,
 			reuseCount: findEntry(label)?.reuseCount ?? entry.reuseCount ?? 0,
 			aborted: abortedRun,
+			compositionBoundaryId: s4BoundaryId,
 		});
 		if (relaunchTmp) {
 			removeTempFiles(relaunchTmp.promptDir, relaunchTmp.promptPath);
