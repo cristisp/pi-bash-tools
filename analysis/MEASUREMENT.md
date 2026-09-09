@@ -1,24 +1,24 @@
 # Orchestration measurement
 
-Agent dir `/Users/cristian.spissack/.pi/agent`. Window 2026-07-13T15:15 .. 2026-09-08T23:01. 401 root sessions, 1046 child sessions, 289 telemetry records. Report cutoff 2026-09-08T22:59.
+Agent dir `/Users/cristian.spissack/.pi/agent`. Window 2026-07-13T15:15 .. 2026-09-08T23:14. 401 root sessions, 1047 child sessions, 290 telemetry records. Report cutoff 2026-09-08T22:59.
 
 ## Delivered `subagent` result size (estimated tokens, chars / 4)
 
 | window | n | avg | p50 | p95 | p99 | max |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | before cutoff | 1468 | 1306 | 856 | 4480 | 8512 | 19559 |
-| at or after cutoff | 4 | 288 | 330 | 354 | 354 | 354 |
-| all | 1472 | 1303 | 850 | 4480 | 8512 | 19559 |
+| at or after cutoff | 6 | 317 | 330 | 549 | 549 | 549 |
+| all | 1474 | 1302 | 849 | 4480 | 8512 | 19559 |
 | baseline 2026-08-26..09-02 | 285 | 1821 | 900 | - | 6099 | - |
 
 ## Report digest fidelity (telemetry turns carrying a report)
 
-Delivered results joined to a telemetry report by report path: 5 / 247.
+Delivered results joined to a telemetry report by report path: 5 / 248.
 
 | role | turns | median full | median digest | digest/full | ledger | cost |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | worker | 115 | 1151 | 444 | 39% | 108/115 | $5.0001 |
-| reviewer | 81 | 2323 | 608 | 26% | 79/81 | $3.4865 |
+| reviewer | 82 | 2354 | 608 | 26% | 80/82 | $3.5108 |
 | validator | 41 | 675 | 257 | 38% | 37/41 | $0.3475 |
 | planner | 8 | 2293 | 484 | 21% | 8/8 | $0.2548 |
 | scout | 2 | 2636 | 600 | 23% | 2/2 | $0.0671 |
@@ -30,8 +30,8 @@ These are root-session read requests targeting files under `flows/*/reports/*.md
 | window | report reads |
 | --- | ---: |
 | before cutoff | 140 |
-| at or after cutoff | 0 |
-| all | 140 |
+| at or after cutoff | 1 |
+| all | 141 |
 
 ## Root carry (the W3 target)
 
@@ -39,15 +39,15 @@ Carry is result tokens x the number of later assistant turns in the same root se
 
 | window | results | delegating roots | carry (token-times) | carry per root |
 | --- | ---: | ---: | ---: | ---: |
-| before cutoff | 1468 | 95 | 329,068,181 | 3,463,876 |
-| at or after cutoff | 4 | 1 | 4,407 | 4,407 |
-| all | 1472 | 95 | 329,041,238 | 3,463,592 |
+| before cutoff | 1468 | 95 | 329,575,601 | 3,469,217 |
+| at or after cutoff | 6 | 2 | 70,430 | 35,215 |
+| all | 1474 | 95 | 329,614,681 | 3,469,628 |
 
-Root sessions received 1,917,680 estimated tokens of subagent results in total.
+Root sessions received 1,918,428 estimated tokens of subagent results in total.
 
-Child sessions created since telemetry began (2026-09-03T09:14): 249, of which 0 have no telemetry record. Historic children cannot be attributed and are excluded.
+Child sessions created since telemetry began (2026-09-03T09:14): 250, of which 0 have no telemetry record. Historic children cannot be attributed and are excluded.
 
-Child spend recorded in telemetry: $9.2088 across 268 ordinary delegation turns.
+Child spend recorded in telemetry: $9.2330 across 269 ordinary delegation turns.
 
 ## Composition policy events
 
@@ -65,9 +65,9 @@ Producer invocation stream: unavailable; producer execution columns are not zero
 
 | scope | delegations | delegations with refs | refs minted | refs executed | refs reused | refs by lookup | full validation passes | distinct state digests | executions per digest |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| overall | 268 | 56 | 47 | 47 | 0 | 14 | 302 | 30 | 1.57 |
+| overall | 269 | 56 | 47 | 47 | 0 | 14 | 302 | 30 | 1.57 |
 | worker | 128 | 32 | 36 | 36 | 0 | 0 | 249 | 20 | 1.80 |
-| reviewer | 84 | 12 | 0 | 0 | 0 | 12 | 1 | 0 | - |
+| reviewer | 85 | 12 | 0 | 0 | 0 | 12 | 1 | 0 | - |
 | validator | 46 | 12 | 11 | 11 | 0 | 2 | 52 | 11 | 1.00 |
 | planner | 8 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | - |
 | scout | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | - |
@@ -151,7 +151,7 @@ Counts consumer-enforced refusals while a sibling held the repository write lock
 | flow:ff0a1a4ae1003aed1 | 1 |
 | flow:ff8106728ab056c4b | 0 |
 
-Every ref counted here was minted by a delegated child seat, because root spend is not in telemetry. Minting works and is authorized per `verify` call shape, so a zero here after children ran the gate means the shape was refused (`F9` in `analysis/BASH_TOOLS_FOLLOWUPS.md`) rather than that validation was deduplicated.
+Every ref counted here was minted by a delegated child seat, because root spend is not in telemetry. Minting works and is authorized per `verify` call shape, so a zero here after children ran the gate means the shape was refused (the `F9` authorization boundary) rather than that validation was deduplicated.
 
 ## Guide reads and rendered size (the W8 target)
 
@@ -160,7 +160,7 @@ The `subagent` tool description and the child prompts now carry what used to req
 | window | guide reads | reads per delegating root |
 | --- | ---: | ---: |
 | before cutoff | 116 | 1.22 |
-| at or after cutoff | 1 | 1.00 |
+| at or after cutoff | 1 | 0.50 |
 | all | 117 | 1.23 |
 | rendered guide (est. tokens) | 5819 | - |
 

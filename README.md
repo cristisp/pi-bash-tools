@@ -521,7 +521,7 @@ inside a flow resolves for every sibling in that flow, observed: a worker minted
 resolved both by bare `{ ref }` lookup without executing anything. A ref minted by a root session lives only
 in that process, so refs travel from child to parent and never the other way round. Two caveats stay true.
 Minting depends on the exact `verify` call shape being authorized without a prompt, because a child cannot
-answer one (`F9` in `analysis/BASH_TOOLS_FOLLOWUPS.md`). A lookup reports the recorded and current repository
+answer an authorization prompt (the `F9` authorization boundary). A lookup reports the recorded and current repository
 state through `repositoryStateStatus`: `matches` can be cited, `mismatch` requires re-execution, and `unreadable`
 must be reported as `NOT_RUN` (`F5`). A sibling ref you cannot resolve is still a capability gap to report, not
 evidence to trust.

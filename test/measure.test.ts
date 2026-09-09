@@ -842,7 +842,7 @@ describe('guide reads (the W8 target)', () => {
 		expect(md).toContain('| overall | 6 | 5 | 4 | 3 | 1 | 1 | 3 | 3 | 1.00 |');
 		expect(md).toContain('| worker | 2 | 2 | 2 | 2 | 0 | 0 | 2 | 1 | 2.00 |');
 		expect(md).toContain('1,075 duplicate project_command calls, 49.7%');
-		expect(md).toContain('`F9` in `analysis/BASH_TOOLS_FOLLOWUPS.md`');
+		expect(md).toContain('(the `F9` authorization boundary)');
 		expect(md).toContain('rather than that validation was deduplicated');
 	});
 });

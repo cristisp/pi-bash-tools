@@ -1342,8 +1342,8 @@ export function renderMarkdown(m: Measurement): string {
 	lines.push(
 		'Every ref counted here was minted by a delegated child seat, because root ' +
 			'spend is not in telemetry. Minting works and is authorized per `verify` call shape, so a zero ' +
-			'here after children ran the gate means the shape was refused (`F9` in ' +
-			'`analysis/BASH_TOOLS_FOLLOWUPS.md`) rather than that validation was deduplicated.',
+			'here after children ran the gate means the shape was refused (the `F9` authorization ' +
+			'boundary) rather than that validation was deduplicated.',
 	);
 	lines.push('');
 	lines.push('## Guide reads and rendered size (the W8 target)');
