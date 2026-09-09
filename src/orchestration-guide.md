@@ -4,14 +4,15 @@ This guide is read on demand rather than before every delegation. Trigger: a tie
 
 ## Composition policy
 
+The boundary and tool description enforce the generated rules below.
+`warn` reports violations, `enforce` refuses them, and `off` disables standard-role checks.
+
 {{composition_rules}}
 
 ## S4 gate
 
-Use ordinary `subagent` calls for default evidence.
-R2 needs disjoint multi-reviewer scopes; synthetic probes do not count.
-Unknown or uncorrelated evidence fails closed.
-Independent review requires explicit handoff; `ENFORCE_CANDIDATE` never changes policy.
+S4 telemetry is emitted at composition boundaries and analyzed fail closed.
+Use its artifacts for evidence only: `ENFORCE_CANDIDATE` never changes `compositionPolicy`; changing the default remains a manual release decision.
 
 ## Workflow classification
 
@@ -62,7 +63,11 @@ A primary reviewer plus focused security or validation reviewers only when a spe
 
 ## Validation ownership per tier
 
-Validation ownership: the validation plan is one `verify` ref plus one review owner. Never delegate a validator to re-run a deterministic gate a ref already covers. Workers publish with `publish: { flowId }` and report the ref. Consumers resolve with `{ ref, flowId?, covers? }` (`covers` is scope, not quality). `fresh: true` executes; successful lookups report `repositoryStateStatus: matches`. Mismatches, unreadable states, and denied, timeout, or not-found errors are unresolved and must be NOT_RUN or unverified. Reviewer reports require `## Files Reviewed` with every inspected path and line range.
+Plan validation as one composite `verify` ref plus one review owner.
+The session that modifies files, or the session integrating a parallel fan-in, owns the final gate; consumers resolve refs rather than rerunning covered checks.
+Use `evidenceScope: "session"` only when independent execution is required.
+A stale, unresolved, or mismatched ref is `NOT_RUN` or otherwise unverified.
+Reviewers inspect refs and the required `## Files Reviewed` contract; they do not execute project validation.
 
 ## Escalation triggers
 
@@ -152,11 +157,12 @@ On context pressure or a compaction request, stop broad work and emit the curren
 
 ### Scout
 
-The scout is read-only reconnaissance: relevant files and symbols, current behavior, callers, callees, and tests, risks and unknowns, and a concise handoff for the planner. It must not edit files, commit changes, or call `codegraph_sync`.
+The scout performs read-only reconnaissance: relevant files and symbols, current behavior, callers, callees, tests, risks, unknowns, and a concise handoff for the planner.
 
 ### Planner
 
-The planner is read-only. It converts the task and scout report into a plan stating the goal, non-goals, acceptance criteria, steps, tests, and validation commands its prompt formats, and for each bug or reviewer finding the invariant, negative or unknown cases, regression matrix, and finding-specific validation. For behavior changes the plan must specify TDD or regression-first sequencing unless a justified exception applies. The planner must not edit files, commit changes, invoke the `subagent` tool, or call `codegraph_sync`.
+The planner converts the task and scout report into a plan stating the goal, non-goals, acceptance criteria, steps, tests, and validation commands, plus invariants, negative or unknown cases, regression coverage, and finding-specific validation when needed.
+For behavior changes the plan must specify TDD or regression-first sequencing unless a justified exception applies.
 
 ### Worker
 
@@ -165,22 +171,17 @@ The worker implements the assigned plan. It may inspect files, edit files, run f
 The worker must:
 
 - Preserve unrelated user changes, avoid unrelated cleanup and refactoring, and follow repository formatting, linting, and testing instructions.
-- Add or update directly related tests, and never edit tests merely to make them pass; the worker prompt carries the TDD and regression-first sequencing and the grounds for a test edit.
-- Mint the validation evidence: the session that modified files owns execution of the validation gate, or under a parallel fan-out the single session that integrates the fan-in owns it, so the owner runs the composite gate once with `verify` after the last implementation change, passes `covers` with the `AC-###` and `F-###` ids addressed, and reports the ref verbatim. Do not run the gate twice for the same repository state; a later file change makes the previous ref stale.
-- Report the `AC-###` statuses, changed files, checks attempted, and test evidence its own prompt contract asks for, and treat the minted `verify` ref as the validation evidence. Leave the final approval decision to the reviewer.
-- When siblings implement in parallel you are usually not the mint owner, so you report `validation_refs: none`, the composite check as `NOT_RUN`, and any sibling edit you noticed as contention.
+- Add or update directly related tests, and never edit tests merely to make them pass; follow the TDD or regression-first strategy in the plan.
+- Report the `AC-###` statuses, changed files, checks attempted, test evidence, and the owner’s `verify` ref. Leave the final approval decision to the reviewer.
+- Under a parallel fan-out, report `validation_refs: none` and the composite check as `NOT_RUN` unless the worker integrates the fan-in and owns the gate.
 
 ### Validator
 
-The validator runs approved final checks. It is read-only with respect to source and configuration files, must not call `codegraph_sync`, and cannot mutate files or repository state, install dependencies, fix failures, or approve or reject the code; its prompt carries the full prohibition list. Its approved commands are read-only project checks, with formatter checks run as `verify`'s format phase rather than as a separate command, and never a formatter in write mode.
-
-The validator resolves before it executes:
-
-- Execute only what no live ref covers, once per command, and cite the ref you minted.
-- The remainder is what `verify` does not expose: `node_build`, the `fallow_*` analyses, and a phase the project has no script for. Run a remainder check only when the plan or an acceptance criterion requires it.
-- When your delegation says `evidenceScope: session`, resolve nothing and execute the gate yourself. When the refs already cover every required check, say so and cite them instead of re-running them.
-
-Its report follows the validator prompt and ends in one `PASS`, `FAIL`, or `BLOCKED` verdict, with a validation reference and its freshness for every check.
+The validator runs approved final checks and remains read-only.
+Runtime permissions restrict it to approved validation surfaces and prevent source or configuration mutation.
+Resolve live refs first, execute only uncovered checks once, cite each ref, and use `evidenceScope: "session"` when independent execution is required.
+The remainder is `node_build`, applicable `fallow_*` analyses, and project phases not exposed by `verify`.
+Report one `PASS`, `FAIL`, or `BLOCKED` verdict and every unverified check; do not approve or reject the code.
 
 ```text
 executed
@@ -188,37 +189,27 @@ reused
 resolved
 ```
 
-`executed` means this role ran the command. `reused` means this role ran `verify` and the tool returned stored evidence for unchanged state. `resolved` means this role called `verify` with `{ ref }` and executed nothing.
+`executed` means this role ran the command.
+`reused` means this role ran `verify` and the tool returned stored evidence for unchanged state.
+`resolved` means this role called `verify` with `{ ref }` and executed nothing.
 
 #### Validation references
 
-Validation evidence is named by a reference; a later role resolves the reference instead of executing the check again.
-
-- The reference is tool-issued. Where the project exposes a composite `verify` command, the session that modified files mints the reference by running the gate once, and the validator and the reviewer are its consumers. Under a parallel fan-out the owner is the single session that integrates the fan-in. Only the owner mints; no other role re-mints covered evidence.
-- Resolve before you execute. Call `verify` with `{ ref }` for every reference in the ledger, confirm the verdict, confirm `covers` spans every required id, and confirm the repository state the reference names still matches the repository under review. Resolving a reference is not a validation pass.
-- References travel upward in the ledger `validation_refs` field, one entry per reference, naming the IDs it covers and the freshness of the citation: `executed`, `reused`, or `resolved`. A child writes the field into its own ledger block; the main session folds it into the next revision.
-- A reference is stale when the repository state it names is no longer the state under review, or its `covers` list omits a required id. The digest sees only what `git status` reports, so a path excluded by `.gitignore` never moves it: a change to an ignored or generated input is a reason to rerun rather than to reuse. A stale reference is reported `NOT_RUN` and then executed by whoever is allowed to execute. A `verify` result that reports `reused: true` is stored evidence, not fresh execution.
-- A reference you cannot resolve is not evidence. Report the check it stands for as `NOT_RUN` or otherwise unverified, execute it only if your role is permitted to execute, and never assert a freshness you cannot establish.
-- A reference minted inside a delegation flow resolves for every sibling in that flow, observed as a worker minting and a validator seat resolving the same ref. Minting itself needs the exact `verify` call shape to be authorized without a prompt. A reference minted by a session with no flow id, which is what the main session is, has never resolved from a child seat, so references travel from child to parent and never the other way round. When the main session modified files, its references are process-local and no child can resolve them, so either delegate the validation of that change or expect the child to report those checks as `NOT_RUN`.
-- Only where the project has no composite `verify` gate, record a compact `V-###` reference: the exact command, working directory, covered `AC-###` or `F-###` IDs, result, exit code, and a repository-state reference such as a diff hash or focused file hashes when available, otherwise exact paths plus a Git status or diff reference marked non-reusable.
-
-Reuse evidence only when the command, working directory, covered IDs, and repository state are unchanged, and rerun environment-sensitive, flaky, time-dependent, or externally dependent checks.
+Validation evidence is tool-issued and tied to a repository state and `covers` scope.
+Consumers resolve refs instead of rerunning covered checks; resolving a ref is not a validation pass.
+Report freshness as `executed`, `reused`, or `resolved`.
+Stale, unresolvable, or mismatched refs are `NOT_RUN` or otherwise unverified.
+Refs minted in a delegation flow resolve for its siblings and travel upward through `validation_refs`; main-session refs do not resolve from children.
+Use a compact `V-###` fingerprint only when the project has no composite `verify` gate.
+Reuse evidence only when the command, scope, and repository state are unchanged.
 A matching reference is evidence reuse, not code approval.
 
 #### Parallel fan-out and validation
 
-Parallel workers share one working tree. A gate executed by a sibling therefore attests to the union of the in-flight changes rather than to one worker's change.
-One session owns the gate for the combined state, normally the main session after the fan-in, and every other role resolves that reference.
-
-- Siblings do not run the composite gate.
-  Each may run a focused read-only check over its own declared paths, or none.
-- Write-capable commands, meaning a formatter, a lint fix, or a `verify` phase override, run in at most one sibling at a time.
-  The tool refuses the second caller while a sibling holds a write in flight, and that refusal means retry.
-- Declare disjoint files.
-  Being permitted to write the same file one after another is still a coordination defect.
-- A check that touches shared mutable state, meaning a fixed port, a coverage directory, a snapshot file, a build output, or a database file, belongs to the single owner that runs it alone, or it needs per-process isolation.
-- Report unexpected tracked changes made by a sibling that is still editing as contention, then re-check after the fan-in rather than failing the change under review for them.
-- When every sibling genuinely needs its own evidence, isolate the trees, for example one `git worktree` per worker.
+One session owns the composite gate for the combined state, normally the integrator after fan-in.
+Siblings run focused read-only checks or none, do not run the composite gate, and do not run write-capable checks concurrently.
+Declare disjoint files, isolate shared mutable state when needed, and report sibling edits as contention before rechecking after fan-in.
+Use separate worktrees when every sibling needs independent full evidence.
 
 For each check, distinguish these classifications:
 
@@ -230,17 +221,14 @@ BASELINE_FAILURE
 NOT_RUN
 ```
 
-Use `FAIL` when the command completed and the result is attributable to the change, `BLOCKED` when the environment prevented a meaningful result, and `BASELINE_FAILURE` for a known pre-existing failure. Do not trigger implementation remediation solely because a check is `BLOCKED` or `BASELINE_FAILURE`; pass those results to the reviewer with their evidence.
+Do not turn `BLOCKED` or `BASELINE_FAILURE` into a pass; pass those results to the reviewer with their evidence.
 
 ### Reviewer
 
-The reviewer is read-only.
-
-The reviewer must not call `codegraph_sync`.
-
-The primary reviewer reviews the complete change and owns the overall release decision. It treats removed, skipped, weakened, broadened, or rewritten assertions as findings unless the worker evidences that the prior test was wrong or the contract intentionally changed; its review method and single-verdict rule are in the reviewer prompt.
-
-The reviewer treats validator output as execution evidence, not semantic approval. The reviewer audits refs and never re-executes them, and a required check with no live ref is a finding. The reviewer calls `verify` with `{ ref }` and nothing else, and the reviewer has no `project_command`. Exactly one primary reviewer owns the release decision.
+The reviewer audits implementation, tests, acceptance criteria, and validation evidence without executing project checks.
+The primary reviewer reviews the complete change and owns the overall release decision; focused reviewers report only on their assigned scope.
+Treat removed, skipped, weakened, broadened, or rewritten assertions as findings unless the worker explains why the prior test was wrong or the contract intentionally changed.
+Validator output is execution evidence, not semantic approval, and a required check without live evidence is a finding.
 
 ## Worker modes
 

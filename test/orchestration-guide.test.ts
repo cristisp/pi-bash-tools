@@ -198,7 +198,9 @@ describe('renderOrchestrationGuide', () => {
 
 	it('keeps the role and workflow contract intact', () => {
 		expect(guide).toContain('### Tier 3 - Full investigation and assurance');
-		expect(guide).toContain('The reviewer must not call `codegraph_sync`.');
+		expect(guide).toContain(
+			'The reviewer audits implementation, tests, acceptance criteria, and validation evidence without executing project checks.',
+		);
 		expect(guide).toContain('Only the primary reviewer owns the final release decision.');
 		expect(guide).toContain('Call `subagent` with `listSubagents: true`.');
 	});
@@ -211,39 +213,20 @@ describe('renderOrchestrationGuide', () => {
 		expect(reuse).toContain('the session exceeds 8 turns');
 	});
 
-	it('owns the composite gate once per state in a parallel fan-out', () => {
+	it('states the compact parallel fan-out ownership rule', () => {
 		const fanOut = guide.slice(guide.indexOf('#### Parallel fan-out and validation'));
 		expect(fanOut.length).toBeGreaterThan(0);
 		expect(guide.indexOf('#### Parallel fan-out and validation')).toBeGreaterThan(
 			guide.indexOf('#### Validation references'),
 		);
-		for (const rule of [
-			'A gate executed by a sibling therefore attests to the union of the in-flight changes',
-			'One session owns the gate for the combined state',
-			'Siblings do not run the composite gate.',
-			'Write-capable commands, meaning a formatter, a lint fix, or a `verify` phase override',
-			'Being permitted to write the same file one after another is still a coordination defect',
-			'one `git worktree` per worker',
-		]) {
-			expect(fanOut).toContain(rule);
-		}
+		expect(fanOut).toContain('One session owns the composite gate for the combined state');
+		expect(fanOut).toContain('Siblings run focused read-only checks or none');
+		expect(fanOut).toContain('do not run write-capable checks concurrently');
+		expect(fanOut).toContain('Declare disjoint files');
+		expect(fanOut).toContain('report sibling edits as contention');
 		expect(fanOut).toContain(
-			're-check after the fan-in rather than failing the change under review',
+			'Use separate worktrees when every sibling needs independent full evidence.',
 		);
-		// The generated budget bullets repeat the rule where the worker budget is stated.
-		expect(guide).toContain(
-			'When siblings implement in parallel, do not run the gate: the session that integrates the fan-in mints one ref for the combined state',
-		);
-		// The unconditional W7 mint mandate is qualified everywhere it appears, so a fan-out
-		// names one owner rather than one owner per modifying session.
-		expect(guide).not.toContain('Only that session mints');
-		expect(guide).toContain(
-			'Under a parallel fan-out the owner is the single session that integrates the fan-in',
-		);
-		expect(guide).toContain(
-			'or under a parallel fan-out the single session that integrates the fan-in owns it',
-		);
-		expect(guide).toContain('you report `validation_refs: none`, the composite check as `NOT_RUN`');
 	});
 
 	it('calls write-capable exactly the commands enforcement excludes from a concurrent sibling', () => {
@@ -265,46 +248,30 @@ describe('renderOrchestrationGuide', () => {
 		expect(verifySetsScriptOverrides({})).toBe(false);
 	});
 
-	it('states the validation reference rules the extension enforces', () => {
-		expect(guide).toContain('Resolving a reference is not a validation pass');
-		expect(guide).toContain('reports `reused: true` is stored evidence, not fresh execution');
-		expect(guide).toContain('references travel from child to parent and never the other way round');
+	it('states the compact validation reference contract', () => {
+		expect(guide).toContain('Consumers resolve refs instead of rerunning covered checks');
+		expect(guide).toContain('resolving a ref is not a validation pass');
+		expect(guide).toContain('Report freshness as `executed`, `reused`, or `resolved`.');
+		expect(guide).toContain(
+			'Stale, unresolvable, or mismatched refs are `NOT_RUN` or otherwise unverified.',
+		);
 		expect(guide).toContain('A matching reference is evidence reuse, not code approval.');
 	});
 
-	it('leads with the tool-issued ref and demotes the fingerprint to the fallback shape', () => {
+	it('keeps validation references ordered from issuance to reuse', () => {
 		const refs = guide.slice(guide.indexOf('#### Validation references'));
 		const ordered = [
-			'The reference is tool-issued.',
-			'Resolve before you execute.',
-			'A reference is stale when the repository state it names',
-			'A reference you cannot resolve is not evidence',
-			'no composite `verify` gate, record a compact `V-###` reference',
+			'Validation evidence is tool-issued',
+			'Consumers resolve refs instead of rerunning covered checks',
+			'Report freshness as `executed`, `reused`, or `resolved`',
+			'Stale, unresolvable, or mismatched refs are `NOT_RUN` or otherwise unverified',
+			'Use a compact `V-###` fingerprint only when the project has no composite `verify` gate',
 		];
 		const positions = ordered.map((sentence) => refs.indexOf(sentence));
 		expect(positions.every((position) => position >= 0)).toBe(true);
 		expect(positions).toEqual(positions.toSorted((left, right) => left - right));
-		expect(guide).toContain(
-			'the session that modified files mints the reference by running the gate once',
-		);
-		expect(guide).toContain('References travel upward in the ledger `validation_refs` field');
-		expect(guide).toContain('the validator and the reviewer are its consumers');
-		expect(guide).toContain(
-			'A stale reference is reported `NOT_RUN` and then executed by whoever is allowed to execute',
-		);
-		expect(guide).toContain(
-			'execute it only if your role is permitted to execute, and never assert a freshness you cannot establish',
-		);
-		expect(guide).toContain('references travel from child to parent and never the other way round');
-		expect(guide).toContain(
-			'resolves for every sibling in that flow, observed as a worker minting and a validator seat resolving',
-		);
-		expect(guide).toContain('authorized without a prompt');
-		expect(guide).toContain('a path excluded by `.gitignore` never moves it');
-		expect(guide).toContain('its references are process-local and no child can resolve them');
-		expect(guide).toContain(
-			'either delegate the validation of that change or expect the child to report those checks as `NOT_RUN`',
-		);
+		expect(guide).toContain('Refs minted in a delegation flow resolve for its siblings');
+		expect(guide).toContain('travel upward through `validation_refs`');
 	});
 
 	it('names the freshness of every reported check', () => {
@@ -317,22 +284,12 @@ describe('renderOrchestrationGuide', () => {
 		);
 	});
 
-	it('makes the worker mint the evidence and the validator resolve it first', () => {
+	it('states the shortened validation ownership guidance', () => {
 		expect(guide).toContain(
-			'the session that modified files owns execution of the validation gate',
+			'The session that modifies files, or the session integrating a parallel fan-in, owns the final gate',
 		);
-		expect(guide).toContain('Mint the validation evidence');
-		expect(guide).toContain('The validator resolves before it executes');
-		expect(guide).toContain('Execute only what no live ref covers, once per command');
-		expect(guide).toContain(
-			'When your delegation says `evidenceScope: session`, resolve nothing and execute the gate yourself',
-		);
-		expect(guide).toContain(
-			'The remainder is what `verify` does not expose: `node_build`, the `fallow_*` analyses, and a phase the project has no script for',
-		);
-		expect(guide).toContain(
-			'Run a remainder check only when the plan or an acceptance criterion requires it',
-		);
+		expect(guide).toContain('Resolve live refs first, execute only uncovered checks once');
+		expect(guide).toContain('The remainder is `node_build`, applicable `fallow_*` analyses');
 		expect(guide).not.toContain('node_format:check');
 	});
 
@@ -346,10 +303,8 @@ describe('renderOrchestrationGuide', () => {
 		expect(guide).toContain(
 			'Tier 3 keeps the validator. Pass `evidenceScope: "session"` on the validator delegation',
 		);
-		expect(guide).toContain('the validation plan is one `verify` ref plus one review owner');
-		expect(guide).toContain(
-			'Never delegate a validator to re-run a deterministic gate a ref already covers',
-		);
+		expect(guide).toContain('Plan validation as one composite `verify` ref plus one review owner.');
+		expect(guide).toContain('consumers resolve refs rather than rerunning covered checks.');
 	});
 
 	it('drops the validator from targeted remediation', () => {
@@ -363,15 +318,15 @@ describe('renderOrchestrationGuide', () => {
 		expect(guide).toContain('it resolves the worker refs for every finding ID first');
 	});
 
-	it('carries the refs, required ids, and evidence scope into the validator task', () => {
+	it('keeps the validator and reviewer handoff contract', () => {
 		expect(guide).toContain(
 			'- Worker `verify` refs with their verdicts, `covers` lists, and repository state',
 		);
 		expect(guide).toContain('- Required `AC-###` and `F-###` ids');
 		expect(guide).toContain('- The evidence scope in force');
-		expect(guide).toContain('The reviewer audits refs and never re-executes them');
-		expect(guide).toContain('The reviewer calls `verify` with `{ ref }` and nothing else');
-		expect(guide).toContain('the reviewer has no `project_command`');
-		expect(guide).toContain('Exactly one primary reviewer owns the release decision');
+		expect(guide).toContain(
+			'The reviewer audits implementation, tests, acceptance criteria, and validation evidence',
+		);
+		expect(guide).toContain('Only the primary reviewer owns the final release decision.');
 	});
 });
