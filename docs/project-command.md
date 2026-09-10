@@ -42,23 +42,23 @@ Legacy variant aliases such as `node_lint:fix` remain accepted, but new calls sh
 
 ## Command catalog
 
-| Command ID | Operation | Policy and execution notes |
-| --- | --- | --- |
-| `workspace_path` | Spawn `/bin/pwd` with no arguments. | Global-safe static observation with head-biased output. |
-| `node_version` | Spawn the active Node executable with `--version`. | Global-safe static observation with head-biased output. |
-| `node_project_info` | Read `package.json` and supported lockfiles in process. | Reports Node version, manifest presence, detected package manager, sorted scripts, and applicable command IDs. |
-| `node_deps_list` | Run a fixed top-level dependency listing. | Uses npm, pnpm, bun, or supported Yarn Classic 1.x forms and accepts exit code 1. |
-| `node_test` | Run the exact `test` or selected `test:<variant>` package script. | Optional workspace-relative test paths are forwarded as fixed arguments. |
-| `node_build` | Run the exact `build` package script. | Project-controlled code and never globally safe. |
-| `node_lint` | Run the exact `lint` or selected `lint:<variant>` package script. | Project-controlled code and never globally safe. |
-| `node_typecheck` | Run the exact `typecheck` package script. | Project-controlled code and never globally safe. |
-| `node_format` | Run the exact `format` or selected `format:<variant>` package script. | Project-controlled code and may mutate the workspace. |
-| `fallow_dead_code` | Run the project-local Fallow dead-code analysis. | Fixed JSON and quiet arguments. |
-| `fallow_dupes` | Run the project-local Fallow duplicate-code analysis. | Fixed JSON and quiet arguments. |
-| `fallow_health` | Run the project-local Fallow health analysis. | Fixed JSON and quiet arguments. |
-| `fallow_audit` | Run the project-local Fallow audit with `--base`. | Requires `base` and uses a validated revision. |
-| `fallow_list_entry_points` | Run Fallow entry-point listing. | Fixed JSON and quiet arguments. |
-| `fallow_list_boundaries` | Run Fallow boundary listing. | Fixed JSON and quiet arguments. |
+| Command ID                 | Operation                                                             | Policy and execution notes                                                                                     |
+| -------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `workspace_path`           | Spawn `/bin/pwd` with no arguments.                                   | Global-safe static observation with head-biased output.                                                        |
+| `node_version`             | Spawn the active Node executable with `--version`.                    | Global-safe static observation with head-biased output.                                                        |
+| `node_project_info`        | Read `package.json` and supported lockfiles in process.               | Reports Node version, manifest presence, detected package manager, sorted scripts, and applicable command IDs. |
+| `node_deps_list`           | Run a fixed top-level dependency listing.                             | Uses npm, pnpm, bun, or supported Yarn Classic 1.x forms and accepts exit code 1.                              |
+| `node_test`                | Run the exact `test` or selected `test:<variant>` package script.     | Optional workspace-relative test paths are forwarded as fixed arguments.                                       |
+| `node_build`               | Run the exact `build` package script.                                 | Project-controlled code and never globally safe.                                                               |
+| `node_lint`                | Run the exact `lint` or selected `lint:<variant>` package script.     | Project-controlled code and never globally safe.                                                               |
+| `node_typecheck`           | Run the exact `typecheck` package script.                             | Project-controlled code and never globally safe.                                                               |
+| `node_format`              | Run the exact `format` or selected `format:<variant>` package script. | Project-controlled code and may mutate the workspace.                                                          |
+| `fallow_dead_code`         | Run the project-local Fallow dead-code analysis.                      | Fixed JSON and quiet arguments.                                                                                |
+| `fallow_dupes`             | Run the project-local Fallow duplicate-code analysis.                 | Fixed JSON and quiet arguments.                                                                                |
+| `fallow_health`            | Run the project-local Fallow health analysis.                         | Fixed JSON and quiet arguments.                                                                                |
+| `fallow_audit`             | Run the project-local Fallow audit with `--base`.                     | Requires `base` and uses a validated revision.                                                                 |
+| `fallow_list_entry_points` | Run Fallow entry-point listing.                                       | Fixed JSON and quiet arguments.                                                                                |
+| `fallow_list_boundaries`   | Run Fallow boundary listing.                                          | Fixed JSON and quiet arguments.                                                                                |
 
 The exact package script must exist in `package.json` before the command is resolved.
 

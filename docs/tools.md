@@ -2,18 +2,18 @@
 
 ## Custom tools
 
-| Tool | Purpose | Detailed reference |
-| --- | --- | --- |
-| `git_status` | Read bounded porcelain working-tree status. | [Git tools](git.md) |
-| `git_diff` | Read a staged or working-tree summary or patch. | [Git tools](git.md) |
-| `git_log` | Read bounded commit identifiers, authors, dates, and subjects. | [Git tools](git.md) |
-| `git_show` | Read bounded revision output with an optional path filter. | [Git tools](git.md) |
-| `environment` | Read explicitly requested environment variables after authorization. | [Environment](environment.md) |
-| `read_batch` | Read up to 32 authorized repository-relative files with bounded ranges. | [Filesystem tools and policy](filesystem.md) |
-| `move` | Move or rename one authorized regular file. | [Filesystem tools and policy](filesystem.md) |
-| `delete` | Delete one authorized regular file. | [Filesystem tools and policy](filesystem.md) |
-| `project_command` | Run one command from the fixed Node and Fallow catalog or look up evidence. | [Project commands](project-command.md) |
-| `verify` | Run the configured verification phases in fixed order or look up evidence. | [Verification](verify.md) |
+| Tool              | Purpose                                                                     | Detailed reference                           |
+| ----------------- | --------------------------------------------------------------------------- | -------------------------------------------- |
+| `git_status`      | Read bounded porcelain working-tree status.                                 | [Git tools](git.md)                          |
+| `git_diff`        | Read a staged or working-tree summary or patch.                             | [Git tools](git.md)                          |
+| `git_log`         | Read bounded commit identifiers, authors, dates, and subjects.              | [Git tools](git.md)                          |
+| `git_show`        | Read bounded revision output with an optional path filter.                  | [Git tools](git.md)                          |
+| `environment`     | Read explicitly requested environment variables after authorization.        | [Environment](environment.md)                |
+| `read_batch`      | Read up to 32 authorized repository-relative files with bounded ranges.     | [Filesystem tools and policy](filesystem.md) |
+| `move`            | Move or rename one authorized regular file.                                 | [Filesystem tools and policy](filesystem.md) |
+| `delete`          | Delete one authorized regular file.                                         | [Filesystem tools and policy](filesystem.md) |
+| `project_command` | Run one command from the fixed Node and Fallow catalog or look up evidence. | [Project commands](project-command.md)       |
+| `verify`          | Run the configured verification phases in fixed order or look up evidence.  | [Verification](verify.md)                    |
 
 ## Native pi tools with additional capabilities
 

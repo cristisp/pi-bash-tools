@@ -105,33 +105,31 @@ it("supports explicit staged patches and paths containing spaces", async () => {
   });
 });
 
-it("keeps strict, mutually exclusive path schema variants with an optional mode and limit", () => {
-  type SchemaVariant = {
+it("keeps a flat strict object schema with mutually exclusive optional path fields", () => {
+  const schema = createGitDiffTool(patchExec().exec).parameters as {
+    readonly type?: string;
     readonly additionalProperties?: boolean;
     readonly properties?: Readonly<Record<string, unknown>>;
     readonly required?: readonly string[];
+    readonly description?: string;
   };
-  const schema = createGitDiffTool(patchExec().exec).parameters as {
-    readonly anyOf?: readonly SchemaVariant[];
-  };
-  const variants = schema.anyOf ?? [];
 
-  expect(variants).toHaveLength(3);
-  expect(variants.every((variant) => variant.additionalProperties === false)).toBe(true);
-  expect(variants.map((variant) => Object.keys(variant.properties ?? {}).sort())).toEqual([
-    ["maxBytes", "mode", "staged"],
-    ["maxBytes", "mode", "path", "staged"],
-    ["maxBytes", "mode", "paths", "staged"],
+  expect(schema.type).toBe("object");
+  expect(schema.additionalProperties).toBe(false);
+  expect(Object.keys(schema.properties ?? {}).sort()).toEqual([
+    "maxBytes",
+    "mode",
+    "path",
+    "paths",
+    "staged",
   ]);
-  expect(variants.map((variant) => [...(variant.required ?? [])].sort())).toEqual([
-    [],
-    ["path"],
-    ["paths"],
-  ]);
-  expect(variants.every((variant) => !variant.required?.includes("maxBytes"))).toBe(true);
-  expect(variants[0]?.properties?.mode).toMatchObject({
+  expect(schema.required).toBeUndefined();
+  expect(schema.properties?.path).toMatchObject({ type: "string" });
+  expect(schema.properties?.paths).toMatchObject({ type: "array", minItems: 1 });
+  expect(schema.properties?.mode).toMatchObject({
     anyOf: [{ const: "summary" }, { const: "patch" }],
   });
+  expect(schema.description).toContain("never both");
 });
 
 it("defaults to a bounded summary with status, stat, and hunk headers but no body", async () => {

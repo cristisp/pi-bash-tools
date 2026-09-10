@@ -53,43 +53,30 @@ const maxBytes = Type.Optional(
     description: `Maximum response bytes. Defaults to ${DEFAULT_GIT_DIFF_MAX_BYTES}.`,
   }),
 );
-const gitDiffParameters = Type.Union([
-  Type.Object(
-    {
-      mode,
-      staged: stagedSchema,
-      maxBytes,
-    },
-    {
-      additionalProperties: false,
-      description: "Omit path filters to inspect the whole repository.",
-    },
-  ),
-  Type.Object(
-    {
-      mode,
-      path: Type.String({
+const gitDiffParameters = Type.Object(
+  {
+    mode,
+    path: Type.Optional(
+      Type.String({
         description: 'Legacy single workspace-relative path. For new calls, use paths: ["file"].',
       }),
-      staged: stagedSchema,
-      maxBytes,
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      mode,
-      paths: Type.Array(Type.String(), {
+    ),
+    paths: Type.Optional(
+      Type.Array(Type.String(), {
         minItems: 1,
         description:
           'New calls should use paths: ["file"] for one path, or list multiple workspace-relative paths.',
       }),
-      staged: stagedSchema,
-      maxBytes,
-    },
-    { additionalProperties: false },
-  ),
-]);
+    ),
+    staged: stagedSchema,
+    maxBytes,
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Omit path and paths to inspect the whole repository. Provide either path or paths, never both.",
+  },
+);
 
 function diffArgs(stagedMode: boolean, paths: readonly string[]): string[] {
   const args = ["diff", "--no-ext-diff", "--no-textconv", "--binary"];
@@ -191,24 +178,13 @@ function waitForSummaryClaim(
   });
 }
 
-type GitDiffRequestParams =
-  | {
-      readonly mode?: "summary" | "patch";
-      readonly staged?: boolean | "true" | "false";
-      readonly maxBytes?: number;
-    }
-  | {
-      readonly mode?: "summary" | "patch";
-      readonly path: string;
-      readonly staged?: boolean | "true" | "false";
-      readonly maxBytes?: number;
-    }
-  | {
-      readonly mode?: "summary" | "patch";
-      readonly paths: readonly string[];
-      readonly staged?: boolean | "true" | "false";
-      readonly maxBytes?: number;
-    };
+type GitDiffRequestParams = {
+  readonly mode?: "summary" | "patch";
+  readonly path?: string;
+  readonly paths?: readonly string[];
+  readonly staged?: boolean | "true" | "false";
+  readonly maxBytes?: number;
+};
 
 type GitRepository = Awaited<ReturnType<typeof resolveRepository>>;
 type GitDiffRenderTheme = Parameters<typeof renderCallLine>[0];
@@ -281,7 +257,13 @@ export function renderGitDiffCall(
     parts.push(theme.fg("muted", "--staged"));
   }
   const paths =
-    args === undefined ? [] : "paths" in args ? args.paths : "path" in args ? [args.path] : [];
+    args === undefined
+      ? []
+      : args.paths !== undefined
+        ? args.paths
+        : args.path !== undefined
+          ? [args.path]
+          : [];
   if (paths.length === 0) {
     parts.push(theme.fg("muted", "(whole repository)"));
   } else {
@@ -299,8 +281,8 @@ function normalizeGitDiffRequest(params: GitDiffRequestParams): GitDiffRequest {
     ["mode", "path", "paths", "staged", "maxBytes"],
     '{ mode?: "summary" | "patch", path?: string, paths?: string[], staged?: boolean, maxBytes?: integer }',
   );
-  const hasLegacyPath = "path" in params;
-  const hasPaths = "paths" in params;
+  const hasLegacyPath = params.path !== undefined;
+  const hasPaths = params.paths !== undefined;
   if (hasLegacyPath && hasPaths) {
     throw invalidGitRequest("provide either path or paths, not both", "path");
   }
@@ -318,8 +300,8 @@ async function resolveGitDiffPaths(
   repository: GitRepository,
   params: GitDiffRequestParams,
 ): Promise<string[]> {
-  const hasLegacyPath = "path" in params;
-  const hasPaths = "paths" in params;
+  const hasLegacyPath = params.path !== undefined;
+  const hasPaths = params.paths !== undefined;
   return hasPaths
     ? await resolvePaths(repository, params.paths)
     : hasLegacyPath
