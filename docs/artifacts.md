@@ -28,6 +28,57 @@ Lookups with a `flowId` succeed only when the caller has the same effective flow
 
 Evidence includes opaque `covers`, producer provenance, repository state, and current-state comparison when available.
 
+## Shared evidence envelope
+
+Bash Tools evidence records carry a producer-neutral envelope so that evidence metadata from participating extensions can be compared without importing another extension's implementation modules.
+
+The envelope format version is `1` and is tracked by the constant `EVIDENCE_ENVELOPE_FORMAT_VERSION` in `src/evidence/envelope.ts`.
+
+Envelope fields are additive on top of each producer's own record shape:
+
+- `producer` is `bash-tools` for every Bash Tools record; Codegraph records use `codegraph-runner`.
+- `kind` is `project-command` for `pc_` records, `verify` for `vr_` records, and `read-batch` for `rr_` records.
+- `scope` is `session` or `flow` where the record has no other scope carrier.
+- `requestHash` and `contentHash` are lowercase SHA-256 hex digests over canonical JSON of the request identity and the stored result identity respectively.
+- `workspace` is an optional block with `repositoryId` (the SHA-256 digest of the canonical repository identity), `head`, `dirtyDigest`, and `status` (`readable` or `degraded`).
+- `output` is an optional block with `truncated`, `totalBytes`, and `totalLines`.
+
+The canonical repository identity and raw paths stay inside producer-owned records; the envelope carries only the digested `repositoryId`.
+
+Producers keep their own record version fields: `pc_` records keep `evidenceFormatVersion: 1`, `vr_` records keep `cacheFormatVersion: 2`, and in-memory `rr_` records use the envelope format version.
+
+### Compatibility and version negotiation
+
+Envelope fields are additive and independently optional.
+
+Record validators accept stored records with and without envelope fields so existing on-disk records remain valid.
+
+A change to the shared envelope field set bumps `EVIDENCE_ENVELOPE_FORMAT_VERSION`.
+
+Consumers that encounter an unknown envelope version or unknown fields must treat those fields as absent rather than fail, and must never execute, replay, or reinterpret an evidence reference from another producer.
+
+Evidence references remain producer-owned, opaque, and non-replayable; the orchestration layer may transport references but must not resolve them.
+
+### Root to session scope mapping
+
+Root-session evidence uses the envelope scope name `session`, and flow-scoped evidence uses `flow`.
+
+The internal `root` scope name used by verify provenance maps to the envelope name `session` without changing any stored value or widening authorization.
+
+A `session` envelope scope still means process-local evidence that becomes cross-process only after explicit publication to an authorized flow.
+
+### Workspace digest comparison
+
+Within one producer's records, two workspace blocks describe the same repository state when `repositoryId`, `head`, and `dirtyDigest` are all equal non-null digests.
+
+Digest derivations are producer-specific: `repositoryId` hashes each producer's canonical repository identity, and `dirtyDigest` summarizes each producer's dirty-state observation, so cross-producer equality is meaningful only for fields both producers derive identically, such as the Git `head` object ID.
+
+A missing or null `head` or `dirtyDigest` is unknown state and must be treated as a mismatch for reuse decisions, never as a match.
+
+The `workspace` block describes Git workspace freshness only; Codegraph index freshness lives in the Codegraph `producerState` block and stays distinct.
+
+A `degraded` status means the producer could not fully observe the workspace and consumers must not treat the block as a complete identity.
+
 ## Disk caches
 
 The default cache root is `~/.pi/agent/bash-tools`.
@@ -64,6 +115,18 @@ Project-command invocations are recorded as `bash-tools.project-command-invocati
 
 One aggregate invocation record is emitted for each `verify` call rather than one record per phase.
 
+Read-batch invocations are recorded as `bash-tools.read-batch-invocation` entries.
+
+Each read-batch record carries the session and tool-call identity, the requested path count, per-path size entries (path hash and length, range, unchanged and truncation flags, file bytes and line totals, returned content bytes, evidence reference, and error code), an aggregate block (model-facing result bytes, returned content bytes, file bytes and line totals, and unchanged, truncated, and error counts), duration, and the evidence scope.
+
+Read-batch records never contain path strings or file content, and they are omitted when the session identity is unavailable.
+
+When observability is active, read-batch invocations observe repository state and record it as an additive `repositoryState` block that follows the shared evidence envelope workspace shape.
+
+The block carries `repositoryId` (the SHA-256 of the resolved workspace root), `head` and `dirtyDigest` (null when they cannot be derived), and `status` (`readable` when full state was derived, `degraded` otherwise).
+
+Repository-state observation runs only when a recorder and session identity are present, uses the same derivation as `project_command` and `verify`, and never changes read results or errors.
+
 At session shutdown, the extension emits a `bash-tools.project-command-summary` entry for the active session when possible.
 
 The summary aggregates invocation count, cache decisions, result categories, process statuses, durations, output bytes, truncation counts, measurements, and a bounded set of schema hashes.
@@ -96,6 +159,8 @@ Each bounded invocation record is appended as one newline-delimited JSON object 
 
 The stream contains the same compact records sent to pi custom entries, including execution decisions, evidence references, repository metadata, lookup outcomes, and failed or denied requests.
 
+Read-batch invocation records use the same stream and follow the same privacy and bounding rules as project-command records.
+
 A denied or failed `verify` call still emits an invocation record with `executed: false` when no phase ran.
 
 String parameters are represented by hashes and lengths where possible, and outputs and raw policy contents are not written to invocation records.
@@ -105,6 +170,8 @@ Each record is capped at 8 KiB, and a missing or unwritable path produces a proc
 ## Useful observability fields
 
 Invocation records may include `flowId`, `delegationId`, `role`, `ref`, `verdict`, `mutating`, `publication`, `lookup`, `coercions`, `concurrentExecutions`, `stateDrift`, `sharedExecution`, and aggregate metadata.
+
+Read-batch records add `requestedPaths`, per-item size entries, and an `aggregate` block with `resultBytes` for the full model-facing result text, which supports result-size attribution per read-batch call.
 
 `cacheDecision` is one of `miss`, `hit`, `forced`, `ineligible`, or `invalidated`.
 

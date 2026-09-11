@@ -1,6 +1,3 @@
-import { appendFileSync, mkdirSync } from "node:fs";
-import { dirname, isAbsolute } from "node:path";
-
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -13,6 +10,7 @@ import type { ProjectCommandCacheDecision } from "../tools/project-command/cache
 import type { ProjectCommandExecutionStatus } from "../tools/project-command/execution.ts";
 import { EXTENSION_VERSION } from "../version.ts";
 import { hashCanonicalJson } from "./canonical-json.ts";
+import { appendInvocationStreamRecord, BASH_TOOLS_INVOCATIONS_PATH } from "./invocation-stream.ts";
 import { measurementPair, type MeasurementPair } from "./measurements.ts";
 
 const PROJECT_COMMAND_INVOCATION_FORMAT_VERSION = 1 as const;
@@ -24,15 +22,7 @@ export const PROJECT_COMMAND_SUMMARY_ENTRY_TYPE = "bash-tools.project-command-su
 export const PROJECT_COMMAND_SUMMARY_MAX_BYTES = 8 * 1024;
 export const PROJECT_COMMAND_SUMMARY_MAX_COUNT = 1_000_000;
 export const PROJECT_COMMAND_SUMMARY_MAX_SCHEMA_HASHES = 32;
-export const BASH_TOOLS_INVOCATIONS_PATH = "BASH_TOOLS_INVOCATIONS_PATH";
-const BASH_TOOLS_INVOCATION_STREAM = "BASH_TOOLS_INVOCATION_STREAM";
-const BASH_TOOLS_TELEMETRY_PATH = "BASH_TOOLS_TELEMETRY_PATH";
-
-const INVOCATION_STREAM_ENVIRONMENT_VARIABLES = [
-  BASH_TOOLS_INVOCATIONS_PATH,
-  BASH_TOOLS_INVOCATION_STREAM,
-  BASH_TOOLS_TELEMETRY_PATH,
-] as const;
+export { BASH_TOOLS_INVOCATIONS_PATH };
 const MAX_IDENTIFIER_LENGTH = 256;
 const MAX_PARAMETER_KEYS = 16;
 const MAX_PARAMETER_ITEMS = 16;
@@ -863,49 +853,6 @@ export function createProjectCommandInvocationSessionRecorder(
   };
 
   return Object.freeze({ invocationRecorder: record, onSessionStart, onSessionShutdown });
-}
-
-const invocationStreamWarnings = new Set<string>();
-
-function configuredInvocationStreamPath(
-  environment: Readonly<Record<string, string | undefined>> = process.env,
-): string | undefined {
-  for (const environmentVariable of INVOCATION_STREAM_ENVIRONMENT_VARIABLES) {
-    const value = environment[environmentVariable];
-    if (value === undefined || value.trim().length === 0) continue;
-    const path = value.trim();
-    if (!isAbsolute(path)) {
-      warnInvocationStream(path, `${environmentVariable} must contain an absolute JSONL file path`);
-      return undefined;
-    }
-    return path;
-  }
-  return undefined;
-}
-
-function warnInvocationStream(path: string, message: string): void {
-  const warningKey = `${path}:${message}`;
-  if (invocationStreamWarnings.has(warningKey)) return;
-  invocationStreamWarnings.add(warningKey);
-  process.emitWarning(message, { code: "BASH_TOOLS_INVOCATION_STREAM" });
-}
-
-function appendInvocationStreamRecord(
-  record: ProjectCommandInvocationRecord,
-  environment: Readonly<Record<string, string | undefined>>,
-): void {
-  const path = configuredInvocationStreamPath(environment);
-  if (path === undefined) return;
-  try {
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
-  } catch (error) {
-    const code =
-      typeof error === "object" && error !== null && "code" in error
-        ? String((error as { readonly code?: unknown }).code)
-        : "unknown";
-    warnInvocationStream(path, `Could not append the invocation stream (${code})`);
-  }
 }
 
 /** Create a best-effort recorder backed by Pi's session custom-entry API and JSONL stream. */

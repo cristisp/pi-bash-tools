@@ -1,3 +1,10 @@
+import type {
+  SharedEvidenceKind,
+  SharedEvidenceOutputBlock,
+  SharedEvidenceWorkspaceBlock,
+} from "../../evidence/envelope.ts";
+import { EVIDENCE_PRODUCER } from "../../evidence/envelope.ts";
+
 export const VERIFY_PHASES = ["format", "lint", "typecheck", "test"] as const;
 export const VERIFY_CACHE_FORMAT_VERSION = 2 as const;
 
@@ -66,6 +73,12 @@ export interface VerifyEvidenceRecord {
   readonly failureTail?: string;
   readonly covers: readonly string[];
   readonly createdAt: number;
+  readonly producer?: typeof EVIDENCE_PRODUCER;
+  readonly kind?: SharedEvidenceKind;
+  readonly requestHash?: string;
+  readonly contentHash?: string;
+  readonly workspace?: SharedEvidenceWorkspaceBlock;
+  readonly output?: SharedEvidenceOutputBlock;
   readonly provenance?: VerifyEvidenceProvenance;
   readonly publication?: VerifyPublication;
   readonly mutating?: boolean;

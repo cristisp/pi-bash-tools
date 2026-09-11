@@ -1,3 +1,4 @@
+import { isBoundedSharedEvidenceFields } from "../../../evidence/envelope.ts";
 import { hashCanonicalJson } from "../../../observability/canonical-json.ts";
 import { RESULT_CATEGORIES } from "../../errors.ts";
 import {
@@ -278,6 +279,10 @@ function isEvidenceRecordPublication(value: Readonly<Record<string, unknown>>): 
   return value.publication === undefined || isPublication(value.publication);
 }
 
+function isEvidenceRecordEnvelopeFields(value: Readonly<Record<string, unknown>>): boolean {
+  return isBoundedSharedEvidenceFields(value, ["project-command"]);
+}
+
 function isEvidenceRecordProducer(value: Readonly<Record<string, unknown>>): boolean {
   return (
     (value.producerScope === undefined ||
@@ -315,6 +320,7 @@ export function isEvidenceRecord(
     isEvidenceRecordRepositoryState(record) &&
     isEvidenceRecordProvenance(record) &&
     isEvidenceRecordPublication(record) &&
+    isEvidenceRecordEnvelopeFields(record) &&
     isEvidenceRecordProducer(record) &&
     isEvidenceRecordScope(record, scopeKey)
   );

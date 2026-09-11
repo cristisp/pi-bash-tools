@@ -1245,7 +1245,7 @@ it("publishes only stable root evidence to an explicitly requested flow", async 
   }
 });
 
-it("binds verify authorization to scripts, excludes paths, and re-prompts outside flow scope", async () => {
+it("binds verify authorization to scripts, excludes paths, and persists project allows across scopes", async () => {
   const cwd = await projectFixture();
   let storedIdentity: { commandId: string; fingerprint: string } | undefined;
   const selections = vi.fn(async () => "Allow for this project");
@@ -1317,6 +1317,15 @@ it("binds verify authorization to scripts, excludes paths, and re-prompts outsid
     await tool.execute(
       "verify-auth-session",
       { omit: ["typecheck"], paths: ["src/two.ts"] },
+      undefined,
+      undefined,
+      { ...context(cwd), ui: { select: selections } },
+    );
+    expect(selections).toHaveBeenCalledTimes(1);
+
+    await tool.execute(
+      "verify-auth-changed-scripts",
+      { omit: ["typecheck", "format"], paths: ["src/two.ts"] },
       undefined,
       undefined,
       { ...context(cwd), ui: { select: selections } },

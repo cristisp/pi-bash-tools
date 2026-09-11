@@ -9,6 +9,13 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import {
+  aggregateSharedEvidenceOutput,
+  EVIDENCE_PRODUCER,
+  sharedEvidenceContentHash,
+  sharedEvidenceRequestHash,
+  sharedWorkspaceBlock,
+} from "../../evidence/envelope.ts";
+import {
   createProjectCommandInvocationMeasurements,
   recordProjectCommandInvocation,
   type ProjectCommandInvocationLookupMetadata,
@@ -159,17 +166,8 @@ async function authorizeVerify(
     globalSafe: false,
     allowGlobal: false,
     deferAllowPersistence: false,
-    findDecision: (current, currentIdentity) => {
-      const orchestration = readProjectCommandOrchestrationContext();
-      const decision = findProjectCommandPolicyDecision(current, currentIdentity, false);
-      // A persisted flow grant is meaningful only while the process is in the
-      // effective flow scope. A bare environment variable never authorizes a
-      // command; an absent/session scope deliberately prompts again.
-      if (orchestration.effectiveScope !== "flow") {
-        return decision === "deny-global" || decision === "deny-project" ? decision : "unknown";
-      }
-      return decision;
-    },
+    findDecision: (current, currentIdentity) =>
+      findProjectCommandPolicyDecision(current, currentIdentity, false),
     recordDecisions: (projectPath, requests, requestSignal) =>
       policy.recordDecisions(projectPath, requests, requestSignal),
     makeRequest: (currentIdentity, decision) => ({
@@ -1009,15 +1007,53 @@ function createVerifyEvidenceRecord(options: {
   readonly stateDrift: boolean;
 }): VerifyEvidenceRecord {
   const firstFailure = options.steps.find((step) => step.status === "failed");
+  const verdict = aggregateVerdict(options.steps);
   return {
     cacheFormatVersion: VERIFY_CACHE_FORMAT_VERSION,
     key: options.key,
     ref: options.ref,
+    producer: EVIDENCE_PRODUCER,
+    kind: "verify" as const,
+    requestHash: sharedEvidenceRequestHash({
+      projectPath: options.projectPath,
+      commands: options.prepared.map(({ phase, resolved }) => ({
+        phase,
+        executable: resolved.executable,
+        args: [...resolved.args],
+        displayCommand: displayCommand(resolved),
+        scriptKey: resolved.scriptKey,
+        scriptFingerprint: scriptFingerprint(resolved),
+      })),
+      paths: options.input.paths,
+      omit: options.input.omit,
+      scripts: options.input.scripts,
+      continueOnFailure: options.input.continueOnFailure,
+      covers: options.input.covers,
+    }),
+    contentHash: sharedEvidenceContentHash({
+      resolvedCommands: options.resolvedCommands,
+      perStep: options.steps,
+      verdict,
+      ...(firstFailure?.failureTail === undefined ? {} : { failureTail: firstFailure.failureTail }),
+    }),
+    ...(options.state === undefined
+      ? {}
+      : {
+          workspace: sharedWorkspaceBlock({
+            repositoryIdentity: options.state.repositoryIdentity,
+            head: options.state.head,
+            dirtyFilesDigest: options.state.dirtyFilesDigest,
+          }),
+        }),
+    output: aggregateSharedEvidenceOutput([
+      ...options.steps.map((step) => step.stdout),
+      ...options.steps.map((step) => step.stderr),
+    ]),
     projectPath: options.projectPath,
     ...(options.state === undefined ? {} : { repositoryState: options.state }),
     resolvedCommands: options.resolvedCommands,
     perStep: options.steps,
-    verdict: aggregateVerdict(options.steps),
+    verdict,
     ...(firstFailure?.failureTail === undefined ? {} : { failureTail: firstFailure.failureTail }),
     covers: options.input.covers,
     createdAt: Date.now(),

@@ -4,6 +4,7 @@ import {
   createProjectCommandInvocationSessionRecorder,
   type ProjectCommandInvocationLifecycleContext,
 } from "./observability/project-command-invocation.ts";
+import { createReadBatchInvocationRecorder } from "./observability/read-batch-invocation.ts";
 import { createToolInventoryRecorder } from "./observability/tool-inventory.ts";
 import { createEnvironmentTool } from "./tools/environment/environment-tool.ts";
 import { createFilesystemAccessPolicyInterceptor } from "./tools/filesystem/access-policy.ts";
@@ -25,6 +26,7 @@ export default function (pi: ExtensionAPI): void {
       : boundedGitExec(command, args, options, options.maxOutputBytes);
   const toolInventoryRecorder = createToolInventoryRecorder(pi);
   const invocationSessionRecorder = createProjectCommandInvocationSessionRecorder(pi);
+  const readBatchInvocationRecorder = createReadBatchInvocationRecorder(pi);
   pi.on("session_start", (event, context) => {
     invocationSessionRecorder.onSessionStart(
       event,
@@ -39,7 +41,7 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool(createGitLogTool(exec));
   pi.registerTool(createGitShowTool(exec));
   pi.registerTool(createEnvironmentTool());
-  pi.registerTool(createReadBatchTool(exec));
+  pi.registerTool(createReadBatchTool(exec, { invocationRecorder: readBatchInvocationRecorder }));
   pi.registerTool(
     createProjectCommandTool({
       invocationRecorder: invocationSessionRecorder.invocationRecorder,

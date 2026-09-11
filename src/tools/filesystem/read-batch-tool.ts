@@ -9,10 +9,28 @@ import { relative, sep } from "node:path";
 import type {
   AgentToolResult,
   AgentToolUpdateCallback,
+  ExtensionContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 
+import {
+  EVIDENCE_ENVELOPE_FORMAT_VERSION,
+  EVIDENCE_PRODUCER,
+  sharedEvidenceRequestHash,
+  sharedRepositoryId,
+  type SharedEvidenceRecord,
+  type SharedEvidenceScope,
+  type SharedEvidenceWorkspaceBlock,
+} from "../../evidence/envelope.ts";
+import { hashToolParameters } from "../../observability/canonical-json.ts";
+import {
+  recordReadBatchInvocation,
+  type ReadBatchInvocationAggregate,
+  type ReadBatchInvocationItem,
+  type ReadBatchInvocationReason,
+  type ReadBatchInvocationRecorder,
+} from "../../observability/read-batch-invocation.ts";
 import { type AuthorizationErrorKind } from "../authorization.ts";
 import { renderCallLine, renderStringArgument } from "../call-render.ts";
 import type { GitExec } from "../git/execution.ts";
@@ -28,6 +46,8 @@ import {
 import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
 import type { LoadedPolicy, PolicyAuthorization, PolicyStore } from "../policy/types.ts";
 import { readProjectCommandOrchestrationContext } from "../project-command/orchestration.ts";
+import type { ProjectCommandRepositoryStateReader } from "../project-command/repository-state.ts";
+import { createProjectCommandRepositoryStateReader } from "../project-command/repository-state.ts";
 import { decodeUtf8Prefix } from "../truncation.ts";
 import {
   authorizeAndPersistFilesystemAccesses,
@@ -129,7 +149,9 @@ export interface ReadBatchDetails {
   readonly results: readonly ReadBatchPathResult[];
 }
 
-export type ReadBatchToolContext = FilesystemAuthorizationContext;
+export type ReadBatchToolContext = FilesystemAuthorizationContext & {
+  readonly sessionManager?: Pick<ExtensionContext["sessionManager"], "getSessionId">;
+};
 
 interface ReadBatchFileStats extends PolicyFileStats {
   readonly size: number;
@@ -146,6 +168,13 @@ export interface ReadBatchToolTestOptions {
   readonly fs?: Partial<ReadBatchFileSystem>;
   readonly gitExec?: GitExec;
   readonly policy?: PolicyStore;
+  readonly invocationRecorder?: ReadBatchInvocationRecorder;
+  readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
+}
+
+export interface ReadBatchToolOptions {
+  readonly invocationRecorder?: ReadBatchInvocationRecorder;
+  readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
 }
 
 type ReadBatchExecute = (
@@ -167,8 +196,7 @@ interface NormalizedReadBatchPath {
 }
 
 interface PreviousRead {
-  readonly contentHash: string;
-  readonly ref: string;
+  readonly evidence: SharedEvidenceRecord;
 }
 
 interface ReadBatchPathFailureOptions {
@@ -370,6 +398,21 @@ function cacheScope(): string {
   return context.effectiveScope === "flow" && context.flowId !== undefined
     ? `flow:${context.flowId}`
     : "session";
+}
+
+interface ReadBatchScopeMetadata {
+  readonly scope: "session" | "flow";
+  readonly flowId?: string;
+}
+
+function scopeMetadata(scope: string): ReadBatchScopeMetadata {
+  return scope.startsWith("flow:")
+    ? { scope: "flow", flowId: scope.slice("flow:".length) }
+    : { scope: "session" };
+}
+
+function envelopeScope(scope: string): SharedEvidenceScope {
+  return scope.startsWith("flow:") ? "flow" : "session";
 }
 
 function cacheKey(
@@ -710,16 +753,31 @@ function finalizeReadBatchRead(
   const contentHash = createHash("sha256").update(bytes).digest("hex");
   const key = cacheKey(scope, root, path, input.range);
   const previous = cache.get(key);
-  if (previous?.contentHash === contentHash) {
+  if (previous?.evidence.contentHash === contentHash) {
     return {
       path,
       ...(input.range === undefined ? {} : { range: input.range }),
       unchanged: true,
-      ref: previous.ref,
+      ref: previous.evidence.ref,
     };
   }
   const ref = readReference(root, path, input.range, contentHash);
-  cache.set(key, { contentHash, ref });
+  cache.set(key, {
+    evidence: Object.freeze({
+      evidenceFormatVersion: EVIDENCE_ENVELOPE_FORMAT_VERSION,
+      ref,
+      producer: EVIDENCE_PRODUCER,
+      kind: "read-batch" as const,
+      scope: envelopeScope(scope),
+      requestHash: sharedEvidenceRequestHash({
+        root,
+        path,
+        range: normalizedRangeKey(input.range),
+      }),
+      contentHash,
+      output: Object.freeze(selected.output),
+    }),
+  });
   trimCache(cache);
   return {
     path,
@@ -775,12 +833,77 @@ function result(details: ReadBatchDetails): AgentToolResult<ReadBatchDetails> {
   };
 }
 
+function getSessionId(ctx: ReadBatchToolContext): string | undefined {
+  const value = ctx.sessionManager?.getSessionId();
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function requestedPathCount(params: ReadBatchInput): number {
+  if (!isRecord(params) || !Array.isArray(params.paths)) return 0;
+  return params.paths.length;
+}
+
+function classifyReadBatchFailure(error: unknown): ReadBatchInvocationReason {
+  if (error instanceof FilesystemToolError) {
+    if (error.contract.code === "cancelled") return "cancelled";
+    if (error.contract.code === "invalid-request") return "invalid-request";
+  }
+  return "failed";
+}
+
+function readBatchInvocationItem(pathResult: ReadBatchPathResult): ReadBatchInvocationItem {
+  const content = pathResult.content;
+  const output = pathResult.output;
+  const errorCode = pathResult.error?.code;
+  return {
+    pathHash: createHash("sha256").update(pathResult.path, "utf8").digest("hex"),
+    pathLength: pathResult.path.length,
+    ...(pathResult.range === undefined ? {} : { range: pathResult.range }),
+    unchanged: pathResult.unchanged === true,
+    truncated: output?.truncated === true,
+    totalBytes: output?.totalBytes ?? 0,
+    totalLines: output?.totalLines ?? 0,
+    contentBytes: content === undefined ? 0 : Buffer.byteLength(content, "utf8"),
+    ...(pathResult.ref === undefined ? {} : { ref: pathResult.ref }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function readBatchInvocationAggregate(details: ReadBatchDetails): ReadBatchInvocationAggregate {
+  let contentBytes = 0;
+  let totalBytes = 0;
+  let totalLines = 0;
+  let unchangedCount = 0;
+  let truncatedCount = 0;
+  let errorCount = 0;
+  for (const item of details.results) {
+    contentBytes += item.content === undefined ? 0 : Buffer.byteLength(item.content, "utf8");
+    totalBytes += item.output?.totalBytes ?? 0;
+    totalLines += item.output?.totalLines ?? 0;
+    if (item.unchanged === true) unchangedCount += 1;
+    if (item.output?.truncated === true) truncatedCount += 1;
+    if (item.error !== undefined) errorCount += 1;
+  }
+  return {
+    resultBytes: Buffer.byteLength(JSON.stringify(details), "utf8"),
+    contentBytes,
+    totalBytes,
+    totalLines,
+    unchangedCount,
+    truncatedCount,
+    errorCount,
+  };
+}
+
 function createReadBatchToolWithDependencies(
   policy: PolicyStore,
   fileSystem: ReadBatchFileSystem,
   gitExec: GitExec | undefined,
+  invocationRecorder: ReadBatchInvocationRecorder | undefined,
+  repositoryStateReader: ProjectCommandRepositoryStateReader | undefined,
 ): ReadBatchToolDefinition {
   const cache = new Map<string, PreviousRead>();
+  const schemaHash = hashToolParameters(readBatchParameters);
   return {
     name: "read_batch",
     label: "Batch read",
@@ -799,66 +922,125 @@ function createReadBatchToolWithDependencies(
       const suffix = paths.length > 1 ? theme.fg("muted", `+${paths.length - 1}`) : "";
       return renderCallLine(theme, "read_batch", [summary, suffix]);
     },
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const inputs = validateInput(params);
-      const requestSignal = signal ?? ctx.signal;
-      if (requestSignal?.aborted) throw filesystemCancellationError("Batch read cancelled");
-      const resolvedRoot = await resolveRoot(ctx.cwd, fileSystem, gitExec, requestSignal);
-      const root = resolvedRoot.root;
-      const canonicalCwd = resolvedRoot.cwd;
-      if (requestSignal?.aborted) throw filesystemCancellationError("Batch read cancelled");
-      let loaded: LoadedPolicy;
-      try {
-        loaded = await loadFilesystemPolicyForRequest(policy, ctx.cwd, requestSignal);
-      } catch (error) {
-        if (requestSignal?.aborted) throw filesystemCancellationError("Batch read cancelled");
-        const failure = pathFailureFromError(error, {
-          code: "policy-load-failure",
-          message: "Filesystem access policy could not be loaded.",
-          category: "POLICY_FAILURE",
-          retryable: true,
-          executed: false,
+    async execute(toolCallId, params, signal, _onUpdate, ctx) {
+      const startedAt = performance.now();
+      const sessionId = getSessionId(ctx);
+      const observeState = invocationRecorder !== undefined && sessionId !== undefined;
+      let workspaceBlock: SharedEvidenceWorkspaceBlock | undefined;
+      const record = (
+        reason: ReadBatchInvocationReason,
+        details: ReadBatchDetails | undefined,
+        executed: boolean,
+        scopeInfo: ReadBatchScopeMetadata = { scope: "session" },
+      ): void => {
+        if (sessionId === undefined) return;
+        recordReadBatchInvocation(invocationRecorder, {
+          sessionId,
+          toolCallId,
+          schemaHash,
+          requestedPaths: requestedPathCount(params),
+          reason,
+          executed,
+          durationMs: performance.now() - startedAt,
+          ...(details === undefined ? {} : { items: details.results.map(readBatchInvocationItem) }),
+          ...(details === undefined ? {} : { aggregate: readBatchInvocationAggregate(details) }),
+          scope: scopeInfo.scope,
+          ...(scopeInfo.flowId === undefined ? {} : { flowId: scopeInfo.flowId }),
+          ...(workspaceBlock === undefined ? {} : { repositoryState: workspaceBlock }),
         });
-        return result({
-          results: inputs.map((input) => ({
-            path: reportedPath(root, canonicalCwd, input.path),
-            ...(input.range === undefined ? {} : { range: input.range }),
-            error: failure,
-          })),
-        });
-      }
-      const scope = cacheScope();
-      const results: ReadBatchPathResult[] = [];
-      const collect = async (index: number): Promise<void> => {
-        if (index >= inputs.length) return;
-        if (requestSignal?.aborted) throw filesystemCancellationError("Batch read cancelled");
-        const input = inputs[index];
-        if (input === undefined) return;
-        results.push(
-          await readOne(
-            input,
-            root,
-            canonicalCwd,
-            loaded,
-            ctx,
-            policy,
-            fileSystem,
-            requestSignal,
-            scope,
-            cache,
-          ),
-        );
-        await collect(index + 1);
       };
-      await collect(0);
-      if (requestSignal?.aborted) throw filesystemCancellationError("Batch read cancelled");
-      return result({ results: Object.freeze(results) });
+      try {
+        const inputs = validateInput(params);
+        const requestSignal = signal ?? ctx.signal;
+        if (requestSignal?.aborted) throw filesystemCancellationError("Batch read cancelled");
+        const resolvedRoot = await resolveRoot(ctx.cwd, fileSystem, gitExec, requestSignal);
+        const root = resolvedRoot.root;
+        const canonicalCwd = resolvedRoot.cwd;
+        if (requestSignal?.aborted) throw filesystemCancellationError("Batch read cancelled");
+        const observedStatePromise =
+          observeState && repositoryStateReader !== undefined
+            ? repositoryStateReader(canonicalCwd, requestSignal).catch(() => undefined)
+            : Promise.resolve(undefined);
+        let loaded: LoadedPolicy;
+        try {
+          loaded = await loadFilesystemPolicyForRequest(policy, ctx.cwd, requestSignal);
+        } catch (error) {
+          if (requestSignal?.aborted) throw filesystemCancellationError("Batch read cancelled");
+          const failure = pathFailureFromError(error, {
+            code: "policy-load-failure",
+            message: "Filesystem access policy could not be loaded.",
+            category: "POLICY_FAILURE",
+            retryable: true,
+            executed: false,
+          });
+          const outcome = result({
+            results: inputs.map((input) => ({
+              path: reportedPath(root, canonicalCwd, input.path),
+              ...(input.range === undefined ? {} : { range: input.range }),
+              error: failure,
+            })),
+          });
+          record("completed", outcome.details, false);
+          return outcome;
+        }
+        if (observeState) {
+          const observedState = await observedStatePromise;
+          workspaceBlock = Object.freeze({
+            repositoryId: sharedRepositoryId(root),
+            head: observedState?.head ?? null,
+            dirtyDigest: observedState?.dirtyFilesDigest ?? null,
+            status: observedState === undefined ? "degraded" : "readable",
+          });
+        }
+        const scope = cacheScope();
+        const scopeInfo = scopeMetadata(scope);
+        const results: ReadBatchPathResult[] = [];
+        const collect = async (index: number): Promise<void> => {
+          if (index >= inputs.length) return;
+          if (requestSignal?.aborted) throw filesystemCancellationError("Batch read cancelled");
+          const input = inputs[index];
+          if (input === undefined) return;
+          results.push(
+            await readOne(
+              input,
+              root,
+              canonicalCwd,
+              loaded,
+              ctx,
+              policy,
+              fileSystem,
+              requestSignal,
+              scope,
+              cache,
+            ),
+          );
+          await collect(index + 1);
+        };
+        await collect(0);
+        if (requestSignal?.aborted) throw filesystemCancellationError("Batch read cancelled");
+        const outcome = result({ results: Object.freeze(results) });
+        record("completed", outcome.details, true, scopeInfo);
+        return outcome;
+      } catch (error) {
+        record(classifyReadBatchFailure(error), undefined, false);
+        throw error;
+      }
     },
   };
 }
 
-export function createReadBatchTool(gitExec?: GitExec): ReadBatchToolDefinition {
-  return createReadBatchToolWithDependencies(createPolicyStore(), createNodeFileSystem(), gitExec);
+export function createReadBatchTool(
+  gitExec?: GitExec,
+  options?: ReadBatchToolOptions,
+): ReadBatchToolDefinition {
+  return createReadBatchToolWithDependencies(
+    createPolicyStore(),
+    createNodeFileSystem(),
+    gitExec,
+    options?.invocationRecorder,
+    options?.repositoryStateReader ??
+      (gitExec === undefined ? undefined : createProjectCommandRepositoryStateReader(gitExec)),
+  );
 }
 
 export function createReadBatchToolForTesting(
@@ -869,5 +1051,7 @@ export function createReadBatchToolForTesting(
     requirePolicy(options, fileSystem),
     fileSystem,
     options.gitExec,
+    options.invocationRecorder,
+    options.repositoryStateReader,
   );
 }

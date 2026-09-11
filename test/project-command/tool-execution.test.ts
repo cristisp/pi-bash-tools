@@ -14,6 +14,7 @@ import type { ProjectCommandExecutionOutcome } from "../../src/tools/project-com
 import type { ProjectCommandRepositoryState } from "../../src/tools/project-command/repository-state.ts";
 import { resolveFixedProjectCommand } from "../../src/tools/project-command/resolution.ts";
 import type { ResolvedProjectCommand } from "../../src/tools/project-command/resolution/types.ts";
+import { projectCommandSingleFlightCountsForTesting } from "../../src/tools/project-command/runner.ts";
 import { ProjectCommandToolError } from "../../src/tools/project-command/schema.ts";
 import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
 import {
@@ -154,7 +155,10 @@ it("shares one non-mutating evidence execution across overlapping identical requ
     context(fixtureData.directory),
   );
   await secondResolverDone;
-  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  await vi.waitFor(() => {
+    const counts = [...projectCommandSingleFlightCountsForTesting().values()];
+    expect(counts).toContain(2);
+  });
   expect(executor).toHaveBeenCalledTimes(1);
   release();
   const [firstResult, secondResult] = await Promise.all([first, second]);

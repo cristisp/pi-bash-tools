@@ -23,8 +23,14 @@ type CommandIdVariant = {
   readonly pattern?: string;
 };
 
+function isCommandIdVariants(
+  value: unknown,
+): value is { readonly anyOf?: readonly CommandIdVariant[] } {
+  return typeof value === "object" && value !== null && "anyOf" in value;
+}
+
 function flatSchema(): FlatSchema {
-  return projectCommandInputSchema as FlatSchema;
+  return projectCommandInputSchema;
 }
 
 function properties(): Readonly<Record<string, unknown>> {
@@ -52,10 +58,8 @@ it("flattens the model-facing schema into a single strict object", () => {
 });
 
 it("lists every command ID and the legacy variant aliases in the commandId schema", () => {
-  const commandId = properties().commandId as {
-    readonly anyOf?: readonly CommandIdVariant[];
-  };
-  const variants = commandId.anyOf ?? [];
+  const commandId = properties().commandId;
+  const variants = isCommandIdVariants(commandId) ? (commandId.anyOf ?? []) : [];
 
   expect(variants.slice(0, 15).map((variant) => variant.const)).toEqual([
     "workspace_path",

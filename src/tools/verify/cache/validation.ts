@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 
+import { isBoundedSharedEvidenceFields } from "../../../evidence/envelope.ts";
 import {
   isBoundedInteger,
   isBoundedNonEmptyString,
@@ -141,6 +142,10 @@ function isVerifyRecordOutcome(value: Readonly<Record<string, unknown>>): boolea
   );
 }
 
+function isVerifyRecordEnvelopeFields(value: Readonly<Record<string, unknown>>): boolean {
+  return isBoundedSharedEvidenceFields(value, ["verify"]);
+}
+
 export function isVerifyEvidenceRecord(
   value: unknown,
   logicalRequestKey?: string,
@@ -149,7 +154,8 @@ export function isVerifyEvidenceRecord(
   return (
     isVerifyRecordMetadata(value, logicalRequestKey) &&
     isVerifyRecordSteps(value) &&
-    isVerifyRecordOutcome(value)
+    isVerifyRecordOutcome(value) &&
+    isVerifyRecordEnvelopeFields(value)
   );
 }
 

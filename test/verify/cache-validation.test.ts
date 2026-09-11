@@ -390,3 +390,47 @@ describe("isVerifyEvidenceRecord boundary validation", () => {
     ).toBe(true);
   });
 });
+
+describe("shared evidence envelope fields", () => {
+  it("accepts records with bounded envelope fields", () => {
+    const workspace = {
+      repositoryId: "a".repeat(64),
+      head: "head-object",
+      dirtyDigest: "b".repeat(64),
+      status: "readable",
+    };
+    expect(
+      isVerifyEvidenceRecord(
+        validRecord({
+          producer: "bash-tools",
+          kind: "verify",
+          requestHash: "c".repeat(64),
+          contentHash: "d".repeat(64),
+          workspace,
+          output: { truncated: false, totalBytes: 0, totalLines: 0 },
+        }),
+        RECORD_KEY,
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts records without envelope fields", () => {
+    expect(isVerifyEvidenceRecord(validRecord(), RECORD_KEY)).toBe(true);
+  });
+
+  it("rejects malformed envelope fields", () => {
+    const record = validRecord();
+    const cases: readonly [string, Record<string, unknown>][] = [
+      ["producer", { producer: "codegraph-runner" }],
+      ["kind", { kind: "project-command" }],
+      ["request hash", { requestHash: "not-a-hash" }],
+      ["content hash", { contentHash: "e".repeat(63) }],
+      ["workspace status", { workspace: { repositoryId: "f".repeat(64), status: "unknown" } }],
+      ["workspace id", { workspace: { repositoryId: "short", status: "readable" } }],
+      ["output bytes", { output: { truncated: false, totalBytes: 1.5, totalLines: 0 } }],
+    ];
+    for (const [label, overrides] of cases) {
+      expect(isVerifyEvidenceRecord({ ...record, ...overrides }, RECORD_KEY), label).toBe(false);
+    }
+  });
+});

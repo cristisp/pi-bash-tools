@@ -116,4 +116,8 @@ Evidence records contain the request key, reference, project path, resolved comm
 
 Verification authorization is project-scoped and never globally safe because package scripts are project-controlled code.
 
+Consent is bound to the selected phase scripts, the script bodies, `omit`, and `continueOnFailure`, so changed file contents or test paths do not invalidate a persisted project allow while an edited package script requires re-approval.
+
+A persisted project allow or deny is honored in normal sessions and inside an authorized flow, and an edited package script body, a different phase selection, or a changed `omit` or `continueOnFailure` value prompts again.
+
 See [Artifacts and observability](artifacts.md) for cache retention and [Policy document](policy.md) for authorization storage.

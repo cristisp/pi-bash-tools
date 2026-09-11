@@ -10,6 +10,10 @@ Historical extension-version recovery is complete, but the latest observed `1.0.
 
 Orchestration policy and Codegraph implementation remain owned by their respective extensions.
 
+Codegraph Runner 2.0.2 now implements the counterpart that the producer-neutral evidence contract was waiting on: a producer-owned `cg_` artifact store with a versioned evidence envelope, repository and multi-dimensional index state, bounded retention, opaque non-replayable references, and lookup-time scope, workspace, and freshness reauthorization. Bash Tools now carries that envelope additively on `pc_`, `vr_`, and in-memory `rr_` records through a neutral shared envelope module, so the remaining shared-contract work is cross-producer lookup-outcome alignment and `rr_` flow publication.
+
+The envelope-adoption slice is implemented, and the next work is the current-version telemetry needed for the remaining P0 measurements.
+
 Cross-extension work will use compatible evidence contracts rather than direct implementation dependencies.
 
 ## Goals
@@ -52,12 +56,13 @@ The latest observed `1.0.2` cohort contains only 40 unambiguous sessions and 142
 - [ ] Attribute inventory tools by their recorded source so Bash Tools-owned, intercepted native, Codegraph, and unrelated extension tools are not conflated.
 - [ ] Recompute error rates, duplicate requests, result volume, latency, cache decisions, and evidence reuse for each sufficiently covered version cohort.
 - [x] Implement state-aware duplicate classification and report unknown state instead of labeling unsupported duplicates as waste.
-- [ ] Improve repository-state coverage beyond the 201 historically attributable calls.
+- [x] Improve repository-state coverage beyond the 201 historically attributable calls with `read_batch` observations.
+- [ ] Observe repository state on the Git read tools so state coverage is not limited to `read_batch` and command execution.
 - [x] Separate invalid requests, policy outcomes, policy subsystem failures, resolution failures, command failures, timeouts, cancellations, test failures, and successful evidence lookups where historical data supports the distinction.
 - [ ] Report tool-result rates both including and excluding expected authorization and fail-closed outcomes.
 - [ ] Measure repeated `project_command` execution separately from `verify` execution, lookup, reuse, publication, forced execution, and cache ineligibility for each sufficiently covered cohort.
 - [x] Include `read_batch` in read-like artifact analysis.
-- [ ] Record aggregate and per-item result size for `read_batch`.
+- [x] Record aggregate and per-item result size for `read_batch`.
 - [ ] Measure Git summary reuse, patch follow-up frequency, truncation, and repeated state observations.
 - [x] Produce a provisional latest-observed-version baseline with explicit sample coverage and uncertainty.
 - [ ] Accumulate enough current-version telemetry to identify which findings in the two research reports remain active.
@@ -115,22 +120,41 @@ The historical report now provides a bounded proximity baseline, but its 705 pot
 
 Bash Tools and Codegraph should expose compatible evidence metadata while retaining producer-owned storage and lookup.
 
-- [ ] Define a minimal versioned evidence envelope shared by participating extensions.
-- [ ] Include the evidence reference, producer, evidence kind, request hash, content hash, compact summary, bounded output metadata, and creation metadata.
-- [ ] Include canonical repository identity, `HEAD`, dirty-state identity, and relevant artifact fingerprints where available.
-- [ ] Allow producer-specific freshness fields, including the Codegraph index identity and indexed workspace state.
-- [ ] Define root, process, and explicit flow scope without widening existing authorization.
-- [ ] Require the producer to reauthorize every lookup.
-- [ ] Define current, stale, mismatched, unreadable, and unavailable lookup outcomes.
+Codegraph Runner 2.0.2 satisfies the producer-side requirements for its `cg_` evidence: a versioned envelope carrying `ref`, `producer`, `kind`, `scope`, `requestHash`, `contentHash`, a `workspace` block with `repositoryId`, `head`, `dirtyDigest`, and `status`, a nested `producerState` with the Codegraph index identity and workspace freshness, an `output` block with truncation and byte totals, and `provenance` creation metadata. References are opaque and non-replayable, retention and content limits are bounded, every lookup is reauthorized against the effective scope, workspace, and index freshness, and lookup outcomes distinguish current, stale, mismatched, missing, expired, corrupt, unauthorized, and unreadable records.
+
+Bash Tools now carries the same envelope additively on `rr_`, `pc_`, and `vr_` records, so the remaining shared-contract work is cross-producer lookup-outcome alignment and `rr_` flow publication.
+
+Satisfied by the Codegraph producer:
+
+- [x] Include the evidence reference, producer, evidence kind, request hash, content hash, compact summary, bounded output metadata, and creation metadata.
+- [x] Include canonical repository identity, `HEAD`, dirty-state identity, and relevant artifact fingerprints where available.
+- [x] Allow producer-specific freshness fields, including the Codegraph index identity and indexed workspace state.
+- [x] Require the producer to reauthorize every lookup.
+- [x] Keep references opaque and non-replayable.
+- [x] Specify bounded retention and content limits.
+
+Remaining shared-contract and Bash Tools work:
+
+- [x] Define a minimal versioned evidence envelope shared by participating extensions.
+- [x] Define root, process, and explicit flow scope without widening existing authorization, including the `root` to `session` naming mapping.
+- [ ] Define current, stale, mismatched, unreadable, and unavailable lookup outcomes consistently across producers.
 - [ ] Preserve provenance, publication status, state drift, truncation, and cache decisions without including secrets or raw policy data.
-- [ ] Keep references opaque and non-replayable.
-- [ ] Specify bounded retention and content limits.
 - [ ] Document compatibility and version-negotiation rules so extensions do not import each other's implementation modules.
+
+#### Envelope adoption slice
+
+This slice is preventive correctness work: it changes evidence metadata shape only and does not weaken authorization, widen evidence scope, or change stored payloads.
+
+- [x] Add a neutral shared envelope module holding the versioned format constant, the scope mapping, and bounded validators.
+- [x] Add `producer`, `kind`, `requestHash`, `contentHash`, `output`, and `workspace` fields to `pc_` records additively, keeping existing fields and `producerScope` values unchanged.
+- [x] Add the same envelope fields to `vr_` records without changing the `cacheFormatVersion: 2` on-disk validation contract.
+- [x] Bring in-memory `rr_` records into the same envelope, leaving flow publication to a later item.
+- [x] Document the shared envelope, the `root` to `session` scope mapping, compatibility and version-negotiation rules, and the `workspace` digest comparison rule in [`docs/artifacts.md`](docs/artifacts.md).
 
 #### Ownership
 
 - Bash Tools continues to own `rr_`, `pc_`, and `vr_` evidence.
-- Codegraph should own a separate `cg_` namespace and resolve its own references.
+- Codegraph owns a separate `cg_` namespace and resolves its own references; Codegraph Runner 2.0.2 implements this.
 - The orchestration layer may transport references but must not reinterpret producer authorization or freshness.
 - A shared implementation, if needed, must be a neutral protocol or utility package rather than Bash Tools becoming a generic artifact database.
 
@@ -194,17 +218,17 @@ This work should close remaining cross-child and aggregate-payload gaps rather t
 
 This repository will implement only the Bash Tools side of the interoperability contract.
 
-The corresponding Codegraph work belongs in the Codegraph extension.
+The corresponding Codegraph work belongs in the Codegraph extension and is implemented in Codegraph Runner 2.0.2 for the items marked below.
 
-- [ ] Ensure the common evidence envelope can represent semantic exploration, symbol context, callers, callees, impact, and affected-test results.
-- [ ] Support compact summaries and opaque `cg_` references without requiring Bash Tools to resolve them.
-- [ ] Require Codegraph evidence to identify both the graph index state and workspace state.
-- [ ] Ensure workspace mutations can make graph evidence visibly stale without deleting historical provenance.
+- [x] Ensure the common evidence envelope can represent semantic exploration, symbol context, callers, callees, impact, and affected-test results.
+- [x] Support compact summaries and opaque `cg_` references without requiring Bash Tools to resolve them.
+- [x] Require Codegraph evidence to identify both the graph index state and workspace state.
+- [x] Ensure workspace mutations can make graph evidence visibly stale without deleting historical provenance.
+- [x] Avoid embedding full source bodies when a bounded reference and exact range are sufficient.
 - [ ] Coordinate bounded source snippets, precise file ranges, signatures, and relevance summaries as the default semantic result.
-- [ ] Avoid embedding full source bodies when a bounded reference and exact range are sufficient.
 - [ ] Define how Bash Tools repository-state metadata can be compared with producer-supplied Codegraph state without sharing private cache records.
 
-The Codegraph extension should separately make `codegraph_sync` idempotent and return an unchanged result when the index already represents the relevant workspace state.
+The Codegraph extension makes `codegraph_sync` idempotent and returns an unchanged result when the index already represents the relevant workspace state.
 
 #### Exit criteria
 
@@ -299,6 +323,7 @@ Shared evidence can save context while introducing stale-result and authorizatio
 The following work is not part of the active efficiency and evidence program.
 
 - [ ] Reconsider a curated read-only probe surface only if current-version telemetry shows persistent hallucinated shell-style probes that existing tools and Codegraph cannot address.
+- [ ] Evaluate a token-oriented serialization format (for example TOON) only for model-facing projections of uniform tabular arrays, and only if current-version telemetry shows that such summaries dominate context; stored evidence records and the producer-neutral cross-extension contract remain JSON.
 - [ ] Confirm no-environment fallback behavior in a separate integration environment when the host can provide that condition.
 - [ ] Add direct tests for low-complexity rendering helpers only if their coverage findings remain materially useful.
 - [ ] Add platform-specific Linux policy tests when a Linux CI environment is available.
@@ -312,4 +337,4 @@ The following work is not part of the active efficiency and evidence program.
 - Provider and model retry or fallback behavior.
 - Flow-ledger summaries and incremental ledger reads.
 - Compact child-response contracts and evidence-routing policy.
-- Codegraph query implementation, index synchronization, and `cg_` artifact storage.
+- Codegraph query implementation, index synchronization, and `cg_` artifact storage (implemented in Codegraph Runner 2.0.2).

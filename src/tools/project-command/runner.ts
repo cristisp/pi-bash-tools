@@ -1831,6 +1831,10 @@ async function executePreparedProjectCommand(
   }
 }
 
+export function projectCommandSingleFlightCountsForTesting(): ReadonlyMap<string, number> {
+  return new Map([...PROJECT_COMMAND_SINGLE_FLIGHTS].map(([key, flight]) => [key, flight.active]));
+}
+
 export function createProjectCommandExecute<
   const Definitions extends readonly ProjectCommandDefinition[],
 >(

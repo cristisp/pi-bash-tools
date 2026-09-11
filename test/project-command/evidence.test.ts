@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, expect, it, vi } from "vitest";
 
+import { sharedRepositoryId } from "../../src/evidence/envelope.ts";
 import {
   createProjectCommandEvidenceRecord,
   createProjectCommandEvidenceStore,
@@ -430,4 +431,87 @@ it("validates the evidence envelope and publication scope boundaries", () => {
   expect(isEvidenceRecord(flow, "flow-a")).toBe(true);
   expect(isEvidenceRecord(flow, "flow-b")).toBe(false);
   expect(isEvidenceRecord(valid, "flow-a")).toBe(false);
+});
+
+it("carries the shared evidence envelope additively on pc_ records", () => {
+  const created = record();
+  if (
+    created.producer === undefined ||
+    created.contentHash === undefined ||
+    created.requestHash === undefined
+  ) {
+    throw new Error("The pc_ envelope fields must be populated");
+  }
+  expect(created.producer).toBe("bash-tools");
+  expect(created.kind).toBe("project-command");
+  expect(created.scope).toBe("session");
+  expect(created.requestHash).toMatch(/^[0-9a-f]{64}$/u);
+  expect(created.contentHash).toMatch(/^[0-9a-f]{64}$/u);
+  expect(created.ref).toBe(`pc_${created.contentHash.slice(0, 24)}`);
+  expect(created.workspace).toEqual({
+    repositoryId: sharedRepositoryId("/repo"),
+    head: "HEAD",
+    dirtyDigest: "clean",
+    status: "readable",
+  });
+  expect(created.output).toEqual({ truncated: false, totalBytes: 2, totalLines: 1 });
+  expect(isEvidenceRecord(created)).toBe(true);
+
+  const flowRecord = record("flow");
+  expect(flowRecord.scope).toBe("flow");
+  expect(flowRecord.producerScope).toBe("flow");
+});
+
+it("maps the pc_ request identity into the envelope request hash", () => {
+  const first = createProjectCommandEvidenceRecord(details(), {});
+  const second = createProjectCommandEvidenceRecord(details(), {});
+  expect(first.requestHash).toBe(second.requestHash);
+  const changed = createProjectCommandEvidenceRecord(
+    { ...details(), parameters: { variant: "check" } },
+    {},
+  );
+  expect(changed.requestHash).not.toBe(first.requestHash);
+  expect(changed.contentHash).not.toBe(first.contentHash);
+});
+
+it("accepts legacy pc_ records without envelope fields and rejects malformed envelope values", () => {
+  const created = record();
+  const legacy: Record<string, unknown> = { ...created };
+  for (const field of [
+    "producer",
+    "kind",
+    "scope",
+    "requestHash",
+    "contentHash",
+    "workspace",
+    "output",
+  ]) {
+    delete legacy[field];
+  }
+  expect(isEvidenceRecord(legacy)).toBe(true);
+
+  const malformed: readonly [string, Record<string, unknown>][] = [
+    ["producer", { producer: "codegraph-runner" }],
+    ["kind", { kind: "verify" }],
+    ["scope", { scope: "root" }],
+    ["request hash", { requestHash: "not-a-hash" }],
+    ["content hash", { contentHash: "NOT-A-HASH" }],
+    [
+      "workspace status",
+      {
+        workspace: {
+          repositoryId: sharedRepositoryId("/repo"),
+          head: "HEAD",
+          dirtyDigest: "clean",
+          status: "unknown",
+        },
+      },
+    ],
+    ["workspace id", { workspace: { repositoryId: "short" } }],
+    ["output bytes", { output: { truncated: false, totalBytes: -1, totalLines: 0 } }],
+    ["output truncated", { output: { truncated: "no", totalBytes: 0, totalLines: 0 } }],
+  ];
+  for (const [label, overrides] of malformed) {
+    expect(isEvidenceRecord({ ...created, ...overrides }), label).toBe(false);
+  }
 });
