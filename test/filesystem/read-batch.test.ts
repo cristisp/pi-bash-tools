@@ -1,6 +1,7 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion */
 
-import { mkdir, realpath, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -88,6 +89,64 @@ it("reads bounded ranges in one request and returns per-path errors", async () =
   });
 });
 
+it("rejects duplicate and overlapping ranges in one request", async () => {
+  const directory = await fixtures.createDirectory();
+  await writeFile(join(directory, "dup.txt"), "one\ntwo\n");
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const tool = createReadBatchToolForTesting({ configPath });
+
+  await expect(
+    tool.execute(
+      "duplicate",
+      {
+        paths: [
+          { path: "dup.txt", range: { offset: 1, limit: 1 } },
+          { path: "dup.txt", range: { offset: 1, limit: 2 } },
+        ],
+      },
+      undefined,
+      undefined,
+      context(directory),
+    ),
+  ).rejects.toThrow(/duplicate or overlapping range for path "dup\.txt"/u);
+
+  await expect(
+    tool.execute(
+      "full-plus-range",
+      { paths: [{ path: "dup.txt" }, { path: "dup.txt", range: { offset: 2 } }] },
+      undefined,
+      undefined,
+      context(directory),
+    ),
+  ).rejects.toThrow(/duplicate or overlapping range for path "dup\.txt"/u);
+});
+
+it("allows disjoint ranges for the same path in one request", async () => {
+  const directory = await fixtures.createDirectory();
+  await writeFile(join(directory, "slices.txt"), "one\ntwo\nthree\n");
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const tool = createReadBatchToolForTesting({ configPath });
+
+  const result = await tool.execute(
+    "disjoint",
+    {
+      paths: [
+        { path: "slices.txt", range: { offset: 1, limit: 1 } },
+        { path: "slices.txt", range: { offset: 2, limit: 1 } },
+      ],
+    },
+    undefined,
+    undefined,
+    context(directory),
+  );
+
+  expect(result.details.results[0]).toMatchObject({ path: "slices.txt", content: "one" });
+  expect(result.details.results[1]).toMatchObject({ path: "slices.txt", content: "two" });
+  expect(result.details.continuation).toBeUndefined();
+});
+
 it("returns unchanged and the prior ref for equivalent normalized reads", async () => {
   const directory = await fixtures.createDirectory();
   await writeFile(join(directory, "read.ts"), "alpha\nbeta\n");
@@ -111,16 +170,21 @@ it("returns unchanged and the prior ref for equivalent normalized reads", async 
     context(directory),
   );
 
+  const expectedHash = createHash("sha256")
+    .update(await readFile(join(directory, "read.ts")))
+    .digest("hex");
   expect(first.details.results[0]).toMatchObject({
     path: "read.ts",
     unchanged: false,
     content: "alpha",
+    contentHash: expectedHash,
   });
   expect(second.details.results[0]).toEqual({
     path: "read.ts",
     range: { offset: 1, limit: 1 },
     unchanged: true,
     ref: first.details.results[0]?.ref,
+    contentHash: expectedHash,
   });
 });
 
@@ -154,6 +218,176 @@ it("refreshes the reference after the file content changes", async () => {
     content: "after",
   });
   expect(second.details.results[0]?.ref).not.toBe(first.details.results[0]?.ref);
+});
+
+it("caps the aggregate returned content and reports aggregate-limit skips", async () => {
+  const directory = await fixtures.createDirectory();
+  const names = ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt"];
+  await Promise.all(names.map((name) => writeFile(join(directory, name), "x".repeat(70 * 1024))));
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const capture = recorderCapture();
+  const tool = createReadBatchToolForTesting({
+    configPath,
+    invocationRecorder: capture.recorder,
+  });
+
+  const result = await tool.execute(
+    "aggregate",
+    { paths: names.map((path) => ({ path })) },
+    undefined,
+    undefined,
+    context(directory, "session-1"),
+  );
+
+  expect(result.details.results).toHaveLength(6);
+  expect(result.details.results.map((item) => item.path)).toEqual(names);
+  const returned = result.details.results.slice(0, 4);
+  const skipped = result.details.results.slice(4);
+  expect(returned.every((item) => item.content !== undefined && item.error === undefined)).toBe(
+    true,
+  );
+  expect(
+    skipped.every(
+      (item) =>
+        item.content === undefined &&
+        item.error?.code === "aggregate-limit" &&
+        item.error?.category === "INVALID_REQUEST" &&
+        item.error?.retryable === false &&
+        item.error?.executed === false,
+    ),
+  ).toBe(true);
+  const aggregateContent = result.details.results.reduce(
+    (sum, item) => sum + Buffer.byteLength(item.content ?? "", "utf8"),
+    0,
+  );
+  expect(aggregateContent).toBeLessThanOrEqual(256 * 1024);
+  expect(result.details.continuation).toEqual({ nextIndex: 4, totalPaths: 6 });
+  expect(capture.records[0]?.aggregate.errorCount).toBe(2);
+  expect(capture.records[0]?.items[5]?.errorCode).toBe("aggregate-limit");
+});
+
+it("bounds invalid-UTF-8 aggregate content to the documented 256 KiB aggregate cap", async () => {
+  const directory = await fixtures.createDirectory();
+  const names = ["ff-a.bin", "ff-b.bin", "ff-c.bin", "ff-d.bin", "ff-e.bin", "ff-f.bin"];
+  const raw = Buffer.alloc(70 * 1024, 0xff);
+  await Promise.all(names.map((name) => writeFile(join(directory, name), raw)));
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const capture = recorderCapture();
+  const tool = createReadBatchToolForTesting({
+    configPath,
+    invocationRecorder: capture.recorder,
+  });
+
+  const result = await tool.execute(
+    "invalid-utf8-aggregate",
+    { paths: names.map((path) => ({ path })) },
+    undefined,
+    undefined,
+    context(directory, "session-1"),
+  );
+
+  expect(result.details.results).toHaveLength(6);
+  expect(result.details.results.map((item) => item.path)).toEqual(names);
+  const returned = result.details.results.slice(0, 4);
+  const skipped = result.details.results.slice(4);
+  expect(returned.every((item) => item.content !== undefined && item.error === undefined)).toBe(
+    true,
+  );
+  expect(returned.every((item) => item.output?.truncated === true)).toBe(true);
+  expect(
+    skipped.every(
+      (item) =>
+        item.content === undefined &&
+        item.error?.code === "aggregate-limit" &&
+        item.error?.category === "INVALID_REQUEST" &&
+        item.error?.retryable === false &&
+        item.error?.executed === false,
+    ),
+  ).toBe(true);
+  const aggregateContent = result.details.results.reduce(
+    (sum, item) => sum + Buffer.byteLength(item.content ?? "", "utf8"),
+    0,
+  );
+  expect(aggregateContent).toBeLessThanOrEqual(256 * 1024);
+  expect(result.details.continuation).toEqual({ nextIndex: 4, totalPaths: 6 });
+  expect(capture.records[0]?.aggregate.errorCount).toBe(2);
+  expect(capture.records[0]?.items[5]?.errorCode).toBe("aggregate-limit");
+});
+
+it("supports a follow-up request for the remaining paths after aggregate truncation", async () => {
+  const directory = await fixtures.createDirectory();
+  const names = ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt"];
+  await Promise.all(names.map((name) => writeFile(join(directory, name), "x".repeat(70 * 1024))));
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const tool = createReadBatchToolForTesting({ configPath });
+
+  const truncated = await tool.execute(
+    "truncated",
+    { paths: names.map((path) => ({ path })) },
+    undefined,
+    undefined,
+    context(directory),
+  );
+  const continuation = truncated.details.continuation;
+  expect(continuation).toEqual({ nextIndex: 4, totalPaths: 6 });
+  const remaining = names.slice(continuation?.nextIndex ?? names.length);
+  const followUp = await tool.execute(
+    "follow-up",
+    { paths: remaining.map((path) => ({ path })) },
+    undefined,
+    undefined,
+    context(directory),
+  );
+
+  expect(followUp.details.results[0]).toMatchObject({
+    path: "e.txt",
+    content: expect.any(String),
+  });
+  expect(followUp.details.continuation).toBeUndefined();
+});
+
+it("returns stable content hashes for fresh and unchanged observations", async () => {
+  const directory = await fixtures.createDirectory();
+  const filePath = join(directory, "hashed.txt");
+  await writeFile(filePath, "alpha\nbeta\n");
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const tool = createReadBatchToolForTesting({ configPath });
+  const expectedHash = createHash("sha256")
+    .update(await readFile(filePath))
+    .digest("hex");
+
+  const first = await tool.execute(
+    "first",
+    { paths: [{ path: "hashed.txt" }] },
+    undefined,
+    undefined,
+    context(directory),
+  );
+  const second = await tool.execute(
+    "second",
+    { paths: [{ path: "hashed.txt" }] },
+    undefined,
+    undefined,
+    context(directory),
+  );
+
+  expect(first.details.results[0]).toMatchObject({
+    path: "hashed.txt",
+    unchanged: false,
+    content: "alpha\nbeta\n",
+    output: { truncated: false, totalBytes: 11, totalLines: 3 },
+    contentHash: expectedHash,
+  });
+  expect(second.details.results[0]).toEqual({
+    path: "hashed.txt",
+    unchanged: true,
+    ref: first.details.results[0]?.ref,
+    contentHash: expectedHash,
+  });
 });
 
 it("keeps a failed path from preventing other paths from being read", async () => {

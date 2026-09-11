@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { Type } from "typebox";
 
+import { hashToolParameters } from "../../../observability/canonical-json.ts";
 import { booleanInputSchema } from "../../boolean.ts";
 import { renderCallLine, renderStringArgument } from "../../call-render.ts";
 import {
@@ -14,6 +15,7 @@ import {
   validateGitRequestKeys,
   type GitExec,
 } from "../execution.ts";
+import { observeGitInvocation, type GitInvocationObservationOptions } from "../invocation.ts";
 import {
   MAX_CONTENT_BYTES,
   makeToolResult,
@@ -38,6 +40,7 @@ export const DEFAULT_GIT_DIFF_MAX_BYTES = 16 * 1024;
 
 export interface GitDiffToolOptions {
   readonly summaryCache?: GitDiffSummaryCache;
+  readonly invocationObservation?: GitInvocationObservationOptions;
 }
 
 const stagedSchema = Type.Optional(booleanInputSchema);
@@ -548,32 +551,39 @@ export function createGitDiffTool(
     renderCall(args, theme) {
       return renderGitDiffCall(args, theme);
     },
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const request = normalizeGitDiffRequest(params);
-      const executionSignal = signal ?? ctx.signal;
-      const repository = await resolveRepository(exec, ctx.cwd, executionSignal);
-      const paths = await resolveGitDiffPaths(repository, params);
-      const details =
-        request.responseMode === "patch"
-          ? await executeGitDiffPatch(
-              exec,
-              repository,
-              executionSignal,
-              request.staged,
-              paths,
-              request.responseLimit,
-            )
-          : await executeGitDiffSummary(
-              exec,
-              repository,
-              executionSignal,
-              request.staged,
-              paths,
-              request.responseLimit,
-              summaryCache,
-              rawDiscoveryFlights,
-            );
-      return makeToolResult(details);
-    },
+    execute: observeGitInvocation<typeof gitDiffParameters, GitDiffOutput>(
+      {
+        tool: "git_diff",
+        schemaHash: hashToolParameters(gitDiffParameters),
+        ...options.invocationObservation,
+      },
+      async (_toolCallId, params, signal, _onUpdate, ctx) => {
+        const request = normalizeGitDiffRequest(params);
+        const executionSignal = signal ?? ctx.signal;
+        const repository = await resolveRepository(exec, ctx.cwd, executionSignal);
+        const paths = await resolveGitDiffPaths(repository, params);
+        const details =
+          request.responseMode === "patch"
+            ? await executeGitDiffPatch(
+                exec,
+                repository,
+                executionSignal,
+                request.staged,
+                paths,
+                request.responseLimit,
+              )
+            : await executeGitDiffSummary(
+                exec,
+                repository,
+                executionSignal,
+                request.staged,
+                paths,
+                request.responseLimit,
+                summaryCache,
+                rawDiscoveryFlights,
+              );
+        return makeToolResult(details);
+      },
+    ),
   });
 }

@@ -181,6 +181,15 @@ export function filesystemAuthorizationContract(
         retryable: true,
         executed: false,
       });
+    case "unchanged-retry":
+      return filesystemContract({
+        code: "policy-unchanged-retry",
+        category: "BLOCKED",
+        explanation:
+          "Filesystem access was already denied for this identical request; change the request or ask the user to approve it explicitly.",
+        retryable: false,
+        executed: false,
+      });
     default:
       throw new Error("Unsupported filesystem authorization error kind");
   }
@@ -237,7 +246,14 @@ export function filesystemMutationError(message: string): FilesystemToolError {
 }
 
 export function filesystemEditDiagnosticError(
-  code: "edit-empty-old-text" | "edit-no-match" | "edit-ambiguous" | "edit-overlap",
+  code:
+    | "edit-empty-old-text"
+    | "edit-no-op"
+    | "edit-no-match"
+    | "edit-stale-context"
+    | "edit-ambiguous"
+    | "edit-overlap"
+    | "edit-unchanged-retry",
   message: string,
   details: Record<string, unknown>,
 ): FilesystemToolError {

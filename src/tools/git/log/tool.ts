@@ -1,7 +1,9 @@
 import { Type } from "typebox";
 
+import { hashToolParameters } from "../../../observability/canonical-json.ts";
 import { renderCallLine, renderStringArgument } from "../../call-render.ts";
 import { runGit, validateGitRequestKeys, validateRevision, type GitExec } from "../execution.ts";
+import { observeGitInvocation, type GitInvocationObservationOptions } from "../invocation.ts";
 import {
   MAX_RECORDS,
   makeToolResult,
@@ -35,6 +37,7 @@ const gitLogParameters = Type.Object(
 
 export function createGitLogTool(
   exec: GitExec,
+  observation?: GitInvocationObservationOptions,
 ): GitToolDefinition<typeof gitLogParameters, GitLogOutput> {
   return defineGitTool({
     name: "git_log",
@@ -54,56 +57,59 @@ export function createGitLogTool(
       parts.push(theme.fg("muted", `maxEntries=${args?.maxEntries ?? "?"}`));
       return renderCallLine(theme, "git_log", parts);
     },
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      validateGitRequestKeys(
-        params,
-        ["path", "revision", "maxEntries"],
-        "{ maxEntries: integer, path?: string, revision?: string }",
-      );
-      validateIntegerLimit(params.maxEntries, 1, MAX_RECORDS, "maxEntries");
-      const revision =
-        params.revision === undefined ? undefined : validateRevision(params.revision);
-      const repository = await resolveRepository(exec, ctx.cwd, signal ?? ctx.signal);
-      const path =
-        params.path === undefined ? undefined : await resolvePath(repository, params.path);
-      const args = [
-        "log",
-        "--no-ext-diff",
-        "--no-textconv",
-        "--no-decorate",
-        "--date=iso-strict",
-        "--format=format:%H%x00%an%x00%aI%x00%s%x00",
-        `--max-count=${params.maxEntries}`,
-      ];
-      if (revision !== undefined) {
-        args.push(revision);
-      }
-      args.push("--");
-      if (path !== undefined) {
-        args.push(path);
-      }
-      const result = await runGit(
-        exec,
-        args,
-        repository.root,
-        signal ?? ctx.signal,
-        "read Git log",
-      );
-      const bounded = truncateUtf8(result.stdout, STRUCTURED_OUTPUT_LIMIT);
-      const fields = bounded.text.split("\0");
-      const completeFieldCount = Math.floor((fields.length - 1) / 4) * 4;
-      const completeOutput =
-        completeFieldCount === 0 ? "" : `${fields.slice(0, completeFieldCount).join("\0")}\0`;
-      const entries = parseLog(completeOutput).slice(0, params.maxEntries);
-      const totalEntries = parseLog(result.stdout).length;
-      return makeToolResult({
-        entries,
-        output: {
-          ...bounded.output,
-          truncated: bounded.output.truncated || totalEntries > params.maxEntries,
-          totalLines: totalEntries,
-        },
-      });
-    },
+    execute: observeGitInvocation<typeof gitLogParameters, GitLogOutput>(
+      { tool: "git_log", schemaHash: hashToolParameters(gitLogParameters), ...observation },
+      async (_toolCallId, params, signal, _onUpdate, ctx) => {
+        validateGitRequestKeys(
+          params,
+          ["path", "revision", "maxEntries"],
+          "{ maxEntries: integer, path?: string, revision?: string }",
+        );
+        validateIntegerLimit(params.maxEntries, 1, MAX_RECORDS, "maxEntries");
+        const revision =
+          params.revision === undefined ? undefined : validateRevision(params.revision);
+        const repository = await resolveRepository(exec, ctx.cwd, signal ?? ctx.signal);
+        const path =
+          params.path === undefined ? undefined : await resolvePath(repository, params.path);
+        const args = [
+          "log",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--no-decorate",
+          "--date=iso-strict",
+          "--format=format:%H%x00%an%x00%aI%x00%s%x00",
+          `--max-count=${params.maxEntries}`,
+        ];
+        if (revision !== undefined) {
+          args.push(revision);
+        }
+        args.push("--");
+        if (path !== undefined) {
+          args.push(path);
+        }
+        const result = await runGit(
+          exec,
+          args,
+          repository.root,
+          signal ?? ctx.signal,
+          "read Git log",
+        );
+        const bounded = truncateUtf8(result.stdout, STRUCTURED_OUTPUT_LIMIT);
+        const fields = bounded.text.split("\0");
+        const completeFieldCount = Math.floor((fields.length - 1) / 4) * 4;
+        const completeOutput =
+          completeFieldCount === 0 ? "" : `${fields.slice(0, completeFieldCount).join("\0")}\0`;
+        const entries = parseLog(completeOutput).slice(0, params.maxEntries);
+        const totalEntries = parseLog(result.stdout).length;
+        return makeToolResult({
+          entries,
+          output: {
+            ...bounded.output,
+            truncated: bounded.output.truncated || totalEntries > params.maxEntries,
+            totalLines: totalEntries,
+          },
+        });
+      },
+    ),
   });
 }

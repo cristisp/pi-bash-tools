@@ -5,9 +5,13 @@ import type {
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
+import type { AuthorizationOutcomeRecorder } from "../../observability/authorization-outcome.ts";
+import { createAuthorizationOutcomeObserver } from "../../observability/authorization-outcome.ts";
+import type { AuthorizationRetryTracker } from "../authorization-retry.ts";
 import { renderCallLine, renderStringArgument } from "../call-render.ts";
 import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
 import type { PolicyFileSystem, PolicyStore } from "../policy/types.ts";
+import type { LoadedPolicy } from "../policy/types.ts";
 import {
   authorizeAndPersistEnvironmentKeys,
   loadEnvironmentPolicyForRequest,
@@ -16,6 +20,7 @@ import {
   environmentCancellationError,
   environmentContract,
   environmentError,
+  EnvironmentToolError,
   environmentInputSchema,
   type EnvironmentInput,
   validateEnvironmentKeys,
@@ -27,6 +32,8 @@ export interface EnvironmentToolTestOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly fs?: Partial<PolicyFileSystem>;
   readonly policy?: PolicyStore;
+  readonly authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder;
+  readonly authorizationRetryTracker?: AuthorizationRetryTracker;
 }
 
 export type EnvironmentToolContext = Omit<
@@ -34,6 +41,7 @@ export type EnvironmentToolContext = Omit<
   "ui"
 > & {
   readonly ui: Pick<ExtensionContext["ui"], "select">;
+  readonly sessionManager?: Pick<ExtensionContext["sessionManager"], "getSessionId">;
 };
 
 type EnvironmentToolExecute = (
@@ -94,9 +102,16 @@ function readEnvironmentValues(
   }
 }
 
+function environmentSessionId(ctx: EnvironmentToolContext): string | undefined {
+  const value = ctx.sessionManager?.getSessionId();
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 function createEnvironmentToolWithDependencies(
   policy: PolicyStore,
   environment: Readonly<Record<string, string | undefined>>,
+  authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder,
+  authorizationRetryTracker?: AuthorizationRetryTracker,
 ): EnvironmentToolDefinition {
   return {
     name: "environment",
@@ -115,7 +130,7 @@ function createEnvironmentToolWithDependencies(
       );
     },
     async execute(
-      _toolCallId,
+      toolCallId,
       params,
       signal,
       _onUpdate: AgentToolUpdateCallback<EnvironmentOutput> | undefined,
@@ -123,8 +138,36 @@ function createEnvironmentToolWithDependencies(
     ) {
       const keys = validateEnvironmentKeys(params);
       const requestSignal = signal ?? ctx.signal;
-      const loadedPolicy = await loadEnvironmentPolicyForRequest(policy, ctx.cwd, requestSignal);
-      await authorizeAndPersistEnvironmentKeys(keys, ctx, loadedPolicy, policy, requestSignal);
+      const observe = createAuthorizationOutcomeObserver({
+        surface: "environment",
+        commandId: "environment",
+        recorder: authorizationOutcomeRecorder,
+        sessionId: environmentSessionId(ctx),
+        toolCallId,
+      });
+      let loadedPolicy: LoadedPolicy;
+      try {
+        loadedPolicy = await loadEnvironmentPolicyForRequest(policy, ctx.cwd, requestSignal);
+      } catch (error) {
+        if (!(error instanceof EnvironmentToolError && error.contract.code === "cancelled")) {
+          observe?.({
+            outcome: "policy-load-failure",
+            decisionPersisted: false,
+            promptEmitted: false,
+            promptWaitMs: 0,
+          });
+        }
+        throw error;
+      }
+      await authorizeAndPersistEnvironmentKeys(
+        keys,
+        ctx,
+        loadedPolicy,
+        policy,
+        requestSignal,
+        observe,
+        authorizationRetryTracker,
+      );
       return makeEnvironmentToolResult({
         values: readEnvironmentValues(keys, environment, requestSignal),
       });
@@ -132,8 +175,16 @@ function createEnvironmentToolWithDependencies(
   };
 }
 
-export function createEnvironmentTool(): EnvironmentToolDefinition {
-  return createEnvironmentToolWithDependencies(createPolicyStore(), process.env);
+export function createEnvironmentTool(
+  authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder,
+  authorizationRetryTracker?: AuthorizationRetryTracker,
+): EnvironmentToolDefinition {
+  return createEnvironmentToolWithDependencies(
+    createPolicyStore(),
+    process.env,
+    authorizationOutcomeRecorder,
+    authorizationRetryTracker,
+  );
 }
 
 export function createEnvironmentToolForTesting(
@@ -145,5 +196,10 @@ export function createEnvironmentToolForTesting(
       configPath: options.configPath,
       fs: options.fs,
     });
-  return createEnvironmentToolWithDependencies(policy, options.environment ?? process.env);
+  return createEnvironmentToolWithDependencies(
+    policy,
+    options.environment ?? process.env,
+    options.authorizationOutcomeRecorder,
+    options.authorizationRetryTracker,
+  );
 }

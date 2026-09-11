@@ -1,7 +1,9 @@
 import { Type } from "typebox";
 
+import { hashToolParameters } from "../../../observability/canonical-json.ts";
 import { renderCallLine, renderStringArgument } from "../../call-render.ts";
 import { runGit, validateRevision, type GitExec } from "../execution.ts";
+import { observeGitInvocation, type GitInvocationObservationOptions } from "../invocation.ts";
 import {
   MAX_CONTENT_BYTES,
   makeToolResult,
@@ -24,6 +26,7 @@ const gitShowParameters = Type.Object({
 
 export function createGitShowTool(
   exec: GitExec,
+  observation?: GitInvocationObservationOptions,
 ): GitToolDefinition<typeof gitShowParameters, GitShowOutput> {
   return defineGitTool({
     name: "git_show",
@@ -40,25 +43,28 @@ export function createGitShowTool(
       ];
       return renderCallLine(theme, "git_show", parts);
     },
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      validateIntegerLimit(params.maxBytes, 1, MAX_CONTENT_BYTES, "maxBytes");
-      const revision = validateRevision(params.revision);
-      const repository = await resolveRepository(exec, ctx.cwd, signal ?? ctx.signal);
-      const path =
-        params.path === undefined ? undefined : await resolvePath(repository, params.path);
-      const args = ["show", "--no-ext-diff", "--no-textconv", revision, "--"];
-      if (path !== undefined) {
-        args.push(path);
-      }
-      const result = await runGit(
-        exec,
-        args,
-        repository.root,
-        signal ?? ctx.signal,
-        "read Git show",
-      );
-      const bounded = truncateUtf8(result.stdout, params.maxBytes);
-      return makeToolResult({ content: bounded.text, output: bounded.output });
-    },
+    execute: observeGitInvocation<typeof gitShowParameters, GitShowOutput>(
+      { tool: "git_show", schemaHash: hashToolParameters(gitShowParameters), ...observation },
+      async (_toolCallId, params, signal, _onUpdate, ctx) => {
+        validateIntegerLimit(params.maxBytes, 1, MAX_CONTENT_BYTES, "maxBytes");
+        const revision = validateRevision(params.revision);
+        const repository = await resolveRepository(exec, ctx.cwd, signal ?? ctx.signal);
+        const path =
+          params.path === undefined ? undefined : await resolvePath(repository, params.path);
+        const args = ["show", "--no-ext-diff", "--no-textconv", revision, "--"];
+        if (path !== undefined) {
+          args.push(path);
+        }
+        const result = await runGit(
+          exec,
+          args,
+          repository.root,
+          signal ?? ctx.signal,
+          "read Git show",
+        );
+        const bounded = truncateUtf8(result.stdout, params.maxBytes);
+        return makeToolResult({ content: bounded.text, output: bounded.output });
+      },
+    ),
   });
 }

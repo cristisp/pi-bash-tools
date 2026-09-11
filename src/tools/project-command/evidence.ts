@@ -58,6 +58,8 @@ export interface ProjectCommandEvidenceRecord {
 
 export interface ProjectCommandEvidenceStore {
   getByRef(ref: string, flowId?: string): ProjectCommandEvidenceRecord | undefined;
+  /** Classification for telemetry only; missing where corruption is not detectable. */
+  lookupOutcome?(ref: string, flowId?: string): "found" | "missing" | "corrupt";
   set(record: ProjectCommandEvidenceRecord, flowId?: string): boolean;
   publish(
     ref: string,

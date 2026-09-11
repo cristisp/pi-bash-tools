@@ -246,6 +246,170 @@ it("looks up stored evidence and rejects missing references", async () => {
   expect(missing).toHaveProperty("message", expect.stringContaining("pc_missing"));
 });
 
+function lookupSessionContext(directory: string) {
+  return context(directory, {
+    sessionManager: { getSessionId: () => "lookup-session" },
+  });
+}
+
+it("records success and not-found evidence lookup telemetry outcomes", async () => {
+  const fixtureData = await fixture();
+  const definition = getProjectCommandDefinition("workspace_path");
+  if (definition === undefined) throw new Error("missing workspace_path definition");
+  const resolved = resolveFixedProjectCommand(definition);
+  await authorize(fixtureData, definition, resolved);
+  let storedRecord: ProjectCommandEvidenceRecord | undefined;
+  const lookupOutcome = vi.fn(() => "missing" as const);
+  const evidence: ProjectCommandEvidenceStore = {
+    getByRef: (ref) => (storedRecord?.ref === ref ? storedRecord : undefined),
+    lookupOutcome,
+    set: (record) => {
+      storedRecord = record;
+      return true;
+    },
+    publish: () => false,
+    clear: () => {
+      storedRecord = undefined;
+    },
+  };
+  const records: ProjectCommandInvocationRecord[] = [];
+  const tool = createProjectCommandToolForTesting({
+    configPath: fixtureData.configPath,
+    evidence,
+    invocationRecorder: (record) => records.push(record),
+    executor: async () => ({
+      status: "success" as const,
+      exit: { code: 0, signal: null },
+      timedOut: false,
+      cancelled: false,
+      stdout: { text: "workspace", truncated: false, totalBytes: 9, totalLines: 1 },
+      stderr: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
+    }),
+  });
+  const executed = await tool.execute(
+    "lookup-producer",
+    { commandId: "workspace_path" },
+    undefined,
+    undefined,
+    lookupSessionContext(fixtureData.directory),
+  );
+  const ref = executed.details.ref;
+  if (typeof ref !== "string") throw new Error("expected an evidence reference");
+
+  await tool.execute(
+    "lookup-consumer",
+    { ref },
+    undefined,
+    undefined,
+    lookupSessionContext(fixtureData.directory),
+  );
+  expect(records.find((record) => record.toolCallId === "lookup-consumer")?.lookup).toEqual({
+    attempted: true,
+    success: true,
+    outcome: "success",
+  });
+
+  const missing = await tool
+    .execute(
+      "lookup-missing",
+      { ref: "pc_missing1" },
+      undefined,
+      undefined,
+      lookupSessionContext(fixtureData.directory),
+    )
+    .catch((error: unknown) => error);
+  expect(missing).toBeInstanceOf(ProjectCommandToolError);
+  expect(missing).toHaveProperty(
+    "message",
+    "Project command evidence ref pc_missing1 not found in the process-local root-session store; evidence refs are non-replayable and process-scoped.",
+  );
+  expect(records.find((record) => record.toolCallId === "lookup-missing")?.lookup).toEqual({
+    attempted: true,
+    success: false,
+    failure: "not-found",
+    outcome: "not-found",
+  });
+  expect(lookupOutcome).toHaveBeenCalledWith("pc_missing1", undefined);
+});
+
+it("records the corrupt outcome for detectable in-process corruption", async () => {
+  const fixtureData = await fixture();
+  const evidence: ProjectCommandEvidenceStore = {
+    getByRef: () => undefined,
+    lookupOutcome: () => "corrupt",
+    set: () => true,
+    publish: () => false,
+    clear: () => undefined,
+  };
+  const records: ProjectCommandInvocationRecord[] = [];
+  const tool = createProjectCommandToolForTesting({
+    configPath: fixtureData.configPath,
+    evidence,
+    invocationRecorder: (record) => records.push(record),
+  });
+  const corrupt = await tool
+    .execute(
+      "lookup-corrupt",
+      { ref: "pc_corrupt0" },
+      undefined,
+      undefined,
+      lookupSessionContext(fixtureData.directory),
+    )
+    .catch((error: unknown) => error);
+  expect(corrupt).toBeInstanceOf(ProjectCommandToolError);
+  expect(corrupt).toHaveProperty(
+    "message",
+    "Project command evidence ref pc_corrupt0 not found in the process-local root-session store; evidence refs are non-replayable and process-scoped.",
+  );
+  expect(records.find((record) => record.toolCallId === "lookup-corrupt")?.lookup).toEqual({
+    attempted: true,
+    success: false,
+    failure: "not-found",
+    outcome: "corrupt",
+  });
+});
+
+it("classifies wrong-flow evidence lookups as unauthorized-flow without querying the store", async () => {
+  const fixtureData = await fixture();
+  const getByRef = vi.fn(() => undefined);
+  const lookupOutcome = vi.fn(() => "missing" as const);
+  const evidence: ProjectCommandEvidenceStore = {
+    getByRef,
+    lookupOutcome,
+    set: () => true,
+    publish: () => false,
+    clear: () => undefined,
+  };
+  const records: ProjectCommandInvocationRecord[] = [];
+  const tool = createProjectCommandToolForTesting({
+    configPath: fixtureData.configPath,
+    evidence,
+    invocationRecorder: (record) => records.push(record),
+  });
+  const wrongFlow = await tool
+    .execute(
+      "lookup-wrong-flow",
+      { ref: "pc_flowrefs", flowId: "flow-a" },
+      undefined,
+      undefined,
+      lookupSessionContext(fixtureData.directory),
+    )
+    .catch((error: unknown) => error);
+  expect(wrongFlow).toBeInstanceOf(ProjectCommandToolError);
+  expect(wrongFlow).toHaveProperty(
+    "message",
+    "Project command evidence ref pc_flowrefs not found in flow flow-a; evidence refs are non-replayable and process-scoped.",
+  );
+  expect(getByRef).not.toHaveBeenCalled();
+  expect(lookupOutcome).not.toHaveBeenCalled();
+  expect(records.find((record) => record.toolCallId === "lookup-wrong-flow")?.lookup).toEqual({
+    attempted: true,
+    success: false,
+    failure: "not-found",
+    outcome: "unauthorized-flow",
+  });
+});
+
 it("reports repository state drift after an execution moves the tree", async () => {
   const fixtureData = await fixture();
   const definition = getProjectCommandDefinition("workspace_path");

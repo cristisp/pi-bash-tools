@@ -57,7 +57,7 @@ The latest observed `1.0.2` cohort contains only 40 unambiguous sessions and 142
 - [ ] Recompute error rates, duplicate requests, result volume, latency, cache decisions, and evidence reuse for each sufficiently covered version cohort.
 - [x] Implement state-aware duplicate classification and report unknown state instead of labeling unsupported duplicates as waste.
 - [x] Improve repository-state coverage beyond the 201 historically attributable calls with `read_batch` observations.
-- [ ] Observe repository state on the Git read tools so state coverage is not limited to `read_batch` and command execution.
+- [x] Observe repository state on the Git read tools so state coverage is not limited to `read_batch` and command execution.
 - [x] Separate invalid requests, policy outcomes, policy subsystem failures, resolution failures, command failures, timeouts, cancellations, test failures, and successful evidence lookups where historical data supports the distinction.
 - [ ] Report tool-result rates both including and excluding expected authorization and fail-closed outcomes.
 - [ ] Measure repeated `project_command` execution separately from `verify` execution, lookup, reuse, publication, forced execution, and cache ineligibility for each sufficiently covered cohort.
@@ -80,7 +80,7 @@ These results remain relevant to workflow efficiency but must not be treated uni
 - [x] Separate expected fail-closed decisions from policy-load, policy-save, lock, unsafe-path, and other policy subsystem failures.
 - [x] Classify missing authorized-flow references as evidence-routing outcomes rather than generic interactive policy denials.
 - [ ] Distinguish wrong-flow, unpublished, missing, expired, unauthorized, and unreadable evidence where this can be done without leaking evidence existence.
-- [ ] Preserve whether command execution was attempted for every authorization-related outcome.
+- [x] Preserve whether command execution was attempted for every authorization-related outcome.
 - [ ] Segment policy outcomes by root or child session, interaction mode, tool, command ID, effective flow, and policy decision source.
 - [ ] Measure whether an approval prompt, warning, or terminal notification was emitted and how long the request waited.
 - [ ] Measure whether a timeout or denial was followed by an unchanged retry, later equivalent approval, alternate tool path, or abandoned workflow.
@@ -169,11 +169,15 @@ This slice is preventive correctness work: it changes evidence metadata shape on
 
 Policy behavior must remain fail-closed while providing enough structured evidence to distinguish correct blocking from subsystem failures and workflow churn.
 
-- [ ] Give explicit denial, confirmation timeout, non-interactive denial, policy-load failure, policy-save failure, lock failure, and authorization cancellation distinct structured reasons where compatibility permits.
-- [ ] Record whether execution was attempted and whether a persistent policy decision was written.
-- [ ] Keep prompt and notification telemetry bounded and free of environment values, raw policy contents, and sensitive paths.
-- [ ] Make unchanged retries after persistent denials or timeouts clearly invalid without automatically changing the recorded policy decision.
-- [ ] Preserve separate evidence lookup outcomes for authorization failure, scope mismatch, missing record, expiry, corruption, and state incompatibility where disclosure is safe.
+Authorization outcomes are now recorded as bounded `bash-tools.authorization-outcome` entries for every surface without changing any decision, error, or fail-closed behavior.
+
+Unchanged retries after persistent denials or confirmation timeouts are now rejected as a distinct `unchanged-retry` authorization failure within the same session, tracked by a bounded in-memory per-session fingerprint map, without re-prompting or writing any policy decision.
+
+- [x] Give explicit denial, confirmation timeout, non-interactive denial, policy-load failure, policy-save failure, and authorization cancellation distinct structured reasons where compatibility permits; lock-level failures still surface as save failures pending policy-store-level distinction.
+- [x] Record whether execution was attempted and whether a persistent policy decision was written.
+- [x] Keep prompt and notification telemetry bounded and free of environment values, raw policy contents, and sensitive paths.
+- [x] Make unchanged retries after persistent denials or timeouts clearly invalid without automatically changing the recorded policy decision.
+- [x] Preserve separate evidence lookup outcomes for authorization failure, scope mismatch, missing record, expiry, corruption, and state incompatibility where disclosure is safe. Implemented as a bounded telemetry-only `lookup.outcome` (`success`, `not-found`, `unauthorized-flow`, `corrupt`) on `pc_` and `vr_` lookup invocations; expiry is N/A because records have no TTL and capacity-trimmed entries are indistinguishable from missing, corruption is distinguishable only in-process (`project_command` root and flow maps) with `verify` clamping to `not-found`, state incompatibility was already carried by the repository-state block, and `rr_` lookups stay deferred with flow publication.
 - [ ] Evaluate child-session approval visibility only after measuring prompt and notification outcomes.
 - [ ] Do not add automatic approval, implicit permission inheritance, or authorization bypasses to reduce failure counts.
 
@@ -192,10 +196,10 @@ This work should close remaining cross-child and aggregate-payload gaps rather t
 
 #### `read_batch`
 
-- [ ] Add or confirm an aggregate model-facing byte limit across all requested files.
-- [ ] Prevent overlapping or duplicate ranges from returning duplicate content in one request.
-- [ ] Add continuation support when an aggregate result is truncated.
-- [ ] Return stable content hashes and relevant file metadata with each successful observation.
+- [x] Add or confirm an aggregate model-facing byte limit across all requested files. (256 KiB aggregate returned-content cap, 4× the 64 KiB per-file cap.)
+- [x] Prevent overlapping or duplicate ranges from returning duplicate content in one request. (Rejected up front as `invalid-request`; raw-path comparison, so canonical-alias duplicates are not detected — bounded anyway by the per-file and aggregate caps.)
+- [x] Add continuation support when an aggregate result is truncated. (`results.continuation` with `nextIndex`/`totalPaths`; the caller re-issues the remaining bounded path list.)
+- [x] Return stable content hashes and relevant file metadata with each successful observation. (`contentHash` sha256 of file bytes on fresh and unchanged results; size/line metadata already in `output.totalBytes`/`totalLines`.)
 - [ ] Determine whether `rr_` evidence can be safely published to an authorized flow for cross-process consumers.
 - [ ] Reauthorize published read evidence at lookup and compare current artifact state before returning reusable content.
 - [ ] Keep speculative broad batch reads more expensive or more explicit than narrow planned ranges.
@@ -261,12 +265,12 @@ The existing edit interceptor already detects empty, missing, ambiguous, and ove
 
 The remaining work is to make repairability and retry behavior explicit without weakening native edit semantics.
 
-- [ ] Classify a missing previously observed replacement as `stale_context` where the available evidence supports that conclusion.
-- [ ] Detect identical or no-op replacements during preflight where possible.
-- [ ] Return a current file fingerprint and bounded repair context without returning unnecessary file content.
-- [ ] Mark unchanged retries after empty, ambiguous, overlapping, or no-op requests as invalid.
-- [ ] Preserve at most one caller-controlled reread-and-rebase recovery rather than implementing automatic mutation retries in the tool.
-- [ ] Retain compatible public error wording where required while adding structured diagnostics.
+- [x] Classify a missing previously observed replacement as `stale_context` where the available evidence supports that conclusion. (`edit-stale-context` when a prior `read_batch` observation hash differs from the current content; plain `edit-no-match` without evidence.)
+- [x] Detect identical or no-op replacements during preflight where possible. (`edit-no-op` when `oldText` equals `newText` after host normalization.)
+- [x] Return a current file fingerprint and bounded repair context without returning unnecessary file content. (`fileFingerprint` sha256 of the preflight-read content, `contentLength`, `lineCount`, nearest candidate lines; hash-only.)
+- [x] Mark unchanged retries after empty, ambiguous, overlapping, or no-op requests as invalid. (`edit-unchanged-retry`, session-scoped, bounded FIFO tracker keyed by path and edits hash.)
+- [x] Preserve at most one caller-controlled reread-and-rebase recovery rather than implementing automatic mutation retries in the tool. (Hints and docs only; a rebased edit that now matches passes preflight.)
+- [x] Retain compatible public error wording where required while adding structured diagnostics. (Existing four hint strings byte-identical; new codes share the same contract shape.)
 
 #### Exit criteria
 

@@ -6,9 +6,11 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
 
-export type GitToolContext = Pick<ExtensionContext, "cwd" | "signal">;
+export type GitToolContext = Pick<ExtensionContext, "cwd" | "signal"> & {
+  readonly sessionManager?: Pick<ExtensionContext["sessionManager"], "getSessionId">;
+};
 
-type GitToolExecute<P extends TSchema, D> = (
+export type GitToolExecute<P extends TSchema, D> = (
   toolCallId: string,
   params: Static<P>,
   signal: AbortSignal | undefined,

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { open, type FileHandle } from "node:fs/promises";
 
 import {
@@ -6,6 +7,13 @@ import {
   type ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 
+import type {
+  AuthorizationOutcomeObserver,
+  AuthorizationOutcomeRecorder,
+} from "../../observability/authorization-outcome.ts";
+import { createAuthorizationOutcomeObserver } from "../../observability/authorization-outcome.ts";
+import type { AuthorizationRetryTracker } from "../authorization-retry.ts";
+import { authorizationRequestFingerprint } from "../authorization-retry.ts";
 import { type AuthorizationErrorKind } from "../authorization.ts";
 import type { ToolErrorContract } from "../errors.ts";
 import { displayPath } from "../path-display.ts";
@@ -32,6 +40,7 @@ import {
   filesystemPolicyPathResolutionError,
   FilesystemToolError,
 } from "./errors.ts";
+import { lookupObservedContentHash } from "./observed-content-store.ts";
 import { canonicalRequestPath } from "./paths.ts";
 
 const DENIED_POLICY_SCOPES: Record<PolicyAuthorization, string> = {
@@ -50,6 +59,7 @@ const BLOCKED_REASON_SUFFIXES: Record<Exclude<AuthorizationErrorKind, "denied">,
   load: "; the access policy could not be loaded.",
   "invalid-choice": "; the access policy returned an invalid approval.",
   "unsafe-global": "; the access policy returned an invalid approval.",
+  "unchanged-retry": " was already denied for this identical request.",
   cancelled: " confirmation was cancelled.",
   dismissed: " confirmation was dismissed.",
 };
@@ -149,7 +159,9 @@ async function readPreflightBytes(handle: FileHandle, buffer: Buffer, offset = 0
   return readPreflightBytes(handle, buffer, offset + result.bytesRead);
 }
 
-async function readEditPreflightContent(path: string): Promise<string | undefined> {
+async function readEditPreflightContent(
+  path: string,
+): Promise<{ content: string; contentHash: string } | undefined> {
   let handle: FileHandle | undefined;
   try {
     handle = await open(path, "r");
@@ -160,7 +172,11 @@ async function readEditPreflightContent(path: string): Promise<string | undefine
     if (bytesRead > MAX_EDIT_PREFLIGHT_BYTES) return undefined;
     const finalStats = await handle.stat();
     if (!finalStats.isFile() || finalStats.size !== bytesRead) return undefined;
-    return buffer.subarray(0, bytesRead).toString("utf8");
+    const bytes = buffer.subarray(0, bytesRead);
+    return {
+      content: bytes.toString("utf8"),
+      contentHash: createHash("sha256").update(bytes).digest("hex"),
+    };
   } catch {
     return undefined;
   } finally {
@@ -171,21 +187,48 @@ async function readEditPreflightContent(path: string): Promise<string | undefine
 async function editPreflight(
   tool: FilesystemToolCall,
   path: string,
-  signal: AbortSignal | undefined,
+  ctx: FilesystemAccessPolicyContext,
+  retryTracker: AuthorizationRetryTracker | undefined,
 ): Promise<ToolCallEventResult | undefined> {
   if (tool.name !== "edit" || tool.edits === undefined) return undefined;
+  const signal = ctx.signal;
   if (signal?.aborted) {
     const error = filesystemCancellationError("Filesystem access policy request cancelled");
     return blockedResult(error.message, error.contract);
   }
-  const content = await readEditPreflightContent(path);
+  const preflight = await readEditPreflightContent(path);
   if (signal?.aborted) {
     const error = filesystemCancellationError("Filesystem access policy request cancelled");
     return blockedResult(error.message, error.contract);
   }
-  if (content === undefined) return undefined;
-  const diagnostic = diagnoseFilesystemEdits(content, tool.edits);
+  if (preflight === undefined) return undefined;
+  const { content, contentHash } = preflight;
+  const sessionIdValue = ctx.sessionManager?.getSessionId();
+  const sessionId =
+    typeof sessionIdValue === "string" && sessionIdValue.length > 0
+      ? sessionIdValue
+      : "unknown-session";
+  const diagnostic = diagnoseFilesystemEdits(content, tool.edits, {
+    fileFingerprint: contentHash,
+    observedContentHash: lookupObservedContentHash(path),
+  });
   if (diagnostic === undefined) return undefined;
+  const retryKey = {
+    sessionId,
+    surface: "filesystem-edit" as const,
+    fingerprint: `${authorizationRequestFingerprint(path)}\u0000${authorizationRequestFingerprint(tool.edits)}`,
+  };
+  if (retryTracker !== undefined) {
+    if (retryTracker.findUnchangedRetry(retryKey) !== undefined) {
+      const retryError = filesystemEditDiagnosticError(
+        "edit-unchanged-retry",
+        `Edit preflight failed for ${displayPath(path)}: This identical edit already failed the edit preflight; reread the file and rebase the edit before retrying.`,
+        { ...diagnostic },
+      );
+      return blockedResult(retryError.message, retryError.contract, retryError.details);
+    }
+    retryTracker.recordPersistentDenial(retryKey, "edit-preflight");
+  }
   const error = filesystemEditDiagnosticError(
     diagnostic.code,
     `Edit preflight failed for ${displayPath(path)}: ${diagnostic.hint}`,
@@ -200,6 +243,8 @@ async function authorizeFilesystemAccesses(
   loaded: LoadedPolicy,
   ctx: FilesystemAccessPolicyContext,
   policy: PolicyStore,
+  observe: AuthorizationOutcomeObserver | undefined,
+  retryTracker: AuthorizationRetryTracker | undefined,
 ): Promise<void> {
   await authorizeAndPersistFilesystemAccesses(
     tool.accesses.map((access) => ({ access, path })),
@@ -212,6 +257,8 @@ async function authorizeFilesystemAccesses(
         `Authorize ${access} access for ${tool.name} to ${displayPath(identity)}?`,
       error: (kind, request, decision, currentLoaded) =>
         blockedReason(tool, request.access, request.path, kind, decision, currentLoaded),
+      observe,
+      retryTracker,
     },
   );
 }
@@ -220,6 +267,8 @@ async function interceptFilesystemToolCall(
   event: ToolCallEvent,
   ctx: FilesystemAccessPolicyContext,
   policy: PolicyStore,
+  observe: AuthorizationOutcomeObserver | undefined,
+  retryTracker: AuthorizationRetryTracker | undefined,
 ): Promise<ToolCallEventResult | undefined> {
   const tool = filesystemToolCall(event);
   if (tool === undefined) {
@@ -251,6 +300,15 @@ async function interceptFilesystemToolCall(
   try {
     loaded = await loadFilesystemPolicyForRequest(policy, ctx.cwd, requestSignal);
   } catch (error) {
+    const cancelled = error instanceof FilesystemToolError && error.contract.code === "cancelled";
+    if (!cancelled) {
+      observe?.({
+        outcome: "policy-load-failure",
+        decisionPersisted: false,
+        promptEmitted: false,
+        promptWaitMs: 0,
+      });
+    }
     if (error instanceof FilesystemToolError) {
       return blockedResult(`Tool call blocked by access policy: ${error.message}.`, error.contract);
     }
@@ -262,7 +320,7 @@ async function interceptFilesystemToolCall(
   }
 
   try {
-    await authorizeFilesystemAccesses(tool, path, loaded, ctx, policy);
+    await authorizeFilesystemAccesses(tool, path, loaded, ctx, policy, observe, retryTracker);
   } catch (error) {
     if (error instanceof FilesystemToolError) {
       return blockedResult(error.message, error.contract, error.details);
@@ -274,7 +332,7 @@ async function interceptFilesystemToolCall(
     );
   }
 
-  const editFailure = await editPreflight(tool, path, ctx.signal);
+  const editFailure = await editPreflight(tool, path, ctx, retryTracker);
   if (editFailure !== undefined) return editFailure;
   if (ctx.signal?.aborted) {
     const error = filesystemCancellationError("Filesystem access policy request cancelled");
@@ -285,9 +343,25 @@ async function interceptFilesystemToolCall(
 
 export function createFilesystemAccessPolicyInterceptor(
   policy: PolicyStore = createPolicyStore(),
+  authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder,
+  authorizationRetryTracker?: AuthorizationRetryTracker,
 ): (
   event: ToolCallEvent,
   ctx: FilesystemAccessPolicyContext,
 ) => Promise<ToolCallEventResult | undefined> {
-  return (event, ctx) => interceptFilesystemToolCall(event, ctx, policy);
+  return (event, ctx) => {
+    const tool = filesystemToolCall(event);
+    const sessionIdValue = ctx.sessionManager?.getSessionId();
+    const observe = createAuthorizationOutcomeObserver({
+      surface: "filesystem",
+      commandId: tool?.name,
+      recorder: authorizationOutcomeRecorder,
+      sessionId:
+        typeof sessionIdValue === "string" && sessionIdValue.length > 0
+          ? sessionIdValue
+          : undefined,
+      toolCallId: event.toolCallId,
+    });
+    return interceptFilesystemToolCall(event, ctx, policy, observe, authorizationRetryTracker);
+  };
 }

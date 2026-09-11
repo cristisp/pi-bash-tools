@@ -15,14 +15,22 @@ import {
   sharedEvidenceRequestHash,
   sharedWorkspaceBlock,
 } from "../../evidence/envelope.ts";
+import type {
+  AuthorizationOutcomeObserver,
+  AuthorizationOutcomeRecorder,
+} from "../../observability/authorization-outcome.ts";
+import { createAuthorizationOutcomeObserver } from "../../observability/authorization-outcome.ts";
 import {
   createProjectCommandInvocationMeasurements,
+  projectCommandInvocationLookupOutcome,
   recordProjectCommandInvocation,
   type ProjectCommandInvocationLookupMetadata,
+  type ProjectCommandInvocationLookupOutcome,
   type ProjectCommandInvocationReason,
   type ProjectCommandInvocationPublicationMetadata,
   type ProjectCommandInvocationRecorder,
 } from "../../observability/project-command-invocation.ts";
+import type { AuthorizationRetryTracker } from "../authorization-retry.ts";
 import { authorizeOrPrompt, type AuthorizationErrorKind } from "../authorization.ts";
 import { awaitWithAbort } from "../await-with-abort.ts";
 import { renderCallLine } from "../call-render.ts";
@@ -95,6 +103,8 @@ export interface VerifyToolOptions {
   readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
   readonly cache?: VerifyEvidenceCache;
   readonly aggregateTimeoutMs?: number;
+  readonly authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder;
+  readonly authorizationRetryTracker?: AuthorizationRetryTracker;
   readonly stepTimeoutMs?: number;
   readonly configPath?: string;
   readonly fs?: Partial<PolicyFileSystem>;
@@ -151,11 +161,19 @@ async function authorizeVerify(
   signal: AbortSignal | undefined,
   identity: { readonly commandId: string; readonly fingerprint: string },
   commands: readonly string[],
+  observe: AuthorizationOutcomeObserver | undefined,
+  retryTracker: AuthorizationRetryTracker | undefined,
 ): Promise<void> {
   let loaded;
   try {
     loaded = await policy.load(ctx.cwd);
   } catch {
+    observe?.({
+      outcome: "policy-load-failure",
+      decisionPersisted: false,
+      promptEmitted: false,
+      promptWaitMs: 0,
+    });
     throw new VerifyToolError("policy-load-failure", "verify policy could not be loaded");
   }
   await authorizeOrPrompt({
@@ -178,6 +196,16 @@ async function authorizeVerify(
     }),
     promptText: () => `Authorize verify: ${commands.join("; ")}`,
     error: authorizationError,
+    observe,
+    retry:
+      retryTracker === undefined
+        ? undefined
+        : {
+            tracker: retryTracker,
+            surface: "verify",
+            sessionId: retrySessionId(ctx),
+            fingerprint: identity.fingerprint,
+          },
   });
 }
 
@@ -365,6 +393,15 @@ function sessionId(ctx: VerifyToolContext): string {
     return typeof value === "string" && value.length > 0 ? value : "unknown-session";
   } catch {
     return "unknown-session";
+  }
+}
+
+function retrySessionId(ctx: VerifyToolContext): string | undefined {
+  try {
+    const value = ctx.sessionManager?.getSessionId();
+    return typeof value === "string" && value.length > 0 ? value : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -653,6 +690,7 @@ function verifyFailureInvocationDetails(
 > {
   const flowId = input?.flowId ?? rawVerifyStringParameter(rawParams, "flowId");
   const lookupAttempted = ref !== undefined;
+  const lookupOutcome = lookupAttempted ? verifyLookupFailureOutcome(input, error) : undefined;
   const fresh = input?.fresh === true || rawVerifyParameter(rawParams, "fresh") === true;
   return {
     redactedParameters: {
@@ -683,6 +721,7 @@ function verifyFailureInvocationDetails(
             attempted: true,
             success: false,
             failure: error instanceof VerifyToolError ? error.code : "implementation-failure",
+            ...(lookupOutcome === undefined ? {} : { outcome: lookupOutcome }),
           }
         : undefined,
     ),
@@ -1187,6 +1226,23 @@ async function stableVerifyCacheLookup(options: {
   };
 }
 
+function verifyLookupFailureOutcome(
+  input: NormalizedVerifyInput | undefined,
+  error: unknown,
+): ProjectCommandInvocationLookupOutcome | undefined {
+  if (input === undefined) return undefined;
+  const orchestration = readProjectCommandOrchestrationContext();
+  if (
+    input.flowId !== undefined &&
+    (orchestration.effectiveScope !== "flow" || orchestration.flowId !== input.flowId)
+  ) {
+    return projectCommandInvocationLookupOutcome("unauthorized-flow");
+  }
+  return error instanceof VerifyToolError && error.code === "not-found"
+    ? projectCommandInvocationLookupOutcome("not-found")
+    : undefined;
+}
+
 function verifyLookupNotFoundError(
   input: NormalizedVerifyInput,
   orchestration: ReturnType<typeof readProjectCommandOrchestrationContext>,
@@ -1212,6 +1268,8 @@ interface VerifyToolDependencies {
   readonly executor: ProjectCommandExecutor;
   readonly resolver: ProjectCommandResolver;
   readonly repositoryStateReader: ProjectCommandRepositoryStateReader | undefined;
+  readonly authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder;
+  readonly authorizationRetryTracker?: AuthorizationRetryTracker;
   readonly cache: VerifyEvidenceCache;
   readonly aggregateTimeoutMs: number;
   readonly stepTimeoutMs: number;
@@ -1307,7 +1365,11 @@ async function lookupVerifyEvidence(options: {
       mutating: record.mutating,
     },
     null,
-    { attempted: true, success: true },
+    {
+      attempted: true,
+      success: true,
+      outcome: projectCommandInvocationLookupOutcome("success"),
+    },
   );
   return result(fullOutput(record, currentRepositoryState));
 }
@@ -1324,10 +1386,23 @@ async function prepareVerifyExecution(
     invocationStartedAt,
     recordInvocation,
   } = options;
+  const observe = createAuthorizationOutcomeObserver({
+    surface: "verify",
+    commandId: "verify",
+    recorder: dependencies.authorizationOutcomeRecorder,
+    sessionId: retrySessionId(ctx),
+    toolCallId,
+  });
   let loadedPolicy;
   try {
     loadedPolicy = await dependencies.policy.load(ctx.cwd);
   } catch {
+    observe?.({
+      outcome: "policy-load-failure",
+      decisionPersisted: false,
+      promptEmitted: false,
+      promptWaitMs: 0,
+    });
     throw new VerifyToolError("policy-load-failure", "verify policy could not be loaded");
   }
   const prepared = await resolveSteps(
@@ -1351,7 +1426,15 @@ async function prepareVerifyExecution(
       `${phase}: ${displayCommand(resolved)} [script-sha256:${scriptFingerprint(resolved)}]`,
   );
   const identity = verificationIdentity(prepared, input);
-  await authorizeVerify(dependencies.policy, ctx, requestSignal, identity, authorizationCommands);
+  await authorizeVerify(
+    dependencies.policy,
+    ctx,
+    requestSignal,
+    identity,
+    authorizationCommands,
+    observe,
+    dependencies.authorizationRetryTracker,
+  );
   if (requestSignal?.aborted) throw new VerifyToolError("cancelled", "verify was cancelled");
   let state = stateBeforeAuthorization;
   let repositoryStateReliable = dependencies.repositoryStateReader === undefined;
@@ -1607,6 +1690,8 @@ function createVerifyToolWithDependencies(
   aggregateTimeoutMs: number,
   stepTimeoutMs: number,
   invocationRecorder?: ProjectCommandInvocationRecorder,
+  authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder,
+  authorizationRetryTracker?: AuthorizationRetryTracker,
 ): VerifyToolDefinition {
   return {
     name: "verify",
@@ -1636,6 +1721,8 @@ function createVerifyToolWithDependencies(
           aggregateTimeoutMs,
           stepTimeoutMs,
           invocationRecorder,
+          authorizationOutcomeRecorder,
+          authorizationRetryTracker,
         },
         { toolCallId, rawParams, signal, ctx },
       );
@@ -1656,6 +1743,8 @@ export function createVerifyTool(
     validTimeout(options.aggregateTimeoutMs, DEFAULT_AGGREGATE_TIMEOUT_MS),
     validTimeout(options.stepTimeoutMs, DEFAULT_STEP_TIMEOUT_MS),
     options.invocationRecorder,
+    options.authorizationOutcomeRecorder,
+    options.authorizationRetryTracker,
   );
 }
 
@@ -1679,5 +1768,7 @@ export function createVerifyToolForTesting(options: VerifyToolOptions): VerifyTo
     validTimeout(options.aggregateTimeoutMs, DEFAULT_AGGREGATE_TIMEOUT_MS),
     validTimeout(options.stepTimeoutMs, DEFAULT_STEP_TIMEOUT_MS),
     options.invocationRecorder,
+    options.authorizationOutcomeRecorder,
+    options.authorizationRetryTracker,
   );
 }

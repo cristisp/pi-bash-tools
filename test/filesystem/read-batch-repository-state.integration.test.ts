@@ -51,6 +51,7 @@ gitIntegration("read_batch repository-state observation with a real Git process"
     );
 
     expect(result.details.results[0]).toMatchObject({ path: "README.md", unchanged: false });
+    expect(result.details.results[0]?.contentHash).toMatch(/^[0-9a-f]{64}$/u);
     expect(records).toHaveLength(1);
     const record = records[0];
     if (record === undefined) throw new Error("expected one invocation record");

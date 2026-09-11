@@ -10,6 +10,10 @@ Diff, log, and show also disable external diff and text conversion helpers.
 
 Git failures, invalid revisions, unsafe paths, non-repository workspaces, and cancellation are tool errors.
 
+When observability is active, every Git read invocation is recorded as a bounded `bash-tools.git-invocation` entry described in [Artifacts and observability](artifacts.md).
+
+The record carries identity, timing, outcome classification, result size, and the same repository-state block as other producers; it never contains revisions, paths, or output text, and recording never changes a result or error.
+
 ## `git_status`
 
 ### Input

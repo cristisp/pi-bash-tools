@@ -9,7 +9,10 @@ import {
   createProjectCommandEvidenceRecord,
   createProjectCommandEvidenceStore,
   isEvidenceRecord,
+  type ProjectCommandEvidenceRecord,
+  type ProjectCommandEvidenceStore,
 } from "../../src/tools/project-command/evidence.ts";
+import { createProjectCommandEvidenceStoreInternal } from "../../src/tools/project-command/evidence/store.ts";
 import type { ProjectCommandOutputDetails } from "../../src/tools/project-command/output.ts";
 
 const roots: string[] = [];
@@ -514,4 +517,51 @@ it("accepts legacy pc_ records without envelope fields and rejects malformed env
   for (const [label, overrides] of malformed) {
     expect(isEvidenceRecord({ ...created, ...overrides }), label).toBe(false);
   }
+});
+
+function tamperableStore(): {
+  store: ProjectCommandEvidenceStore;
+  tamper: () => void;
+} {
+  let tampered = false;
+  function validate(value: unknown, scopeKey?: string): value is ProjectCommandEvidenceRecord {
+    return !tampered && isEvidenceRecord(value, scopeKey);
+  }
+  const store = createProjectCommandEvidenceStoreInternal({}, validate, () => ({
+    get: () => undefined,
+    set: () => true,
+    publish: () => true,
+    delete: () => undefined,
+    clear: () => undefined,
+    tryClaim: () => undefined,
+    releaseClaim: () => undefined,
+  }));
+  return { store, tamper: () => (tampered = true) };
+}
+
+it("classifies present-but-invalid root-map records as corrupt without probing disk", () => {
+  const { store, tamper } = tamperableStore();
+  const valid = record();
+  expect(store.set(valid)).toBe(true);
+  expect(store.lookupOutcome?.(valid.ref)).toBe("found");
+
+  tamper();
+  expect(store.getByRef(valid.ref)).toBeUndefined();
+  expect(store.lookupOutcome?.(valid.ref)).toBe("corrupt");
+  expect(store.lookupOutcome?.("pc_missing0")).toBe("missing");
+  expect(store.lookupOutcome?.("pc_short")).toBe("missing");
+});
+
+it("classifies tampered in-memory flow records as corrupt and clamps flow misses to missing", () => {
+  vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
+  vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
+  const { store, tamper } = tamperableStore();
+  const flowRecord = record("flow");
+  expect(store.set(flowRecord, "flow-a")).toBe(true);
+  expect(store.lookupOutcome?.(flowRecord.ref, "flow-a")).toBe("found");
+
+  tamper();
+  expect(store.getByRef(flowRecord.ref, "flow-a")).toBeUndefined();
+  expect(store.lookupOutcome?.(flowRecord.ref, "flow-a")).toBe("corrupt");
+  expect(store.lookupOutcome?.("pc_notaflow", "flow-b")).toBe("missing");
 });

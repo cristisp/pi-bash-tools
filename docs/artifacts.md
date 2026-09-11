@@ -6,7 +6,7 @@ Generated records are diagnostic artifacts and are not authorization inputs.
 
 ## Evidence references
 
-`read_batch` references use the `rr_` prefix and are process-local cache references.
+`read_batch` references use the `rr_` prefix and are process-local cache references. Successful `read_batch` results also expose the record's `contentHash` (the lowercase SHA-256 digest of the full file bytes) directly on each item, including unchanged repeats.
 
 `project_command` evidence references use the `pc_` prefix.
 
@@ -27,6 +27,18 @@ Publication is reported only after the destination write succeeds.
 Lookups with a `flowId` succeed only when the caller has the same effective flow scope.
 
 Evidence includes opaque `covers`, producer provenance, repository state, and current-state comparison when available.
+
+### Lookup outcome telemetry
+
+When a session identity is available, `pc_` and `vr_` lookup invocations record an additive bounded `lookup.outcome` field on the invocation record alongside the existing `lookup` block (`attempted`, `success`, `failure`), without changing any model-facing error message or code.
+
+The outcome is one of `success`, `not-found`, `unauthorized-flow`, or `corrupt`; any other value is dropped at persistence time.
+
+`unauthorized-flow` is derived only from the caller's own orchestration context before any store query, so a wrong-flow lookup never probes another scope.
+
+`corrupt` is emitted only where the store detects a present-but-invalid record in-process: the `project_command` root map and in-memory flow maps classify present-but-invalid records as `corrupt`, while the verify cache and all durable disk records are never probed for corruption and clamp to `not-found`.
+
+Expiry is not applicable: lookup records have no TTL, so capacity-trimmed records are indistinguishable from missing records and both report `not-found`. `rr_` references have no lookup API today; `rr_` outcome telemetry is deferred together with `rr_` flow publication.
 
 ## Shared evidence envelope
 
@@ -127,6 +139,24 @@ The block carries `repositoryId` (the SHA-256 of the resolved workspace root), `
 
 Repository-state observation runs only when a recorder and session identity are present, uses the same derivation as `project_command` and `verify`, and never changes read results or errors.
 
+Git read-tool invocations are recorded as `bash-tools.git-invocation` entries.
+
+Each Git record carries the tool name, session and tool-call identity, the schema hash, the requested path-filter count, the outcome reason (`completed`, `cancelled`, `invalid-request`, or `failed`), a bounded error code, duration, an `unchanged` flag for `git_status` unchanged repeats, an aggregate block with the model-facing result byte count, and the same additive `repositoryState` workspace block described above.
+
+Git invocation records never contain revision expressions, path strings, or output text, and they are omitted when the session identity is unavailable.
+
+The Git observation uses the identical repository-state reader and derivation as `read_batch`, runs concurrently with the tool's own Git work, and never changes a Git result or error.
+
+Authorization outcomes are recorded as `bash-tools.authorization-outcome` entries.
+
+Each authorization record carries the authorization surface (`project-command`, `verify`, `filesystem`, or `environment`), an optional bounded command or tool identifier, session and tool-call identity, a structured outcome (`authorized`, `allowed-once`, `allowed-and-persisted`, `deferred-persistence`, `deferred-decision-persisted`, `denied`, `denied-once`, `not-authorized`, `confirmation-timeout`, `confirmation-failure`, `dismissed`, `cancelled`, `policy-save-failure`, `policy-load-failure`, `decision-lookup-failure`, `invalid-choice`, `unsafe-global`, or `unchanged-retry-after-denial`), flags for whether a persistent policy decision was written and whether execution was attempted, a flag for whether an approval prompt was emitted, and the bounded prompt wait time.
+
+When a session repeats an unchanged request that was persistently denied or timed out earlier in the same session, the authorization layer rejects the retry as an unchanged retry and records `unchanged-retry-after-denial` without prompting again or writing a policy decision.
+
+Authorization records never contain environment values, path strings, commands, or policy contents, and they are omitted when the session identity is unavailable.
+
+Recording is best effort from the shared authorization path and never changes an authorization decision, error, or fail-closed behavior; lock-level failures inside the policy store still surface as save failures at this layer.
+
 At session shutdown, the extension emits a `bash-tools.project-command-summary` entry for the active session when possible.
 
 The summary aggregates invocation count, cache decisions, result categories, process statuses, durations, output bytes, truncation counts, measurements, and a bounded set of schema hashes.
@@ -169,7 +199,7 @@ Each record is capped at 8 KiB, and a missing or unwritable path produces a proc
 
 ## Useful observability fields
 
-Invocation records may include `flowId`, `delegationId`, `role`, `ref`, `verdict`, `mutating`, `publication`, `lookup`, `coercions`, `concurrentExecutions`, `stateDrift`, `sharedExecution`, and aggregate metadata.
+Invocation records may include `flowId`, `delegationId`, `role`, `ref`, `verdict`, `mutating`, `publication`, `lookup` (with the additive clamped `outcome` field), `coercions`, `concurrentExecutions`, `stateDrift`, `sharedExecution`, and aggregate metadata.
 
 Read-batch records add `requestedPaths`, per-item size entries, and an `aggregate` block with `resultBytes` for the full model-facing result text, which supports result-size attribution per read-batch call.
 

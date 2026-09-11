@@ -1,3 +1,6 @@
+import type { AuthorizationOutcomeObserver } from "../../observability/authorization-outcome.ts";
+import type { AuthorizationRetryTracker } from "../authorization-retry.ts";
+import { authorizationRequestFingerprint } from "../authorization-retry.ts";
 import type { AuthorizeOrPromptContext } from "../authorization.ts";
 import { authorizeOrPrompt, type AuthorizationErrorKind } from "../authorization.ts";
 import { findEnvironmentPolicyDecision } from "../policy/decisions.ts";
@@ -27,6 +30,8 @@ const ENVIRONMENT_AUTHORIZATION_MESSAGES: Record<
   load: "Unable to load environment policy",
   "invalid-choice": "Environment confirmation returned an invalid choice",
   "unsafe-global": "Environment confirmation returned an invalid choice",
+  "unchanged-retry":
+    "Environment access was already denied for this identical request; change the request or ask the user to approve it explicitly",
 };
 
 function authorizationContract(kind: Exclude<AuthorizationErrorKind, "cancelled" | "dismissed">) {
@@ -34,7 +39,8 @@ function authorizationContract(kind: Exclude<AuthorizationErrorKind, "cancelled"
     kind === "denied" ||
     kind === "denied-once" ||
     kind === "not-authorized" ||
-    kind === "unsafe-global";
+    kind === "unsafe-global" ||
+    kind === "unchanged-retry";
   const timeout = kind === "timeout";
   const code = timeout
     ? "confirmation-timeout"
@@ -137,10 +143,16 @@ export async function authorizeAndPersistEnvironmentKeys(
   loadedPolicy: LoadedPolicy,
   policy: PolicyStore,
   requestSignal: AbortSignal | undefined,
+  observe: AuthorizationOutcomeObserver | undefined,
+  retryTracker: AuthorizationRetryTracker | undefined,
 ): Promise<void> {
   const staged: EnvironmentDecisionRequest[] = [];
+  const sessionIdValue = ctx.sessionManager?.getSessionId();
+  const sessionId =
+    typeof sessionIdValue === "string" && sessionIdValue.length > 0 ? sessionIdValue : undefined;
   for (const key of keys) {
     throwIfRequestAborted(requestSignal);
+    const fingerprint = authorizationRequestFingerprint({ kind: "environment", key });
     // eslint-disable-next-line no-await-in-loop
     const request = await authorizeOrPrompt<string, EnvironmentDecisionRequest>({
       identity: key,
@@ -149,12 +161,17 @@ export async function authorizeAndPersistEnvironmentKeys(
       signal: requestSignal,
       globalSafe: true,
       deferAllowPersistence: true,
+      retry:
+        retryTracker === undefined
+          ? undefined
+          : { tracker: retryTracker, surface: "environment", sessionId, fingerprint },
       findDecision: (loaded, identity) => findEnvironmentPolicyDecision(loaded, identity),
       recordDecisions: (projectPath, requests, signal) =>
         policy.recordDecisions(projectPath, requests, signal),
       makeRequest: (identity, decision) => ({ kind: "environment", key: identity, decision }),
       promptText: (identity) => `Authorize access to environment variable ${identity}`,
       error: errorForKind,
+      observe,
     });
     if (request !== undefined) {
       staged.push(request);
@@ -167,7 +184,19 @@ export async function authorizeAndPersistEnvironmentKeys(
   try {
     await policy.recordDecisions(loadedPolicy.projectPath, staged, requestSignal);
   } catch {
+    observe?.({
+      outcome: requestSignal?.aborted ? "cancelled" : "policy-save-failure",
+      decisionPersisted: false,
+      promptEmitted: false,
+      promptWaitMs: 0,
+    });
     throw persistenceError(requestSignal);
   }
+  observe?.({
+    outcome: "deferred-decision-persisted",
+    decisionPersisted: true,
+    promptEmitted: false,
+    promptWaitMs: 0,
+  });
   throwIfRequestAborted(requestSignal);
 }

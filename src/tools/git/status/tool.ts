@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 
 import { Type } from "typebox";
 
+import { hashToolParameters } from "../../../observability/canonical-json.ts";
 import { booleanInputSchema } from "../../boolean.ts";
 import { renderCallLine, renderStringArgument } from "../../call-render.ts";
 import { normalizeGitBoolean, runGit, validateGitRequestKeys, type GitExec } from "../execution.ts";
+import { observeGitInvocation, type GitInvocationObservationOptions } from "../invocation.ts";
 import {
   countStatusRecords,
   MAX_RECORDS,
@@ -31,6 +33,7 @@ const gitStatusParameters = Type.Object(
 
 export function createGitStatusTool(
   exec: GitExec,
+  observation?: GitInvocationObservationOptions,
 ): GitToolDefinition<typeof gitStatusParameters, GitStatusOutput> {
   const previousByRequest = new Map<
     string,
@@ -54,60 +57,63 @@ export function createGitStatusTool(
       }
       return renderCallLine(theme, "git_status", parts);
     },
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      validateGitRequestKeys(
-        params,
-        ["path", "refresh"],
-        '{ path?: string, refresh?: boolean | "true" | "false" }',
-      );
-      const refresh = normalizeGitBoolean(params.refresh, "refresh") === true;
-      const repository = await resolveRepository(exec, ctx.cwd, signal ?? ctx.signal);
-      const path =
-        params.path === undefined ? undefined : await resolvePath(repository, params.path);
-      const args = ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--"];
-      if (path !== undefined) {
-        args.push(path);
-      }
-      const result = await runGit(
-        exec,
-        args,
-        repository.root,
-        signal ?? ctx.signal,
-        "read Git status",
-      );
-      const recordCount = countStatusRecords(result.stdout);
-      const bounded = truncateUtf8(result.stdout, STRUCTURED_OUTPUT_LIMIT, recordCount);
-      const completeOutput = bounded.text.slice(0, bounded.text.lastIndexOf("\0") + 1);
-      const entries = parseStatus(completeOutput).slice(0, MAX_RECORDS);
-      const output = {
-        ...bounded.output,
-        truncated: bounded.output.truncated || recordCount > MAX_RECORDS,
-      };
-      const key = JSON.stringify([repository.root, path ?? null]);
-      const digest = createHash("sha256").update(result.stdout, "utf8").digest("hex");
-      const previous = previousByRequest.get(key);
-      if (previous !== undefined && previous.digest === digest && !refresh) {
+    execute: observeGitInvocation<typeof gitStatusParameters, GitStatusOutput>(
+      { tool: "git_status", schemaHash: hashToolParameters(gitStatusParameters), ...observation },
+      async (_toolCallId, params, signal, _onUpdate, ctx) => {
+        validateGitRequestKeys(
+          params,
+          ["path", "refresh"],
+          '{ path?: string, refresh?: boolean | "true" | "false" }',
+        );
+        const refresh = normalizeGitBoolean(params.refresh, "refresh") === true;
+        const repository = await resolveRepository(exec, ctx.cwd, signal ?? ctx.signal);
+        const path =
+          params.path === undefined ? undefined : await resolvePath(repository, params.path);
+        const args = ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--"];
+        if (path !== undefined) {
+          args.push(path);
+        }
+        const result = await runGit(
+          exec,
+          args,
+          repository.root,
+          signal ?? ctx.signal,
+          "read Git status",
+        );
+        const recordCount = countStatusRecords(result.stdout);
+        const bounded = truncateUtf8(result.stdout, STRUCTURED_OUTPUT_LIMIT, recordCount);
+        const completeOutput = bounded.text.slice(0, bounded.text.lastIndexOf("\0") + 1);
+        const entries = parseStatus(completeOutput).slice(0, MAX_RECORDS);
+        const output = {
+          ...bounded.output,
+          truncated: bounded.output.truncated || recordCount > MAX_RECORDS,
+        };
+        const key = JSON.stringify([repository.root, path ?? null]);
+        const digest = createHash("sha256").update(result.stdout, "utf8").digest("hex");
+        const previous = previousByRequest.get(key);
+        if (previous !== undefined && previous.digest === digest && !refresh) {
+          return makeToolResult({
+            repositoryRoot: repository.root,
+            unchanged: true as const,
+            previous,
+            output: { truncated: false, totalBytes: 0, totalLines: 0 },
+            message:
+              "Git status is unchanged since the previous request. Use { refresh: true } to force a fresh rendering.",
+          });
+        }
+        const current = {
+          digest,
+          entryCount: recordCount,
+          output,
+        };
+        previousByRequest.set(key, current);
         return makeToolResult({
           repositoryRoot: repository.root,
-          unchanged: true as const,
-          previous,
-          output: { truncated: false, totalBytes: 0, totalLines: 0 },
-          message:
-            "Git status is unchanged since the previous request. Use { refresh: true } to force a fresh rendering.",
+          unchanged: false as const,
+          entries,
+          output,
         });
-      }
-      const current = {
-        digest,
-        entryCount: recordCount,
-        output,
-      };
-      previousByRequest.set(key, current);
-      return makeToolResult({
-        repositoryRoot: repository.root,
-        unchanged: false as const,
-        entries,
-        output,
-      });
-    },
+      },
+    ),
   });
 }

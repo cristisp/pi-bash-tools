@@ -4,11 +4,16 @@ import { join } from "node:path";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, it, vi } from "vitest";
 
+import { createAuthorizationRetryTracker } from "../../src/tools/authorization-retry.ts";
 import {
   createFilesystemAccessPolicyInterceptor,
   type FilesystemAccessPolicyContext,
 } from "../../src/tools/filesystem/access-policy.ts";
 import { diagnoseFilesystemEdits } from "../../src/tools/filesystem/edit-diagnostics.ts";
+import {
+  createReadBatchToolForTesting,
+  type ReadBatchToolContext,
+} from "../../src/tools/filesystem/read-batch-tool.ts";
 import { createPolicyStoreForTesting } from "../../src/tools/policy/store.ts";
 import { createPolicyTestFixtures } from "../policy/test-fixtures.ts";
 
@@ -571,4 +576,330 @@ it("ignores non-filesystem tool calls", async () => {
   );
 
   expect(result).toBeUndefined();
+});
+
+function readBatchContext(cwd: string): ReadBatchToolContext {
+  return {
+    cwd,
+    mode: "print",
+    hasUI: false,
+    signal: undefined,
+    ui: { select: async () => undefined },
+  };
+}
+
+it("classifies stale context when an observed read no longer matches the file", async () => {
+  const directory = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const intercept = createFilesystemAccessPolicyInterceptor(policy);
+  const file = join(await realpath(directory), "stale.txt");
+  await writeFile(file, "observed line\n");
+  const readBatch = createReadBatchToolForTesting({ configPath });
+  const readResult = await readBatch.execute(
+    "read-batch",
+    { paths: [{ path: file }] },
+    undefined,
+    undefined,
+    readBatchContext(directory),
+  );
+  expect(readResult.details.results[0]).toMatchObject({ unchanged: false });
+
+  await writeFile(file, "changed line\n");
+  const stale = await intercept(
+    {
+      type: "tool_call",
+      toolCallId: "edit-stale",
+      toolName: "edit",
+      input: { path: file, edits: [{ oldText: "observed line", newText: "new" }] },
+    },
+    context(directory),
+  );
+  expect(stale?.reason).toContain('"code":"edit-stale-context"');
+  expect(stale?.reason).toContain('"fileFingerprint":"');
+
+  const unobserved = join(await realpath(directory), "unobserved.txt");
+  await writeFile(unobserved, "other\n");
+  const plain = await intercept(
+    {
+      type: "tool_call",
+      toolCallId: "edit-plain",
+      toolName: "edit",
+      input: { path: unobserved, edits: [{ oldText: "missing", newText: "new" }] },
+    },
+    context(directory),
+  );
+  expect(plain?.reason).toContain('"code":"edit-no-match"');
+});
+
+it("classifies a plain no-match for an unchanged non-UTF-8 file with observed evidence", async () => {
+  const directory = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const intercept = createFilesystemAccessPolicyInterceptor(policy);
+  const file = join(await realpath(directory), "binary.txt");
+  await writeFile(file, Buffer.from([0x62, 0x69, 0x6e, 0xff, 0x0a]));
+  const readBatch = createReadBatchToolForTesting({ configPath });
+  const readResult = await readBatch.execute(
+    "read-batch",
+    { paths: [{ path: file }] },
+    undefined,
+    undefined,
+    readBatchContext(directory),
+  );
+  expect(readResult.details.results[0]).toMatchObject({ unchanged: false });
+
+  const noMatch = await intercept(
+    {
+      type: "tool_call",
+      toolCallId: "edit-binary",
+      toolName: "edit",
+      input: { path: file, edits: [{ oldText: "missing", newText: "new" }] },
+    },
+    context(directory),
+  );
+  expect(noMatch?.reason).toContain('"code":"edit-no-match"');
+  expect(noMatch?.reason).not.toContain('"code":"edit-stale-context"');
+});
+
+it("classifies stale context for an unchanged-in-bytes multibyte file that changed content", async () => {
+  const directory = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const intercept = createFilesystemAccessPolicyInterceptor(policy);
+  const file = join(await realpath(directory), "multibyte.txt");
+  await writeFile(file, "h\u00e9llo w\u00f6rld \u00fc\u00f1\u00ee\u00e7\u00f8de\n");
+  const readBatch = createReadBatchToolForTesting({ configPath });
+  const readResult = await readBatch.execute(
+    "read-batch",
+    { paths: [{ path: file }] },
+    undefined,
+    undefined,
+    readBatchContext(directory),
+  );
+  expect(readResult.details.results[0]).toMatchObject({ unchanged: false });
+
+  await writeFile(file, "completely different content\n");
+  const stale = await intercept(
+    {
+      type: "tool_call",
+      toolCallId: "edit-multibyte",
+      toolName: "edit",
+      input: { path: file, edits: [{ oldText: "h\u00e9llo", newText: "new" }] },
+    },
+    context(directory),
+  );
+  expect(stale?.reason).toContain('"code":"edit-stale-context"');
+  expect(stale?.reason).toContain('"fileFingerprint":"');
+});
+
+it("rejects unchanged retries after a preflight failure with a distinct code", async () => {
+  const directory = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const tracker = createAuthorizationRetryTracker();
+  const intercept = createFilesystemAccessPolicyInterceptor(policy, undefined, tracker);
+  const file = join(await realpath(directory), "retry.txt");
+  await writeFile(file, "alpha\n");
+  const editEvent = {
+    type: "tool_call" as const,
+    toolCallId: "edit-retry",
+    toolName: "edit" as const,
+    input: { path: file, edits: [{ oldText: "missing", newText: "new" }] },
+  };
+
+  const first = await intercept(editEvent, context(directory));
+  expect(first?.reason).toContain('"code":"edit-no-match"');
+
+  const retry = await intercept({ ...editEvent, toolCallId: "edit-retry-2" }, context(directory));
+  expect(retry?.reason).toContain('"code":"edit-unchanged-retry"');
+  expect(retry?.reason).toContain("reread the file and rebase the edit before retrying");
+
+  const changedEdits = await intercept(
+    {
+      ...editEvent,
+      toolCallId: "edit-retry-3",
+      input: { path: file, edits: [{ oldText: "missing", newText: "other" }] },
+    },
+    context(directory),
+  );
+  expect(changedEdits?.reason).toContain('"code":"edit-no-match"');
+});
+
+it("rejects unchanged retries after no-op, ambiguous, and overlap failures", async () => {
+  const directory = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const tracker = createAuthorizationRetryTracker();
+  const intercept = createFilesystemAccessPolicyInterceptor(policy, undefined, tracker);
+
+  const ambiguous = join(await realpath(directory), "ambiguous.txt");
+  await writeFile(ambiguous, "same\nsame\n");
+  const ambiguousInput = { path: ambiguous, edits: [{ oldText: "same", newText: "new" }] };
+  expect(
+    (
+      await intercept(
+        {
+          type: "tool_call",
+          toolCallId: "edit-ambiguous",
+          toolName: "edit",
+          input: ambiguousInput,
+        },
+        context(directory),
+      )
+    )?.reason,
+  ).toContain('"code":"edit-ambiguous"');
+  expect(
+    (
+      await intercept(
+        {
+          type: "tool_call",
+          toolCallId: "edit-ambiguous-2",
+          toolName: "edit",
+          input: ambiguousInput,
+        },
+        context(directory),
+      )
+    )?.reason,
+  ).toContain('"code":"edit-unchanged-retry"');
+
+  const noOp = join(await realpath(directory), "noop.txt");
+  await writeFile(noOp, "target\n");
+  const noOpInput = { path: noOp, edits: [{ oldText: "target", newText: "target" }] };
+  expect(
+    (
+      await intercept(
+        { type: "tool_call", toolCallId: "edit-noop", toolName: "edit", input: noOpInput },
+        context(directory),
+      )
+    )?.reason,
+  ).toContain('"code":"edit-no-op"');
+  expect(
+    (
+      await intercept(
+        { type: "tool_call", toolCallId: "edit-noop-2", toolName: "edit", input: noOpInput },
+        context(directory),
+      )
+    )?.reason,
+  ).toContain('"code":"edit-unchanged-retry"');
+
+  const overlap = join(await realpath(directory), "overlap.txt");
+  await writeFile(overlap, "overlap\n");
+  const overlapInput = {
+    path: overlap,
+    edits: [
+      { oldText: "overlap", newText: "new" },
+      { oldText: "erlap", newText: "new2" },
+    ],
+  };
+  expect(
+    (
+      await intercept(
+        { type: "tool_call", toolCallId: "edit-overlap", toolName: "edit", input: overlapInput },
+        context(directory),
+      )
+    )?.reason,
+  ).toContain('"code":"edit-overlap"');
+  expect(
+    (
+      await intercept(
+        {
+          type: "tool_call",
+          toolCallId: "edit-overlap-2",
+          toolName: "edit",
+          input: overlapInput,
+        },
+        context(directory),
+      )
+    )?.reason,
+  ).toContain('"code":"edit-unchanged-retry"');
+});
+
+it("allows an edit after the caller rebases the content on a reread", async () => {
+  const directory = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const tracker = createAuthorizationRetryTracker();
+  const intercept = createFilesystemAccessPolicyInterceptor(policy, undefined, tracker);
+  const file = join(await realpath(directory), "rebase.txt");
+  await writeFile(file, "first\n");
+  const editEvent = {
+    type: "tool_call" as const,
+    toolCallId: "edit-rebase",
+    toolName: "edit" as const,
+    input: { path: file, edits: [{ oldText: "second", newText: "new" }] },
+  };
+  expect((await intercept(editEvent, context(directory)))?.reason).toContain(
+    '"code":"edit-no-match"',
+  );
+
+  await writeFile(file, "first\nsecond\n");
+  expect(
+    await intercept({ ...editEvent, toolCallId: "edit-rebase-2" }, context(directory)),
+  ).toBeUndefined();
+});
+
+it("scopes unchanged-retry tracking per session and bounds it", async () => {
+  const directory = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const tracker = createAuthorizationRetryTracker();
+  const intercept = createFilesystemAccessPolicyInterceptor(policy, undefined, tracker);
+  const file = join(await realpath(directory), "session.txt");
+  await writeFile(file, "alpha\n");
+  const editInput = { path: file, edits: [{ oldText: "missing", newText: "new" }] };
+  const firstSession = { ...context(directory), sessionManager: { getSessionId: () => "s1" } };
+  const secondSession = { ...context(directory), sessionManager: { getSessionId: () => "s2" } };
+  expect(
+    (
+      await intercept(
+        { type: "tool_call", toolCallId: "edit-session", toolName: "edit", input: editInput },
+        firstSession,
+      )
+    )?.reason,
+  ).toContain('"code":"edit-no-match"');
+  expect(
+    (
+      await intercept(
+        { type: "tool_call", toolCallId: "edit-session-2", toolName: "edit", input: editInput },
+        firstSession,
+      )
+    )?.reason,
+  ).toContain('"code":"edit-unchanged-retry"');
+  expect(
+    (
+      await intercept(
+        { type: "tool_call", toolCallId: "edit-session-3", toolName: "edit", input: editInput },
+        secondSession,
+      )
+    )?.reason,
+  ).toContain('"code":"edit-no-match"');
+
+  const boundedTracker = createAuthorizationRetryTracker(1);
+  const boundedIntercept = createFilesystemAccessPolicyInterceptor(
+    policy,
+    undefined,
+    boundedTracker,
+  );
+  const firstFile = join(await realpath(directory), "bound-a.txt");
+  const secondFile = join(await realpath(directory), "bound-b.txt");
+  await writeFile(firstFile, "alpha\n");
+  await writeFile(secondFile, "beta\n");
+  const firstPath = { path: firstFile, edits: [{ oldText: "missing", newText: "new" }] };
+  const secondPath = { path: secondFile, edits: [{ oldText: "absent", newText: "new" }] };
+  const editCall = (toolCallId: string, path: typeof firstPath) =>
+    boundedIntercept(
+      { type: "tool_call", toolCallId, toolName: "edit" as const, input: path },
+      context(directory),
+    );
+  expect((await editCall("b1", firstPath))?.reason).toContain('"code":"edit-no-match"');
+  expect((await editCall("b2", secondPath))?.reason).toContain('"code":"edit-no-match"');
+  expect((await editCall("b3", firstPath))?.reason).toContain('"code":"edit-no-match"');
 });

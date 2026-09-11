@@ -17,13 +17,27 @@ export interface EditDiagnosticCandidate {
   readonly line: number;
 }
 
+export interface EditDiagnosticContext {
+  readonly fileFingerprint?: string;
+  readonly observedContentHash?: string;
+}
+
 export interface EditDiagnostic {
-  readonly code: "edit-empty-old-text" | "edit-no-match" | "edit-ambiguous" | "edit-overlap";
+  readonly code:
+    | "edit-empty-old-text"
+    | "edit-no-op"
+    | "edit-no-match"
+    | "edit-stale-context"
+    | "edit-ambiguous"
+    | "edit-overlap";
   readonly editIndex: number;
   readonly matchCount?: number;
   readonly matchCountCapped?: boolean;
   readonly nearestCandidates?: readonly EditDiagnosticCandidate[];
   readonly whitespaceMismatch?: boolean;
+  readonly fileFingerprint?: string;
+  readonly contentLength?: number;
+  readonly lineCount?: number;
   readonly hint: string;
 }
 
@@ -105,8 +119,26 @@ function whitespaceOnlyMismatch(content: string, oldText: string): boolean {
   return normalizedOldText.length > 0 && normalizedContent.includes(normalizedOldText);
 }
 
-function noMatchDiagnostic(content: string, oldText: string, editIndex: number): EditDiagnostic {
+function noMatchDiagnostic(
+  content: string,
+  oldText: string,
+  editIndex: number,
+  context?: EditDiagnosticContext,
+): EditDiagnostic {
   const whitespaceMismatch = whitespaceOnlyMismatch(content, oldText);
+  const stale =
+    context?.observedContentHash !== undefined &&
+    context.fileFingerprint !== undefined &&
+    context.observedContentHash !== context.fileFingerprint;
+  if (stale) {
+    return {
+      code: "edit-stale-context",
+      editIndex,
+      matchCount: 0,
+      nearestCandidates: nearestCandidates(content, oldText),
+      hint: "The file has changed since it was last observed; reread the file and rebase this edit on the current content.",
+    };
+  }
   return {
     code: "edit-no-match",
     editIndex,
@@ -122,6 +154,7 @@ function noMatchDiagnostic(content: string, oldText: string, editIndex: number):
 export function diagnoseFilesystemEdits(
   content: string,
   edits: readonly FilesystemEditInput[],
+  context?: EditDiagnosticContext,
 ): EditDiagnostic | undefined {
   const contentWithoutBom = stripUtf8Bom(content);
   if (
@@ -134,6 +167,15 @@ export function diagnoseFilesystemEdits(
   ) {
     return undefined;
   }
+  const repairContext = context
+    ? {
+        ...(context.fileFingerprint === undefined
+          ? {}
+          : { fileFingerprint: context.fileFingerprint }),
+        contentLength: content.length,
+        lineCount: content.split("\n").length,
+      }
+    : {};
   const normalizedEdits = edits.map((edit) => ({
     oldText: normalizeToLf(edit.oldText),
     newText: normalizeToLf(edit.newText),
@@ -143,7 +185,17 @@ export function diagnoseFilesystemEdits(
     return {
       code: "edit-empty-old-text",
       editIndex: emptyIndex,
+      ...repairContext,
       hint: "Provide non-empty oldText for the replacement.",
+    };
+  }
+  const noOpIndex = normalizedEdits.findIndex((edit) => edit.oldText === edit.newText);
+  if (noOpIndex >= 0) {
+    return {
+      code: "edit-no-op",
+      editIndex: noOpIndex,
+      ...repairContext,
+      hint: "The replacement is a no-op because oldText and newText are identical.",
     };
   }
 
@@ -164,7 +216,11 @@ export function diagnoseFilesystemEdits(
     if (edit === undefined) continue;
     const oldText = usedFuzzy ? normalizeForFuzzyMatch(edit.oldText) : edit.oldText;
     const index = baseContent.indexOf(oldText);
-    if (index < 0) return noMatchDiagnostic(contentWithoutBom, edit.oldText, editIndex);
+    if (index < 0)
+      return {
+        ...noMatchDiagnostic(contentWithoutBom, edit.oldText, editIndex, context),
+        ...repairContext,
+      };
     const occurrences = countOccurrences(baseContent, oldText);
     if (occurrences > 1) {
       return {
@@ -173,6 +229,7 @@ export function diagnoseFilesystemEdits(
         matchCount: Math.min(occurrences, MAX_MATCH_COUNT),
         ...(occurrences > MAX_MATCH_COUNT ? { matchCountCapped: true } : {}),
         nearestCandidates: matchingLineCandidates(baseContent, oldText),
+        ...repairContext,
         hint: "Provide more surrounding context so oldText matches exactly one region.",
       };
     }
@@ -191,6 +248,7 @@ export function diagnoseFilesystemEdits(
       return {
         code: "edit-overlap",
         editIndex: current.editIndex,
+        ...repairContext,
         hint: "Merge overlapping edits into one replacement or target disjoint regions.",
       };
     }

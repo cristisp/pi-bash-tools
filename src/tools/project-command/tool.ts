@@ -1,7 +1,9 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
+import type { AuthorizationOutcomeRecorder } from "../../observability/authorization-outcome.ts";
 import { hashToolParameters } from "../../observability/canonical-json.ts";
 import type { ProjectCommandInvocationRecorder } from "../../observability/project-command-invocation.ts";
+import type { AuthorizationRetryTracker } from "../authorization-retry.ts";
 import { renderCallLine, renderStringArgument, truncateRenderText } from "../call-render.ts";
 import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
 import type { PolicyStore, PolicyStoreTestOptions } from "../policy/types.ts";
@@ -73,6 +75,8 @@ export interface ProjectCommandToolOptions {
   readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
   readonly cache?: ProjectCommandResultCache;
   readonly evidence?: ProjectCommandEvidenceStore;
+  readonly authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder;
+  readonly authorizationRetryTracker?: AuthorizationRetryTracker;
 }
 
 export type ProjectCommandToolDefinition<
@@ -155,6 +159,8 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
         schemaHash,
         repositoryStateReader: invocationOptions.repositoryStateReader,
         evidence,
+        authorizationOutcomeRecorder: invocationOptions.authorizationOutcomeRecorder,
+        authorizationRetryTracker: invocationOptions.authorizationRetryTracker,
       },
     ),
   };

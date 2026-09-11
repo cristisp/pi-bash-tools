@@ -1,11 +1,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+import { createAuthorizationOutcomeRecorder } from "./observability/authorization-outcome.ts";
+import { createGitInvocationRecorder } from "./observability/git-invocation.ts";
 import {
   createProjectCommandInvocationSessionRecorder,
   type ProjectCommandInvocationLifecycleContext,
 } from "./observability/project-command-invocation.ts";
 import { createReadBatchInvocationRecorder } from "./observability/read-batch-invocation.ts";
 import { createToolInventoryRecorder } from "./observability/tool-inventory.ts";
+import { createAuthorizationRetryTracker } from "./tools/authorization-retry.ts";
 import { createEnvironmentTool } from "./tools/environment/environment-tool.ts";
 import { createFilesystemAccessPolicyInterceptor } from "./tools/filesystem/access-policy.ts";
 import { createDeleteTool, createMoveTool } from "./tools/filesystem/mutation-tool.ts";
@@ -27,6 +30,10 @@ export default function (pi: ExtensionAPI): void {
   const toolInventoryRecorder = createToolInventoryRecorder(pi);
   const invocationSessionRecorder = createProjectCommandInvocationSessionRecorder(pi);
   const readBatchInvocationRecorder = createReadBatchInvocationRecorder(pi);
+  const gitInvocationRecorder = createGitInvocationRecorder(pi);
+  const authorizationOutcomeRecorder = createAuthorizationOutcomeRecorder(pi);
+  const authorizationRetryTracker = createAuthorizationRetryTracker();
+  const gitRepositoryStateReader = createProjectCommandRepositoryStateReader(exec);
   pi.on("session_start", (event, context) => {
     invocationSessionRecorder.onSessionStart(
       event,
@@ -35,24 +42,63 @@ export default function (pi: ExtensionAPI): void {
     toolInventoryRecorder(event, context);
   });
   pi.on("session_shutdown", invocationSessionRecorder.onSessionShutdown);
-  pi.on("tool_call", createFilesystemAccessPolicyInterceptor());
-  pi.registerTool(createGitStatusTool(exec));
-  pi.registerTool(createGitDiffTool(exec));
-  pi.registerTool(createGitLogTool(exec));
-  pi.registerTool(createGitShowTool(exec));
-  pi.registerTool(createEnvironmentTool());
-  pi.registerTool(createReadBatchTool(exec, { invocationRecorder: readBatchInvocationRecorder }));
+  pi.on(
+    "tool_call",
+    createFilesystemAccessPolicyInterceptor(
+      undefined,
+      authorizationOutcomeRecorder,
+      authorizationRetryTracker,
+    ),
+  );
+  pi.registerTool(
+    createGitStatusTool(exec, {
+      invocationRecorder: gitInvocationRecorder,
+      repositoryStateReader: gitRepositoryStateReader,
+    }),
+  );
+  pi.registerTool(
+    createGitDiffTool(exec, {
+      invocationObservation: {
+        invocationRecorder: gitInvocationRecorder,
+        repositoryStateReader: gitRepositoryStateReader,
+      },
+    }),
+  );
+  pi.registerTool(
+    createGitLogTool(exec, {
+      invocationRecorder: gitInvocationRecorder,
+      repositoryStateReader: gitRepositoryStateReader,
+    }),
+  );
+  pi.registerTool(
+    createGitShowTool(exec, {
+      invocationRecorder: gitInvocationRecorder,
+      repositoryStateReader: gitRepositoryStateReader,
+    }),
+  );
+  pi.registerTool(createEnvironmentTool(authorizationOutcomeRecorder, authorizationRetryTracker));
+  pi.registerTool(
+    createReadBatchTool(exec, {
+      invocationRecorder: readBatchInvocationRecorder,
+      authorizationOutcomeRecorder,
+      authorizationRetryTracker,
+    }),
+  );
   pi.registerTool(
     createProjectCommandTool({
       invocationRecorder: invocationSessionRecorder.invocationRecorder,
       repositoryStateReader: createProjectCommandRepositoryStateReader(exec),
+      authorizationOutcomeRecorder,
+      authorizationRetryTracker,
     }),
   );
   pi.registerTool(
     createVerifyTool(exec, {
       invocationRecorder: invocationSessionRecorder.invocationRecorder,
+      authorizationOutcomeRecorder,
+      authorizationRetryTracker,
     }),
   );
-  pi.registerTool(createMoveTool(exec));
-  pi.registerTool(createDeleteTool(exec));
+  pi.registerTool(createMoveTool(exec, authorizationOutcomeRecorder, authorizationRetryTracker));
+  pi.registerTool(createDeleteTool(exec, authorizationOutcomeRecorder, authorizationRetryTracker));
 }

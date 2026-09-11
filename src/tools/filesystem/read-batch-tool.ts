@@ -23,6 +23,11 @@ import {
   type SharedEvidenceScope,
   type SharedEvidenceWorkspaceBlock,
 } from "../../evidence/envelope.ts";
+import type {
+  AuthorizationOutcomeObserver,
+  AuthorizationOutcomeRecorder,
+} from "../../observability/authorization-outcome.ts";
+import { createAuthorizationOutcomeObserver } from "../../observability/authorization-outcome.ts";
 import { hashToolParameters } from "../../observability/canonical-json.ts";
 import {
   recordReadBatchInvocation,
@@ -31,6 +36,7 @@ import {
   type ReadBatchInvocationReason,
   type ReadBatchInvocationRecorder,
 } from "../../observability/read-batch-invocation.ts";
+import type { AuthorizationRetryTracker } from "../authorization-retry.ts";
 import { type AuthorizationErrorKind } from "../authorization.ts";
 import { renderCallLine, renderStringArgument } from "../call-render.ts";
 import type { GitExec } from "../git/execution.ts";
@@ -63,6 +69,7 @@ import {
   filesystemInvalidRequest,
   FilesystemToolError,
 } from "./errors.ts";
+import { recordObservedContent } from "./observed-content-store.ts";
 import { canonicalExistingPath, requestPath } from "./paths.ts";
 
 const READ_BATCH_MAX_PATHS = 32;
@@ -70,6 +77,7 @@ const READ_BATCH_MAX_PATH_LENGTH = 4_096;
 const READ_BATCH_MAX_OFFSET = 1_000_000;
 const READ_BATCH_MAX_RANGE_LINES = 2_000;
 const READ_BATCH_MAX_CONTENT_BYTES = 64 * 1024;
+const READ_BATCH_MAX_AGGREGATE_CONTENT_BYTES = 256 * 1024;
 const READ_BATCH_MAX_FILE_BYTES = 8 * 1024 * 1024;
 const READ_BATCH_MAX_CACHE_ENTRIES = 512;
 const READ_BATCH_REF_PREFIX = "rr_";
@@ -140,13 +148,20 @@ export interface ReadBatchPathResult {
   readonly range?: ReadBatchRange;
   readonly unchanged?: boolean;
   readonly ref?: string;
+  readonly contentHash?: string;
   readonly content?: string;
   readonly output?: ReadBatchOutput;
   readonly error?: ReadBatchPathError;
 }
 
+export interface ReadBatchContinuation {
+  readonly nextIndex: number;
+  readonly totalPaths: number;
+}
+
 export interface ReadBatchDetails {
   readonly results: readonly ReadBatchPathResult[];
+  readonly continuation?: ReadBatchContinuation;
 }
 
 export type ReadBatchToolContext = FilesystemAuthorizationContext & {
@@ -170,11 +185,15 @@ export interface ReadBatchToolTestOptions {
   readonly policy?: PolicyStore;
   readonly invocationRecorder?: ReadBatchInvocationRecorder;
   readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
+  readonly authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder;
+  readonly authorizationRetryTracker?: AuthorizationRetryTracker;
 }
 
 export interface ReadBatchToolOptions {
   readonly invocationRecorder?: ReadBatchInvocationRecorder;
   readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
+  readonly authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder;
+  readonly authorizationRetryTracker?: AuthorizationRetryTracker;
 }
 
 type ReadBatchExecute = (
@@ -226,6 +245,7 @@ const BLOCKED_REASON_SUFFIXES: Record<Exclude<AuthorizationErrorKind, "denied">,
   load: "; the access policy could not be loaded.",
   "invalid-choice": "; the access policy returned an invalid approval.",
   "unsafe-global": "; the access policy returned an invalid approval.",
+  "unchanged-retry": " was already denied for this identical request.",
   cancelled: " confirmation was cancelled.",
   dismissed: " confirmation was dismissed.",
 };
@@ -366,7 +386,29 @@ function validateInput(params: ReadBatchInput): ReadonlyArray<NormalizedReadBatc
       "paths",
     );
   }
-  return params.paths.map(normalizePathInput);
+  const inputs = params.paths.map(normalizePathInput);
+  validateNoOverlappingRanges(inputs);
+  return inputs;
+}
+
+function validateNoOverlappingRanges(inputs: ReadonlyArray<NormalizedReadBatchPath>): void {
+  const intervals = new Map<string, Array<{ readonly start: number; readonly end: number }>>();
+  for (const input of inputs) {
+    const start = input.range?.offset ?? 1;
+    const end =
+      input.range?.limit === undefined ? Number.POSITIVE_INFINITY : start + input.range.limit - 1;
+    const existing = intervals.get(input.path) ?? [];
+    for (const prior of existing) {
+      if (prior.start <= end && start <= prior.end) {
+        throw filesystemInvalidRequest(
+          `duplicate or overlapping range for path "${input.path}"`,
+          "paths",
+        );
+      }
+    }
+    existing.push({ start, end });
+    intervals.set(input.path, existing);
+  }
 }
 
 function normalizedRangeKey(range: ReadBatchRange | undefined): string {
@@ -489,6 +531,21 @@ function pathFailureFromError(
     executed: error.contract.executed,
     ...(ruleKind === undefined ? {} : { ruleKind }),
     ...(authorizedRoots === undefined ? {} : { authorizedRoots }),
+  });
+}
+
+interface ReadBatchAggregateBudget {
+  returnedBytes: number;
+  capped: boolean;
+}
+
+function aggregateLimitFailure(): ReadBatchPathError {
+  return pathFailure({
+    code: "aggregate-limit",
+    message: "The aggregate batch read limit was reached; this path was not read.",
+    category: "INVALID_REQUEST",
+    retryable: false,
+    executed: false,
   });
 }
 
@@ -661,6 +718,8 @@ async function authorizeReadBatchPath(
   context: ReadBatchToolContext,
   policy: PolicyStore,
   signal: AbortSignal | undefined,
+  observe: AuthorizationOutcomeObserver | undefined,
+  retryTracker: AuthorizationRetryTracker | undefined,
 ): Promise<ReadBatchPathError | undefined> {
   try {
     await authorizeAndPersistFilesystemAccesses(
@@ -674,6 +733,8 @@ async function authorizeReadBatchPath(
           `Authorize read access for read_batch to ${displayPath(identity)}?`,
         error: (kind, request, decision, currentLoaded) =>
           readAuthorizationError(kind, request, decision, currentLoaded),
+        observe,
+        retryTracker,
       },
     );
     return undefined;
@@ -725,6 +786,7 @@ async function readReadBatchFile(
 
 function finalizeReadBatchRead(
   input: NormalizedReadBatchPath,
+  canonical: string,
   path: string,
   root: string,
   scope: string,
@@ -751,6 +813,7 @@ function finalizeReadBatchRead(
   }
 
   const contentHash = createHash("sha256").update(bytes).digest("hex");
+  if (input.range === undefined) recordObservedContent(canonical, contentHash);
   const key = cacheKey(scope, root, path, input.range);
   const previous = cache.get(key);
   if (previous?.evidence.contentHash === contentHash) {
@@ -759,6 +822,7 @@ function finalizeReadBatchRead(
       ...(input.range === undefined ? {} : { range: input.range }),
       unchanged: true,
       ref: previous.evidence.ref,
+      contentHash,
     };
   }
   const ref = readReference(root, path, input.range, contentHash);
@@ -784,6 +848,7 @@ function finalizeReadBatchRead(
     ...(input.range === undefined ? {} : { range: input.range }),
     unchanged: false,
     ref,
+    contentHash,
     content: selected.content,
     output: selected.output,
   };
@@ -800,6 +865,9 @@ async function readOne(
   signal: AbortSignal | undefined,
   scope: string,
   cache: Map<string, PreviousRead>,
+  observe: AuthorizationOutcomeObserver | undefined,
+  retryTracker: AuthorizationRetryTracker | undefined,
+  budget: ReadBatchAggregateBudget,
 ): Promise<ReadBatchPathResult> {
   const resolved = await resolveReadBatchPath(input, root, cwd, fileSystem, signal);
   if ("error" in resolved) return readBatchPathResult(resolved.path, input, resolved.error);
@@ -809,12 +877,22 @@ async function readOne(
     return readBatchPathResult(resolved.path, input, inspectionError);
   }
 
+  if (
+    budget.capped ||
+    budget.returnedBytes + READ_BATCH_MAX_CONTENT_BYTES > READ_BATCH_MAX_AGGREGATE_CONTENT_BYTES
+  ) {
+    budget.capped = true;
+    return readBatchPathResult(resolved.path, input, aggregateLimitFailure());
+  }
+
   const authorizationError = await authorizeReadBatchPath(
     resolved.canonical,
     loaded,
     context,
     policy,
     signal,
+    observe,
+    retryTracker,
   );
   if (authorizationError !== undefined) {
     return readBatchPathResult(resolved.path, input, authorizationError);
@@ -823,7 +901,20 @@ async function readOne(
   const contents = await readReadBatchFile(resolved.canonical, fileSystem, signal);
   if ("error" in contents) return readBatchPathResult(resolved.path, input, contents.error);
 
-  return finalizeReadBatchRead(input, resolved.path, root, scope, contents.bytes, signal, cache);
+  const outcome = finalizeReadBatchRead(
+    input,
+    resolved.canonical,
+    resolved.path,
+    root,
+    scope,
+    contents.bytes,
+    signal,
+    cache,
+  );
+  if (outcome.content !== undefined) {
+    budget.returnedBytes += Buffer.byteLength(outcome.content, "utf8");
+  }
+  return outcome;
 }
 
 function result(details: ReadBatchDetails): AgentToolResult<ReadBatchDetails> {
@@ -901,6 +992,8 @@ function createReadBatchToolWithDependencies(
   gitExec: GitExec | undefined,
   invocationRecorder: ReadBatchInvocationRecorder | undefined,
   repositoryStateReader: ProjectCommandRepositoryStateReader | undefined,
+  authorizationOutcomeRecorder: AuthorizationOutcomeRecorder | undefined,
+  authorizationRetryTracker: AuthorizationRetryTracker | undefined,
 ): ReadBatchToolDefinition {
   const cache = new Map<string, PreviousRead>();
   const schemaHash = hashToolParameters(readBatchParameters);
@@ -926,6 +1019,13 @@ function createReadBatchToolWithDependencies(
       const startedAt = performance.now();
       const sessionId = getSessionId(ctx);
       const observeState = invocationRecorder !== undefined && sessionId !== undefined;
+      const authorizationObserver = createAuthorizationOutcomeObserver({
+        surface: "filesystem",
+        commandId: "read_batch",
+        recorder: authorizationOutcomeRecorder,
+        sessionId,
+        toolCallId,
+      });
       let workspaceBlock: SharedEvidenceWorkspaceBlock | undefined;
       const record = (
         reason: ReadBatchInvocationReason,
@@ -995,30 +1095,54 @@ function createReadBatchToolWithDependencies(
         const scope = cacheScope();
         const scopeInfo = scopeMetadata(scope);
         const results: ReadBatchPathResult[] = [];
+        const budget: ReadBatchAggregateBudget = { returnedBytes: 0, capped: false };
+        let firstSkippedIndex: number | undefined;
         const collect = async (index: number): Promise<void> => {
           if (index >= inputs.length) return;
           if (requestSignal?.aborted) throw filesystemCancellationError("Batch read cancelled");
           const input = inputs[index];
           if (input === undefined) return;
-          results.push(
-            await readOne(
-              input,
-              root,
-              canonicalCwd,
-              loaded,
-              ctx,
-              policy,
-              fileSystem,
-              requestSignal,
-              scope,
-              cache,
-            ),
-          );
+          if (budget.capped) {
+            results.push(
+              readBatchPathResult(
+                reportedPath(root, canonicalCwd, input.path),
+                input,
+                aggregateLimitFailure(),
+              ),
+            );
+          } else {
+            const wasCapped = budget.capped;
+            results.push(
+              await readOne(
+                input,
+                root,
+                canonicalCwd,
+                loaded,
+                ctx,
+                policy,
+                fileSystem,
+                requestSignal,
+                scope,
+                cache,
+                authorizationObserver,
+                authorizationRetryTracker,
+                budget,
+              ),
+            );
+            if (!wasCapped && budget.capped) firstSkippedIndex = index;
+          }
           await collect(index + 1);
         };
         await collect(0);
         if (requestSignal?.aborted) throw filesystemCancellationError("Batch read cancelled");
-        const outcome = result({ results: Object.freeze(results) });
+        const continuation =
+          firstSkippedIndex === undefined
+            ? undefined
+            : { nextIndex: firstSkippedIndex, totalPaths: inputs.length };
+        const outcome = result({
+          results: Object.freeze(results),
+          ...(continuation === undefined ? {} : { continuation }),
+        });
         record("completed", outcome.details, true, scopeInfo);
         return outcome;
       } catch (error) {
@@ -1040,6 +1164,8 @@ export function createReadBatchTool(
     options?.invocationRecorder,
     options?.repositoryStateReader ??
       (gitExec === undefined ? undefined : createProjectCommandRepositoryStateReader(gitExec)),
+    options?.authorizationOutcomeRecorder,
+    options?.authorizationRetryTracker,
   );
 }
 
@@ -1053,5 +1179,7 @@ export function createReadBatchToolForTesting(
     options.gitExec,
     options.invocationRecorder,
     options.repositoryStateReader,
+    options.authorizationOutcomeRecorder,
+    options.authorizationRetryTracker,
   );
 }

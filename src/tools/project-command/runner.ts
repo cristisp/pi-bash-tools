@@ -8,13 +8,21 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import {
+  createAuthorizationOutcomeObserver,
+  type AuthorizationOutcomeObserver,
+  type AuthorizationOutcomeRecorder,
+} from "../../observability/authorization-outcome.ts";
+import {
   createProjectCommandInvocationMeasurements,
   recordProjectCommandInvocation,
   redactProjectCommandParameters,
+  type ProjectCommandInvocationLookupMetadata,
+  type ProjectCommandInvocationLookupOutcome,
   type ProjectCommandInvocationOutputMetadata,
   type ProjectCommandInvocationReason,
   type ProjectCommandInvocationRecorder,
 } from "../../observability/project-command-invocation.ts";
+import type { AuthorizationRetryTracker } from "../authorization-retry.ts";
 import { authorizeOrPrompt, type AuthorizationErrorKind } from "../authorization.ts";
 import { awaitWithAbort } from "../await-with-abort.ts";
 import {
@@ -116,6 +124,8 @@ export interface ProjectCommandInvocationOptions {
   readonly schemaHash?: string;
   readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
   readonly evidence?: ProjectCommandEvidenceStore;
+  readonly authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder;
+  readonly authorizationRetryTracker?: AuthorizationRetryTracker;
 }
 
 export type ProjectCommandExecute<Definitions extends readonly ProjectCommandDefinition[]> = (
@@ -297,6 +307,8 @@ const PROJECT_COMMAND_AUTHORIZATION_MESSAGES: Record<
   "unsafe-global": "Project command cannot be allowed globally",
   "invalid-choice": "Project command confirmation returned an invalid choice",
   load: "Unable to load project command policy",
+  "unchanged-retry":
+    "Project command was already denied for this identical request; change the request or ask the user to approve it explicitly",
 };
 
 function authorizationContract(
@@ -306,7 +318,8 @@ function authorizationContract(
     kind === "denied" ||
     kind === "denied-once" ||
     kind === "not-authorized" ||
-    kind === "unsafe-global";
+    kind === "unsafe-global" ||
+    kind === "unchanged-retry";
   const timeout = kind === "timeout";
   return createToolErrorContract({
     code: timeout ? "confirmation-timeout" : `policy-${kind}`,
@@ -364,6 +377,29 @@ async function loadPolicy(policy: PolicyStore, cwd: string, signal: AbortSignal 
   }
 }
 
+async function loadPolicyObserved(
+  policy: PolicyStore,
+  cwd: string,
+  signal: AbortSignal | undefined,
+  observe: AuthorizationOutcomeObserver | undefined,
+): Promise<Awaited<ReturnType<PolicyStore["load"]>>> {
+  try {
+    return await loadPolicy(policy, cwd, signal);
+  } catch (error) {
+    const cancelled =
+      error instanceof ProjectCommandToolError && error.contract.code === "cancelled";
+    if (!cancelled) {
+      observe?.({
+        outcome: "policy-load-failure",
+        decisionPersisted: false,
+        promptEmitted: false,
+        promptWaitMs: 0,
+      });
+    }
+    throw error;
+  }
+}
+
 async function authorizeCommand(
   policy: PolicyStore,
   loaded: Awaited<ReturnType<PolicyStore["load"]>>,
@@ -372,6 +408,8 @@ async function authorizeCommand(
   resolved: ResolvedProjectCommand,
   ctx: ProjectCommandToolContext,
   signal: AbortSignal | undefined,
+  observe: AuthorizationOutcomeObserver | undefined,
+  retryTracker: AuthorizationRetryTracker | undefined,
 ): Promise<void> {
   await authorizeOrPrompt<
     CommandIdentity,
@@ -399,6 +437,16 @@ async function authorizeCommand(
         resolved.script === undefined ? "" : `\nScript: ${resolved.script}`
       }`,
     error: authorizationError,
+    observe,
+    retry:
+      retryTracker === undefined
+        ? undefined
+        : {
+            tracker: retryTracker,
+            surface: "project-command",
+            sessionId: getContextSessionId(ctx),
+            fingerprint: identity.fingerprint,
+          },
   });
 }
 
@@ -1080,6 +1128,7 @@ interface ProjectCommandInvocationState {
   status: ProjectCommandExecutionOutcome["status"] | undefined;
   executed: boolean;
   output: ProjectCommandInvocationOutputMetadata | undefined;
+  lookup: ProjectCommandInvocationLookupMetadata | undefined;
 }
 
 function createInvocationState(
@@ -1123,6 +1172,7 @@ function createInvocationState(
     status: undefined,
     executed: false,
     output: undefined,
+    lookup: undefined,
   };
 }
 
@@ -1347,6 +1397,7 @@ function recordInvocation(
                 : { stateMatchesCurrent: state.repositoryStateStatus === "matches" }),
             },
       publication: state.publication,
+      lookup: state.lookup,
       coercions: state.coercions,
       mutating: state.mutating,
       concurrentExecutions: state.concurrentExecutions,
@@ -1457,6 +1508,9 @@ async function prepareProjectCommand(
   stateSnapshotter: ProjectCommandStateSnapshotter,
   repositoryStateReader: ProjectCommandRepositoryStateReader | undefined,
   state: ProjectCommandInvocationState,
+  toolCallId: string,
+  authorizationOutcomeRecorder: AuthorizationOutcomeRecorder | undefined,
+  authorizationRetryTracker: AuthorizationRetryTracker | undefined,
 ): Promise<PreparedProjectCommand> {
   const validatedParams = validateProjectCommandInput(rawParams, capturedDefinitions);
   if (!hasOptionalForce(validatedParams)) {
@@ -1483,8 +1537,15 @@ async function prepareProjectCommand(
   };
   const definition = byId.get(params.commandId);
   if (definition === undefined) throw invalidRequest("commandId");
+  const observe = createAuthorizationOutcomeObserver({
+    surface: "project-command",
+    commandId: state.commandId,
+    recorder: authorizationOutcomeRecorder,
+    sessionId: getContextSessionId(executorContext),
+    toolCallId,
+  });
   const requestSignal = signal ?? executorContext.signal;
-  const loaded = await loadPolicy(policy, executorContext.cwd, requestSignal);
+  const loaded = await loadPolicyObserved(policy, executorContext.cwd, requestSignal, observe);
   state.reusePolicyId = getProjectCommandReusePolicy(definition);
   const resolved = await resolveCommandForTool(
     resolver,
@@ -1514,9 +1575,16 @@ async function prepareProjectCommand(
     resolved,
     executorContext,
     requestSignal,
+    observe,
+    authorizationRetryTracker,
   );
   throwIfRequestAborted(requestSignal);
-  const authorizedPolicy = await loadPolicy(policy, executorContext.cwd, requestSignal);
+  const authorizedPolicy = await loadPolicyObserved(
+    policy,
+    executorContext.cwd,
+    requestSignal,
+    observe,
+  );
   state.policyId = projectCommandPolicyId(authorizedPolicy);
   state.beforeSnapshot =
     relevantInputs === undefined
@@ -1580,6 +1648,18 @@ function evidenceNotFound(ref: string, flowId: string | undefined): ProjectComma
   );
 }
 
+function evidenceLookupFailureState(
+  state: ProjectCommandInvocationState,
+  outcome: ProjectCommandInvocationLookupOutcome | undefined,
+): void {
+  state.lookup = {
+    attempted: true,
+    success: false,
+    failure: "not-found",
+    ...(outcome === undefined ? {} : { outcome }),
+  };
+}
+
 async function executeEvidenceLookup(
   evidence: ProjectCommandEvidenceStore,
   repositoryStateReader: ProjectCommandRepositoryStateReader | undefined,
@@ -1593,11 +1673,17 @@ async function executeEvidenceLookup(
     requestedFlowId !== undefined &&
     (orchestration.effectiveScope !== "flow" || orchestration.flowId !== requestedFlowId)
   ) {
+    evidenceLookupFailureState(state, "unauthorized-flow");
     throw evidenceNotFound(ref, requestedFlowId);
   }
   const flowId = evidenceLookupFlowId(requestedFlowId, orchestration);
   const record = evidence.getByRef(ref, flowId);
-  if (record === undefined) throw evidenceNotFound(ref, flowId);
+  if (record === undefined) {
+    const outcome = evidence.lookupOutcome?.(ref, flowId);
+    evidenceLookupFailureState(state, outcome === "corrupt" ? "corrupt" : "not-found");
+    throw evidenceNotFound(ref, flowId);
+  }
+  state.lookup = { attempted: true, success: true, outcome: "success" };
   throwIfRequestAborted(signal);
 
   let currentRepositoryState: ProjectCommandRepositoryState | undefined;
@@ -1888,6 +1974,9 @@ export function createProjectCommandExecute<
         stateSnapshotter,
         invocationOptions.repositoryStateReader,
         state,
+        toolCallId,
+        invocationOptions.authorizationOutcomeRecorder,
+        invocationOptions.authorizationRetryTracker,
       );
       return await executePreparedProjectCommand(
         executor,

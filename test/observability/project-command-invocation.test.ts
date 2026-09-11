@@ -17,6 +17,7 @@ import {
   PROJECT_COMMAND_SUMMARY_MAX_BYTES,
   PROJECT_COMMAND_SUMMARY_MAX_COUNT,
   PROJECT_COMMAND_SUMMARY_MAX_SCHEMA_HASHES,
+  projectCommandInvocationLookupOutcome,
   recordProjectCommandInvocation,
   summarizeProjectCommandInvocations,
   type ProjectCommandInvocationRecordInput,
@@ -514,5 +515,56 @@ describe("project command invocation metadata", () => {
       PROJECT_COMMAND_SUMMARY_ENTRY_TYPE,
       expect.objectContaining({ sessionId: "session-b", invocationCount: 1 }),
     );
+  });
+});
+
+describe("project command invocation lookup outcome", () => {
+  it("clamps exactly the bounded outcome values and undefines everything else", () => {
+    expect(projectCommandInvocationLookupOutcome("success")).toBe("success");
+    expect(projectCommandInvocationLookupOutcome("not-found")).toBe("not-found");
+    expect(projectCommandInvocationLookupOutcome("unauthorized-flow")).toBe("unauthorized-flow");
+    expect(projectCommandInvocationLookupOutcome("corrupt")).toBe("corrupt");
+    expect(projectCommandInvocationLookupOutcome(undefined)).toBeUndefined();
+    expect(projectCommandInvocationLookupOutcome("")).toBeUndefined();
+    expect(projectCommandInvocationLookupOutcome("missing")).toBeUndefined();
+    expect(projectCommandInvocationLookupOutcome("Success")).toBeUndefined();
+    expect(projectCommandInvocationLookupOutcome("unauthorized_flow")).toBeUndefined();
+    expect(projectCommandInvocationLookupOutcome("success;drop table")).toBeUndefined();
+    expect(projectCommandInvocationLookupOutcome("found")).toBeUndefined();
+  });
+
+  it("persists only clamped lookup outcomes and omits unknown values", () => {
+    const success = buildProjectCommandInvocationRecord(
+      input({ lookup: { attempted: true, success: true, outcome: "success" } }),
+    );
+    const unauthorized = buildProjectCommandInvocationRecord(
+      input({
+        lookup: {
+          attempted: true,
+          success: false,
+          failure: "not-found",
+          outcome: "unauthorized-flow",
+        },
+      }),
+    );
+    const unknown = buildProjectCommandInvocationRecord(
+      input({
+        lookup: {
+          attempted: true,
+          success: false,
+          failure: "not-found",
+          outcome: "found",
+        },
+      }),
+    );
+
+    expect(success.lookup).toEqual({ attempted: true, success: true, outcome: "success" });
+    expect(unauthorized.lookup).toEqual({
+      attempted: true,
+      success: false,
+      failure: "not-found",
+      outcome: "unauthorized-flow",
+    });
+    expect(unknown.lookup).toEqual({ attempted: true, success: false, failure: "not-found" });
   });
 });

@@ -31,6 +31,14 @@ function trimEvidenceRecords(records: Map<string, ProjectCommandEvidenceRecord>)
   }
 }
 
+function classifyEvidenceRecord(
+  value: ProjectCommandEvidenceRecord | undefined,
+  isEvidenceRecord: EvidenceRecordValidator,
+): "found" | "missing" | "corrupt" {
+  if (value === undefined) return "missing";
+  return isEvidenceRecord(value) ? "found" : "corrupt";
+}
+
 function hasValidPublicationScope(
   publication: ProjectCommandEvidencePublication | undefined,
   flowId: string,
@@ -144,6 +152,15 @@ export function createProjectCommandEvidenceStoreInternal(
             return isEvidenceRecord(value, flowId) ? value : undefined;
           })()
         : undefined;
+    },
+    lookupOutcome(ref, flowId) {
+      if (!PROJECT_COMMAND_EVIDENCE_REF_PATTERN.test(ref)) return "missing";
+      if (flowId === undefined) {
+        return classifyEvidenceRecord(root.get(ref), isEvidenceRecord);
+      }
+      const inMemory = flows.get(flowId)?.get(ref);
+      if (inMemory !== undefined) return isEvidenceRecord(inMemory, flowId) ? "found" : "corrupt";
+      return "missing";
     },
     set(record, flowId) {
       if (!isEvidenceRecord(record, flowId)) return false;

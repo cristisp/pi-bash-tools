@@ -1,5 +1,10 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+import type { AuthorizationOutcomeObserver } from "../../observability/authorization-outcome.ts";
+import {
+  authorizationRequestFingerprint,
+  type AuthorizationRetryTracker,
+} from "../authorization-retry.ts";
 import { authorizeOrPrompt, type AuthorizationErrorKind } from "../authorization.ts";
 import { displayPath } from "../path-display.ts";
 import { findFilesystemPolicyDecision } from "../policy/decisions.ts";
@@ -21,6 +26,7 @@ export type FilesystemAuthorizationContext = Omit<
   "ui"
 > & {
   readonly ui: Pick<ExtensionContext["ui"], "select">;
+  readonly sessionManager?: Pick<ExtensionContext["sessionManager"], "getSessionId">;
 };
 
 export interface FilesystemAuthorizationRequest {
@@ -40,6 +46,8 @@ export interface FilesystemAuthorizationOptions {
   readonly allowGlobal?: boolean;
   readonly defaultAllow?: (request: FilesystemAuthorizationRequest) => Promise<boolean>;
   readonly promptText?: (request: FilesystemAuthorizationRequest) => string;
+  readonly observe?: AuthorizationOutcomeObserver;
+  readonly retryTracker?: AuthorizationRetryTracker;
   readonly error: FilesystemAuthorizationError;
 }
 
@@ -88,6 +96,21 @@ async function authorizeFilesystemAccess(
   const policyPath = request.policyPath ?? request.path;
   const defaultAllowed = (await options.defaultAllow?.(request)) ?? false;
   let matchedDecision: PolicyAuthorization = "unknown";
+  const sessionIdValue = ctx.sessionManager?.getSessionId();
+  const sessionId =
+    typeof sessionIdValue === "string" && sessionIdValue.length > 0 ? sessionIdValue : undefined;
+  const retry =
+    options.retryTracker === undefined || sessionId === undefined
+      ? undefined
+      : {
+          tracker: options.retryTracker,
+          surface: "filesystem" as const,
+          sessionId,
+          fingerprint: authorizationRequestFingerprint({
+            access: request.access,
+            path: policyPath,
+          }),
+        };
   return authorizeOrPrompt<string, FilesystemDecisionRequest>({
     identity: policyPath,
     loaded,
@@ -96,6 +119,7 @@ async function authorizeFilesystemAccess(
     globalSafe: true,
     allowGlobal: options.allowGlobal,
     deferAllowPersistence: true,
+    retry,
     findDecision: (current, identity) => {
       matchedDecision = findFilesystemPolicyDecision(current, request.path, request.access);
       if (matchedDecision === "unknown" && identity !== request.path) {
@@ -115,6 +139,7 @@ async function authorizeFilesystemAccess(
       options.promptText?.(request) ??
       `Authorize ${request.access} access to ${displayPath(identity)}?`,
     error: (kind) => options.error(kind, request, matchedDecision, loaded),
+    observe: options.observe,
   });
 }
 
@@ -172,11 +197,23 @@ export async function authorizeAndPersistFilesystemAccesses(
   try {
     await policy.recordDecisions(loaded.projectPath, deferred, signal);
   } catch {
+    options.observe?.({
+      outcome: signal?.aborted ? "cancelled" : "policy-save-failure",
+      decisionPersisted: false,
+      promptEmitted: false,
+      promptWaitMs: 0,
+    });
     const request = requests[0];
     if (request === undefined) {
       throw options.error("save", { access: "write", path: loaded.projectPath }, "unknown");
     }
     throw options.error(signal?.aborted ? "cancelled" : "save", request, "unknown");
   }
+  options.observe?.({
+    outcome: "deferred-decision-persisted",
+    decisionPersisted: true,
+    promptEmitted: false,
+    promptWaitMs: 0,
+  });
   throwIfRequestAborted(signal);
 }

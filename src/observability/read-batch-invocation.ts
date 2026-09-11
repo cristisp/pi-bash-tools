@@ -6,7 +6,7 @@ import {
 } from "../evidence/envelope.ts";
 import { appendInvocationStreamRecord } from "./invocation-stream.ts";
 
-export const READ_BATCH_INVOCATION_FORMAT_VERSION = 1 as const;
+const READ_BATCH_INVOCATION_FORMAT_VERSION = 1 as const;
 export const READ_BATCH_INVOCATION_ENTRY_TYPE = "bash-tools.read-batch-invocation" as const;
 export const READ_BATCH_INVOCATION_MAX_BYTES = 8 * 1024;
 export const READ_BATCH_INVOCATION_MAX_ITEMS = 32;

@@ -86,10 +86,39 @@ export interface ProjectCommandInvocationPublicationMetadata {
   readonly error?: string;
 }
 
+export type ProjectCommandInvocationLookupOutcome =
+  | "success"
+  | "not-found"
+  | "unauthorized-flow"
+  | "corrupt";
+
 export interface ProjectCommandInvocationLookupMetadata {
   readonly attempted: boolean;
   readonly success: boolean;
   readonly failure?: string;
+  readonly outcome?: string;
+}
+
+function isProjectCommandInvocationLookupOutcome(
+  value: string,
+): value is ProjectCommandInvocationLookupOutcome {
+  switch (value) {
+    case "success":
+    case "not-found":
+    case "unauthorized-flow":
+    case "corrupt":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Clamp an untrusted lookup outcome string to the bounded persisted enum. */
+export function projectCommandInvocationLookupOutcome(
+  value: string | undefined,
+): ProjectCommandInvocationLookupOutcome | undefined {
+  if (value === undefined || !isProjectCommandInvocationLookupOutcome(value)) return undefined;
+  return value;
 }
 
 /** Values in this map are either bounded non-sensitive values or redaction metadata. */
@@ -341,10 +370,12 @@ function boundedLookup(
   value: ProjectCommandInvocationLookupMetadata | undefined,
 ): ProjectCommandInvocationLookupMetadata | undefined {
   if (value === undefined || !value.attempted) return undefined;
+  const outcome = projectCommandInvocationLookupOutcome(value.outcome);
   return {
     attempted: true,
     success: value.success,
     ...(value.failure === undefined ? {} : { failure: boundedIdentifier(value.failure) }),
+    ...(outcome === undefined ? {} : { outcome }),
   };
 }
 

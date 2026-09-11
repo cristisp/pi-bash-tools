@@ -1,5 +1,8 @@
+/* oxlint-disable typescript/no-unsafe-type-assertion, eslint/no-await-in-loop */
+
 import { expect, it, vi } from "vitest";
 
+import type { AuthorizationOutcomeCore } from "../src/observability/authorization-outcome.ts";
 import { authorizeOrPrompt, type AuthorizeOrPromptOptions } from "../src/tools/authorization.ts";
 import { findEnvironmentPolicyDecision } from "../src/tools/policy/decisions.ts";
 import { parsePolicyDocument } from "../src/tools/policy/document.ts";
@@ -380,4 +383,274 @@ it("persists each project denial and returns each deferred approval as its decis
       }
     }),
   );
+});
+
+it("records an authorized outcome without a prompt when policy already allows", async () => {
+  const current = loaded();
+  const policy = {
+    ...current.document,
+    environment: {
+      ...current.document.environment,
+      global: { allow: ["TOKEN"], deny: [] },
+    },
+  };
+  const outcomes: AuthorizationOutcomeCore[] = [];
+  await authorizeOrPrompt(
+    options({
+      loaded: { ...current, document: policy },
+      observe: (core) => outcomes.push(core),
+    }),
+  );
+  expect(outcomes).toEqual([
+    {
+      outcome: "authorized",
+      decisionPersisted: false,
+      executionAttempted: undefined,
+      promptEmitted: false,
+      promptWaitMs: 0,
+    },
+  ]);
+});
+
+it("records a denied outcome without prompting when policy denies", async () => {
+  const current = loaded();
+  const policy = {
+    ...current.document,
+    environment: {
+      ...current.document.environment,
+      global: { allow: [], deny: ["TOKEN"] },
+    },
+  };
+  const outcomes: AuthorizationOutcomeCore[] = [];
+  await expect(
+    authorizeOrPrompt(
+      options({
+        loaded: { ...current, document: policy },
+        observe: (core) => outcomes.push(core),
+      }),
+    ),
+  ).rejects.toThrow("denied");
+  expect(outcomes).toEqual([
+    {
+      outcome: "denied",
+      decisionPersisted: false,
+      executionAttempted: undefined,
+      promptEmitted: false,
+      promptWaitMs: 0,
+    },
+  ]);
+});
+
+it("records a not-authorized outcome in non-interactive modes", async () => {
+  const outcomes: AuthorizationOutcomeCore[] = [];
+  await expect(
+    authorizeOrPrompt(
+      options({
+        context: { hasUI: false, mode: "print", ui: { select: async () => undefined } },
+        observe: (core) => outcomes.push(core),
+      }),
+    ),
+  ).rejects.toThrow("not-authorized");
+  expect(outcomes.map((outcome) => outcome.outcome)).toEqual(["not-authorized"]);
+});
+
+it("records prompt-based outcomes for allow-once, deferred, persisted, and denials", async () => {
+  const cases = [
+    { choice: "Allow once", outcome: "allowed-once", persisted: false, rejects: false },
+    { choice: "Deny once", outcome: "denied-once", persisted: false, rejects: true },
+    {
+      choice: "Allow for this project",
+      outcome: "deferred-persistence",
+      persisted: false,
+      rejects: false,
+    },
+    { choice: "Deny for this project", outcome: "denied", persisted: true, rejects: true },
+  ] as const;
+  for (const testCase of cases) {
+    const outcomes: AuthorizationOutcomeCore[] = [];
+    const execution = authorizeOrPrompt(
+      options({
+        context: { hasUI: true, mode: "tui", ui: { select: async () => testCase.choice } },
+        deferAllowPersistence: testCase.choice === "Allow for this project",
+        observe: (core) => outcomes.push(core),
+      }),
+    );
+    if (testCase.rejects) {
+      await expect(execution).rejects.toThrow();
+    } else if (testCase.outcome === "deferred-persistence") {
+      await expect(execution).resolves.toBeDefined();
+    } else {
+      await expect(execution).resolves.toBeUndefined();
+    }
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({
+      outcome: testCase.outcome,
+      decisionPersisted: testCase.persisted,
+      promptEmitted: true,
+    });
+    expect(outcomes[0]?.promptWaitMs).toBeGreaterThanOrEqual(0);
+  }
+});
+
+it("records an allowed-and-persisted outcome when deferral is off", async () => {
+  const outcomes: AuthorizationOutcomeCore[] = [];
+  const recordDecisions = vi.fn(async () => undefined);
+  await authorizeOrPrompt(
+    options({
+      recordDecisions,
+      observe: (core) => outcomes.push(core),
+    }),
+  );
+  expect(outcomes).toEqual([
+    {
+      outcome: "allowed-and-persisted",
+      decisionPersisted: true,
+      executionAttempted: undefined,
+      promptEmitted: true,
+      promptWaitMs: expect.any(Number),
+    },
+  ]);
+});
+
+it("records a save failure when persisting a denial fails", async () => {
+  const outcomes: AuthorizationOutcomeCore[] = [];
+  await expect(
+    authorizeOrPrompt(
+      options({
+        context: {
+          hasUI: true,
+          mode: "tui",
+          ui: { select: async () => "Deny for this project" },
+        },
+        recordDecisions: async () => {
+          throw new Error("disk full");
+        },
+        observe: (core) => outcomes.push(core),
+      }),
+    ),
+  ).rejects.toThrow("save");
+  expect(outcomes).toEqual([
+    {
+      outcome: "denied",
+      decisionPersisted: false,
+      executionAttempted: undefined,
+      promptEmitted: true,
+      promptWaitMs: expect.any(Number),
+    },
+  ]);
+});
+
+it("records a confirmation timeout outcome with the persisted deny", async () => {
+  const outcomes: AuthorizationOutcomeCore[] = [];
+  await expect(
+    authorizeOrPrompt(
+      options({
+        loaded: loaded(1),
+        context: {
+          hasUI: true,
+          mode: "rpc",
+          ui: { select: () => new Promise<string | undefined>(() => undefined) },
+        },
+        observe: (core) => outcomes.push(core),
+      }),
+    ),
+  ).rejects.toThrow("timeout");
+  expect(outcomes).toEqual([
+    {
+      outcome: "confirmation-timeout",
+      decisionPersisted: true,
+      executionAttempted: undefined,
+      promptEmitted: true,
+      promptWaitMs: expect.any(Number),
+    },
+  ]);
+});
+
+it("records a timeout outcome without persistence when the deny write fails", async () => {
+  const outcomes: AuthorizationOutcomeCore[] = [];
+  await expect(
+    authorizeOrPrompt(
+      options({
+        loaded: loaded(1),
+        context: {
+          hasUI: true,
+          mode: "rpc",
+          ui: { select: () => new Promise<string | undefined>(() => undefined) },
+        },
+        recordDecisions: async () => {
+          throw new Error("disk full");
+        },
+        observe: (core) => outcomes.push(core),
+      }),
+    ),
+  ).rejects.toThrow("save");
+  expect(outcomes.map((outcome) => outcome.outcome)).toEqual(["confirmation-timeout"]);
+  expect(outcomes[0]).toMatchObject({ decisionPersisted: false, promptEmitted: true });
+});
+
+it("records cancelled, dismissed, invalid-choice, unsafe-global, and lookup failures", async () => {
+  const controller = new AbortController();
+  const cancelled: AuthorizationOutcomeCore[] = [];
+  const execution = authorizeOrPrompt(
+    options({
+      signal: controller.signal,
+      context: {
+        hasUI: true,
+        mode: "rpc",
+        ui: { select: () => new Promise<string | undefined>(() => undefined) },
+      },
+      observe: (core) => cancelled.push(core),
+    }),
+  );
+  controller.abort();
+  await expect(execution).rejects.toThrow("cancelled");
+  expect(cancelled.map((outcome) => outcome.outcome)).toEqual(["cancelled"]);
+
+  const dismissed: AuthorizationOutcomeCore[] = [];
+  await expect(
+    authorizeOrPrompt(
+      options({
+        context: { hasUI: true, mode: "tui", ui: { select: async () => undefined } },
+        observe: (core) => dismissed.push(core),
+      }),
+    ),
+  ).rejects.toThrow("dismissed");
+  expect(dismissed.map((outcome) => outcome.outcome)).toEqual(["dismissed"]);
+
+  const invalid: AuthorizationOutcomeCore[] = [];
+  await expect(
+    authorizeOrPrompt(
+      options({
+        context: { hasUI: true, mode: "tui", ui: { select: async () => "Nonsense" } },
+        observe: (core) => invalid.push(core),
+      }),
+    ),
+  ).rejects.toThrow("invalid-choice");
+  expect(invalid.map((outcome) => outcome.outcome)).toEqual(["invalid-choice"]);
+
+  const unsafe: AuthorizationOutcomeCore[] = [];
+  await expect(
+    authorizeOrPrompt(
+      options({
+        globalSafe: false,
+        context: { hasUI: true, mode: "tui", ui: { select: async () => "Allow globally" } },
+        observe: (core) => unsafe.push(core),
+      }),
+    ),
+  ).rejects.toThrow("unsafe-global");
+  expect(unsafe.map((outcome) => outcome.outcome)).toEqual(["unsafe-global"]);
+
+  const lookupFailure: AuthorizationOutcomeCore[] = [];
+  await expect(
+    authorizeOrPrompt(
+      options({
+        findDecision: () => {
+          throw new Error("lookup failed");
+        },
+        observe: (core) => lookupFailure.push(core),
+      }),
+    ),
+  ).rejects.toThrow("load");
+  expect(lookupFailure.map((outcome) => outcome.outcome)).toEqual(["decision-lookup-failure"]);
+  expect(lookupFailure[0]).toMatchObject({ promptEmitted: false, decisionPersisted: false });
 });

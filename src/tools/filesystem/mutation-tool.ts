@@ -7,6 +7,12 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 
+import type {
+  AuthorizationOutcomeObserver,
+  AuthorizationOutcomeRecorder,
+} from "../../observability/authorization-outcome.ts";
+import { createAuthorizationOutcomeObserver } from "../../observability/authorization-outcome.ts";
+import type { AuthorizationRetryTracker } from "../authorization-retry.ts";
 import { type AuthorizationErrorKind } from "../authorization.ts";
 import { renderCallLine, renderStringArgument } from "../call-render.ts";
 import type { GitExec } from "../git/execution.ts";
@@ -81,6 +87,8 @@ export interface FilesystemMutationToolTestOptions {
   readonly fs?: Partial<PolicyFileSystem>;
   readonly gitExec?: GitExec;
   readonly policy?: PolicyStore;
+  readonly authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder;
+  readonly authorizationRetryTracker?: AuthorizationRetryTracker;
 }
 
 type FilesystemMoveExecute = (
@@ -171,6 +179,7 @@ function authorizationError(
     load: "; the access policy could not be loaded.",
     "invalid-choice": "; the access policy returned an invalid approval.",
     "unsafe-global": "; the access policy returned an invalid approval.",
+    "unchanged-retry": " was already denied for this identical request.",
     cancelled: " confirmation was cancelled.",
     dismissed: " confirmation was dismissed.",
   };
@@ -251,6 +260,26 @@ async function canonicalMoveDestination(
   }
 }
 
+function sessionId(ctx: FilesystemMutationToolContext): string | undefined {
+  const value = ctx.sessionManager?.getSessionId();
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function mutationObserver(
+  operation: string,
+  ctx: FilesystemMutationToolContext,
+  toolCallId: string,
+  recorder: AuthorizationOutcomeRecorder | undefined,
+): AuthorizationOutcomeObserver | undefined {
+  return createAuthorizationOutcomeObserver({
+    surface: "filesystem",
+    commandId: operation,
+    recorder,
+    sessionId: sessionId(ctx),
+    toolCallId,
+  });
+}
+
 async function authorizeMutation(
   operation: string,
   requests: readonly FilesystemAuthorizationRequest[],
@@ -258,6 +287,8 @@ async function authorizeMutation(
   policy: PolicyStore,
   signal: AbortSignal | undefined,
   gitExec: GitExec | undefined,
+  observe: AuthorizationOutcomeObserver | undefined,
+  retryTracker: AuthorizationRetryTracker | undefined,
 ): Promise<void> {
   let loadedPolicy;
   try {
@@ -265,6 +296,15 @@ async function authorizeMutation(
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw cancellationError();
+    }
+    const cancelled = error instanceof FilesystemToolError && error.contract.code === "cancelled";
+    if (!cancelled) {
+      observe?.({
+        outcome: "policy-load-failure",
+        decisionPersisted: false,
+        promptEmitted: false,
+        promptWaitMs: 0,
+      });
     }
     if (error instanceof FilesystemToolError) {
       throw error;
@@ -298,6 +338,8 @@ async function authorizeMutation(
         : `Authorize deletion of files in ${displayPath(policyPath)} and its subfolders for this project only? Requested file: ${displayPath(path)}`,
     error: (kind, request, decision, currentLoaded) =>
       authorizationError(operation, kind, request, decision, currentLoaded),
+    observe,
+    retryTracker,
   });
 }
 
@@ -329,6 +371,8 @@ function createMoveToolWithDependencies(
   policy: PolicyStore,
   fileSystem: FilesystemMutationFileSystem,
   gitExec: GitExec | undefined,
+  authorizationOutcomeRecorder: AuthorizationOutcomeRecorder | undefined,
+  authorizationRetryTracker: AuthorizationRetryTracker | undefined,
 ): FilesystemMoveToolDefinition {
   return {
     name: "move",
@@ -345,7 +389,7 @@ function createMoveToolWithDependencies(
         renderStringArgument(args?.destination, theme),
       ]);
     },
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+    async execute(toolCallId, params, signal, _onUpdate, ctx) {
       const sourceInput = inputPath(params?.source, "source");
       const destinationInput = inputPath(params?.destination, "destination");
       const requestSignal = signal ?? ctx.signal;
@@ -367,6 +411,8 @@ function createMoveToolWithDependencies(
         policy,
         requestSignal,
         gitExec,
+        mutationObserver("move", ctx, toolCallId, authorizationOutcomeRecorder),
+        authorizationRetryTracker,
       );
       throwIfAborted(requestSignal);
       await requireRegularFile(fileSystem, source, "Move source");
@@ -402,6 +448,8 @@ function createDeleteToolWithDependencies(
   policy: PolicyStore,
   fileSystem: FilesystemMutationFileSystem,
   gitExec: GitExec | undefined,
+  authorizationOutcomeRecorder: AuthorizationOutcomeRecorder | undefined,
+  authorizationRetryTracker: AuthorizationRetryTracker | undefined,
 ): FilesystemDeleteToolDefinition {
   return {
     name: "delete",
@@ -413,7 +461,7 @@ function createDeleteToolWithDependencies(
     renderCall(args, theme) {
       return renderCallLine(theme, "delete", [renderStringArgument(args?.path, theme)]);
     },
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+    async execute(toolCallId, params, signal, _onUpdate, ctx) {
       const pathInput = inputPath(params?.path, "path");
       const requestSignal = signal ?? ctx.signal;
       throwIfAborted(requestSignal);
@@ -426,6 +474,8 @@ function createDeleteToolWithDependencies(
         policy,
         requestSignal,
         gitExec,
+        mutationObserver("delete", ctx, toolCallId, authorizationOutcomeRecorder),
+        authorizationRetryTracker,
       );
       throwIfAborted(requestSignal);
       await requireRegularFile(fileSystem, path, "Delete target");
@@ -446,14 +496,34 @@ function createDeleteToolWithDependencies(
   };
 }
 
-export function createMoveTool(gitExec?: GitExec): FilesystemMoveToolDefinition {
+export function createMoveTool(
+  gitExec?: GitExec,
+  authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder,
+  authorizationRetryTracker?: AuthorizationRetryTracker,
+): FilesystemMoveToolDefinition {
   const fileSystem = createNodePolicyFileSystem();
-  return createMoveToolWithDependencies(createPolicyStore(), fileSystem, gitExec);
+  return createMoveToolWithDependencies(
+    createPolicyStore(),
+    fileSystem,
+    gitExec,
+    authorizationOutcomeRecorder,
+    authorizationRetryTracker,
+  );
 }
 
-export function createDeleteTool(gitExec?: GitExec): FilesystemDeleteToolDefinition {
+export function createDeleteTool(
+  gitExec?: GitExec,
+  authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder,
+  authorizationRetryTracker?: AuthorizationRetryTracker,
+): FilesystemDeleteToolDefinition {
   const fileSystem = createNodePolicyFileSystem();
-  return createDeleteToolWithDependencies(createPolicyStore(), fileSystem, gitExec);
+  return createDeleteToolWithDependencies(
+    createPolicyStore(),
+    fileSystem,
+    gitExec,
+    authorizationOutcomeRecorder,
+    authorizationRetryTracker,
+  );
 }
 
 export function createMoveToolForTesting(
@@ -464,6 +534,8 @@ export function createMoveToolForTesting(
     requirePolicy(options, fileSystem),
     fileSystem,
     options.gitExec,
+    options.authorizationOutcomeRecorder,
+    options.authorizationRetryTracker,
   );
 }
 
@@ -475,5 +547,7 @@ export function createDeleteToolForTesting(
     requirePolicy(options, fileSystem),
     fileSystem,
     options.gitExec,
+    options.authorizationOutcomeRecorder,
+    options.authorizationRetryTracker,
   );
 }

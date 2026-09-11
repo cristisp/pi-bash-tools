@@ -1,0 +1,194 @@
+/* oxlint-disable typescript/no-unsafe-type-assertion */
+
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import {
+  buildAuthorizationOutcomeRecord,
+  createAuthorizationOutcomeObserver,
+  createAuthorizationOutcomeRecorder,
+  AUTHORIZATION_OUTCOME_ENTRY_TYPE,
+  recordAuthorizationOutcome,
+  type AuthorizationOutcomeCore,
+  type AuthorizationOutcomeRecordInput,
+} from "../../src/observability/authorization-outcome.ts";
+import { BASH_TOOLS_INVOCATIONS_PATH } from "../../src/observability/invocation-stream.ts";
+
+function input(
+  overrides: Partial<AuthorizationOutcomeRecordInput> = {},
+): AuthorizationOutcomeRecordInput {
+  return {
+    surface: "verify",
+    commandId: "verify",
+    sessionId: "session-1",
+    toolCallId: "call-1",
+    outcome: "authorized",
+    decisionPersisted: false,
+    promptEmitted: false,
+    promptWaitMs: 0,
+    executionAttempted: false,
+    ...overrides,
+  };
+}
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+});
+
+describe("authorization outcome records", () => {
+  it("records surface identity and outcome classification without policy contents", () => {
+    const record = buildAuthorizationOutcomeRecord(
+      input({
+        outcome: "confirmation-timeout",
+        decisionPersisted: true,
+        promptEmitted: true,
+        promptWaitMs: 512.6,
+      }),
+    );
+
+    expect(record).toEqual({
+      authorizationFormatVersion: 1,
+      surface: "verify",
+      commandId: "verify",
+      sessionId: "session-1",
+      toolCallId: "call-1",
+      outcome: "confirmation-timeout",
+      decisionPersisted: true,
+      promptEmitted: true,
+      promptWaitMs: 512,
+      executionAttempted: false,
+    });
+  });
+
+  it("drops empty command identifiers and clamps invalid values", () => {
+    const record = buildAuthorizationOutcomeRecord(
+      input({
+        commandId: "",
+        surface: "unexpected" as never,
+        outcome: "unexpected" as never,
+        promptWaitMs: Number.NaN,
+        sessionId: "s".repeat(400),
+      }),
+    );
+
+    expect("commandId" in record).toBe(false);
+    expect(record.surface).toBe("environment");
+    expect(record.outcome).toBe("confirmation-failure");
+    expect(record.promptWaitMs).toBe(0);
+    expect(record.sessionId.length).toBeLessThanOrEqual(256);
+  });
+
+  it("marks execution attempted when the caller reports it", () => {
+    const record = buildAuthorizationOutcomeRecord(input({ executionAttempted: true }));
+
+    expect(record.executionAttempted).toBe(true);
+  });
+
+  it("keeps records bounded well under the persistence cap", () => {
+    const record = buildAuthorizationOutcomeRecord(
+      input({
+        commandId: "c".repeat(600),
+        toolCallId: "t".repeat(600),
+        outcome: "denied",
+      }),
+    );
+    const serialized = JSON.stringify(record);
+
+    expect(serialized.length).toBeLessThan(8 * 1024);
+    expect(record.commandId?.length).toBeLessThanOrEqual(256);
+    expect(record.toolCallId.length).toBeLessThanOrEqual(256);
+  });
+
+  it("swallows failures from an injected recorder", () => {
+    const recorder = vi.fn(() => {
+      throw new Error("recorder unavailable");
+    });
+
+    expect(() => recordAuthorizationOutcome(recorder, input())).not.toThrow();
+    expect(recorder).toHaveBeenCalledOnce();
+    expect(() => recordAuthorizationOutcome(undefined, input())).not.toThrow();
+  });
+});
+
+describe("authorization outcome observer", () => {
+  it("returns undefined without a recorder or session identity", () => {
+    expect(
+      createAuthorizationOutcomeObserver({
+        surface: "verify",
+        recorder: undefined,
+        sessionId: "s",
+        toolCallId: "c",
+      }),
+    ).toBeUndefined();
+    expect(
+      createAuthorizationOutcomeObserver({
+        surface: "verify",
+        recorder: vi.fn(),
+        sessionId: undefined,
+        toolCallId: "c",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("emits a full record with surface identity for each observed outcome", () => {
+    const recorder = vi.fn();
+    const observe = createAuthorizationOutcomeObserver({
+      surface: "project-command",
+      commandId: "node_lint",
+      recorder,
+      sessionId: "session-1",
+      toolCallId: "call-1",
+    });
+
+    const core: AuthorizationOutcomeCore = {
+      outcome: "denied",
+      decisionPersisted: true,
+      promptEmitted: true,
+      promptWaitMs: 42,
+      executionAttempted: false,
+    };
+    observe?.(core);
+
+    expect(recorder).toHaveBeenCalledWith(
+      buildAuthorizationOutcomeRecord({
+        surface: "project-command",
+        commandId: "node_lint",
+        sessionId: "session-1",
+        toolCallId: "call-1",
+        ...core,
+      }),
+    );
+  });
+});
+
+describe("authorization outcome recorder", () => {
+  it("appends custom entries and JSONL stream records", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bash-tools-auth-"));
+    const streamPath = join(directory, "nested", "invocations.jsonl");
+    const appendEntry = vi.fn();
+    const recorder = createAuthorizationOutcomeRecorder(
+      { appendEntry },
+      { [BASH_TOOLS_INVOCATIONS_PATH]: streamPath },
+    );
+    const record = buildAuthorizationOutcomeRecord(input());
+
+    recorder(record);
+
+    expect(appendEntry).toHaveBeenCalledWith(AUTHORIZATION_OUTCOME_ENTRY_TYPE, record);
+    const stream = await readFile(streamPath, "utf8");
+    expect(stream.trimEnd()).toBe(JSON.stringify(record));
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  it("ignores unset stream configuration", () => {
+    const appendEntry = vi.fn();
+    const recorder = createAuthorizationOutcomeRecorder({ appendEntry }, {});
+
+    recorder(buildAuthorizationOutcomeRecord(input()));
+
+    expect(appendEntry).toHaveBeenCalledOnce();
+  });
+});

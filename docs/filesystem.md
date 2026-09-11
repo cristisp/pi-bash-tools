@@ -41,6 +41,7 @@ Each `path` is a non-empty repository-relative path of at most 4,096 characters.
       "path": "src/index.ts",
       "range": { "offset": 1, "limit": 200 },
       "ref": "rr_example",
+      "contentHash": "sha256 hex digest of the file bytes",
       "content": "bounded file text",
       "output": {
         "truncated": false,
@@ -55,13 +56,23 @@ Each `path` is a non-empty repository-relative path of at most 4,096 characters.
         "message": "..."
       }
     }
-  ]
+  ],
+  "continuation": {
+    "nextIndex": 4,
+    "totalPaths": 6
+  }
 }
 ```
 
 Each result has either bounded content metadata, `unchanged: true` with the prior `rr_` reference, or a bounded per-path error.
 
+Successful results expose `contentHash`, the lowercase SHA-256 digest of the full file bytes (also present on `unchanged` results), plus size and line metadata in `output.totalBytes` and `output.totalLines`.
+
 Each file result is capped at 64 KiB of returned text and 8 MiB of inspected regular-file size.
+
+The aggregate returned content across all successful results in one request is capped at 256 KiB (4× the per-file cap). Once the cap is reached, the first affected path and every later path return a bounded `aggregate-limit` error (`category: "INVALID_REQUEST"`, `retryable: false`, `executed: false`) in the original request order without being authorized or read. When that happens, `results.continuation` reports `nextIndex` (the index of the first skipped path in the original request) and `totalPaths` so the caller can re-issue the remaining paths in a follow-up request. Re-issued paths count against a fresh aggregate budget.
+
+The same path string may not appear twice with overlapping ranges (including identical ranges and a full read combined with any range) in one request; such requests are rejected up front with an `invalid-request` error. Disjoint ranges of one path are allowed. Overlap detection compares raw path strings, so distinct spellings that canonicalize to the same file are not detected; the per-file and aggregate caps still bound the returned content in that case.
 
 The repeated-read cache is process-local, scoped by effective flow, and capped at 512 entries.
 
@@ -121,7 +132,9 @@ The operation uses the separate `delete` capability.
 
 `edit` requests both `read` and `write` access.
 
-An edit preflight reads at most 256 KiB and diagnoses empty `oldText`, no match, ambiguous matches, and overlapping edits before the native edit is allowed to run.
+An edit preflight reads at most 256 KiB and diagnoses empty `oldText`, no-op replacements, no match, stale context, ambiguous matches, and overlapping edits before the native edit is allowed to run.
+
+Diagnostics include the nearest candidate line numbers, a `fileFingerprint` (sha256 of the preflight-read content), and bounded repair context (`contentLength`, `lineCount`) without file content. A `read_batch` full-file read records the observed content hash (hash-only, bounded, best-effort): when a later edit no longer matches content that changed since that observation, the failure is classified as `edit-stale-context`; without observed evidence it stays `edit-no-match`. Repeating an identical edit after any preflight failure is rejected once per session with `edit-unchanged-retry` until the edit is rebased on a fresh reread. The extension never retries or rebases a mutation automatically.
 
 The interceptor reports blocked calls as `Tool call blocked by access policy` with the tool, access type, path, and reason.
 

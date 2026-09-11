@@ -1,9 +1,12 @@
+/* oxlint-disable typescript/no-unsafe-type-assertion */
+
 import { mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { afterEach, expect, it, vi } from "vitest";
 
+import type { AuthorizationOutcomeRecord } from "../../src/observability/authorization-outcome.ts";
 import type { PolicyDecisionRequest, PolicyStore } from "../../src/tools/policy/types.ts";
 import { createProjectCommandExecutor } from "../../src/tools/project-command/execution.ts";
 import type { ProjectCommandExecutionOutcome } from "../../src/tools/project-command/execution.ts";
@@ -218,6 +221,54 @@ it("runs fixed phases in order, exposes omissions, and reuses unchanged evidence
     code: "not-found",
     message: expect.stringContaining("process-local root-session cache"),
   });
+});
+
+it("omits authorization-outcome records when session identity is unavailable", async () => {
+  const cwd = await projectFixture();
+  const deps = dependencies();
+  const records: AuthorizationOutcomeRecord[] = [];
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver: deps.resolver,
+    executor: deps.executor,
+    repositoryStateReader: deps.repositoryStateReader,
+    authorizationOutcomeRecorder: (record) => {
+      records.push(record);
+    },
+  });
+
+  const observed = await tool.execute(
+    "verify-observability-1",
+    { omit: ["typecheck"] as const },
+    undefined,
+    undefined,
+    {
+      ...context(cwd),
+      sessionManager: { getSessionId: () => "verify-observability-session" },
+    },
+  );
+  expect(observed.details.status).toBe("completed");
+  expect(records.map((record) => record.sessionId)).toEqual(["verify-observability-session"]);
+
+  const withoutSession = createVerifyToolForTesting({
+    policy: policy(),
+    resolver: deps.resolver,
+    executor: deps.executor,
+    repositoryStateReader: deps.repositoryStateReader,
+    authorizationOutcomeRecorder: (record) => {
+      records.push(record);
+    },
+  });
+  const unobserved = await withoutSession.execute(
+    "verify-observability-2",
+    { omit: ["typecheck"] as const },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  expect(unobserved.details.status).toBe("completed");
+  expect(records).toHaveLength(1);
+  expect(records[0]?.sessionId).toBe("verify-observability-session");
 });
 
 it("does not reuse evidence when repository state changes during authorization", async () => {
@@ -1383,6 +1434,95 @@ it("records one aggregate invocation for execution, reuse, and lookup", async ()
         record && typeof record === "object" && "aggregate" in record && record.aggregate === true,
     ),
   ).toBe(true);
+});
+
+it("emits distinct verify lookup telemetry outcomes without changing error wording", async () => {
+  const cwd = await projectFixture();
+  const deps = dependencies();
+  const records: unknown[] = [];
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver: deps.resolver,
+    executor: deps.executor,
+    repositoryStateReader: deps.repositoryStateReader,
+    invocationRecorder: (record) => records.push(record),
+  });
+  const first = await tool.execute(
+    "verify-outcome-1",
+    { omit: ["typecheck"] },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  await tool.execute(
+    "verify-outcome-lookup",
+    { ref: first.details.ref },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  const hitRecord = records.find(
+    (record) =>
+      record &&
+      typeof record === "object" &&
+      "toolCallId" in record &&
+      record.toolCallId === "verify-outcome-lookup",
+  ) as { lookup?: { attempted: boolean; success: boolean; outcome?: string } } | undefined;
+  expect(hitRecord?.lookup).toEqual({ attempted: true, success: true, outcome: "success" });
+
+  const missing = await tool
+    .execute("verify-outcome-miss", { ref: "vr_missing" }, undefined, undefined, context(cwd))
+    .catch((error: unknown) => error);
+  expect(missing).toMatchObject({ code: "not-found" });
+  expect(missing).toHaveProperty(
+    "message",
+    "validation ref not found in the process-local root-session cache. Root-session refs are process-scoped and are not durable across processes.",
+  );
+  const missRecord = records.find(
+    (record) =>
+      record &&
+      typeof record === "object" &&
+      "toolCallId" in record &&
+      record.toolCallId === "verify-outcome-miss",
+  ) as
+    | { lookup?: { attempted: boolean; success: boolean; failure?: string; outcome?: string } }
+    | undefined;
+  expect(missRecord?.lookup).toEqual({
+    attempted: true,
+    success: false,
+    failure: "not-found",
+    outcome: "not-found",
+  });
+
+  const wrongFlow = await tool
+    .execute(
+      "verify-outcome-wrong-flow",
+      { ref: "vr_flowrefs", flowId: "flow-b" },
+      undefined,
+      undefined,
+      context(cwd),
+    )
+    .catch((error: unknown) => error);
+  expect(wrongFlow).toMatchObject({ code: "not-found" });
+  expect(wrongFlow).toHaveProperty(
+    "message",
+    "validation ref not found in the effective flow scope flow-b. A flow lookup requires the same effective flow scope; environment variables alone do not authorize a lookup.",
+  );
+  const wrongFlowRecord = records.find(
+    (record) =>
+      record &&
+      typeof record === "object" &&
+      "toolCallId" in record &&
+      record.toolCallId === "verify-outcome-wrong-flow",
+  ) as
+    | { lookup?: { attempted: boolean; success: boolean; failure?: string; outcome?: string } }
+    | undefined;
+  expect(wrongFlowRecord?.lookup).toEqual({
+    attempted: true,
+    success: false,
+    failure: "not-found",
+    outcome: "unauthorized-flow",
+  });
 });
 
 it("keeps the record failure pointer without duplicating complete step tails by ref", async () => {
