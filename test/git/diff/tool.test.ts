@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 
 import type { RenderTheme } from "../../../src/tools/call-render.ts";
+import { createGitDiffSummaryCache } from "../../../src/tools/git/diff/cache.ts";
 import type {
   GitDiffOutput,
   GitDiffPatchOutput,
@@ -33,7 +34,9 @@ function patchDetails(details: GitDiffOutput): GitDiffPatchOutput {
 }
 
 function summaryDetails(details: GitDiffOutput): GitDiffSummaryOutput {
-  if (details.mode !== "summary") throw new Error("expected a summary response");
+  if (details.mode !== "summary" || "unchanged" in details) {
+    throw new Error("expected a full summary response");
+  }
   return details;
 }
 
@@ -185,7 +188,7 @@ it("defaults to a bounded summary with status, stat, and hunk headers but no bod
   ]);
 });
 
-it("reuses an unchanged summary and misses after the working tree changes", async () => {
+it("returns a compact unchanged repeat and misses after the working tree changes", async () => {
   const statusOutput = " M README.md\0";
   let diffText = "diff --git a/README.md b/README.md\n@@ -1 +1 @@\n";
   let rawText = "raw-a";
@@ -206,15 +209,32 @@ it("reuses an unchanged summary and misses after the working tree changes", asyn
   };
   const tool = createGitDiffTool(exec);
 
-  const first = await tool.execute("first", {}, undefined, undefined, context);
-  const second = await tool.execute("second", {}, undefined, undefined, context);
-  expect(second.details).toEqual(first.details);
+  const first = summaryDetails(
+    (await tool.execute("first", {}, undefined, undefined, context)).details,
+  );
+  expect(first.head).toBe("head-a");
+  expect(first.dirtyFilesDigest).toMatch(/^[0-9a-f]{64}$/u);
+
+  const repeat = await tool.execute("second", {}, undefined, undefined, context);
+  expect(repeat.details).toMatchObject({ mode: "summary", unchanged: true });
   expect(statCalls).toBe(1);
   expect(hunkCalls).toBe(1);
 
   diffText = "diff --git a/README.md b/README.md\n@@ -2 +2 @@\n";
   rawText = "raw-b";
-  await tool.execute("changed", {}, undefined, undefined, context);
+  const changed = await tool.execute("changed", {}, undefined, undefined, context);
+  expect(changed.details).toMatchObject({ mode: "summary", head: "head-a" });
+  expect(statCalls).toBe(2);
+  expect(hunkCalls).toBe(2);
+
+  const repeatAfterChange = await tool.execute(
+    "repeat-after-change",
+    {},
+    undefined,
+    undefined,
+    context,
+  );
+  expect(repeatAfterChange.details).toMatchObject({ mode: "summary", unchanged: true });
   expect(statCalls).toBe(2);
   expect(hunkCalls).toBe(2);
 });
@@ -422,6 +442,172 @@ it("does not let an aborted summary waiter break the active single-flight owner"
 
   expect(hunkCalls).toBe(1);
   expect(statCalls).toBe(1);
+
+  const fourth = await tool.execute("single-flight-fourth", {}, undefined, undefined, context);
+  expect(fourth.details).toMatchObject({ mode: "summary", unchanged: true });
+  expect(hunkCalls).toBe(1);
+  expect(statCalls).toBe(1);
+});
+
+it("returns a detailed unchanged comparison with zeroed output for an identical repeat", async () => {
+  let rawText = "raw-a";
+  let statCalls = 0;
+  let hunkCalls = 0;
+  const exec: GitExec = async (_command, args) => {
+    if (args[3] === "rev-parse") {
+      return result(args[4] === "--show-toplevel" ? `${cwd}\n` : "head-a\n");
+    }
+    if (args[3] === "status") return result(" M README.md\0");
+    if (args.includes("--raw")) return result(rawText);
+    if (args.includes("--stat")) {
+      statCalls += 1;
+      return result(" README.md | 1 +\n");
+    }
+    hunkCalls += 1;
+    return result("diff --git a/README.md b/README.md\n@@ -1 +1 @@\n");
+  };
+  const tool = createGitDiffTool(exec);
+  const first = summaryDetails(
+    (await tool.execute("first", {}, undefined, undefined, context)).details,
+  );
+
+  const repeat = await tool.execute("repeat", {}, undefined, undefined, context);
+  expect(repeat.details).toEqual({
+    mode: "summary",
+    repositoryRoot: cwd,
+    unchanged: true,
+    previous: {
+      digest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      entryCount: 1,
+      head: first.head,
+      dirtyFilesDigest: first.dirtyFilesDigest,
+      output: first.output,
+    },
+    output: { truncated: false, totalBytes: 0, totalLines: 0 },
+    message:
+      'Git diff summary is unchanged since the previous request. Use mode: "patch" with explicit paths for full content.',
+  });
+  expect(statCalls).toBe(1);
+  expect(hunkCalls).toBe(1);
+});
+
+it("keys the unchanged comparison by the exact request and keeps other requests full", async () => {
+  const exec: GitExec = async (_command, args) => {
+    if (args[3] === "rev-parse") {
+      return result(args[4] === "--show-toplevel" ? `${cwd}\n` : "head-a\n");
+    }
+    if (args[3] === "status") return result(" M README.md\0");
+    if (args.includes("--raw")) return result("raw-a");
+    if (args.includes("--stat")) return result(" README.md | 1 +\n");
+    return result("diff --git a/README.md b/README.md\n@@ -1 +1 @@\n");
+  };
+  const tool = createGitDiffTool(exec);
+  await tool.execute("first", {}, undefined, undefined, context);
+
+  const staged = await tool.execute("staged", { staged: true }, undefined, undefined, context);
+  expect(staged.details).toMatchObject({ mode: "summary" });
+  expect(staged.details).not.toHaveProperty("unchanged");
+  const scoped = await tool.execute(
+    "scoped",
+    { paths: ["other.txt"] },
+    undefined,
+    undefined,
+    context,
+  );
+  expect(scoped.details).toMatchObject({ mode: "summary" });
+  expect(scoped.details).not.toHaveProperty("unchanged");
+  const limited = await tool.execute("limited", { maxBytes: 1024 }, undefined, undefined, context);
+  expect(limited.details).toMatchObject({ mode: "summary" });
+  expect(limited.details).not.toHaveProperty("unchanged");
+
+  const repeat = await tool.execute("repeat", {}, undefined, undefined, context);
+  expect(repeat.details).toMatchObject({ mode: "summary", unchanged: true });
+});
+
+it("evicts the oldest previous summary entries beyond the process-local cap", async () => {
+  const exec: GitExec = async (_command, args) => {
+    if (args[3] === "rev-parse") {
+      return result(args[4] === "--show-toplevel" ? `${cwd}\n` : "head-a\n");
+    }
+    if (args[3] === "status") return result(" M README.md\0");
+    if (args.includes("--raw")) return result("raw-a");
+    if (args.includes("--stat")) return result(" README.md | 1 +\n");
+    return result("diff --git a/README.md b/README.md\n@@ -1 +1 @@\n");
+  };
+  const tool = createGitDiffTool(exec);
+  for (let index = 0; index < 257; index += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    const response = await tool.execute(
+      `fill-${index}`,
+      { paths: [`file-${index}.txt`] },
+      undefined,
+      undefined,
+      context,
+    );
+    expect(response.details).not.toHaveProperty("unchanged");
+  }
+
+  const evicted = await tool.execute(
+    "evicted",
+    { paths: ["file-0.txt"] },
+    undefined,
+    undefined,
+    context,
+  );
+  expect(evicted.details).toMatchObject({ mode: "summary" });
+  expect(evicted.details).not.toHaveProperty("unchanged");
+
+  const recent = await tool.execute(
+    "recent",
+    { paths: ["file-256.txt"] },
+    undefined,
+    undefined,
+    context,
+  );
+  expect(recent.details).toMatchObject({ mode: "summary", unchanged: true });
+});
+
+it("attaches repository-state identity on a cache hit without extra git calls", async () => {
+  const calls: string[][] = [];
+  const exec: GitExec = async (_command, args) => {
+    calls.push([...args]);
+    if (args[3] === "rev-parse") {
+      return result(args[4] === "--show-toplevel" ? `${cwd}\n` : "head-a\n");
+    }
+    if (args[3] === "status") return result(" M README.md\0");
+    if (args.includes("--raw")) return result("raw-a");
+    if (args.includes("--stat")) return result(" README.md | 1 +\n");
+    return result("diff --git a/README.md b/README.md\n@@ -1 +1 @@\n");
+  };
+  const cache = createGitDiffSummaryCache();
+  const first = summaryDetails(
+    (
+      await createGitDiffTool(exec, { summaryCache: cache }).execute(
+        "cache-owner",
+        {},
+        undefined,
+        undefined,
+        context,
+      )
+    ).details,
+  );
+  const callsAfterFirst = calls.length;
+
+  const second = summaryDetails(
+    (
+      await createGitDiffTool(exec, { summaryCache: cache }).execute(
+        "cache-reader",
+        {},
+        undefined,
+        undefined,
+        context,
+      )
+    ).details,
+  );
+  expect(second).toEqual(first);
+  expect(calls.length).toBe(callsAfterFirst + 4);
+  expect(calls.filter((args) => args.includes("--unified=0"))).toHaveLength(1);
+  expect(calls.filter((args) => args.includes("--stat"))).toHaveLength(1);
 });
 
 it("filters summary status to the selected staged or worktree column", async () => {

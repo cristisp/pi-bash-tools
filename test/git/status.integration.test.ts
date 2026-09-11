@@ -123,6 +123,25 @@ gitIntegration("Git status with a real Git process", () => {
     expect(response.content[0]?.type).toBe("text");
   });
 
+  it("carries repository-state identity matching the real HEAD and keeps it in the unchanged repeat", async () => {
+    const repository = await fixtures.createRepository();
+    await writeFile(join(repository.directory, "dirty.txt"), "dirty\n");
+    const tool = createGitStatusTool(makeRealGitExec());
+
+    const details = changed(
+      (await tool.execute("identity", {}, undefined, undefined, repository.context)).details,
+    );
+    const realHead = (await rawGit(repository.directory, ["rev-parse", "HEAD"])).trim();
+    expect(details.head).toBe(realHead);
+    expect(details.dirtyFilesDigest).toMatch(/^[0-9a-f]{64}$/u);
+
+    const repeat = await tool.execute("repeat", {}, undefined, undefined, repository.context);
+    expect(repeat.details).toMatchObject({
+      unchanged: true,
+      previous: { head: realHead, dirtyFilesDigest: details.dirtyFilesDigest },
+    });
+  });
+
   it("cancels a real Git process after the adapter observes its spawn", async () => {
     const repository = await fixtures.createRepository();
     let resolveSpawned: (() => void) | undefined;

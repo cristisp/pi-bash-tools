@@ -43,6 +43,8 @@ Both fields are optional and unknown fields are rejected.
       "renamedFrom": "optional/original.ts"
     }
   ],
+  "head": "40-64 hexadecimal characters",
+  "dirtyFilesDigest": "64 hexadecimal characters",
   "output": {
     "truncated": false,
     "totalBytes": 42,
@@ -53,7 +55,9 @@ Both fields are optional and unknown fields are rejected.
 
 `renamedFrom` is present for rename and copy records.
 
-An unchanged response contains `repositoryRoot`, `unchanged: true`, `previous` with the prior digest and output metadata, the zero-sized current `output`, and a message explaining how to request a refresh.
+A fresh status also carries repository-state identity: `head` is the resolved HEAD commit id, and `dirtyFilesDigest` is a content-sensitive digest over the dirty paths and their hashed content. Identity fields are omitted when their computation cannot complete (for example an empty repository or an oversized dirty state). Computing identity runs one extra `git rev-parse HEAD` process per fresh status and a bounded `git hash-object` process only when the tree is dirty; the unchanged path runs no extra processes.
+
+An unchanged response contains `repositoryRoot`, `unchanged: true`, `previous` with the prior digest, entry count, identity fields, and output metadata, the zero-sized current `output`, and a message explaining how to request a refresh.
 
 Status output is capped at 50 KiB and 2,000 records.
 
@@ -105,6 +109,8 @@ The legacy single `path` field remains supported, but new calls should use a non
       "header": "@@ -1 +1 @@"
     }
   ],
+  "head": "40-64 hexadecimal characters",
+  "dirtyFilesDigest": "64 hexadecimal characters",
   "output": {
     "truncated": false,
     "totalBytes": 100,
@@ -117,6 +123,39 @@ The legacy single `path` field remains supported, but new calls should use a non
 The summary is derived from Git status, diff stat, raw diff, and hunk data and is cached by a content-sensitive process-local cache.
 
 A concurrent summary request can share one discovery execution.
+
+A summary also carries request-scoped repository-state identity: `head` is the resolved HEAD commit id, and `dirtyFilesDigest` is a digest over the status output, raw diff, and untracked file content for the requested path filters. Unlike the `git_status` digest, which is repository-global by default and scoped to the requested path when a path filter is supplied, the `git_diff` digest is always scoped to the exact request.
+
+### Unchanged summary result
+
+A repeated identical summary request (same repository root, working directory, staged mode, path filters, and `maxBytes`) whose request-scoped digest matches the previously served summary returns a compact comparison instead of the full summary:
+
+```json
+{
+  "mode": "summary",
+  "repositoryRoot": "/absolute/repository",
+  "unchanged": true,
+  "previous": {
+    "digest": "64 hexadecimal characters",
+    "entryCount": 1,
+    "head": "40-64 hexadecimal characters",
+    "dirtyFilesDigest": "64 hexadecimal characters",
+    "output": {
+      "truncated": false,
+      "totalBytes": 100,
+      "totalLines": 4
+    }
+  },
+  "output": {
+    "truncated": false,
+    "totalBytes": 0,
+    "totalLines": 0
+  },
+  "message": "Git diff summary is unchanged since the previous request. Use mode: \"patch\" with explicit paths for full content."
+}
+```
+
+The comparison is process-local, mirrors the `git_status` unchanged behavior, and never changes patch mode responses.
 
 ### Patch result
 
@@ -133,6 +172,14 @@ A concurrent summary request can share one discovery execution.
 ```
 
 Patch and show text are truncated to the requested UTF-8 byte limit without splitting a code point.
+
+## Cross-process evidence references
+
+Decision: `git_status` and `git_diff` results carry repository-state identity (`head`, `dirtyFilesDigest`) so callers can compare evidence across calls within a process, but no opaque stable evidence reference is issued for Git results and no cross-process lookup resolves one.
+
+Rationale: the identity fields already answer the local "is this the same tree I saw before" question without adding a reference format, a resolver, or producer-authorization semantics. Cross-process stable references interact with the flow evidence-referencing decision tracked in [PLAN](../PLAN.md) and should not be invented piecemeal for one tool family.
+
+Revisit trigger: revisit this determination when the flow-level evidence-referencing decision lands, or when a concrete consumer needs to hand a Git result reference to another process; until then, callers compare the returned identity fields directly.
 
 ## `git_log`
 

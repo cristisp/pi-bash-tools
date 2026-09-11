@@ -91,6 +91,28 @@ The `workspace` block describes Git workspace freshness only; Codegraph index fr
 
 A `degraded` status means the producer could not fully observe the workspace and consumers must not treat the block as a complete identity.
 
+### Cross-producer repository-state comparison
+
+The `head` field is the only directly comparable workspace field across producers: it holds a Git commit object ID, and exact string equality of two non-null `head` values is authoritative evidence that both producers observed the same commit.
+
+A `head` that is null on either side is unknown state, never a match.
+
+The `repositoryId` and `dirtyDigest` fields are producer-local identities: Bash Tools hashes the realpath of the Git toplevel while Codegraph hashes its canonical root plus Git directory, and the dirty-digest inputs and bounds differ, so cross-producer equality of those fields must never be treated as authoritative.
+
+Any `degraded` status on either side makes the whole cross-producer comparison unknown.
+
+Cross-producer comparison consumes only envelope workspace fields, never private cache records, and no module is imported from the Codegraph extension.
+
+### Semantic result defaults
+
+The default cross-extension semantic result is bounded source snippets, precise file ranges, signatures, and relevance summaries.
+
+Full file bodies are fetched only through Bash Tools' own bounded read tools (`read`, `read_batch`), never through another extension's evidence.
+
+Codegraph evidence reaches Bash Tools only as opaque `cg_` references that Bash Tools never resolves.
+
+The `SharedEvidenceKind` union stays Bash Tools-only and must not be extended to carry Codegraph evidence, because the independence rule forbids importing another extension's modules and `cg_` references stay out-of-band.
+
 ## Disk caches
 
 The default cache root is `~/.pi/agent/bash-tools`.
@@ -141,7 +163,7 @@ Repository-state observation runs only when a recorder and session identity are 
 
 Git read-tool invocations are recorded as `bash-tools.git-invocation` entries.
 
-Each Git record carries the tool name, session and tool-call identity, the schema hash, the requested path-filter count, the outcome reason (`completed`, `cancelled`, `invalid-request`, or `failed`), a bounded error code, duration, an `unchanged` flag for `git_status` unchanged repeats, an aggregate block with the model-facing result byte count, and the same additive `repositoryState` workspace block described above.
+Each Git record carries the tool name, session and tool-call identity, the schema hash, the requested path-filter count, the outcome reason (`completed`, `cancelled`, `invalid-request`, or `failed`), a bounded error code, duration, an `unchanged` flag for `git_status` and `git_diff` unchanged repeats, an aggregate block with the model-facing result byte count, and the same additive `repositoryState` workspace block described above.
 
 Git invocation records never contain revision expressions, path strings, or output text, and they are omitted when the session identity is unavailable.
 

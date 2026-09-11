@@ -66,6 +66,8 @@ A manual cancellation before the policy commit rejects the current request witho
 A cancellation after the commit rejects without returning environment values, but the completed policy commit is retained.
 A confirmation timeout records a project-level deny and returns no environment values.
 Print, JSON, and other no-UI modes reject unknown keys without modifying policy.
+A persistent denial or confirmation timeout followed by an unchanged identical request in the same session is rejected as an unchanged retry without opening a new prompt or writing policy.
+This unchanged-retry invalidation applies to the environment, filesystem, `verify`, and `project_command` surfaces and never weakens the underlying authorization decision.
 When an orchestrated subagent reaches a manual policy approval prompt, the extension emits a warning notification through Pi before opening the prompt.
 In TUI and RPC modes it also emits a terminal-native notification through OSC 777, Kitty OSC 99, or a Windows toast when the terminal supports it.
 Notification failures are ignored and never change the authorization result.
@@ -77,7 +79,9 @@ It does not intercept `bash` or `user_bash`.
 
 The extension also registers `read_batch`, `move`, and `delete` tools.
 `read_batch` accepts `{ paths: [{ path, range?: { offset?, limit? } }] }`, reads at most 32 paths, caps each returned file at 64 KiB of text and 2,000 requested lines, and reports a bounded result or error for every path.
-Successful entries report repository-relative paths and a stable `rr_` reference.
+Successful entries report repository-relative paths, a stable `rr_` reference, and a stable `contentHash` (the SHA-256 digest of the full file bytes).
+The aggregate returned content across all paths in one request is capped at 256 KiB; once the cap is reached, the first affected path and every later path return a bounded `aggregate-limit` error in request order without being authorized or read, and the result reports `continuation` with `nextIndex` and `totalPaths` so the caller can re-issue the remaining paths in a follow-up request.
+The same path may not appear twice with overlapping ranges in one request; such requests are rejected up front, while disjoint ranges of one path remain allowed.
 A repeated path and range in the same process-local scope returns `unchanged: true` with the prior reference when the file content hash is unchanged.
 The batch cache is process-local and separates effective flow scopes without using orchestration environment variables as authorization.
 `move` authorizes both the source and destination with the move capability and rejects existing destinations.
@@ -139,6 +143,12 @@ Delete prompts are project-scoped and instead offer `Deny once`, `Deny for this 
 The existing `confirmationTimeoutMs` setting applies to filesystem prompts and defaults to 120000 milliseconds.
 A timeout automatically records a project-level deny for the requested access type and blocks only the current tool call.
 Blocked calls report `Tool call blocked by access policy` with the tool, access type, path, and reason.
+
+An edit preflight reads at most 256 KiB and diagnoses empty `oldText`, no-op replacements, no match, stale context, ambiguous matches, and overlapping edits before the native edit is allowed to run.
+Diagnostics include the nearest candidate line numbers, a `fileFingerprint` (SHA-256 of the preflight-read content), and bounded repair context without file content.
+When a `read_batch` full-file read recorded the file and its content changed since that observation, a failing no-match edit is classified as `edit-stale-context`; without observed evidence it stays `edit-no-match`.
+Repeating an identical edit after any preflight failure is rejected once per session with `edit-unchanged-retry` until the edit is rebased on a fresh reread.
+The extension never retries or rebases a mutation automatically; recovery is a caller-controlled reread-and-rebase step.
 
 Invalid or unreadable policy files fail closed without exposing raw policy contents.
 The policy file and every parent directory must be regular, non-symlink filesystem objects.
@@ -243,6 +253,11 @@ A shared request reports `sharedExecution: true` and is distinct from an ordinar
 `concurrentExecutions` reports the observed overlapping execution count for the repository identity.
 The consumer-owned repository write lock remains authoritative for coordination between writers and readers.
 
+Evidence lookup outcomes are recorded separately in the invocation stream where disclosure is safe.
+Wrong-flow lookups are classified from the caller's own orchestration context before any store query, so an unauthorized lookup can never learn whether a record exists.
+Corrupt records are distinguished from missing records only when the caller's own in-process scope can observe the difference.
+Model-facing lookup error wording is unchanged by this classification.
+
 The project-command invocation recorder stores bounded `flowId`, `delegationId`, `role`, `ref`, verdict, mutability, publication, lookup outcome, coercion, concurrency, drift, and aggregate-verify metadata.
 One aggregate invocation record is emitted per `verify` call rather than one record per phase.
 Process status remains separate from the aggregate verify verdict.
@@ -280,6 +295,11 @@ Revisions must be non-empty, non-option-like Git revision expressions without wh
 It does not implement `REV:path` blob extraction.
 
 Structured status and log results are limited to 2,000 records and 50 KiB of raw Git output.
+
+`git_status` and `git_diff` summary results carry repository-state identity (`head` and a content-sensitive `dirtyFilesDigest`) so callers can compare evidence across calls without an overlapping workspace-state tool.
+Identity fields are omitted when their computation cannot complete.
+A repeated identical diff summary request whose request-scoped digest matches the previously served summary returns a compact `unchanged: true` comparison instead of re-emitting the full summary.
+No opaque stable evidence reference is issued for Git results; see the cross-process reference determination in [docs/git.md](docs/git.md).
 
 Diff and show text are limited to the requested `maxBytes`, from 1 byte through 1 MiB.
 

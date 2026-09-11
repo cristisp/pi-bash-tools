@@ -26,7 +26,9 @@ function patchDetails(details: GitDiffOutput): GitDiffPatchOutput {
 }
 
 function summaryDetails(details: GitDiffOutput): GitDiffSummaryOutput {
-  if (details.mode !== "summary") throw new Error("expected a summary response");
+  if (details.mode !== "summary" || "unchanged" in details) {
+    throw new Error("expected a full summary response");
+  }
   return details;
 }
 
@@ -159,6 +161,46 @@ gitIntegration("Git diff with a real Git process", () => {
     );
 
     expect(response.hunks).toEqual([{ path: fileName, header: expect.stringContaining("@@") }]);
+  });
+
+  it("defaults to summary with identity and returns a compact unchanged repeat", async () => {
+    const repository = await fixtures.createRepository();
+    await writeFile(join(repository.directory, "README.md"), "changed\n");
+    const tool = createGitDiffTool(makeRealGitExec());
+
+    const first = summaryDetails(
+      (await tool.execute("summary", {}, undefined, undefined, repository.context)).details,
+    );
+    const realHead = (await rawGit(repository.directory, ["rev-parse", "HEAD"])).trim();
+    expect(first.head).toBe(realHead);
+    expect(first.dirtyFilesDigest).toMatch(/^[0-9a-f]{64}$/u);
+
+    const repeat = await tool.execute("repeat", {}, undefined, undefined, repository.context);
+    expect(repeat.details).toMatchObject({
+      mode: "summary",
+      unchanged: true,
+      previous: { head: realHead, dirtyFilesDigest: first.dirtyFilesDigest },
+      output: { truncated: false, totalBytes: 0, totalLines: 0 },
+      message: expect.stringContaining('mode: "patch"'),
+    });
+  });
+
+  it("bounds whole-repository patches and directs follow-ups to explicit paths", async () => {
+    const repository = await fixtures.createRepository();
+    await writeFile(join(repository.directory, "README.md"), "content\n".repeat(400));
+
+    const response = await createGitDiffTool(makeRealGitExec()).execute(
+      "whole-patch",
+      { mode: "patch", maxBytes: 512 },
+      undefined,
+      undefined,
+      repository.context,
+    );
+
+    const details = patchDetails(response.details);
+    expect(details.output.truncated).toBe(true);
+    expect(details.message).toContain('mode: "patch"');
+    expect(details.message).toContain("paths");
   });
 
   it("returns staged, unstaged, binary, space-containing, empty, and truncated diffs", async () => {

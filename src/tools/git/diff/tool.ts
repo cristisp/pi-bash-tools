@@ -29,12 +29,26 @@ import type { GitStatusEntry } from "../status/output.ts";
 import { defineGitTool, type GitToolDefinition } from "../tool.ts";
 import {
   createGitDiffSummaryCache,
+  stateKey,
   type GitDiffSummaryCache,
   type GitDiffSummaryCacheClaim,
   type GitDiffSummaryCacheState,
 } from "./cache.ts";
-import type { GitDiffOutput, GitDiffPatchOutput, GitDiffSummaryOutput } from "./output.ts";
+import type {
+  GitDiffOutput,
+  GitDiffPatchOutput,
+  GitDiffSummaryOutput,
+  GitDiffSummaryUnchangedOutput,
+} from "./output.ts";
 import { createGitDiffSummary } from "./summary.ts";
+
+interface GitDiffPreviousSummaryEntry {
+  readonly digest: string;
+  readonly entryCount: number;
+  readonly head: string;
+  readonly dirtyFilesDigest: string;
+  readonly output: Pick<GitDiffSummaryOutput["output"], "totalBytes" | "totalLines" | "truncated">;
+}
 
 export const DEFAULT_GIT_DIFF_MAX_BYTES = 16 * 1024;
 
@@ -473,7 +487,8 @@ async function executeGitDiffSummary(
   responseLimit: number,
   summaryCache: GitDiffSummaryCache,
   rawDiscoveryFlights: RawDiscoveryFlights,
-): Promise<GitDiffSummaryOutput> {
+  previousByRequest: Map<string, GitDiffPreviousSummaryEntry>,
+): Promise<GitDiffSummaryOutput | GitDiffSummaryUnchangedOutput> {
   const statusResult = await runGit(
     exec,
     statusArgs(paths),
@@ -510,14 +525,37 @@ async function executeGitDiffSummary(
     paths,
     responseLimit,
   );
+  const requestKey = JSON.stringify([
+    repository.root,
+    repository.cwd,
+    staged,
+    paths,
+    responseLimit,
+  ]);
+  const digest = stateKey(cacheState);
+  const previous = previousByRequest.get(requestKey);
+  if (previous !== undefined && previous.digest === digest) {
+    return {
+      mode: "summary",
+      repositoryRoot: repository.root,
+      unchanged: true as const,
+      previous,
+      output: { truncated: false, totalBytes: 0, totalLines: 0 },
+      message:
+        'Git diff summary is unchanged since the previous request. Use mode: "patch" with explicit paths for full content.',
+    };
+  }
   const cached = summaryCache.get(cacheState);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined)
+    return attachSummaryIdentity(cached, cacheState, requestKey, previousByRequest);
   const claimResult = await waitForSummaryClaim(summaryCache, cacheState, signal);
-  if (claimResult.summary !== undefined) return claimResult.summary;
+  if (claimResult.summary !== undefined) {
+    return attachSummaryIdentity(claimResult.summary, cacheState, requestKey, previousByRequest);
+  }
   if (claimResult.cancelled) throw cancellationError(true);
   const claim = claimResult.claim;
   if (claim === undefined) throw new Error("summary claim was lost before computation");
-  return computeAndCacheSummary(
+  const summary = await computeAndCacheSummary(
     exec,
     repository,
     signal,
@@ -530,6 +568,34 @@ async function executeGitDiffSummary(
     cacheState,
     claim,
   );
+  return attachSummaryIdentity(summary, cacheState, requestKey, previousByRequest);
+}
+
+const MAX_PREVIOUS_SUMMARY_ENTRIES = 256;
+
+function trimPreviousSummaryEntries(entries: Map<string, GitDiffPreviousSummaryEntry>): void {
+  while (entries.size > MAX_PREVIOUS_SUMMARY_ENTRIES) {
+    const oldest = entries.keys().next();
+    if (oldest.done) return;
+    entries.delete(oldest.value);
+  }
+}
+
+function attachSummaryIdentity(
+  summary: GitDiffSummaryOutput,
+  cacheState: GitDiffSummaryCacheState,
+  requestKey: string,
+  previousByRequest: Map<string, GitDiffPreviousSummaryEntry>,
+): GitDiffSummaryOutput {
+  previousByRequest.set(requestKey, {
+    digest: stateKey(cacheState),
+    entryCount: summary.status.length,
+    head: cacheState.head,
+    dirtyFilesDigest: cacheState.dirtyFilesDigest,
+    output: summary.output,
+  });
+  trimPreviousSummaryEntries(previousByRequest);
+  return { ...summary, head: cacheState.head, dirtyFilesDigest: cacheState.dirtyFilesDigest };
 }
 
 export function createGitDiffTool(
@@ -541,6 +607,7 @@ export function createGitDiffTool(
     string,
     Promise<{ readonly rawText: string; readonly untrackedDigest: string }>
   >();
+  const previousByRequest = new Map<string, GitDiffPreviousSummaryEntry>();
   return defineGitTool({
     name: "git_diff",
     label: "Git diff",
@@ -581,6 +648,7 @@ export function createGitDiffTool(
                 request.responseLimit,
                 summaryCache,
                 rawDiscoveryFlights,
+                previousByRequest,
               );
         return makeToolResult(details);
       },

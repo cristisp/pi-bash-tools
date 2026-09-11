@@ -179,7 +179,7 @@ function isCacheRecord(
   return value.key === stateKey(value.state);
 }
 
-function stateKey(state: GitDiffSummaryCacheState): string {
+export function stateKey(state: GitDiffSummaryCacheState): string {
   return createHash("sha256")
     .update("git-diff-summary-v1\0", "utf8")
     .update(JSON.stringify(state), "utf8")

@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
-import { realpath } from "node:fs/promises";
+import { realpath, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { afterEach, expect, it } from "vitest";
 
 import type { GitInvocationRecord } from "../../src/observability/git-invocation.ts";
+import { createGitDiffTool } from "../../src/tools/git/diff/tool.ts";
 import { createGitStatusTool } from "../../src/tools/git/status/tool.ts";
 import { createProjectCommandRepositoryStateReader } from "../../src/tools/project-command/repository-state.ts";
 import {
@@ -57,6 +59,36 @@ gitIntegration("git_status invocation observation with a real Git process", () =
       head: realHead,
       dirtyDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
       status: "readable",
+    });
+  });
+
+  it("records an unchanged flag for a repeated git_diff summary", async () => {
+    const repository = await fixtures.createRepository();
+    await writeFile(join(repository.directory, "README.md"), "changed\n");
+    const gitExec = makeRealGitExec();
+    const records: GitInvocationRecord[] = [];
+    const tool = createGitDiffTool(gitExec, {
+      invocationObservation: {
+        invocationRecorder: (record) => {
+          records.push(record);
+        },
+        repositoryStateReader: createProjectCommandRepositoryStateReader(gitExec),
+      },
+    });
+    const context = {
+      ...repository.context,
+      sessionManager: { getSessionId: () => "integration-session" },
+    };
+
+    await tool.execute("diff-call", {}, undefined, undefined, context);
+    await tool.execute("diff-repeat", {}, undefined, undefined, context);
+
+    expect(records).toHaveLength(2);
+    expect(records[1]).toMatchObject({
+      tool: "git_diff",
+      toolCallId: "diff-repeat",
+      reason: "completed",
+      unchanged: true,
     });
   });
 

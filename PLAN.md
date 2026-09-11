@@ -206,11 +206,11 @@ This work should close remaining cross-child and aggregate-payload gaps rather t
 
 #### Git state and diff evidence
 
-- [ ] Determine whether compact `git_status` and `git_diff` summaries need stable evidence references across child processes.
-- [ ] Prefer enriching existing Git results with repository-state identity over adding an overlapping public workspace-state tool.
-- [ ] Preserve summary-first behavior and require explicit path-bounded requests for full patches.
-- [ ] Return compact current-state comparison when prior Git evidence is referenced.
-- [ ] Preserve process-local single-flight behavior for concurrent identical discovery work.
+- [x] Determine whether compact `git_status` and `git_diff` summaries need stable evidence references across child processes. (Determined not yet — deferred pending the flow evidence-referencing decision; decision, rationale, and revisit trigger documented in docs/git.md.)
+- [x] Prefer enriching existing Git results with repository-state identity over adding an overlapping public workspace-state tool. (`head` and `dirtyFilesDigest` added to `git_status` and `git_diff` summary results; no workspace-state tool.)
+- [x] Preserve summary-first behavior and require explicit path-bounded requests for full patches. (Whole-repo patches stay byte-bounded with INCOMPLETE guidance naming explicit `paths`; confirmed by integration test.)
+- [x] Return compact current-state comparison when prior Git evidence is referenced. (Process-local unchanged comparison for repeated identical `git_diff` summary requests, mirroring `git_status`; cross-process references remain deferred.)
+- [x] Preserve process-local single-flight behavior for concurrent identical discovery work. (Existing claim/wait tests cover concurrent deduplication and aborted-waiter isolation.)
 
 #### Exit criteria
 
@@ -229,8 +229,8 @@ The corresponding Codegraph work belongs in the Codegraph extension and is imple
 - [x] Require Codegraph evidence to identify both the graph index state and workspace state.
 - [x] Ensure workspace mutations can make graph evidence visibly stale without deleting historical provenance.
 - [x] Avoid embedding full source bodies when a bounded reference and exact range are sufficient.
-- [ ] Coordinate bounded source snippets, precise file ranges, signatures, and relevance summaries as the default semantic result.
-- [ ] Define how Bash Tools repository-state metadata can be compared with producer-supplied Codegraph state without sharing private cache records.
+- [x] Coordinate bounded source snippets, precise file ranges, signatures, and relevance summaries as the default semantic result. (Documented in docs/artifacts.md under "Semantic result defaults"; docs-only — code side already satisfied: Bash Tools read tools are the only full-body path and `cg_` refs stay opaque.)
+- [x] Define how Bash Tools repository-state metadata can be compared with producer-supplied Codegraph state without sharing private cache records. (`compareWorkspaceBlocksCrossProducer` in `src/evidence/repository-state-comparison.ts`; head-only authoritative comparison, documented in docs/artifacts.md under "Cross-producer repository-state comparison".)
 
 The Codegraph extension makes `codegraph_sync` idempotent and returns an unchanged result when the index already represents the relevant workspace state.
 

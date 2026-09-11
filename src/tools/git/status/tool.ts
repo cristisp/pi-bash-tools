@@ -5,6 +5,7 @@ import { Type } from "typebox";
 import { hashToolParameters } from "../../../observability/canonical-json.ts";
 import { booleanInputSchema } from "../../boolean.ts";
 import { renderCallLine, renderStringArgument } from "../../call-render.ts";
+import { contentDigest } from "../../project-command/repository-state/dirty-files.ts";
 import { normalizeGitBoolean, runGit, validateGitRequestKeys, type GitExec } from "../execution.ts";
 import { observeGitInvocation, type GitInvocationObservationOptions } from "../invocation.ts";
 import {
@@ -18,6 +19,16 @@ import {
 import { resolvePath, resolveRepository } from "../repository.ts";
 import { defineGitTool, type GitToolDefinition } from "../tool.ts";
 import type { GitStatusChangedOutput, GitStatusOutput } from "./output.ts";
+
+const MAX_PREVIOUS_STATUS_ENTRIES = 256;
+
+function trimPreviousStatusEntries<T>(entries: Map<string, T>): void {
+  while (entries.size > MAX_PREVIOUS_STATUS_ENTRIES) {
+    const oldest = entries.keys().next();
+    if (oldest.done) return;
+    entries.delete(oldest.value);
+  }
+}
 
 const gitStatusParameters = Type.Object(
   {
@@ -101,16 +112,40 @@ export function createGitStatusTool(
               "Git status is unchanged since the previous request. Use { refresh: true } to force a fresh rendering.",
           });
         }
+        const executionSignal = signal ?? ctx.signal;
+        const [head, dirtyFilesDigest] = await Promise.all([
+          runGit(
+            exec,
+            ["rev-parse", "HEAD"],
+            repository.root,
+            executionSignal,
+            "read Git repository HEAD for status identity",
+          )
+            .then((headResult) => headResult.stdout.trim())
+            .catch(() => undefined),
+          contentDigest(
+            repository.root,
+            result.stdout,
+            exec,
+            repository.root,
+            executionSignal,
+          ).catch(() => undefined),
+        ]);
         const current = {
           digest,
           entryCount: recordCount,
           output,
+          ...(head === undefined ? {} : { head }),
+          ...(dirtyFilesDigest === undefined ? {} : { dirtyFilesDigest }),
         };
         previousByRequest.set(key, current);
+        trimPreviousStatusEntries(previousByRequest);
         return makeToolResult({
           repositoryRoot: repository.root,
           unchanged: false as const,
           entries,
+          ...(head === undefined ? {} : { head }),
+          ...(dirtyFilesDigest === undefined ? {} : { dirtyFilesDigest }),
           output,
         });
       },

@@ -11,6 +11,8 @@ export interface GitStatusChangedOutput {
   readonly repositoryRoot: string;
   readonly unchanged: false;
   readonly entries: readonly GitStatusEntry[];
+  readonly head?: string;
+  readonly dirtyFilesDigest?: string;
   readonly output: Truncation;
 }
 
@@ -20,6 +22,8 @@ export interface GitStatusUnchangedOutput {
   readonly previous: {
     readonly digest: string;
     readonly entryCount: number;
+    readonly head?: string;
+    readonly dirtyFilesDigest?: string;
     readonly output: Pick<Truncation, "totalBytes" | "totalLines" | "truncated">;
   };
   readonly output: Truncation;

@@ -11,6 +11,23 @@ export interface GitDiffSummaryOutput {
   readonly status: readonly GitStatusEntry[];
   readonly stat: string;
   readonly hunks: readonly GitDiffHunk[];
+  readonly head?: string;
+  readonly dirtyFilesDigest?: string;
+  readonly output: Truncation;
+  readonly message: string;
+}
+
+export interface GitDiffSummaryUnchangedOutput {
+  readonly mode: "summary";
+  readonly repositoryRoot: string;
+  readonly unchanged: true;
+  readonly previous: {
+    readonly digest: string;
+    readonly entryCount: number;
+    readonly head?: string;
+    readonly dirtyFilesDigest?: string;
+    readonly output: Pick<Truncation, "totalBytes" | "totalLines" | "truncated">;
+  };
   readonly output: Truncation;
   readonly message: string;
 }
@@ -22,4 +39,7 @@ export interface GitDiffPatchOutput {
   readonly message?: string;
 }
 
-export type GitDiffOutput = GitDiffSummaryOutput | GitDiffPatchOutput;
+export type GitDiffOutput =
+  | GitDiffSummaryOutput
+  | GitDiffSummaryUnchangedOutput
+  | GitDiffPatchOutput;
