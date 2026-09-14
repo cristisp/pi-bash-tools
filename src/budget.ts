@@ -41,6 +41,7 @@ const DISCOVERY_TOOLS = new Set([
 	'codegraph_callees',
 	'codegraph_impact',
 	'codegraph_affected',
+	'codegraph_artifact',
 	'resolve-library-id',
 	'query-docs',
 	'environment',

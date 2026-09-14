@@ -11,7 +11,7 @@ Completed implementation history, review rounds, and superseded plans remain ava
 - S5 evidence-reuse instrumentation and the `@ztc/bash-tools` 1.0.2 handoff are complete.
 - S2 repository-lock deletion is not authorized and the lock remains enabled.
 - S7 identity-path consolidation remains deferred.
-- The implementation and prior documentation changes are committed; this plan simplification is the current documentation change.
+- The implementation and prior documentation changes are committed.
 
 ## S4: decide whether `warn` can become `enforce`
 
@@ -78,7 +78,6 @@ Do not consolidate the stores merely for aesthetic consistency.
 
 ## Invariants
 
-- Keep the package version at `1.6.0` unless a separate release decision changes it.
 - Treat `@ztc/bash-tools` 1.0.2 as the producer contract.
 - Keep producer ownership boundaries intact; this repository does not write the producer's policy or store files.
 - Treat cross-process single-flight as unavailable unless a separate durable-lease design is approved.
@@ -93,7 +92,7 @@ Do not consolidate the stores merely for aesthetic consistency.
 2. Omit `compositionPolicy` from ordinary calls.
 3. Use fresh isolated telemetry and producer streams for any new decision window.
 4. Preserve the cutoff, flow identity, policy, override status, rule, tier, outcome, and guardrail counts in the decision record.
-5. Regenerate `analysis/MEASUREMENT.md` with `npm run test:analyze` and an explicit cutoff.
+5. Regenerate `analysis/MEASUREMENT.md` with `MEASURE_CUTOFF=<epoch-ms> npm run test:analyze`.
 6. Run the independent review against the generated artifact and the decision record.
 7. Run format, lint, typecheck, and tests after the final change.
 

@@ -260,7 +260,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 		name: 'planner',
 		description: 'Creates implementation plans from context and requirements',
 		tools:
-			'read, grep, find, ls, git_status, git_diff, git_log, git_show, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, resolve-library-id, query-docs',
+			'read, grep, find, ls, git_status, git_diff, git_log, git_show, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, codegraph_artifact, resolve-library-id, query-docs',
 		body: `
 You are the planner agent.
 
@@ -376,7 +376,7 @@ End with a concise summary containing:
 		name: 'reviewer',
 		description: 'Code review specialist for quality and security analysis',
 		tools:
-			'read, grep, find, ls, git_status, git_diff, git_log, git_show, verify, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, resolve-library-id, query-docs',
+			'read, grep, find, ls, git_status, git_diff, git_log, git_show, verify, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, codegraph_artifact, resolve-library-id, query-docs',
 		body: `
 You are a senior code reviewer responsible for finding correctness, security, regression, and maintainability problems.
 
@@ -521,7 +521,7 @@ Do not introduce new findings in the summary.
 		name: 'scout',
 		description: 'Fast codebase recon that returns compressed context for handoff to other agents',
 		tools:
-			'read, grep, find, ls, git_status, git_diff, git_log, git_show, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, resolve-library-id, query-docs',
+			'read, grep, find, ls, git_status, git_diff, git_log, git_show, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, codegraph_artifact, resolve-library-id, query-docs',
 		body: `
 You are a scout. Quickly investigate a codebase and return structured findings that another agent can use without re-reading everything.
 
@@ -604,7 +604,7 @@ Give a concise plan-oriented handoff without repeating large source excerpts.
 		name: 'worker',
 		description: 'General-purpose subagent with full capabilities, isolated context',
 		tools:
-			'read, write, edit, grep, find, ls, environment, git_status, git_diff, git_log, git_show, project_command, verify, move, delete, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, resolve-library-id, query-docs, playwright',
+			'read, write, edit, grep, find, ls, environment, git_status, git_diff, git_log, git_show, project_command, verify, move, delete, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, codegraph_artifact, resolve-library-id, query-docs, playwright',
 		body: `
 You are a worker agent with full capabilities operating in an isolated context window.
 
@@ -744,7 +744,7 @@ Include important implementation decisions, compatibility concerns, preserved us
 		name: 'validator',
 		description: 'Runs approved validation checks without modifying the repository',
 		tools:
-			'read, grep, find, ls, git_status, git_diff, git_log, git_show, project_command, verify, codegraph_explore, codegraph_affected, playwright',
+			'read, grep, find, ls, git_status, git_diff, git_log, git_show, project_command, verify, codegraph_explore, codegraph_affected, codegraph_artifact, playwright',
 		body: `
 You are the validator agent.
 

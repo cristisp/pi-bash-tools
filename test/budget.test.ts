@@ -50,6 +50,7 @@ function settleBudget(handlers: Record<string, Handler>, ctx: { abort(): void })
 describe('budget classification', () => {
 	it('classifies discovery, validation, and ordinary calls', () => {
 		expect(classifyToolCall('read', { path: 'src/index.ts' })).toBe('discovery');
+		expect(classifyToolCall('codegraph_artifact', { ref: 'cg_abc' })).toBe('discovery');
 		expect(classifyToolCall('project_command', { commandId: 'node_test' })).toBe('validation');
 		expect(classifyToolCall('project_command', { commandId: 'node_project_info' })).toBe(
 			'discovery',

@@ -240,6 +240,31 @@ describe('renderAgentFile', () => {
 		expect(validator?.tools).toContain('playwright');
 		expect(validator?.body).toContain('BASELINE_FAILURE');
 	});
+	it('ships the codegraph artifact lookup to every role that can mint a reference', () => {
+		const queryTools = new Set([
+			'codegraph_explore',
+			'codegraph_callers',
+			'codegraph_callees',
+			'codegraph_impact',
+			'codegraph_affected',
+		]);
+		const mintingRoles = AGENT_TEMPLATES.filter((template) =>
+			(template.tools ?? '')
+				.split(',')
+				.map((tool) => tool.trim())
+				.some((tool) => queryTools.has(tool)),
+		);
+		// Every shipped role holds at least one query tool, so the sweep cannot go vacuous.
+		expect(mintingRoles.map((template) => template.name)).toEqual(
+			AGENT_TEMPLATES.map((template) => template.name),
+		);
+		for (const template of mintingRoles) {
+			const tools = (template.tools ?? '').split(',').map((tool) => tool.trim());
+			expect(tools, `${template.name} must resolve the cg_ references it can mint`).toContain(
+				'codegraph_artifact',
+			);
+		}
+	});
 	it('gives the verify gate to the roles that execute validation', () => {
 		for (const role of ['worker', 'validator']) {
 			const tools = (AGENT_TEMPLATES.find((t) => t.name === role)?.tools ?? '')
