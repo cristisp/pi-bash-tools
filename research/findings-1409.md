@@ -33,6 +33,9 @@ The most important changes since the `findings-0909` report are:
 3. `bash-tools.project-command-summary` and `-invocation` make cache behavior observable: only 48 of 4,979 project-command invocations reused a cached result.
 4. `codegraph-runner.tool-inventory` makes Codegraph index freshness and synchronization observable, with zero recorded sync failures.
 5. The latest week improved its tool-error rate to 7.86%, but exact-duplicate excess stayed near 12% and cross-child repeated validation remains the dominant waste source.
+6. Calls can now be attributed by tool source: 28,844 builtin calls at a 5.0% error rate versus 8,030 `npm:@ztc/bash-tools` calls at 24.2%, which separates owned behavior from the host and interception layers.
+7. Failure codes are now counted directly from structured payloads, which surfaces 507 `edit-no-match` and 277 `policy-path-resolution-failure` results that the text-normalized view diluted.
+8. The `1.0.3` cohort is measurably cleaner than earlier releases: a 4.8% error rate and 6.7% duplicate excess versus 10.1% and 11.5% for `0.10.1`.
 
 The largest immediate optimization targets remain cross-child evidence caching, typed validation preflight, and result reuse, but they are now measurable rather than inferred.
 
@@ -114,6 +117,31 @@ In the latest 7 days, coverage rose to 310 of 321 sessions (96.57%) and 14,046 o
 Calls from sessions with missing or multiple versions remain excluded rather than assigned by proximity.
 
 The `1.0.3` cohort is now the largest recent cohort, so it is the right basis for the next iteration's baseline.
+
+### Per-version cohort metrics
+
+Each version cohort now reports error rate, duplicate excess, latency, cache decisions, and evidence reuse, not only call counts and result tokens.
+
+| Version | Calls | Errors | Error rate | Dup. excess | Latency p50 | Latency p95 | Cache hits | Reused calls |
+| ------- | ----: | -----: | ---------: | ----------: | ----------: | ----------: | ---------: | -----------: |
+| 0.10.1  | 9,238 |    931 |      10.1% |       1,062 |       25 ms |    4,095 ms |          0 |            8 |
+| 1.0.3   | 4,963 |    240 |       4.8% |         334 |       26 ms |    1,627 ms |          0 |           33 |
+| 1.0.2   | 3,767 |    340 |       9.0% |         355 |       36 ms |    3,573 ms |          0 |            1 |
+| 0.11.9  | 3,290 |    365 |      11.1% |         528 |       57 ms |    3,551 ms |          0 |            3 |
+| 0.9.0   | 2,937 |    319 |      10.9% |         325 |       38 ms |    2,066 ms |          0 |            0 |
+| 0.11.4  | 2,153 |    226 |      10.5% |         139 |       22 ms |    5,226 ms |          0 |            4 |
+| 0.10.0  | 2,127 |    244 |      11.5% |         385 |       23 ms |   10,987 ms |          0 |            0 |
+| 0.5.1   | 1,279 |     75 |       5.9% |         114 |       64 ms |   68,596 ms |          0 |            0 |
+| 1.0.0   | 1,057 |     92 |       8.7% |         135 |       33 ms |   26,430 ms |          0 |            0 |
+| 0.11.0  | 1,048 |    100 |       9.5% |          23 |       52 ms |    3,037 ms |          0 |            0 |
+
+`1.0.3` is the cleanest recent release on both error rate (4.8%) and duplicate excess (6.7% of its calls), and it also shows the highest evidence reuse (33 calls).
+
+`0.10.1` carried the most duplicate churn in absolute terms (1,062 excess calls, 11.5% of its calls).
+
+Cache reuse is near zero in every cohort, which confirms that the reuse problem is not specific to one release.
+
+The cohort metrics use the same multi-version exclusion rule, so they describe only sessions with a single observed extension version.
 
 ### Structured result version metadata
 
@@ -225,6 +253,61 @@ The summaries recorded 43 repeated unchanged requests, 160 truncations, and 33,3
 
 The invocation and summary cache counts agree closely, which increases confidence in both records.
 
+### Publication, lookup, and verdict segmentation
+
+The invocation records already carry publication, lookup, and verdict fields, which the previous report did not present.
+
+| Segment              | 30 days | 7 days |
+| -------------------- | ------: | -----: |
+| Invocations          |   4,979 |  2,271 |
+| Published refs       |      55 |     49 |
+| Publication failures |       0 |      0 |
+| Lookup attempts      |      55 |     55 |
+| Lookup successes     |      42 |     42 |
+| Lookup failures      |      13 |     13 |
+| Aggregate runs       |     289 |    282 |
+| Recorded refs        |     375 |    212 |
+| Coercions            |      38 |     36 |
+
+The `publication` block recorded 55 published `flow`-scoped refs across the 30 days with zero publication failures.
+
+The `lookup` block recorded 55 attempts, 42 successes, and 13 failures, so lookup is the part of the publication path that fails.
+
+The verdict distribution was 115 `incomplete`, 62 `passed`, and 33 `failed`, which is separate from the process exit status and gives a cleaner review signal.
+
+`aggregate` runs identify the consolidated verify records, and there were 289 of them.
+
+Verification refs (`ref`) appeared on 375 records, and argument coercions such as `paths:string-json-array` appeared 38 times, which indicates the tool is silently repairing caller mistakes rather than rejecting them.
+
+No invocation recorded shared execution above zero, which matches the `sharedExecutionRuns: 0` result.
+
+### Forced-bypass attribution
+
+2,064 of 4,979 invocations forced a cache bypass.
+
+They occurred across 137 sessions, so forced bypass is systemic rather than confined to a few workflows.
+
+| Role        | Forced runs |
+| ----------- | ----------: |
+| `(none)`    |       1,994 |
+| `worker`    |          42 |
+| `validator` |          28 |
+
+| Command             | Forced runs |
+| ------------------- | ----------: |
+| `node_test`         |         761 |
+| `node_lint`         |         423 |
+| `node_format`       |         380 |
+| `node_project_info` |         114 |
+| `node_typecheck`    |          99 |
+| `verify`            |          67 |
+| `node_build`        |          48 |
+| `node_format_check` |          43 |
+
+Most forced runs carry no orchestration role, which means the bypass is mostly requested by the caller's `force` argument rather than driven by a specific workflow role.
+
+`node_test`, `node_lint`, and `node_format` alone account for 1,564 forced runs, so those three commands are the first place to check whether bypassing the cache is justified.
+
 ## Codegraph telemetry
 
 `codegraph-runner.tool-inventory` now exposes index freshness and synchronization behavior.
@@ -288,6 +371,40 @@ Zero sync failures and non-stale freshness mean that the earlier "index state un
 
 `git_log` and `git_status` have unusually high error rates driven by request-schema problems, not by the underlying repository.
 
+## Tool source attribution
+
+Every `bash-tools.tool-inventory` entry carries `tools[].sourceInfo`, so calls can be attributed to the layer that actually owns the tool.
+
+That separates builtin host tools from intercepted packages and project extensions instead of treating all calls as one cohort.
+
+| Source                                        |  Calls | Errors | Error rate | Result tokens (est.) | Allocated cost |
+| --------------------------------------------- | -----: | -----: | ---------: | -------------------: | -------------: |
+| `builtin`                                     | 28,844 |  1,441 |       5.0% |           33,719,041 |         $73.69 |
+| `npm:@ztc/bash-tools`                         |  8,030 |  1,940 |      24.2% |           10,710,668 |         $16.13 |
+| `npm:@ztc/codegraph-runner`                   |  1,549 |      5 |       0.3% |            3,422,070 |          $3.15 |
+| `../../work/git/pi-extensions/bash-tools`     |  1,531 |    339 |      22.1% |            1,458,889 |          $4.36 |
+| `../../work/git/pi-extensions/subagent-herdr` |    447 |      8 |       1.8% |              251,833 |          $1.72 |
+| `cli`                                         |    410 |     33 |       8.0% |              655,230 |          $1.80 |
+| `npm:@ztc/subagent-herdr`                     |    345 |      1 |       0.3% |              596,258 |          $5.53 |
+| `npm:@upstash/context7-pi`                    |    168 |      2 |       1.2% |              153,349 |          $0.45 |
+| `npm:@ztc/lavish`                             |     23 |      3 |      13.0% |               64,481 |          $0.10 |
+
+41,347 of 55,599 calls were attributed, and 14,252 were not.
+
+The unattributed calls come from sessions that predate tool-inventory emission or from tool names that never appear in an inventory entry.
+
+The most common unattributed tool names were `read` (5,163), `bash` (2,296), `edit` (1,865), `grep` (1,213), and `project_command` (980).
+
+The 24.2% error rate on `npm:@ztc/bash-tools` is the single clearest reliability signal in the report, because those calls are our own interception surface rather than host behavior.
+
+Two malformed tool names appeared, `ls drizzle</arg_value>` and `ls src src/lib src/lib/services src/actions src/lib/db 2>/dev/null</arg_value>`.
+
+The analyzer now separates those into `malformedToolCalls` and `malformedTools`, so `unknownTools` lists only real tool names.
+
+They are not an importer or analyzer defect: the raw Pi log for session `subagent-wN-worker-49.jsonl` contains `{"type":"toolCall","name":"ls ...</arg_value>","arguments":{}}`, so the malformed name is written upstream, and this repository contains no `arg_value` parsing.
+
+In the latest 7 days, attribution is nearly complete (1 unattributed call), and the split is 11,344 builtin calls at 4.7% versus 2,921 `npm:@ztc/bash-tools` calls at 18.1%.
+
 ## Failure and error analysis
 
 The normalized error categories over 30 days were:
@@ -330,9 +447,47 @@ The largest schema-validation clusters were:
 
 Together, empty `git_status` paths, empty `git_log` revisions, and conflicting `git_diff` path arguments account for 487 errors that a typed preflight could eliminate.
 
-The `edit` failure modes remain stable: 281 stale-context mismatches, 141 ambiguous or non-unique matches, and 12 no-op replacements.
+The `edit` failure modes remain stable in the normalized view: 281 stale-context mismatches, 141 ambiguous or non-unique matches, and 12 no-op replacements.
+
+The analyzer now counts structured failure codes from the result payloads, which is a more complete and machine-stable view than message normalization.
+
+| Code                             | Count | Tools                         |
+| -------------------------------- | ----: | ----------------------------- |
+| `edit-no-match`                  |   507 | `edit`                        |
+| `policy-path-resolution-failure` |   277 | `read`, `grep`, `ls`, `edit`  |
+| `edit-ambiguous`                 |   222 | `edit`                        |
+| `policy-denied`                  |   104 | `ls`, `find`, `read`, `grep`  |
+| `policy-load-failure`            |    39 | `read`, `ls`, `edit`, `write` |
+| `inapplicable-command`           |    25 | `project_command`, `bash`     |
+| `confirmation-timeout`           |    17 | `ls`, `read`, `write`, `grep` |
+| `edit-overlap`                   |    15 | `edit`                        |
+| `missing-package-manifest`       |    14 | `project_command`             |
+| `test-path-outside-workspace`    |    13 | `project_command`             |
+| `invalid-test-parameters`        |    11 | `project_command`             |
+| `missing-binary`                 |    10 | `project_command`, `bash`     |
+| `policy-denied-once`             |     4 | `find`, `ls`                  |
+| `edit-no-op`                     |     3 | `edit`                        |
+
+The structured edit codes total 747, which is larger than the 434 normalized `stale_context`, `ambiguous_edit`, and `no_op_edit` results, because many edit failures were previously folded into `other`.
+
+There is no `edit-stale-context` code in the logs; `edit-no-match` is the closest available signal, so an evidence-backed stale classification cannot yet be separated from a plain no-match.
 
 Other notable exact messages were 34 `verify authorization failed: save`, 20 `verify authorization failed: timeout`, 13 `verify could not resolve the typecheck package script typecheck`, 12 `read Git show failed: fatal: bad revision 'HEAD'`, 11 `EISDIR: illegal operation on a directory, read`, 11 `rg: the literal "\n" is not allowed in a regex`, and 10 `Unable to load project command policy`.
+
+### Dual error rate
+
+The analyzer now reports both an inclusive tool-result error rate and a rate that excludes expected authorization and fail-closed outcomes.
+
+| Window  | Inclusive | Excluding expected outcomes | Excluded | Breakdown                                                     |
+| ------- | --------: | --------------------------: | -------: | ------------------------------------------------------------- |
+| 30 days |     8.74% |                       7.05% |      942 | policy 626, orchestration budget 302, confirmation timeout 14 |
+| 7 days  |     7.86% |                       5.92% |      323 | orchestration budget 173, policy 148, confirmation timeout 2  |
+
+Expected outcomes are identified from structured policy codes (`policy-*`), `confirmation-timeout`, the normalized `policy_denied` category, and the `orchestration_budget` category.
+
+The two rates must not be confused: the inclusive rate describes raw tool reliability, while the excluding rate describes avoidable failures.
+
+Reclassifying confirmation timeouts is a real correction, because `Project command confirmation timed out` was previously normalized as a provider timeout.
 
 ## Duplicate work
 
@@ -419,6 +574,46 @@ The most repeated artifacts were:
 `PLAN.md` was read 610 times across 216 sessions and changed between reads 557 times, so those reads carry real information but at very high cost.
 
 The low ratio of content changes to repeated reads for `package.json`, `src/tools/project-command/tool.ts`, and `SUBAGENTS_GUIDE.md` supports hashing plus conditional or cached reads.
+
+### Read-batch producer linking
+
+`read-batch-invocation` records produced references directly, which makes the producer half of the `rr_` evidence chain observable.
+
+| Metric          |   30 days |
+| --------------- | --------: |
+| Invocations     |         7 |
+| Items           |        21 |
+| Produced refs   |        21 |
+| Unique refs     |        19 |
+| Truncated items |         1 |
+| Unchanged items |         2 |
+| Scope           | `session` |
+
+Every item produced a reference, and the two duplicate references are the same path served across invocations.
+
+The consumer half remains unavailable because `read-batch-invocation` does not record `role` or `delegationId`, so the analyzer cannot say which child consumed an `rr_` ref.
+
+## Git evidence reuse and truncation
+
+Git results carry an `output` block with `truncated`, `totalBytes`, and `totalLines`, plus a `mode` for diff responses.
+
+| Metric                                 |    30 days |    7 days |
+| -------------------------------------- | ---------: | --------: |
+| Result payloads                        |      2,908 |       964 |
+| Total bytes                            | 38,264,376 | 7,964,301 |
+| Total lines                            |    886,939 |   155,777 |
+| Truncated results                      |        116 |        49 |
+| `patch` responses                      |      1,083 |       325 |
+| `summary` responses                    |        283 |       173 |
+| Results with `head`/`dirtyFilesDigest` |          5 |         5 |
+
+The `git-invocation` records add 51 invocations across 18 sessions (36 `git_diff`, 12 `git_status`, 2 `git_show`, 1 `git_log`) with 340,249 aggregate result bytes.
+
+`unchanged` was `false` on all 51 invocation records, so the git reuse path was never exercised in this snapshot and there is no measured summary reuse to report.
+
+Git results are a large context source: 38.26 million bytes over 30 days, and 116 results were truncated, which indicates the bounded-output path is doing real work.
+
+The `head`/`dirtyFilesDigest` extension fields appear on only 5 results, so the claimed post-1.1.0 coverage widening is not yet material in this window.
 
 ## Orchestration
 
@@ -556,6 +751,32 @@ The data-availability matrix now reports:
 
 `repository_state` coverage rose from 318 to 1,404 of 55,599 calls after the custom-entry merge, but it is still too low to label the remaining unknown-state duplicates as waste.
 
+## Data map verification
+
+The `bash-tools` data map was checked against the captured records, and most of it is confirmed.
+
+These claims did not match the current data and should not be built on as written:
+
+- `repositoryStateStatus` does not exist on `project-command-invocation` (0 of 1,239 records). The available fields are `stateDrift`, `sharedExecution`, and `repositoryState.stateMatchesCurrent` / `repositoryState.readable`.
+- The edit codes `edit-stale-context` and `edit-unchanged-retry` do not appear. The observed codes are `edit-no-match` (507), `edit-ambiguous` (222), `edit-overlap` (15), and `edit-no-op` (3), so the proposed evidence-backed stale separation is not yet available.
+- Git results carry `output.{truncated,totalBytes,totalLines}` on 2,908 results and `mode` on 747, but `head` and `dirtyFilesDigest` appear on only 5 results in this snapshot, so the claimed 1.1.0 coverage widening is barely represented.
+- `policyId` and `authFingerprint` are not on `authorization-outcome` (0 of 797). They live in tool-result payloads.
+- `git-invocation.repositoryState` uses `repositoryId` and `dirtyDigest`, not `repositoryIdentity` and `dirtyFilesDigest`.
+- Version is not always one per session: one session has 12 inventory entries with 2 distinct `extensionVersion` values, so multi-version sessions must stay excluded.
+
+Confirmed claims that the analyzer now consumes:
+
+- `tools[].sourceInfo` is present on 3,873 of 3,873 tool entries for `path`, `source`, `scope`, and `origin`, and on 2,897 for `baseDir`.
+- `project-command-invocation` carries `publication` (29), `lookup` (41), `verdict` (120), `aggregate` (176), `role`/`delegationId`/`flowId` (419), `ref` (124), and `coercions` (36).
+- `read-batch-invocation` carries `items[].ref` and `scope` but no `role`, `delegationId`, `publication`, or `lookup`, so only producer linking is possible today.
+- `authorization-outcome` is missing `mode`, `flowId`, `policySource`, `role`, and `delegationId`.
+- `git-invocation.unchanged` was `false` on all 51 records, so git summary reuse is not exercised yet.
+
+Two more items were diagnosed rather than implemented:
+
+- Git `mode` is absent on 2,161 of 2,908 result payloads, so a `(none)` mode bucket dominates and mode-based segmentation is only partially useful.
+- The malformed tool names are not ours to fix. The raw Pi log already contains `{"type":"toolCall","name":"ls ...</arg_value>","arguments":{}}`, and this repository has no `arg_value` parsing. The upstream layer that turns a model's text-form tool call into a structured `toolCall` block produced the wrong `name`. The analyzer now isolates these under `malformedToolCalls`.
+
 ## Comparison with findings-0909
 
 The windows differ by six days, so only rates and structural signals are compared.
@@ -606,6 +827,20 @@ The analyzer was extended during this investigation so the new extension telemet
 
 It also emits `customEntryFieldCoverage`, which lists per-custom-type field presence and exposes telemetry gaps such as null `status` values.
 
+Tool source attribution is emitted under `sourceAttribution`, using inventory `sourceInfo` to separate builtin, package, project-extension, and CLI calls, and isolating malformed tool names into `malformedTools`.
+
+Failure analysis now emits `errorAnalysis.structuredCodes`, which counts provider error codes directly instead of relying on message normalization.
+
+Version cohorts now include error rate, duplicate excess, latency, cache decisions, and evidence-reuse counts.
+
+`projectCommandTelemetry` now includes publications, publication failures, lookups, verdicts, aggregate runs, shared-execution runs, refs, coercions, and a `forcedBypass` breakdown by role and command.
+
+`errorAnalysis.rates` now reports both the inclusive error rate and the rate excluding expected authorization and fail-closed outcomes.
+
+`versionAwareAnalysis.gitTelemetry` reports git invocation reuse, result modes, truncation, and byte and line volume.
+
+`versionAwareAnalysis.readBatchTelemetry` reports produced `rr_` references, truncation, and unchanged items, and marks consumer attribution as unavailable.
+
 State-aware duplication now merges custom-entry repository state, which raised call state coverage from 323 to 1,404, and reports `stateSources` and `customStatePairs`.
 
 Retry analysis now reports `retryTargets` and separates unchanged non-retryable retries from unchanged retries with unknown retryability.
@@ -618,7 +853,7 @@ The `dataAvailability` matrix now marks `policy_prompt_display` and `codegraph_i
 
 Database custom entries are now filtered by their own event timestamp, which fixed a leak where a post-window inventory entry could become the reported latest version.
 
-The analyzer test suite covers the new telemetry and the window-filtering behavior and passes 16 tests.
+The analyzer test suite covers the new telemetry, source attribution, structured codes, cohort metrics, git and read-batch telemetry, dual error rates, and the window-filtering behavior and passes 18 tests.
 
 Persisting the provider tool-call id on tool-call messages is the next enabler, because it would replace the approximate session-and-command pairing with an exact join.
 

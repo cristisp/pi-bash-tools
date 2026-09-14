@@ -131,6 +131,10 @@ A successful or failed execution returns a details object with the following pri
 
 The details may also include project information, `diagnostic`, `suggestedAction`, fingerprints, relevant inputs, repository state, mutability, concurrency, drift, provenance, publication, and producer fields.
 
+Model-facing content carries the bounded evidence `ref` when a completed execution stored evidence and the `publication` outcome when the request asked to publish, copying both values unchanged; each key is omitted entirely when it is undefined, and the remaining evidence metadata stays in details.
+Failing and cancelled executions report the stored `pc_` reference in the failure or cancellation message and keep `ref` and `publication` in their error details and invocation records.
+Only the reference enters the message; the realized publication outcome stays in error details.
+
 `node_project_info` also exposes `nodeVersion`, `manifestPresent`, `packageManager`, `scripts`, and `applicableCommands` when available.
 
 ## Caching and evidence
@@ -142,5 +146,8 @@ Package scripts, Fallow analyses, and other commands with uncontrolled external 
 Non-mutating identical requests can use single-flight coordination, which is reported separately as `sharedExecution: true`.
 
 Repository state includes the canonical repository identity, `HEAD`, and a dirty-files digest that includes Git-reported paths, content, mode, size, and status.
+
+A completed execution that stored evidence returns the bounded `pc_` reference in model-facing content, and a request that asked to publish reports the realized publication outcome there.
+A failing or cancelled execution that stored evidence reports the `pc_` reference in the failure or cancellation message, and the realized publication outcome remains in error details.
 
 See [Artifacts and observability](artifacts.md) for cache paths, evidence scope, and invocation records.

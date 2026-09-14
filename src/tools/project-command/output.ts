@@ -12,7 +12,11 @@ import { projectCommandResultCategory } from "./categories.ts";
 import { projectCommandIdGuidance } from "./command-id-guidance.ts";
 import { definedObjectProperties } from "./defined-properties.ts";
 import { getProjectCommandDefinitions, type ProjectCommandDefinition } from "./definitions.ts";
-import { boundProjectCommandText, projectCommandDiagnostic } from "./diagnostics.ts";
+import {
+  boundProjectCommandText,
+  boundedEvidenceRefSegment,
+  projectCommandDiagnostic,
+} from "./diagnostics.ts";
 import type { ProjectCommandResolutionError } from "./errors.ts";
 import type {
   ProjectCommandEvidenceProvenance,
@@ -312,6 +316,7 @@ function executionFailureMessage(details: ProjectCommandOutputDetails): string {
       ? undefined
       : `signal ${boundProjectCommandText(details.exit.signal)}`,
   ].filter((part): part is string => part !== undefined);
+  const ref = boundedEvidenceRefSegment(details.ref);
   const diagnostic =
     details.diagnostic === undefined
       ? undefined
@@ -321,6 +326,7 @@ function executionFailureMessage(details: ProjectCommandOutputDetails): string {
       "Project command failed",
       `status: ${boundProjectCommandText(details.status)}`,
       `reason: ${boundProjectCommandText(executionFailureReason(details.status))}`,
+      ref,
       `commandId: ${boundProjectCommandText(details.commandId)}`,
       `resolvedCommand: ${boundProjectCommandText(details.resolvedCommand)}`,
       `parameters: ${boundProjectCommandText(serializeDiagnostic(details.parameters))}`,

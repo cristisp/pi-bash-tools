@@ -140,6 +140,13 @@ export function boundProjectCommandText(text: string): string {
   return boundSanitizedProjectCommandText(sanitizeProjectCommandText(text));
 }
 
+export function boundedEvidenceRefSegment(ref: unknown): string | undefined {
+  if (typeof ref !== "string" || ref.length === 0) {
+    return undefined;
+  }
+  return `ref: ${boundProjectCommandText(ref)}`;
+}
+
 function boundedDiagnostic(text: string, commandId: string): string | undefined {
   const cleaned = withoutCommandBanner(sanitizeProjectCommandText(text), commandId).trim();
   if (cleaned.length === 0) {

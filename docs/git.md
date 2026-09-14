@@ -26,13 +26,15 @@ Entries inside a `paths` array are never coerced, because dropping one entry wou
 
 A request that supplies both `path` and `paths` is still rejected; an empty `path` is first treated as absent, and a non-empty conflict keeps its existing rejection and wording.
 
+An empty `path` in a patch request leaves no scope, so the request is rejected by the patch-scope rule below.
+
 A request-shape failure that an identical retry would reproduce is remembered per session, tool, and effective request shape.
 
 A repeated identical request is rejected without a Git execution with the code `unchanged-invalid-request`, `retryable: false`, and `executed: false`, and its record carries `retryInvalidation: "invalid-request-repeat"`.
 
 Its message is `Identical invalid Git request was already rejected for this session; change the request before retrying; action: Correct the request shape or value and retry.`
 
-Only request-shape validation failures participate: empty or control-character `path` and `revision` text, an empty `paths` array, and the `path`-and-`paths` conflict.
+Only request-shape validation failures participate: empty or control-character `path` and `revision` text, an empty `paths` array, the `path`-and-`paths` conflict, and a `mode: "patch"` request without `path` or `paths`.
 
 Unsafe paths and unsafe revision expressions, cancellation, spawn failures, command failures, output-limit breaches, and repository-resolution failures never participate, so a transient failure is never blocked from a retry.
 
@@ -112,7 +114,7 @@ The status unchanged cache is process-local.
 
 `maxBytes` must be an integer from 1 through 1 MiB and defaults to 16 KiB.
 
-Omit path filters to inspect the whole repository.
+Omit path filters to inspect the whole repository as a summary. The default summary is the only whole-repository mode: `mode: "patch"` requires an explicit `path` or `paths`, and an unscoped patch request is rejected before any Git diff process runs.
 
 The legacy single `path` field remains supported, but new calls should use a non-empty `paths` array.
 
@@ -200,6 +202,14 @@ The comparison is process-local, mirrors the `git_status` unchanged behavior, an
 ```
 
 Patch and show text are truncated to the requested UTF-8 byte limit without splitting a code point.
+
+## Whole-repository patch scope
+
+Decision: `git_diff` patch mode requires an explicit `path` or `paths`. A whole-repository patch request is rejected as an invalid request before any Git diff process runs (the invocation observer may still read repository state for telemetry), and scoped patch requests keep their bounded truncation guidance.
+
+Rationale: measured usage is 1,083 `patch` responses against 283 `summary` responses, with 116 truncated results, which makes `git_diff` the second-largest result-token source at about 8.24 million tokens. A byte-prefix whole-repository patch can cut a file mid-hunk, and the caller re-requests the affected content scoped anyway, so the unscoped path spends bytes without answering the request.
+
+Revisit trigger: revisit if unscoped diff requests do not shift toward summary after this contract, or if summary-then-scoped-patch sequences raise total `git_diff` bytes or call counts.
 
 ## Cross-process evidence references
 

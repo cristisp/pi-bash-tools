@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { expect, it } from "vitest";
 
+import type { GitInvocationRecord } from "../../../src/observability/git-invocation.ts";
 import type { RenderTheme } from "../../../src/tools/call-render.ts";
 import { createGitDiffSummaryCache } from "../../../src/tools/git/diff/cache.ts";
 import type {
@@ -796,16 +797,65 @@ it("uses complete multibyte summary metadata when maxBytes bounds the display", 
   });
 });
 
-it("supports omitted, single, and multiple path filters for explicit patches", async () => {
-  const wholeRepository = patchExec();
-  await createGitDiffTool(wholeRepository.exec).execute(
-    "whole",
-    { mode: "patch", maxBytes: 1024 },
-    undefined,
-    undefined,
-    context,
+it.each([
+  ["bare", { mode: "patch" as const }],
+  ["staged", { mode: "patch" as const, staged: true }],
+  ["bounded", { mode: "patch" as const, maxBytes: 5 }],
+] as const)("rejects an unscoped %s patch before any Git execution", async (_variant, params) => {
+  const { exec, calls } = patchExec();
+  const call = () =>
+    createGitDiffTool(exec).execute("unscoped", params, undefined, undefined, context);
+
+  await expect(call()).rejects.toHaveProperty("contract.shapeDeterministic", true);
+  await expect(call()).rejects.toThrow(
+    'mode "patch" requires explicit path or paths; use the default summary to identify changed files, then request patch content for those paths; action: Correct the paths field or request shape and retry.',
   );
-  expect(wholeRepository.calls[1].slice(-1)).toEqual(["--"]);
+  expect(calls).toHaveLength(0);
+});
+
+it("omits request fields from the invocation record of a rejected unscoped patch", async () => {
+  const { exec, calls } = patchExec();
+  const records: GitInvocationRecord[] = [];
+  const tool = createGitDiffTool(exec, {
+    invocationObservation: {
+      invocationRecorder: (record) => {
+        records.push(record);
+      },
+    },
+  });
+  const sessionContext: GitToolContext = {
+    cwd,
+    signal: undefined,
+    sessionManager: { getSessionId: () => "rejected-patch-session" },
+  };
+
+  await expect(
+    tool.execute("rejected", { mode: "patch", maxBytes: 5 }, undefined, undefined, sessionContext),
+  ).rejects.toHaveProperty("contract.code", "invalid-request");
+  expect(calls).toHaveLength(0);
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({
+    tool: "git_diff",
+    reason: "invalid-request",
+    errorCode: "invalid-request",
+  });
+  expect(Object.hasOwn(records[0] ?? {}, "mode")).toBe(false);
+  expect(Object.hasOwn(records[0] ?? {}, "maxBytes")).toBe(false);
+  expect(Object.hasOwn(records[0] ?? {}, "truncated")).toBe(false);
+});
+
+it("rejects an unscoped patch request and supports single and multiple path filters", async () => {
+  const unscoped = patchExec();
+  await expect(
+    createGitDiffTool(unscoped.exec).execute(
+      "whole",
+      { mode: "patch", maxBytes: 1024 },
+      undefined,
+      undefined,
+      context,
+    ),
+  ).rejects.toThrow(/requires explicit path or paths/u);
+  expect(unscoped.calls).toHaveLength(0);
 
   const onePath = patchExec();
   await createGitDiffTool(onePath.exec).execute(
@@ -872,21 +922,24 @@ it("uses the stable default summary limit and explicitly describes patch truncat
   const long = patchExec("0123456789abcdef");
   const response = await createGitDiffTool(long.exec).execute(
     "patch-truncated",
-    { mode: "patch", maxBytes: 5 },
+    { mode: "patch", paths: ["src"], maxBytes: 5 },
     undefined,
     undefined,
     context,
   );
   expect(patchDetails(response.details).patch).toBe("01234");
   expect(response.details.output).toEqual({ truncated: true, totalBytes: 16, totalLines: 1 });
-  expect(response.details.message).toMatch(/INCOMPLETE|larger maxBytes/iu);
+  expect(response.details.message).toContain("INCOMPLETE");
+  expect(response.details.message).toContain(
+    'Follow up with an explicit scoped request using mode: "patch", paths: ["file"], and a larger maxBytes.',
+  );
 });
 
 it("returns empty and binary-safe explicit patches", async () => {
   const empty = patchExec();
   const emptyResponse = await createGitDiffTool(empty.exec).execute(
     "empty",
-    { mode: "patch", maxBytes: 100 },
+    { mode: "patch", paths: ["empty.txt"], maxBytes: 100 },
     undefined,
     undefined,
     context,
@@ -896,7 +949,7 @@ it("returns empty and binary-safe explicit patches", async () => {
   const binary = patchExec("Binary files a/x and b/x differ\n");
   const binaryResponse = await createGitDiffTool(binary.exec).execute(
     "binary",
-    { mode: "patch", maxBytes: 100 },
+    { mode: "patch", paths: ["binary.bin"], maxBytes: 100 },
     undefined,
     undefined,
     context,

@@ -100,6 +100,24 @@ it("treats an empty git_diff path as omitted next to paths", async () => {
   expect(diffArgs?.at(-1)).toBe("src");
 });
 
+it("rejects an unscoped patch request after an empty path is omitted", async () => {
+  const calls: string[][] = [];
+  const call = () =>
+    createGitDiffTool(recordingExec(calls)).execute(
+      "call",
+      { mode: "patch", path: "" },
+      undefined,
+      undefined,
+      context,
+    );
+
+  await expect(call()).rejects.toHaveProperty("contract.shapeDeterministic", true);
+  await expect(call()).rejects.toThrow(
+    'mode "patch" requires explicit path or paths; use the default summary to identify changed files, then request patch content for those paths; action: Correct the paths field or request shape and retry.',
+  );
+  expect(calls).toHaveLength(0);
+});
+
 it("never drops empty paths entries, which would widen the scope", async () => {
   const calls: string[][] = [];
 

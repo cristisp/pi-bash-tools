@@ -18,6 +18,12 @@ A published `rr_` reference is reauthorized and re-read on every lookup; only pa
 
 `project_command` evidence references use the `pc_` prefix.
 
+A `project_command` request that completes with a result and stores evidence returns the bounded `pc_` reference in model-facing content as `ref`, mirroring the `rr_` reference returned to the model.
+
+A `project_command` execution may request explicit publication with `publish: { "flowId": "..." }`, and model-facing content reports the realized outcome in `publication`; both keys are omitted entirely when they are undefined.
+A failing or cancelled execution whose evidence was stored reports the `pc_` reference in the failure or cancellation message and keeps `ref` in its error details and invocation records.
+The realized `publication` outcome for those executions stays in error details and invocation records.
+
 `verify` evidence references use the `vr_` prefix.
 
 Evidence references are non-replayable lookups, not commands and not permission grants.

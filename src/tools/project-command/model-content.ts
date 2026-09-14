@@ -2,6 +2,7 @@ import type { ResultCategory } from "../errors.ts";
 import type { ProjectCommandCacheDecision } from "./cache.ts";
 import { definedObjectProperties } from "./defined-properties.ts";
 import { sanitizeProjectCommandText } from "./diagnostics.ts";
+import type { ProjectCommandEvidencePublication } from "./evidence.ts";
 import type { ProjectCommandOutput } from "./execution.ts";
 import type { ProjectCommandOutputDetails } from "./output.ts";
 
@@ -77,7 +78,9 @@ type NodeProjectInfoDetails = {
  * Compact, sanitized projection of result details serialized into tool
  * content for the model. Internal authorization, cache, fingerprint, policy,
  * invocation, and timing metadata stay in `details` (which the cache and
- * tests rely on) and never appear in content.
+ * tests rely on) and never appear in content. The bounded evidence `ref` and
+ * the realized `publication` outcome of a requested publication are the only
+ * evidence metadata copied through, unchanged.
  */
 export interface ProjectCommandModelContent {
   readonly [key: string]: unknown;
@@ -106,6 +109,8 @@ export interface ProjectCommandModelContent {
   readonly forced: boolean;
   readonly cacheDecision: ProjectCommandCacheDecision;
   readonly producerScope?: "session" | "flow";
+  readonly ref?: string;
+  readonly publication?: ProjectCommandEvidencePublication;
 }
 
 function modelProjectInfo(details: ProjectCommandOutputDetails): Readonly<Record<string, unknown>> {
@@ -154,6 +159,10 @@ export function projectCommandModelContent(
     reused: details.reused,
     forced: details.forced,
     cacheDecision: details.cacheDecision,
-    ...definedObjectProperties([["producerScope", details.producerScope]]),
+    ...definedObjectProperties([
+      ["producerScope", details.producerScope],
+      ["ref", details.ref],
+      ["publication", details.publication],
+    ]),
   };
 }

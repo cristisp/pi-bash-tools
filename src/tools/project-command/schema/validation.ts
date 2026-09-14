@@ -8,6 +8,7 @@ import {
 import { isRecord, isValidPublishValue } from "../../value-validation.ts";
 import { projectCommandIdGuidance } from "../command-id-guidance.ts";
 import { getProjectCommandDefinitions, type ProjectCommandDefinition } from "../definitions.ts";
+import { boundedEvidenceRefSegment } from "../diagnostics.ts";
 import {
   isValidNodePackageScriptVariant,
   nodePackageScriptVariantKey,
@@ -448,8 +449,11 @@ export function cancellationError(details?: unknown): ProjectCommandToolError {
     retryable: true,
     executed,
   });
+  const ref = isRecord(details) ? boundedEvidenceRefSegment(details.ref) : undefined;
   const error = new ProjectCommandToolError(
-    "Project command request cancelled",
+    ref === undefined
+      ? "Project command request cancelled"
+      : `Project command request cancelled; ${ref}`,
     isRecord(details)
       ? withToolErrorContract(details, contract)
       : withToolErrorContract({}, contract),

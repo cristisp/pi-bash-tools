@@ -155,3 +155,19 @@ it("still refuses an identical empty-paths repeat as unchanged", async () => {
   await expect(call()).rejects.toHaveProperty("contract.code", "invalid-request");
   await expect(call()).rejects.toHaveProperty("contract.code", "unchanged-invalid-request");
 });
+
+it("rejects an unscoped patch request and re-rejects an identical repeat as unchanged", async () => {
+  const tool = createGitDiffTool(repositoryExec(), {
+    invocationObservation: { retryInvalidationTracker: createInvalidRequestTracker() },
+  });
+  const call = () =>
+    tool.execute("call", { mode: "patch" }, undefined, undefined, sessionContext());
+
+  const rejection = call();
+  await expect(rejection).rejects.toHaveProperty("contract.code", "invalid-request");
+  await expect(rejection).rejects.toHaveProperty("contract.shapeDeterministic", true);
+  await expect(rejection).rejects.toThrow(
+    'mode "patch" requires explicit path or paths; use the default summary to identify changed files, then request patch content for those paths; action: Correct the paths field or request shape and retry.',
+  );
+  await expect(call()).rejects.toHaveProperty("contract.code", "unchanged-invalid-request");
+});

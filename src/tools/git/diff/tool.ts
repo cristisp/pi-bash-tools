@@ -293,6 +293,14 @@ export function renderGitDiffCall(
   return renderCallLine(theme, "git_diff", parts);
 }
 
+function isUnscopedPatchRequest(
+  responseMode: "summary" | "patch",
+  hasLegacyPath: boolean,
+  hasPaths: boolean,
+): boolean {
+  return responseMode === "patch" && !hasLegacyPath && !hasPaths;
+}
+
 function normalizeGitDiffRequest(params: GitDiffRequestParams): GitDiffRequest {
   validateGitRequestKeys(
     params,
@@ -307,6 +315,12 @@ function normalizeGitDiffRequest(params: GitDiffRequestParams): GitDiffRequest {
   const responseMode = params.mode ?? "summary";
   if (responseMode !== "summary" && responseMode !== "patch") {
     throw invalidGitRequest('mode must be either "summary" or "patch"', "mode");
+  }
+  if (isUnscopedPatchRequest(responseMode, hasLegacyPath, hasPaths)) {
+    throw invalidGitRequestShape(
+      'mode "patch" requires explicit path or paths; use the default summary to identify changed files, then request patch content for those paths',
+      "paths",
+    );
   }
   const staged = normalizeGitBoolean(params.staged, "staged") === true;
   const responseLimit = params.maxBytes ?? DEFAULT_GIT_DIFF_MAX_BYTES;
@@ -613,7 +627,7 @@ export function createGitDiffTool(
     name: "git_diff",
     label: "Git diff",
     description:
-      'Read a bounded Git diff. The default mode is a summary containing status, per-file diff stat, and hunk headers without bodies. Use mode: "patch" explicitly for patch content; for new path-filtered calls, use paths: ["file"].',
+      'Read a bounded Git diff. The default mode is a summary containing status, per-file diff stat, and hunk headers without bodies. Use mode: "patch" with explicit paths: ["file"] for patch content; whole-repository reads use the default summary.',
     promptSnippet: "Inspect a bounded Git diff",
     parameters: gitDiffParameters,
     renderCall(args, theme) {

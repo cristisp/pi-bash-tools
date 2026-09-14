@@ -2,7 +2,14 @@ import { writeFile, realpath } from "node:fs/promises";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { projectCommandIdentity } from "../../src/tools/project-command/definitions.ts";
+import {
+  getProjectCommandDefinition,
+  projectCommandIdentity,
+} from "../../src/tools/project-command/definitions.ts";
+import type {
+  ProjectCommandEvidenceRecord,
+  ProjectCommandEvidenceStore,
+} from "../../src/tools/project-command/evidence.ts";
 import {
   PROJECT_COMMAND_MODEL_OUTPUT_MAX_CHARS,
   projectCommandModelContent,
@@ -10,12 +17,23 @@ import {
 import type { ProjectCommandOutputDetails } from "../../src/tools/project-command/output.ts";
 import { resolveFixedProjectCommand } from "../../src/tools/project-command/resolution.ts";
 import { createProjectCommandToolForTesting } from "../../src/tools/project-command/tool.ts";
+import { authorize } from "./tool-execution-helpers.ts";
 import { cleanupProjectCommandFixtures, context, fixture } from "./tool-test-fixtures.ts";
 
 afterEach(cleanupProjectCommandFixtures);
 
 function isRecordObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parsedTextContent(response: {
+  readonly content: readonly { readonly type: string; readonly text?: string }[];
+}): Record<string, unknown> {
+  const entry = response.content[0];
+  if (entry?.type !== "text") throw new Error("expected text content");
+  const parsed: unknown = JSON.parse(entry.text ?? "");
+  if (!isRecordObject(parsed)) throw new Error("expected serialized object content");
+  return parsed;
 }
 
 function detailsFixture(
@@ -129,6 +147,57 @@ describe("projectCommandModelContent", () => {
     for (const key of OMITTED_INTERNAL_KEYS) {
       expect(content, `content must not expose ${key}`).not.toHaveProperty(key);
     }
+  });
+
+  it("includes the evidence reference when defined and omits the key otherwise", () => {
+    const withRef = projectCommandModelContent(detailsFixture({ ref: "pc_example" }));
+    expect(withRef.ref).toBe("pc_example");
+
+    const withoutRef = projectCommandModelContent(detailsFixture());
+    expect("ref" in withoutRef).toBe(false);
+    expect(withoutRef).not.toHaveProperty("ref");
+  });
+
+  it("includes the publication outcome when defined and omits the key otherwise", () => {
+    const published = projectCommandModelContent(
+      detailsFixture({
+        ref: "pc_example",
+        publication: { scope: "flow", flowId: "flow-a", published: true },
+      }),
+    );
+    expect(published.publication).toEqual({ scope: "flow", flowId: "flow-a", published: true });
+
+    const failed = projectCommandModelContent(
+      detailsFixture({
+        ref: "pc_example",
+        publication: {
+          scope: "flow",
+          flowId: "flow-a",
+          published: false,
+          error: "Evidence publication was not available from the producer scope.",
+        },
+      }),
+    );
+    expect(failed.publication).toEqual({
+      scope: "flow",
+      flowId: "flow-a",
+      published: false,
+      error: "Evidence publication was not available from the producer scope.",
+    });
+
+    const withoutPublication = projectCommandModelContent(detailsFixture({ ref: "pc_example" }));
+    expect("publication" in withoutPublication).toBe(false);
+    expect(withoutPublication).not.toHaveProperty("publication");
+  });
+
+  it("never emits undefined-valued keys", () => {
+    const content = projectCommandModelContent(detailsFixture());
+    for (const [key, value] of Object.entries(content)) {
+      expect(value, `content must define a value for ${key}`).not.toBeUndefined();
+    }
+    const keys = Object.keys(content);
+    expect(keys).not.toContain("ref");
+    expect(keys).not.toContain("publication");
   });
 
   it("sanitizes ANSI escape and control sequences from output text", () => {
@@ -287,5 +356,62 @@ describe("projectCommandModelContent", () => {
     for (const key of OMITTED_INTERNAL_KEYS) {
       expect(content, `serialized content must not expose ${key}`).not.toHaveProperty(key);
     }
+    expect("ref" in content).toBe(false);
+    expect("publication" in content).toBe(false);
+  });
+
+  it("serializes the evidence reference for executions and lookups", async () => {
+    const fixtureData = await fixture();
+    const definition = getProjectCommandDefinition("workspace_path");
+    if (definition === undefined) throw new Error("missing workspace_path definition");
+    const resolved = resolveFixedProjectCommand(definition);
+    await authorize(fixtureData, definition, resolved);
+    let storedRecord: ProjectCommandEvidenceRecord | undefined;
+    const evidence: ProjectCommandEvidenceStore = {
+      getByRef: (ref) => (storedRecord?.ref === ref ? storedRecord : undefined),
+      set: (record) => {
+        storedRecord = record;
+        return true;
+      },
+      publish: () => false,
+      clear: () => {
+        storedRecord = undefined;
+      },
+    };
+    const tool = createProjectCommandToolForTesting({
+      configPath: fixtureData.configPath,
+      evidence,
+      executor: async (_resolved, cwd) => ({
+        status: "success" as const,
+        exit: { code: 0, signal: null },
+        timedOut: false,
+        cancelled: false,
+        stdout: { text: cwd, truncated: false, totalBytes: cwd.length, totalLines: 1 },
+        stderr: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
+      }),
+    });
+    const executed = await tool.execute(
+      "serialized-ref-producer",
+      { commandId: "workspace_path" },
+      undefined,
+      undefined,
+      context(fixtureData.directory),
+    );
+    const ref = executed.details.ref;
+    if (typeof ref !== "string") throw new Error("expected an evidence reference");
+    const executedContent = parsedTextContent(executed);
+    expect(executedContent.ref).toBe(ref);
+    expect("publication" in executedContent).toBe(false);
+
+    const lookedUp = await tool.execute(
+      "serialized-ref-lookup",
+      { ref },
+      undefined,
+      undefined,
+      context(fixtureData.directory),
+    );
+    const lookedUpContent = parsedTextContent(lookedUp);
+    expect(lookedUpContent.ref).toBe(ref);
+    expect("publication" in lookedUpContent).toBe(false);
   });
 });

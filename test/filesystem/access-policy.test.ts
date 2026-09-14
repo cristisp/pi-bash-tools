@@ -1,4 +1,4 @@
-import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
@@ -18,9 +18,30 @@ import {
 import { createPolicyStoreForTesting } from "../../src/tools/policy/store.ts";
 import { createPolicyTestFixtures } from "../policy/test-fixtures.ts";
 
+const fsHooks = vi.hoisted(() => ({
+  abortOnRealpath: undefined as (() => void) | undefined,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    realpath: async (path: string) => {
+      const abort = fsHooks.abortOnRealpath;
+      if (abort === undefined) return actual.realpath(path);
+      fsHooks.abortOnRealpath = undefined;
+      abort();
+      const error = new Error("ENOENT: no such file or directory");
+      Object.assign(error, { code: "ENOENT" });
+      throw error;
+    },
+  };
+});
+
 const fixtures = createPolicyTestFixtures();
 
 afterEach(async () => {
+  fsHooks.abortOnRealpath = undefined;
   vi.useRealTimers();
   await fixtures.cleanup();
 });
@@ -573,7 +594,10 @@ it("classifies policy loading, path resolution, and cancellation failures", asyn
     context(directory),
   );
   expect(missingResult?.reason).toContain('"code":"policy-path-resolution-failure"');
+  expect(missingResult?.reason).toContain('"category":"POLICY_FAILURE"');
+  expect(missingResult?.reason).toContain('"retryable":true');
   expect(missingResult?.reason).toContain('"executed":false');
+  expect(missingResult?.reason).toContain('"resolutionFailure":{"reason":"missing-target"');
 
   const controller = new AbortController();
   controller.abort();
@@ -583,6 +607,120 @@ it("classifies policy loading, path resolution, and cancellation failures", asyn
   );
   expect(cancelledResult?.reason).toContain('"code":"cancelled"');
   expect(cancelledResult?.reason).toContain('"category":"CANCELLED"');
+  expect(cancelledResult?.reason).not.toContain("resolutionFailure");
+});
+
+it("keeps cancellation precedence when the signal aborts during path resolution", async () => {
+  const directory = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const controller = new AbortController();
+  fsHooks.abortOnRealpath = () => controller.abort();
+
+  const result = await createFilesystemAccessPolicyInterceptor(policy)(
+    event("read", join(directory, "missing.txt")),
+    context(directory, { signal: controller.signal }),
+  );
+
+  expect(result?.block).toBe(true);
+  expect(result?.reason).toContain('"code":"cancelled"');
+  expect(result?.reason).toContain('"category":"CANCELLED"');
+  expect(result?.reason).not.toContain("resolutionFailure");
+  expect(fsHooks.abortOnRealpath).toBeUndefined();
+});
+
+it.each(["read", "edit", "ls", "find", "grep"] as const)(
+  "%s reports the additive resolution failure diagnostic for a missing target",
+  async (toolName) => {
+    const directory = await fixtures.createDirectory();
+    const configPath = join(await realpath(directory), "bash-tools.json");
+    await writeFile(configPath, JSON.stringify({ version: 1 }));
+    const policy = createPolicyStoreForTesting({ configPath });
+
+    const result = await createFilesystemAccessPolicyInterceptor(policy)(
+      event(toolName, join(directory, "missing.txt")),
+      context(directory),
+    );
+
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain(
+      `Tool call blocked by access policy: ${toolName} path could not be safely resolved.`,
+    );
+    expect(result?.reason).toContain('"code":"policy-path-resolution-failure"');
+    expect(result?.reason).toContain('"resolutionFailure":{"reason":"missing-target"');
+    expect(result?.reason).toContain('"action":"');
+  },
+);
+
+it("reports the symlink resolution reason for a symbolic link loop", async () => {
+  const directory = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  await symlink(join(directory, "loop-b"), join(directory, "loop-a"));
+  await symlink(join(directory, "loop-a"), join(directory, "loop-b"));
+
+  const result = await createFilesystemAccessPolicyInterceptor(policy)(
+    event("read", join(directory, "loop-a")),
+    context(directory),
+  );
+
+  expect(result?.block).toBe(true);
+  expect(result?.reason).toContain('"resolutionFailure":{"reason":"symlink"');
+  expect(result?.reason).toContain("Resolve the symbolic link");
+});
+
+it("reports the symlink resolution reason for a dangling write destination", async () => {
+  const directory = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  await symlink(join(directory, "missing.txt"), join(directory, "dangling.txt"));
+
+  const result = await createFilesystemAccessPolicyInterceptor(policy)(
+    event("write", join(directory, "dangling.txt")),
+    context(directory),
+  );
+
+  expect(result?.block).toBe(true);
+  expect(result?.reason).toContain('"resolutionFailure":{"reason":"symlink"');
+});
+
+it("reports the control-character resolution reason for a literal newline path", async () => {
+  const directory = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const path = join(directory, "line\nbreak.txt");
+  await writeFile(path, "content");
+
+  const result = await createFilesystemAccessPolicyInterceptor(policy)(
+    event("read", path),
+    context(directory),
+  );
+
+  expect(result?.block).toBe(true);
+  expect(result?.reason).toContain('"code":"policy-path-resolution-failure"');
+  expect(result?.reason).toContain('"resolutionFailure":{"reason":"control-character"');
+});
+
+it("reports the wildcard-path resolution reason for a literal wildcard path", async () => {
+  const directory = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const path = join(directory, "star*.txt");
+  await writeFile(path, "content");
+
+  const result = await createFilesystemAccessPolicyInterceptor(policy)(
+    event("read", path),
+    context(directory),
+  );
+
+  expect(result?.block).toBe(true);
+  expect(result?.reason).toContain('"code":"policy-path-resolution-failure"');
+  expect(result?.reason).toContain('"resolutionFailure":{"reason":"wildcard-path"');
 });
 
 it("ignores non-filesystem tool calls", async () => {

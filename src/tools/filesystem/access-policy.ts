@@ -45,6 +45,7 @@ import {
   FilesystemToolError,
 } from "./errors.ts";
 import { lookupObservedContentHash } from "./observed-content-store.ts";
+import { pathResolutionFailureDetails } from "./path-resolution-diagnostics.ts";
 import { canonicalRequestPath } from "./paths.ts";
 
 const DENIED_POLICY_SCOPES: Record<PolicyAuthorization, string> = {
@@ -287,15 +288,20 @@ async function interceptFilesystemToolCall(
   let path: string;
   try {
     path = await canonicalRequestPath(tool.path, ctx.cwd, tool.allowMissingPath);
-  } catch {
-    const error = ctx.signal?.aborted
-      ? filesystemCancellationError("Filesystem access policy request cancelled")
-      : filesystemPolicyPathResolutionError();
+  } catch (error) {
+    if (ctx.signal?.aborted) {
+      const cancellation = filesystemCancellationError(
+        "Filesystem access policy request cancelled",
+      );
+      return blockedResult(cancellation.message, cancellation.contract);
+    }
+    const resolutionError = filesystemPolicyPathResolutionError(
+      pathResolutionFailureDetails(error),
+    );
     return blockedResult(
-      ctx.signal?.aborted
-        ? error.message
-        : `Tool call blocked by access policy: ${tool.name} path could not be safely resolved.`,
-      error.contract,
+      `Tool call blocked by access policy: ${tool.name} path could not be safely resolved.`,
+      resolutionError.contract,
+      resolutionError.details,
     );
   }
 

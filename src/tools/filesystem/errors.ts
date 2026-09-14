@@ -57,6 +57,7 @@ function filesystemPolicyError(
   code: string,
   explanation: string,
   retryable = true,
+  details: Readonly<Record<string, unknown>> = {},
 ): FilesystemToolError {
   return filesystemError(
     message,
@@ -67,6 +68,8 @@ function filesystemPolicyError(
       retryable,
       executed: false,
     }),
+    undefined,
+    details,
   );
 }
 
@@ -211,11 +214,15 @@ export function filesystemPolicyLoadError(): FilesystemToolError {
   );
 }
 
-export function filesystemPolicyPathResolutionError(): FilesystemToolError {
+export function filesystemPolicyPathResolutionError(
+  details: Readonly<Record<string, unknown>> = {},
+): FilesystemToolError {
   return filesystemPolicyError(
     "Filesystem access policy path could not be safely resolved",
     "policy-path-resolution-failure",
     "The filesystem access policy path could not be safely resolved.",
+    true,
+    details,
   );
 }
 

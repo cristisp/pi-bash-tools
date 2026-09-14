@@ -26,6 +26,9 @@ The filesystem interceptor applies to native `read`, `write`, `edit`, `grep`, `f
 Edit preflight failures carry structured details: the diagnostic code, nearest candidate line numbers, a `fileFingerprint` (sha256 of the preflight-read content), and bounded repair context (`contentLength`, `lineCount`) — never file content itself. When a prior `read_batch` read observed the file, a no-match against changed content is classified as `edit-stale-context` with a reread-and-rebase hint; without observed evidence it stays a plain `edit-no-match`. Repeating an identical edit after a preflight failure is rejected with `edit-unchanged-retry` (bounded per session); rebasing the edit on a fresh read clears the block. The tool never retries or rebases a mutation automatically — rereading and rebasing is the single caller-controlled recovery.
 
 The interceptor canonicalizes and authorizes the requested path before allowing the native implementation to execute.
+A blocked path-resolution failure additionally carries `resolutionFailure.reason` and `resolutionFailure.action` additive details.
+The bounded reasons are `missing-target`, `unreadable`, `symlink`, `control-character`, `wildcard-path`, `invalid-path-form`, and `unknown`, and each action is a short fixed hint.
+The block decision, the `policy-path-resolution-failure` contract, and the message text are unchanged, and containment or traversal outcomes remain policy decisions.
 
 Prefer `read_batch` over repeated or multi-file native `read` calls: it returns per-path results, hashes, and repository-state identity in one bounded call, and it is the only file-read path that can report compact `unchanged` metadata for a repeated identical read.
 

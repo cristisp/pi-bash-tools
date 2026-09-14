@@ -9,6 +9,7 @@ import type {
   GitDiffSummaryOutput,
 } from "../../src/tools/git/diff/output.ts";
 import { createGitDiffTool } from "../../src/tools/git/diff/tool.ts";
+import type { GitExec } from "../../src/tools/git/execution.ts";
 import {
   gitIntegration,
   createGitIntegrationFixtures,
@@ -185,22 +186,28 @@ gitIntegration("Git diff with a real Git process", () => {
     });
   });
 
-  it("bounds whole-repository patches and directs follow-ups to explicit paths", async () => {
+  it("rejects a whole-repository patch before any diff process runs", async () => {
     const repository = await fixtures.createRepository();
     await writeFile(join(repository.directory, "README.md"), "content\n".repeat(400));
+    const realExec = makeRealGitExec();
+    const calls: string[][] = [];
+    const exec: GitExec = async (command, args, options) => {
+      calls.push([...args]);
+      return realExec(command, args, options);
+    };
 
-    const response = await createGitDiffTool(makeRealGitExec()).execute(
-      "whole-patch",
-      { mode: "patch", maxBytes: 512 },
-      undefined,
-      undefined,
-      repository.context,
+    await expect(
+      createGitDiffTool(exec).execute(
+        "whole-patch",
+        { mode: "patch", maxBytes: 512 },
+        undefined,
+        undefined,
+        repository.context,
+      ),
+    ).rejects.toThrow(
+      'mode "patch" requires explicit path or paths; use the default summary to identify changed files, then request patch content for those paths; action: Correct the paths field or request shape and retry.',
     );
-
-    const details = patchDetails(response.details);
-    expect(details.output.truncated).toBe(true);
-    expect(details.message).toContain('mode: "patch"');
-    expect(details.message).toContain("paths");
+    expect(calls.filter((args) => args[3] === "diff")).toHaveLength(0);
   });
 
   it("returns staged, unstaged, binary, space-containing, empty, and truncated diffs", async () => {
@@ -212,13 +219,15 @@ gitIntegration("Git diff with a real Git process", () => {
     await writeFile(join(repository.directory, "space name.txt"), "space change\n");
 
     const tool = createGitDiffTool(makeRealGitExec());
-    const wholeRepository = await tool.execute(
-      "whole",
-      { mode: "patch", maxBytes: 4096 },
-      undefined,
-      undefined,
-      repository.context,
-    );
+    await expect(
+      tool.execute(
+        "whole",
+        { mode: "patch", maxBytes: 4096 },
+        undefined,
+        undefined,
+        repository.context,
+      ),
+    ).rejects.toThrow(/requires explicit path or paths/u);
     const selected = await tool.execute(
       "selected",
       { mode: "patch", paths: ["README.md", "space name.txt"], maxBytes: 4096 },
@@ -276,9 +285,6 @@ gitIntegration("Git diff with a real Git process", () => {
       repository.context,
     );
 
-    expect(patchDetails(wholeRepository.details).patch).toContain("README.md");
-    expect(patchDetails(wholeRepository.details).patch).toContain("space name.txt");
-    expect(patchDetails(wholeRepository.details).patch).toContain("binary.bin");
     expect(patchDetails(selected.details).patch).toContain("README.md");
     expect(patchDetails(selected.details).patch).toContain("space name.txt");
     expect(patchDetails(selected.details).patch).not.toContain("binary.bin");

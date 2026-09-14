@@ -195,6 +195,11 @@ An edit preflight reads at most 256 KiB and diagnoses empty `oldText`, no-op rep
 Diagnostics include the nearest candidate line numbers, a `fileFingerprint` (sha256 of the preflight-read content), and bounded repair context (`contentLength`, `lineCount`) without file content. A `read_batch` full-file read records the observed content hash (hash-only, bounded, best-effort): when a later edit no longer matches content that changed since that observation, the failure is classified as `edit-stale-context`; without observed evidence it stays `edit-no-match`. A stale-context or equal-hash no-match diagnostic carries the additive `evidenceBacked: true` flag when an observation existed for the path, so the `edit-stale-context` hit rate is measurable; the flag is omitted when no observation existed. Repeating an identical edit after any preflight failure is rejected once per session with `edit-unchanged-retry` until the edit is rebased on a fresh reread. The extension never retries or rebases a mutation automatically.
 
 The interceptor reports blocked calls as `Tool call blocked by access policy` with the tool, access type, path, and reason.
+A blocked path-resolution failure additionally carries `resolutionFailure.reason` and `resolutionFailure.action` additive details.
+The reason is one of `missing-target`, `unreadable`, `symlink`, `control-character`, `wildcard-path`, `invalid-path-form`, or `unknown`, derived from the failing resolution step.
+The action is a short fixed hint for the reason and never includes the requested path, policy contents, or environment values.
+The block decision, the `policy-path-resolution-failure` contract, and the message text are unchanged.
+Resolution failures never reason about outside-workspace or traversal forms: the request path is normalized before resolution, and containment or traversal outcomes remain policy decisions that are reported as policy denials.
 
 ## Default access
 

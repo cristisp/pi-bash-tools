@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   boundProjectCommandText,
+  boundedEvidenceRefSegment,
   projectCommandDiagnostic,
   PROJECT_COMMAND_DIAGNOSTIC_MAX_CHARS,
   sanitizeProjectCommandText,
@@ -135,6 +136,31 @@ describe("project command diagnostics", () => {
     expect(
       projectCommandDiagnostic("fallow_health", output("α\u0080\u0085\u0099β\n\tγ"), output("")),
     ).toBe("αβ\n\tγ");
+  });
+
+  it("builds an evidence reference segment only for non-empty string candidates", () => {
+    expect(boundedEvidenceRefSegment(undefined)).toBeUndefined();
+    expect(boundedEvidenceRefSegment(null)).toBeUndefined();
+    expect(boundedEvidenceRefSegment(42)).toBeUndefined();
+    expect(boundedEvidenceRefSegment({ ref: "pc_0123456789abcdef01234567" })).toBeUndefined();
+    expect(boundedEvidenceRefSegment("")).toBeUndefined();
+    expect(boundedEvidenceRefSegment("pc_0123456789abcdef01234567")).toBe(
+      "ref: pc_0123456789abcdef01234567",
+    );
+  });
+
+  it("sanitizes and bounds an untrusted evidence reference segment", () => {
+    const payload = "https://example.test/secret";
+    const segment = boundedEvidenceRefSegment(
+      `\u001b[31mpc_before\u001b]8;;${payload}\u0007after\u001b[0m`,
+    );
+    expect(segment).toBe("ref: pc_beforeafter");
+    expect(segment).not.toContain(payload);
+
+    const bounded = boundedEvidenceRefSegment(`pc_${"a".repeat(2_500)}`);
+    expect(bounded).toBeDefined();
+    expect(bounded).toHaveLength("ref: ".length + PROJECT_COMMAND_DIAGNOSTIC_MAX_CHARS);
+    expect(bounded).toMatch(/^ref: pc_a+\.\.\.$/u);
   });
 
   it("does not treat control-only output as a diagnostic and stays bounded", () => {

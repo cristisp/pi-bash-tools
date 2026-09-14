@@ -2,6 +2,13 @@ import { lstat as nodeLstat, realpath as nodeRealpath } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { validatePolicyPath } from "../policy/format.ts";
+import {
+  FilesystemPathResolutionError,
+  asPathResolutionError,
+  isMissingPathError,
+} from "./path-resolution-diagnostics.ts";
+
+export { isMissingPathError };
 
 export interface CanonicalPathFileSystem {
   lstat(path: string): Promise<{ isSymbolicLink(): boolean }>;
@@ -19,15 +26,6 @@ export function requestPath(path: string | undefined, cwd: string): string {
   return resolve(cwd, normalized);
 }
 
-export function isMissingPathError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error.code === "ENOENT" || error.code === "ENOTDIR")
-  );
-}
-
 export async function canonicalMissingPath(
   path: string,
   fileSystem: CanonicalPathFileSystem = nodeFileSystem,
@@ -38,34 +36,50 @@ export async function canonicalMissingPath(
       return await fileSystem.realpath(candidate);
     } catch (error) {
       if (!isMissingPathError(error)) {
-        throw error;
+        throw asPathResolutionError(error);
       }
       try {
         const stats = await fileSystem.lstat(candidate);
         if (stats.isSymbolicLink()) {
-          throw new Error("Filesystem path contains a symbolic link", { cause: error });
+          throw new FilesystemPathResolutionError("symlink", { cause: error });
         }
       } catch (lstatError) {
         if (!isMissingPathError(lstatError)) {
-          throw lstatError;
+          throw asPathResolutionError(lstatError);
         }
       }
       const parent = dirname(candidate);
       if (parent === candidate) {
-        throw error;
+        throw asPathResolutionError(error);
       }
       missingParts.unshift(basename(candidate));
       return findExistingAncestor(parent);
     }
   };
-  return validatePolicyPath(join(await findExistingAncestor(path), ...missingParts));
+  const resolved = await findExistingAncestor(path);
+  const joined = join(resolved, ...missingParts);
+  try {
+    return validatePolicyPath(joined);
+  } catch (error) {
+    throw asPathResolutionError(error, joined);
+  }
 }
 
 export async function canonicalExistingPath(
   path: string,
   fileSystem: CanonicalPathFileSystem = nodeFileSystem,
 ): Promise<string> {
-  return validatePolicyPath(await fileSystem.realpath(path));
+  let canonical: string;
+  try {
+    canonical = await fileSystem.realpath(path);
+  } catch (error) {
+    throw asPathResolutionError(error);
+  }
+  try {
+    return validatePolicyPath(canonical);
+  } catch (error) {
+    throw asPathResolutionError(error, canonical);
+  }
 }
 
 export async function canonicalRequestPath(

@@ -11,7 +11,7 @@ The interceptor does not intercept `bash` or `user_bash`.
 The extension registers exactly these custom tools:
 
 - `git_status` reads porcelain Git status entries and the canonical repository root.
-- `git_diff` reads a working-tree or staged diff for the whole repository, a legacy single `path`, or one or more new `paths`.
+- `git_diff` reads a working-tree or staged diff; whole-repository reads use the default summary, and patch content requires an explicit `path` or `paths`.
 - `git_log` reads bounded commit IDs, authors, dates, and subjects.
 - `git_show` reads bounded output from a revision, optionally filtered by a path.
 - `environment` reads only explicitly requested environment variables after policy authorization.
@@ -144,6 +144,11 @@ Delete prompts are project-scoped and instead offer `Deny once`, `Deny for this 
 The existing `confirmationTimeoutMs` setting applies to filesystem prompts and defaults to 120000 milliseconds.
 A timeout automatically records a project-level deny for the requested access type and blocks only the current tool call.
 Blocked calls report `Tool call blocked by access policy` with the tool, access type, path, and reason.
+A blocked path-resolution failure additionally reports a bounded `resolutionFailure.reason` and a short `resolutionFailure.action`.
+The bounded reasons are `missing-target`, `unreadable`, `symlink`, `control-character`, `wildcard-path`, `invalid-path-form`, and `unknown`.
+The action never contains the requested path, policy contents, or environment values.
+The block decision, the `policy-path-resolution-failure` contract, and the exact message text are unchanged.
+Resolution failure reasons do not include outside-workspace or traversal forms: the request path is normalized before resolution, and containment or traversal outcomes are policy decisions that are reported as policy denials.
 
 An edit preflight reads at most 256 KiB and diagnoses empty `oldText`, no-op replacements, no match, stale context, ambiguous matches, and overlapping edits before the native edit is allowed to run.
 Diagnostics include the nearest candidate line numbers, a `fileFingerprint` (SHA-256 of the preflight-read content), and bounded repair context without file content.
@@ -229,6 +234,9 @@ A fresh execution reports `reused: false` and can retain the same reference when
 `fresh` cannot be combined with `ref`.
 
 `project_command` execution evidence uses distinct bounded `pc_` references.
+A completed execution returns the `pc_` reference in model-facing content, and a request that asked to publish reports the realized publication outcome there.
+Failing and cancelled executions report the stored `pc_` reference in the failure or cancellation message and keep it in their error details and invocation records.
+The realized publication outcome for those executions stays in error details and invocation records.
 Project-command evidence is non-replayable: looking up `{ "ref": "pc_example" }` returns stored evidence without executing a command and never acts as a result-cache hit.
 Project-command script and Fallow commands retain `reusePolicy: "never"`.
 Lookup accepts only `ref`, optional `flowId`, and opaque `covers` fields.
@@ -284,12 +292,13 @@ Paths must be workspace-relative, must remain inside the repository, and must no
 A `--` argument separates revisions and options from path filters.
 
 `git_diff` accepts omitted paths, the legacy single `path` field, or a new `paths` array, but never both path fields together.
-Omit both fields to diff the whole repository.
+Omit both fields to read a whole-repository summary.
+Patch mode requires an explicit `path` or `paths`; a whole-repository patch request is rejected as an invalid request before any Git diff process runs.
 For new calls, use `paths: ["file"]` for one path or `paths: ["first", "second"]` for multiple paths.
 The legacy `path` field remains supported for compatibility.
 Empty and duplicate `paths` arrays are rejected.
 
-`git_status` treats an empty optional `path` as absent, `git_log` treats an empty optional `path` or `revision` as absent, `git_diff` treats an empty legacy `path` as absent, and `git_show` treats an empty optional `path` as absent; array entries are never dropped.
+`git_status` treats an empty optional `path` as absent, `git_log` treats an empty optional `path` or `revision` as absent, `git_diff` treats an empty legacy `path` as absent (a patch request without remaining scope is then rejected), and `git_show` treats an empty optional `path` as absent; array entries are never dropped.
 
 A deterministically invalid request shape is remembered per session and re-rejected as `unchanged-invalid-request` until the caller changes it; see [docs/git.md](docs/git.md).
 
