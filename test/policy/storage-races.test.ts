@@ -3,7 +3,10 @@ import { join } from "node:path";
 
 import { afterEach, expect, it, vi } from "vitest";
 
-import { findEnvironmentPolicyDecision } from "../../src/tools/policy/decisions.ts";
+import {
+  findEnvironmentPolicyDecision,
+  findProjectCommandPolicyDecision,
+} from "../../src/tools/policy/decisions.ts";
 import { createPolicyStoreForTesting } from "../../src/tools/policy/store.ts";
 import { createPolicyTestFixtures } from "./test-fixtures.ts";
 
@@ -33,6 +36,36 @@ it("preserves unrelated decisions during serialized updates", async () => {
   const updated = await store.load(directory);
   expect(findEnvironmentPolicyDecision(updated, "FIRST")).toBe("allow-project");
   expect(findEnvironmentPolicyDecision(updated, "SECOND")).toBe("deny-project");
+});
+
+it("persists a wave of concurrent decisions without loss", async () => {
+  const directory = await fixtures.createDirectory();
+  const policyRoot = await realpath(directory);
+  const configPath = join(policyRoot, "bash-tools.json");
+  const store = createPolicyStoreForTesting({ configPath });
+  const waveSize = 24;
+  const identities = Array.from({ length: waveSize }, (_, index) => ({
+    commandId: "verify",
+    fingerprint: `f${index.toString().padStart(4, "0")}`.padEnd(64, "0"),
+  }));
+  const outcomes = await Promise.all(
+    identities.map((identity) =>
+      store
+        .recordDecisions(policyRoot, [
+          { kind: "project-command", identity, decision: "deny-project", globalSafe: false },
+        ])
+        .then(
+          () => true,
+          () => false,
+        ),
+    ),
+  );
+  expect(outcomes).toEqual(Array.from({ length: waveSize }, () => true));
+  const loaded = await store.load(policyRoot);
+  const denied = identities.filter(
+    (identity) => findProjectCommandPolicyDecision(loaded, identity, false) === "deny-project",
+  );
+  expect(denied).toHaveLength(waveSize);
 });
 
 it.each(["lock", "temporary", "rename"] as const)(

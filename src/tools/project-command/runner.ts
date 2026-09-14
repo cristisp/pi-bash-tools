@@ -425,6 +425,7 @@ async function authorizeCommand(
     deferAllowPersistence: false,
     findDecision: (current, currentIdentity) =>
       findProjectCommandPolicyDecision(current, currentIdentity, definition.globalSafe),
+    reload: () => policy.load(ctx.cwd),
     recordDecisions: (projectPath, requests, requestSignal) =>
       policy.recordDecisions(projectPath, requests, requestSignal),
     makeRequest: (currentIdentity, decision) => ({

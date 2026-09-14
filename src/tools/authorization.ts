@@ -2,6 +2,7 @@ import type {
   AuthorizationOutcomeCore,
   AuthorizationOutcomeObserver,
   AuthorizationOutcomeSurface,
+  PolicyDecisionSource,
 } from "../observability/authorization-outcome.ts";
 import { notifySubagentApproval } from "./approval-notification.ts";
 import type { AuthorizationRetryKey, AuthorizationRetryTracker } from "./authorization-retry.ts";
@@ -66,6 +67,7 @@ export interface AuthorizeOrPromptOptions<Identity, Request extends PolicyDecisi
   readonly globalSafe: boolean;
   readonly allowGlobal?: boolean;
   readonly deferAllowPersistence: boolean;
+  readonly reload?: () => Promise<LoadedPolicy>;
   readonly findDecision: (loaded: LoadedPolicy, identity: Identity) => PolicyAuthorization;
   readonly recordDecisions: (
     projectPath: string,
@@ -206,6 +208,51 @@ async function persist<Identity, Request extends PolicyDecisionRequest>(
   }
 }
 
+function observeAuthorizedOutcome(
+  options: OutcomeEmitter,
+  timing: PromptTiming,
+  decisionSource: PolicyDecisionSource,
+): void {
+  observeOutcome(options, timing, {
+    outcome: "authorized",
+    decisionPersisted: false,
+    decisionSource,
+  });
+}
+
+async function resolvePersistFailure<Identity, Request extends PolicyDecisionRequest>(
+  options: AuthorizeOrPromptOptions<Identity, Request>,
+  timing: PromptTiming,
+): Promise<"recovered" | "failed"> {
+  if (options.reload === undefined) return "failed";
+  let fresh: LoadedPolicy;
+  try {
+    fresh = await options.reload();
+  } catch {
+    return "failed";
+  }
+  throwIfAborted(options, timing);
+  let authorization: PolicyAuthorization;
+  try {
+    authorization = options.findDecision(fresh, options.identity);
+  } catch {
+    return "failed";
+  }
+  if (authorization === "allow-global" || authorization === "allow-project") {
+    observeAuthorizedOutcome(options, timing, authorization);
+    return "recovered";
+  }
+  if (authorization === "deny-global" || authorization === "deny-project") {
+    throwForPersistentDenial(options, timing, retryKeyOf(options), authorization);
+  }
+  return "failed";
+}
+
+function throwPolicySaveFailure(options: OutcomeEmitter, timing: PromptTiming): never {
+  observeOutcome(options, timing, { outcome: "policy-save-failure", decisionPersisted: false });
+  throw options.error("save");
+}
+
 type PromptResult =
   | { readonly kind: "choice"; readonly choice: string }
   | { readonly kind: "timeout"; readonly persisted: boolean }
@@ -267,13 +314,18 @@ async function resolvePrompt<Identity, Request extends PolicyDecisionRequest>(
     case "timeout":
       if (prompt.persisted) {
         recordPersistentDenial(retryKeyOf(options), options, "confirmation-timeout");
+      } else {
+        if ((await resolvePersistFailure(options, timing)) === "recovered") {
+          return undefined;
+        }
+        throwPolicySaveFailure(options, timing);
       }
       observeOutcome(options, timing, {
         outcome: "confirmation-timeout",
         decisionPersisted: prompt.persisted,
         decisionSource: "prompt",
       });
-      throw options.error(prompt.persisted ? "timeout" : "save");
+      throw options.error("timeout");
     case "cancelled":
       observeOutcome(options, timing, { outcome: "cancelled", decisionPersisted: false });
       throw options.error("cancelled");
@@ -341,24 +393,33 @@ async function resolvePrompt<Identity, Request extends PolicyDecisionRequest>(
     const persisted = await persist(options, timing, request);
     if (persisted) {
       recordPersistentDenial(retryKeyOf(options), options, "denied");
+    } else {
+      if ((await resolvePersistFailure(options, timing)) === "recovered") {
+        return undefined;
+      }
+      throwPolicySaveFailure(options, timing);
     }
     observeOutcome(options, timing, {
       outcome: "denied",
       decisionPersisted: persisted,
       decisionSource: "prompt",
     });
-    if (!persisted) throw options.error("save");
     throw options.error("denied");
   }
   if (!options.deferAllowPersistence) {
     const persisted = await persist(options, timing, request);
-    observeOutcome(options, timing, {
-      outcome: "allowed-and-persisted",
-      decisionPersisted: persisted,
-      decisionSource: "prompt",
-    });
-    if (!persisted) throw options.error("save");
-    return undefined;
+    if (persisted) {
+      observeOutcome(options, timing, {
+        outcome: "allowed-and-persisted",
+        decisionPersisted: true,
+        decisionSource: "prompt",
+      });
+      return undefined;
+    }
+    if ((await resolvePersistFailure(options, timing)) === "recovered") {
+      return undefined;
+    }
+    throwPolicySaveFailure(options, timing);
   }
   observeOutcome(options, timing, {
     outcome: "deferred-persistence",
@@ -386,11 +447,7 @@ export async function authorizeOrPrompt<Identity, Request extends PolicyDecision
     throwForPersistentDenial(options, timing, retryKeyOf(options), authorization);
   }
   if (authorization !== "unknown") {
-    observeOutcome(options, timing, {
-      outcome: "authorized",
-      decisionPersisted: false,
-      decisionSource: authorization,
-    });
+    observeAuthorizedOutcome(options, timing, authorization);
     return undefined;
   }
   throwIfAborted(options, timing);

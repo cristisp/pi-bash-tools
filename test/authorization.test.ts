@@ -1,5 +1,9 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion, eslint/no-await-in-loop */
 
+import { mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { expect, it, vi } from "vitest";
 
 import type {
@@ -7,9 +11,17 @@ import type {
   AuthorizationOutcomeObserver,
 } from "../src/observability/authorization-outcome.ts";
 import { authorizeOrPrompt, type AuthorizeOrPromptOptions } from "../src/tools/authorization.ts";
-import { findEnvironmentPolicyDecision } from "../src/tools/policy/decisions.ts";
+import {
+  findEnvironmentPolicyDecision,
+  findProjectCommandPolicyDecision,
+} from "../src/tools/policy/decisions.ts";
 import { parsePolicyDocument } from "../src/tools/policy/document.ts";
-import type { EnvironmentDecisionRequest, LoadedPolicy } from "../src/tools/policy/types.ts";
+import { createPolicyStoreForTesting } from "../src/tools/policy/store.ts";
+import type {
+  CommandIdentity,
+  EnvironmentDecisionRequest,
+  LoadedPolicy,
+} from "../src/tools/policy/types.ts";
 
 const projectPath = "/tmp/authorization-project";
 
@@ -537,12 +549,11 @@ it("records a save failure when persisting a denial fails", async () => {
   ).rejects.toThrow("save");
   expect(outcomes).toEqual([
     {
-      outcome: "denied",
+      outcome: "policy-save-failure",
       decisionPersisted: false,
       executionAttempted: undefined,
       promptEmitted: true,
       promptWaitMs: expect.any(Number),
-      decisionSource: "prompt",
     },
   ]);
 });
@@ -574,7 +585,7 @@ it("records a confirmation timeout outcome with the persisted deny", async () =>
   ]);
 });
 
-it("records a timeout outcome without persistence when the deny write fails", async () => {
+it("records a policy-save-failure outcome without persistence when the deny write fails", async () => {
   const outcomes: AuthorizationOutcomeCore[] = [];
   await expect(
     authorizeOrPrompt(
@@ -592,8 +603,159 @@ it("records a timeout outcome without persistence when the deny write fails", as
       }),
     ),
   ).rejects.toThrow("save");
-  expect(outcomes.map((outcome) => outcome.outcome)).toEqual(["confirmation-timeout"]);
+  expect(outcomes.map((outcome) => outcome.outcome)).toEqual(["policy-save-failure"]);
   expect(outcomes[0]).toMatchObject({ decisionPersisted: false, promptEmitted: true });
+});
+
+it("keeps the policy-save-failure outcome for a timed-out prompt when the fresh lookup stays unknown", async () => {
+  const outcomes: AuthorizationOutcomeCore[] = [];
+  await expect(
+    authorizeOrPrompt(
+      options({
+        loaded: loaded(1),
+        context: {
+          hasUI: true,
+          mode: "rpc",
+          ui: { select: () => new Promise<string | undefined>(() => undefined) },
+        },
+        recordDecisions: async () => {
+          throw new Error("disk full");
+        },
+        reload: async () => loaded(),
+        observe: (core) => outcomes.push(core),
+      }),
+    ),
+  ).rejects.toThrow("save");
+  expect(outcomes.map((outcome) => outcome.outcome)).toEqual(["policy-save-failure"]);
+  expect(outcomes[0]).toMatchObject({ decisionPersisted: false, promptEmitted: true });
+});
+
+it("observes cancellation when the abort lands during the reload", async () => {
+  const controller = new AbortController();
+  const outcomes: AuthorizationOutcomeCore[] = [];
+  await expect(
+    authorizeOrPrompt(
+      options({
+        loaded: loaded(1),
+        signal: controller.signal,
+        context: {
+          hasUI: true,
+          mode: "rpc",
+          ui: { select: () => new Promise<string | undefined>(() => undefined) },
+        },
+        recordDecisions: async () => {
+          throw new Error("disk full");
+        },
+        reload: async () => {
+          controller.abort();
+          return loaded();
+        },
+        observe: (core) => outcomes.push(core),
+      }),
+    ),
+  ).rejects.toThrow("cancelled");
+  expect(outcomes.map((outcome) => outcome.outcome)).toEqual(["cancelled"]);
+});
+
+it("recovers a timed-out prompt when a concurrent allow is already persisted", async () => {
+  const outcomes: AuthorizationOutcomeCore[] = [];
+  const fresh = loadedWithEnvironment({ global: { allow: ["TOKEN"] } });
+  await expect(
+    authorizeOrPrompt(
+      options({
+        loaded: loaded(1),
+        context: {
+          hasUI: true,
+          mode: "rpc",
+          ui: { select: () => new Promise<string | undefined>(() => undefined) },
+        },
+        recordDecisions: async () => {
+          throw new Error("opposite decision");
+        },
+        reload: async () => fresh,
+        observe: (core) => outcomes.push(core),
+      }),
+    ),
+  ).resolves.toBeUndefined();
+  expect(outcomes).toEqual([
+    {
+      outcome: "authorized",
+      decisionPersisted: false,
+      executionAttempted: undefined,
+      promptEmitted: true,
+      promptWaitMs: expect.any(Number),
+      decisionSource: "allow-global",
+    },
+  ]);
+});
+
+it("recovers an explicit denial when a concurrent allow is already persisted", async () => {
+  const outcomes: AuthorizationOutcomeCore[] = [];
+  const fresh = loadedWithEnvironment({ global: { allow: ["TOKEN"] } });
+  await expect(
+    authorizeOrPrompt(
+      options({
+        context: {
+          hasUI: true,
+          mode: "tui",
+          ui: { select: async () => "Deny for this project" },
+        },
+        recordDecisions: async () => {
+          throw new Error("opposite decision");
+        },
+        reload: async () => fresh,
+        observe: (core) => outcomes.push(core),
+      }),
+    ),
+  ).resolves.toBeUndefined();
+  expect(outcomes.map((outcome) => outcome.outcome)).toEqual(["authorized"]);
+  expect(outcomes[0]).toMatchObject({ decisionSource: "allow-global", promptEmitted: true });
+});
+
+it("reports a persistent concurrent denial after a failed deny persist", async () => {
+  const outcomes: AuthorizationOutcomeCore[] = [];
+  const fresh = loadedWithEnvironment({ global: { deny: ["TOKEN"] } });
+  await expect(
+    authorizeOrPrompt(
+      options({
+        context: {
+          hasUI: true,
+          mode: "tui",
+          ui: { select: async () => "Deny for this project" },
+        },
+        recordDecisions: async () => {
+          throw new Error("conflict");
+        },
+        reload: async () => fresh,
+        observe: (core) => outcomes.push(core),
+      }),
+    ),
+  ).rejects.toThrow("denied");
+  expect(outcomes.map((outcome) => outcome.outcome)).toEqual(["denied"]);
+  expect(outcomes[0]).toMatchObject({ decisionSource: "deny-global", promptEmitted: true });
+});
+
+it("keeps the save failure when the fresh policy lookup fails", async () => {
+  const outcomes: AuthorizationOutcomeCore[] = [];
+  await expect(
+    authorizeOrPrompt(
+      options({
+        context: {
+          hasUI: true,
+          mode: "tui",
+          ui: { select: async () => "Deny for this project" },
+        },
+        recordDecisions: async () => {
+          throw new Error("disk full");
+        },
+        reload: async () => {
+          throw new Error("reload failed");
+        },
+        observe: (core) => outcomes.push(core),
+      }),
+    ),
+  ).rejects.toThrow("save");
+  expect(outcomes.map((outcome) => outcome.outcome)).toEqual(["policy-save-failure"]);
 });
 
 it("records cancelled, dismissed, invalid-choice, unsafe-global, and lookup failures", async () => {
@@ -873,3 +1035,100 @@ it.each(PRECEDENCE_SCENARIOS)(
     expect(without.decisionSources).toEqual([]);
   },
 );
+
+type ProjectCommandPromptOptions = AuthorizeOrPromptOptions<
+  CommandIdentity,
+  import("../src/tools/policy/types.ts").ProjectCommandDecisionRequest
+>;
+
+async function createRealPolicyStore(prefix: string): Promise<{
+  store: ReturnType<typeof createPolicyStoreForTesting>;
+  policyRoot: string;
+  identity: CommandIdentity;
+}> {
+  const directory = await mkdtemp(join(tmpdir(), prefix));
+  const policyRoot = await realpath(directory);
+  const configPath = join(policyRoot, "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1, confirmationTimeoutMs: 1 }));
+  const store = createPolicyStoreForTesting({ configPath });
+  return {
+    store,
+    policyRoot,
+    identity: { commandId: "verify", fingerprint: "f".repeat(64) },
+  };
+}
+
+function realStorePromptOptions(
+  store: ReturnType<typeof createPolicyStoreForTesting>,
+  policyRoot: string,
+  overrides: Partial<Omit<ProjectCommandPromptOptions, "identity" | "loaded">> = {},
+): Omit<ProjectCommandPromptOptions, "identity" | "loaded"> {
+  return {
+    context: {
+      hasUI: true,
+      mode: "rpc",
+      ui: {
+        select: () => new Promise<string | undefined>(() => undefined),
+      },
+    },
+    signal: undefined,
+    globalSafe: false,
+    deferAllowPersistence: false,
+    findDecision: (current, currentIdentity) =>
+      findProjectCommandPolicyDecision(current, currentIdentity, false),
+    reload: () => store.load(policyRoot),
+    recordDecisions: (recordPath, requests, recordSignal) =>
+      store.recordDecisions(recordPath, requests, recordSignal),
+    makeRequest: (currentIdentity, decision) => ({
+      kind: "project-command",
+      identity: currentIdentity,
+      decision,
+      globalSafe: false,
+    }),
+    promptText: (currentIdentity) => `Authorize ${currentIdentity.commandId}`,
+    error: (kind) => new Error(kind),
+    ...overrides,
+  };
+}
+
+it("recovers a timed-out prompt from a real policy store after a concurrent allow", async () => {
+  const { store, policyRoot, identity } = await createRealPolicyStore(
+    "bash-tools-authorization-recovery-",
+  );
+  await store.recordDecisions(policyRoot, [
+    { kind: "project-command", identity, decision: "allow-project", globalSafe: false },
+  ]);
+  await expect(
+    authorizeOrPrompt<
+      CommandIdentity,
+      import("../src/tools/policy/types.ts").ProjectCommandDecisionRequest
+    >({
+      ...realStorePromptOptions(store, policyRoot),
+      identity,
+      loaded: await store.load(policyRoot),
+    }),
+  ).resolves.toBeUndefined();
+});
+
+it("surfaces a save failure from a real policy store when the fresh lookup stays unknown", async () => {
+  const { store, policyRoot, identity } = await createRealPolicyStore(
+    "bash-tools-authorization-save-",
+  );
+  const outcomes: AuthorizationOutcomeCore[] = [];
+  await expect(
+    authorizeOrPrompt<
+      CommandIdentity,
+      import("../src/tools/policy/types.ts").ProjectCommandDecisionRequest
+    >({
+      ...realStorePromptOptions(store, policyRoot, {
+        recordDecisions: async () => {
+          throw new Error("forced save failure");
+        },
+        observe: (core) => outcomes.push(core),
+      }),
+      identity,
+      loaded: await store.load(policyRoot),
+    }),
+  ).rejects.toThrow("save");
+  expect(outcomes.map((outcome) => outcome.outcome)).toEqual(["policy-save-failure"]);
+});

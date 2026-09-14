@@ -189,6 +189,10 @@ async function authorizeVerify(
     deferAllowPersistence: false,
     findDecision: (current, currentIdentity) =>
       findProjectCommandPolicyDecision(current, currentIdentity, false),
+    reload: async () => {
+      const reloaded = await policy.load(ctx.cwd);
+      return reloaded;
+    },
     recordDecisions: (projectPath, requests, requestSignal) =>
       policy.recordDecisions(projectPath, requests, requestSignal),
     makeRequest: (currentIdentity, decision) => ({
