@@ -14,7 +14,10 @@ import {
   readNodeProjectInfo,
   resolveNodeProjectCommand,
 } from "../../src/tools/project-command/node.ts";
-import type { ProjectCommandRepositoryStateReader } from "../../src/tools/project-command/repository-state.ts";
+import {
+  createProjectCommandRepositoryStateReader,
+  type ProjectCommandRepositoryStateReader,
+} from "../../src/tools/project-command/repository-state.ts";
 import type { ProjectCommandResolver } from "../../src/tools/project-command/resolution.ts";
 import type { ProjectCommandExecutor } from "../../src/tools/project-command/runner.ts";
 import {
@@ -26,13 +29,20 @@ import { validateVerifyInput } from "../../src/tools/verify/schema.ts";
 import { createVerifyToolForTesting } from "../../src/tools/verify/tool.ts";
 import type { VerifyToolContext } from "../../src/tools/verify/tool.ts";
 import type { VerifyEvidenceRecord, VerifyPhase } from "../../src/tools/verify/types.ts";
+import {
+  createGitIntegrationFixtures,
+  gitIntegration,
+  makeRealGitExec,
+} from "../git/integration-fixtures.ts";
 
 const fixtureDirectories: string[] = [];
+const gitFixtures = createGitIntegrationFixtures();
 
 afterEach(async () => {
-  await Promise.all(
-    fixtureDirectories.splice(0).map((directory) => rm(directory, { recursive: true })),
-  );
+  await Promise.all([
+    ...fixtureDirectories.splice(0).map((directory) => rm(directory, { recursive: true })),
+    gitFixtures.cleanup(),
+  ]);
 });
 
 function context(cwd: string): VerifyToolContext {
@@ -708,7 +718,7 @@ it("rejects contradictory persisted evidence", () => {
         perStep: [
           {
             ...step("format"),
-            stdout: { ...chunk, totalBytes: 50 * 1024 + 1 },
+            stdout: { ...chunk, totalBytes: 0.5 },
           },
           step("lint"),
           step("typecheck"),
@@ -774,7 +784,9 @@ it("rejects pre-remediation durable records with unsafe tails or fractional dura
       covers: ["compatibility"],
       createdAt: 0,
     };
-    createVerifyEvidenceCache({ rootDirectory: cacheRoot }).set(record);
+    const writer = createVerifyEvidenceCache({ rootDirectory: cacheRoot });
+    writer.set(record);
+    expect(createVerifyEvidenceCache({ rootDirectory: cacheRoot }).get(record.key)).toEqual(record);
     const ansi = `${String.fromCodePoint(0x1b)}[31m${"failure ".repeat(2_000)}${String.fromCodePoint(0x1b)}[0m`;
     const invalidRecord: VerifyEvidenceRecord = {
       ...record,
@@ -931,6 +943,189 @@ it("persists flow evidence, resolves refs, and invalidates changed repository st
     if (previousScope === undefined) delete process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
     else process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE = previousScope;
   }
+});
+
+function oversizedTotalsRecord(key: string, projectPath: string): VerifyEvidenceRecord {
+  const chunk = {
+    text: "x".repeat(50 * 1024),
+    truncated: true,
+    totalBytes: 136_119,
+    totalLines: 1_768,
+  };
+  const phases: readonly VerifyPhase[] = ["format", "lint", "typecheck", "test"];
+  const steps = phases.map((phase) => ({
+    phase,
+    status: "passed" as const,
+    verdict: "passed" as const,
+    command: `pnpm run ${phase}`,
+    resolvedCommand: `pnpm run ${phase}`,
+    exitCode: 0,
+    signal: null,
+    durationMs: 1,
+    executed: true,
+    stdout: chunk,
+    stderr: chunk,
+  }));
+  return {
+    cacheFormatVersion: 2,
+    key,
+    ref: `vr_${key.slice(0, 24)}`,
+    projectPath,
+    resolvedCommands: steps.map((step) => step.command),
+    perStep: steps,
+    verdict: "passed",
+    covers: ["AC-001"],
+    createdAt: 0,
+  };
+}
+
+function withFlowScope(flowId: string | undefined, run: () => Promise<void>): Promise<void> {
+  const previousFlow = process.env.PI_ORCHESTRATION_FLOW;
+  const previousScope = process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
+  if (flowId === undefined) {
+    delete process.env.PI_ORCHESTRATION_FLOW;
+    delete process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
+  } else {
+    process.env.PI_ORCHESTRATION_FLOW = flowId;
+    process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE = "flow";
+  }
+  return run().finally(() => {
+    if (previousFlow === undefined) delete process.env.PI_ORCHESTRATION_FLOW;
+    else process.env.PI_ORCHESTRATION_FLOW = previousFlow;
+    if (previousScope === undefined) delete process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
+    else process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE = previousScope;
+  });
+}
+
+it("round-trips flow evidence with oversized step output totals on the same instance", async () => {
+  const cacheRoot = await mkdtemp(join(tmpdir(), "bash-tools-verify-oversized-"));
+  fixtureDirectories.push(cacheRoot);
+  await withFlowScope("verify-oversized-flow", async () => {
+    const record = oversizedTotalsRecord("oversized-totals-key", "/tmp/verify-project");
+    const cache = createVerifyEvidenceCache({ rootDirectory: cacheRoot });
+    cache.set(record);
+    expect(cache.get(record.key)).toEqual(record);
+    expect(cache.getByRef(record.ref)).toEqual(record);
+  });
+});
+
+it("shares flow evidence with oversized totals across cache instances", async () => {
+  const cacheRoot = await mkdtemp(join(tmpdir(), "bash-tools-verify-oversized-shared-"));
+  fixtureDirectories.push(cacheRoot);
+  await withFlowScope("verify-oversized-shared-flow", async () => {
+    const record = oversizedTotalsRecord("shared-oversized-key", "/tmp/verify-project");
+    createVerifyEvidenceCache({ rootDirectory: cacheRoot }).set(record);
+    const consumer = createVerifyEvidenceCache({ rootDirectory: cacheRoot });
+    expect(consumer.get(record.key)).toEqual(record);
+    expect(consumer.getByRef(record.ref)).toEqual(record);
+  });
+});
+
+it("resolves a root-published oversized-totals ref from a flow seat and refuses another flow", async () => {
+  const cacheRoot = await mkdtemp(join(tmpdir(), "bash-tools-verify-root-publish-"));
+  fixtureDirectories.push(cacheRoot);
+  await withFlowScope(undefined, async () => {
+    const record = {
+      ...oversizedTotalsRecord("root-published-key", "/tmp/verify-project"),
+      repositoryState: {
+        repositoryIdentity: "/repo",
+        workingDirectory: "/tmp/verify-project",
+        head: "HEAD",
+        dirtyFilesDigest: "clean",
+      },
+    };
+    const producer = createVerifyEvidenceCache({ rootDirectory: cacheRoot });
+    producer.set(record);
+    const published = producer.publish?.(record.ref, "publish-flow", "/repo");
+    expect(published?.publication).toMatchObject({
+      flowId: "publish-flow",
+      producerScope: "root",
+      published: true,
+    });
+    await withFlowScope("publish-flow", async () => {
+      const seat = createVerifyEvidenceCache({ rootDirectory: cacheRoot });
+      expect(seat.getByRef(record.ref)).toEqual(published);
+      expect(seat.getByRef(record.ref, "publish-flow")).toEqual(published);
+    });
+    await withFlowScope("other-flow", async () => {
+      const otherSeat = createVerifyEvidenceCache({ rootDirectory: cacheRoot });
+      expect(otherSeat.getByRef(record.ref)).toBeUndefined();
+      expect(otherSeat.getByRef(record.ref, "publish-flow")).toBeUndefined();
+      expect((await readdir(join(cacheRoot, "flows"))).sort()).toEqual(["publish-flow"]);
+    });
+  });
+});
+
+it("publishes flow evidence with oversized totals and keeps distinct publication failures", async () => {
+  const cwd = await projectFixture();
+  const cacheRoot = await mkdtemp(join(tmpdir(), "bash-tools-verify-publish-seat-"));
+  fixtureDirectories.push(cacheRoot);
+  await withFlowScope("publish-seat-flow", async () => {
+    const deps = dependencies();
+    const executor = vi.fn(async (resolved: Parameters<ProjectCommandExecutor>[0]) => {
+      const executed = await deps.executor(resolved);
+      return {
+        ...executed,
+        stdout: { ...executed.stdout, truncated: true, totalBytes: 136_119, totalLines: 1_768 },
+      };
+    });
+    const cache = createVerifyEvidenceCache({ rootDirectory: cacheRoot });
+    const tool = createVerifyToolForTesting({
+      policy: policy(),
+      resolver: deps.resolver,
+      executor,
+      repositoryStateReader: deps.repositoryStateReader,
+      cache,
+    });
+    const published = await tool.execute(
+      "verify-publish-seat",
+      { omit: ["typecheck"] as const, publish: { flowId: "publish-seat-flow" } },
+      undefined,
+      undefined,
+      context(cwd),
+    );
+    expect(published.details.publication).toMatchObject({
+      flowId: "publish-seat-flow",
+      published: true,
+    });
+    expect(published.details.perStep[0]?.stdout.totalBytes).toBe(136_119);
+    expect(published.details.perStep[0]?.stdout.totalLines).toBe(1_768);
+
+    await expect(
+      tool.execute(
+        "verify-publish-seat-wrong-flow",
+        {
+          omit: ["typecheck"] as const,
+          covers: ["MISMATCH"],
+          publish: { flowId: "other-flow" },
+        },
+        undefined,
+        undefined,
+        context(cwd),
+      ),
+    ).rejects.toThrow("no compatible stable evidence was stored");
+
+    const unreadableTool = createVerifyToolForTesting({
+      policy: policy(),
+      resolver: deps.resolver,
+      executor,
+      repositoryStateReader: async () => undefined,
+      cache,
+    });
+    await expect(
+      unreadableTool.execute(
+        "verify-publish-seat-unreadable",
+        {
+          omit: ["typecheck"] as const,
+          covers: ["UNREADABLE"],
+          publish: { flowId: "publish-seat-flow" },
+        },
+        undefined,
+        undefined,
+        context(cwd),
+      ),
+    ).rejects.toThrow("repository state is unreadable or changed during execution");
+  });
 });
 
 it("runs actual package-manager scripts with configured names", async () => {
@@ -1294,6 +1489,55 @@ it("publishes only stable root evidence to an explicitly requested flow", async 
     if (previousScope === undefined) delete process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
     else process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE = previousScope;
   }
+});
+
+gitIntegration("verify publication with a tracked deletion", () => {
+  it("publishes flow evidence for a recorded repository state with a tracked deletion", async () => {
+    const repository = await gitFixtures.createRepository();
+    await rm(join(repository.directory, "README.md"));
+    const observedState = await createProjectCommandRepositoryStateReader(makeRealGitExec())(
+      repository.directory,
+      undefined,
+    );
+    expect(observedState).toBeDefined();
+    const cacheRoot = await mkdtemp(join(tmpdir(), "bash-tools-verify-publish-deletion-"));
+    fixtureDirectories.push(cacheRoot);
+    const previousFlow = process.env.PI_ORCHESTRATION_FLOW;
+    const previousScope = process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
+    vi.stubEnv("PI_ORCHESTRATION_FLOW", undefined);
+    vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", undefined);
+    try {
+      const deps = dependencies();
+      const cache = createVerifyEvidenceCache({ rootDirectory: cacheRoot });
+      const tool = createVerifyToolForTesting({
+        policy: policy(),
+        resolver: deps.resolver,
+        executor: deps.executor,
+        repositoryStateReader: async () => observedState,
+        cache,
+      });
+      const published = await tool.execute(
+        "verify-publish-deletion",
+        { omit: ["typecheck"], publish: { flowId: "publish-deletion-flow" } },
+        undefined,
+        undefined,
+        context(repository.directory),
+      );
+      expect(published.details).toMatchObject({
+        ref: expect.stringMatching(/^vr_/u),
+        publication: { flowId: "publish-deletion-flow", published: true },
+        provenance: { scope: "flow", flowId: "publish-deletion-flow" },
+      });
+      expect(published.details.repositoryState?.dirtyFilesDigest).toBe(
+        observedState?.dirtyFilesDigest,
+      );
+    } finally {
+      if (previousFlow === undefined) delete process.env.PI_ORCHESTRATION_FLOW;
+      else process.env.PI_ORCHESTRATION_FLOW = previousFlow;
+      if (previousScope === undefined) delete process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
+      else process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE = previousScope;
+    }
+  });
 });
 
 it("binds verify authorization to scripts, excludes paths, and persists project allows across scopes", async () => {

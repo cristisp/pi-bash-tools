@@ -13,7 +13,11 @@ import {
   type VerifyEvidenceRecord,
   type VerifyRepositoryState,
 } from "../types.ts";
-import { isSafeFailureTail, isVerifyStepResult } from "./step-validation.ts";
+import {
+  isSafeFailureTail,
+  isVerifyStepResult,
+  VERIFY_CACHE_MAX_COMMAND,
+} from "./step-validation.ts";
 
 const VERIFY_CACHE_MAX_TAIL = 8 * 1024;
 const VERIFY_CACHE_MAX_STEPS = 4;
@@ -116,7 +120,7 @@ function isVerifyRecordSteps(value: Readonly<Record<string, unknown>>): boolean 
     Array.isArray(value.resolvedCommands) &&
     value.resolvedCommands.length > 0 &&
     value.resolvedCommands.length <= VERIFY_CACHE_MAX_COMMANDS &&
-    value.resolvedCommands.every((command) => isBoundedString(command, 4096)) &&
+    value.resolvedCommands.every((command) => isBoundedString(command, VERIFY_CACHE_MAX_COMMAND)) &&
     Array.isArray(value.perStep) &&
     value.perStep.length === VERIFY_CACHE_MAX_STEPS &&
     value.perStep.every(isVerifyStepResult) &&

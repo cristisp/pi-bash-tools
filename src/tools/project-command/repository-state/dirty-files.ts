@@ -42,6 +42,10 @@ function sameIndexedFileState(left: FileStat | undefined, right: FileStat | unde
   return left !== undefined && right !== undefined && sameFileState(left, right);
 }
 
+function isDeletedStatus(status: string): boolean {
+  return status.includes("D") && !status.includes("U");
+}
+
 function parseStatus(value: string): readonly DirtyPath[] | undefined {
   if (Buffer.byteLength(value, "utf8") > MAX_REPOSITORY_STATE_BYTES) return undefined;
   const records = value.split("\0").filter((record) => record.length > 0);
@@ -84,9 +88,10 @@ export async function contentDigest(
 ): Promise<string | undefined> {
   const paths = parseStatus(status);
   if (paths === undefined) return undefined;
-  const currentPaths = paths.map((entry) => entry.path);
+  const entries = paths.map((entry) => ({ entry, deleted: isDeletedStatus(entry.status) }));
+  const presentPaths = entries.filter(({ deleted }) => !deleted).map(({ entry }) => entry.path);
   const stats = await Promise.all(
-    currentPaths.map(async (path) => {
+    presentPaths.map(async (path) => {
       try {
         return await lstat(join(repositoryRoot, path));
       } catch {
@@ -106,11 +111,11 @@ export async function contentDigest(
     return undefined;
   }
   const hashResult =
-    currentPaths.length === 0
+    presentPaths.length === 0
       ? undefined
       : await runGit(
           exec,
-          ["hash-object", "--", ...currentPaths],
+          ["hash-object", "--", ...presentPaths],
           projectPath,
           signal,
           "dirty file content",
@@ -124,13 +129,13 @@ export async function contentDigest(
   }
   const hashes = hashResult?.stdout.split("\n").filter((hash) => hash.length > 0) ?? [];
   if (
-    hashes.length !== currentPaths.length ||
+    hashes.length !== presentPaths.length ||
     hashes.some((hash) => !/^[0-9a-f]{40,64}$/u.test(hash))
   ) {
-    return currentPaths.length === 0 ? digest(["status", status]) : undefined;
+    return undefined;
   }
   const finalStats = await Promise.all(
-    currentPaths.map(async (path) => {
+    presentPaths.map(async (path) => {
       try {
         return await lstat(join(repositoryRoot, path));
       } catch {
@@ -141,17 +146,26 @@ export async function contentDigest(
   if (finalStats.some((entry, index) => !sameIndexedFileState(stats[index], entry))) {
     return undefined;
   }
+  let presentIndex = 0;
   return digest([
     "status",
     status,
-    ...paths.flatMap((entry, index) => [
-      "path",
-      entry.status,
-      entry.path,
-      entry.originalPath ?? "",
-      String(stats[index]?.mode ?? 0),
-      String(stats[index]?.size ?? 0),
-      hashes[index] ?? "",
-    ]),
+    ...entries.flatMap(({ entry, deleted }) => {
+      if (deleted) {
+        return ["path", entry.status, entry.path, entry.originalPath ?? "", "0", "0", "deleted"];
+      }
+      const stat = stats[presentIndex];
+      const hash = hashes[presentIndex];
+      presentIndex += 1;
+      return [
+        "path",
+        entry.status,
+        entry.path,
+        entry.originalPath ?? "",
+        String(stat?.mode ?? 0),
+        String(stat?.size ?? 0),
+        hash ?? "",
+      ];
+    }),
   ]);
 }

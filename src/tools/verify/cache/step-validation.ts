@@ -8,6 +8,7 @@ import {
 import { type VerifyOutputChunk, type VerifyStepResult } from "../types.ts";
 
 const VERIFY_CACHE_MAX_TEXT = 50 * 1024;
+export const VERIFY_CACHE_MAX_COMMAND = 300 * 1024;
 const VERIFY_CACHE_MAX_TAIL = 8 * 1024;
 const ANSI_ESCAPE = String.fromCodePoint(0x1b);
 
@@ -16,8 +17,8 @@ function isOutputChunk(value: unknown): value is VerifyOutputChunk {
     isRecord(value) &&
     isBoundedString(value.text, VERIFY_CACHE_MAX_TEXT) &&
     typeof value.truncated === "boolean" &&
-    isBoundedInteger(value.totalBytes, 0, VERIFY_CACHE_MAX_TEXT) &&
-    isBoundedInteger(value.totalLines, 0, VERIFY_CACHE_MAX_TEXT)
+    isBoundedInteger(value.totalBytes, 0, Number.MAX_SAFE_INTEGER) &&
+    isBoundedInteger(value.totalLines, 0, Number.MAX_SAFE_INTEGER)
   );
 }
 
@@ -45,8 +46,10 @@ export function isVerifyStepResult(value: unknown): value is VerifyStepResult {
     value.verdict === value.status &&
     typeof value.executed === "boolean" &&
     value.executed === (value.status === "passed" || value.status === "failed") &&
-    (value.command === undefined || isBoundedNonEmptyString(value.command, 4096)) &&
-    (value.resolvedCommand === undefined || isBoundedNonEmptyString(value.resolvedCommand, 4096)) &&
+    (value.command === undefined ||
+      isBoundedNonEmptyString(value.command, VERIFY_CACHE_MAX_COMMAND)) &&
+    (value.resolvedCommand === undefined ||
+      isBoundedNonEmptyString(value.resolvedCommand, VERIFY_CACHE_MAX_COMMAND)) &&
     (value.executable === undefined || isBoundedString(value.executable, 4096)) &&
     (value.args === undefined ||
       (Array.isArray(value.args) && value.args.every((arg) => isBoundedString(arg, 4096)))) &&

@@ -85,7 +85,10 @@ Both fields are optional and unknown fields are rejected.
 
 `renamedFrom` is present for rename and copy records.
 
-A fresh status also carries repository-state identity: `head` is the resolved HEAD commit id, and `dirtyFilesDigest` is a content-sensitive digest over the dirty paths and their hashed content. Identity fields are omitted when their computation cannot complete (for example an empty repository or an oversized dirty state). Computing identity runs one extra `git rev-parse HEAD` process per fresh status and a bounded `git hash-object` process only when the tree is dirty; the unchanged path runs no extra processes.
+A fresh status also carries repository-state identity: `head` is the resolved HEAD commit id, and `dirtyFilesDigest` is a content-sensitive digest over the dirty paths and their hashed content. Identity fields are omitted when their computation cannot complete (for example an empty repository or an oversized dirty state).
+Tracked deletions are supported and included in `dirtyFilesDigest`: a path with `D` in its status and no `U` contributes its status and path with fixed placeholder values instead of file content, so a repository whose only dirty state is a deletion still carries identity fields.
+Unmerged entries whose worktree file exists (`UD`, `DU`) keep their content hashed, so an edit to a conflicted file still changes the digest.
+Computing identity runs one extra `git rev-parse HEAD` process per fresh status and a bounded `git hash-object` process only when the tree is dirty; the unchanged path runs no extra processes.
 
 An unchanged response contains `repositoryRoot`, `unchanged: true`, `previous` with the prior digest, entry count, identity fields, and output metadata, the zero-sized current `output`, and a message explaining how to request a refresh.
 

@@ -7,6 +7,7 @@ import {
 import { isVerifyEvidenceRecord } from "../../src/tools/verify/cache/validation.ts";
 
 const MAX_TEXT = 50 * 1024;
+const MAX_COMMAND = 300 * 1024;
 const MAX_TAIL = 8 * 1024;
 const MAX_DURATION_MS = 24 * 60 * 60 * 1000;
 const ANSI_ESCAPE = "\u001b";
@@ -96,8 +97,8 @@ describe("isVerifyStepResult", () => {
     expect(
       isVerifyStepResult(
         step({
-          command: "c".repeat(4096),
-          resolvedCommand: "r".repeat(4096),
+          command: "c".repeat(MAX_COMMAND),
+          resolvedCommand: "r".repeat(MAX_COMMAND),
           executable: "e".repeat(4096),
           args: ["a".repeat(4096)],
           script: "s".repeat(128),
@@ -111,8 +112,8 @@ describe("isVerifyStepResult", () => {
   it.each([
     ["command", { command: "" }],
     ["resolvedCommand", { resolvedCommand: "" }],
-    ["command length", { command: "c".repeat(4097) }],
-    ["resolvedCommand length", { resolvedCommand: "r".repeat(4097) }],
+    ["command length", { command: "c".repeat(MAX_COMMAND + 1) }],
+    ["resolvedCommand length", { resolvedCommand: "r".repeat(MAX_COMMAND + 1) }],
     ["executable length", { executable: "e".repeat(4097) }],
     ["argument length", { args: ["a".repeat(4097)] }],
     ["script length", { script: "s".repeat(129) }],
@@ -131,13 +132,50 @@ describe("isVerifyStepResult", () => {
     expect(isVerifyStepResult(step({ stdout: boundedOutput, stderr: boundedOutput }))).toBe(true);
   });
 
+  it.each([["text", { text: "x".repeat(MAX_TEXT + 1) }]] as const)(
+    "rejects output over the %s limit in either stream",
+    (_field, overrides) => {
+      for (const stream of ["stdout", "stderr"] as const) {
+        expect(isVerifyStepResult(step({ [stream]: output(overrides) }))).toBe(false);
+      }
+    },
+  );
+
+  it("accepts totals above the stored text limit like a real truncated execution", () => {
+    const truncatedOutput = output({
+      text: "x".repeat(MAX_TEXT),
+      truncated: true,
+      totalBytes: 136_119,
+      totalLines: 1_768,
+    });
+    expect(isVerifyStepResult(step({ stdout: truncatedOutput, stderr: truncatedOutput }))).toBe(
+      true,
+    );
+  });
+
+  it("accepts display commands at the length a real verify run can emit", () => {
+    const command = "c".repeat(4096 + 67 * 4096 + 67);
+    expect(isVerifyStepResult(step({ command, resolvedCommand: command }))).toBe(true);
+  });
+
+  it.each([0, Number.MAX_SAFE_INTEGER] as const)("accepts totals at %s", (total) => {
+    const boundedOutput = output({ totalBytes: total, totalLines: total });
+    expect(isVerifyStepResult(step({ stdout: boundedOutput, stderr: boundedOutput }))).toBe(true);
+  });
+
   it.each([
-    ["text", { text: "x".repeat(MAX_TEXT + 1) }],
-    ["totalBytes", { totalBytes: MAX_TEXT + 1 }],
-    ["totalLines", { totalLines: MAX_TEXT + 1 }],
-  ] as const)("rejects output over the %s limit in either stream", (_field, overrides) => {
-    for (const stream of ["stdout", "stderr"] as const) {
-      expect(isVerifyStepResult(step({ [stream]: output(overrides) }))).toBe(false);
+    1.5,
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+    "136119",
+    null,
+  ] as const)("rejects non-integer totals %j", (total) => {
+    for (const field of ["totalBytes", "totalLines"] as const) {
+      for (const stream of ["stdout", "stderr"] as const) {
+        expect(isVerifyStepResult(step({ [stream]: output({ [field]: total }) }))).toBe(false);
+      }
     }
   });
 
@@ -351,6 +389,54 @@ describe("isVerifyEvidenceRecord boundary validation", () => {
     for (const [label, overrides] of cases) {
       expect(isVerifyEvidenceRecord({ ...record, ...overrides }, RECORD_KEY), label).toBe(false);
     }
+  });
+
+  it("accepts step output totals above the stored text limit in a full record", () => {
+    const truncatedOutput = output({
+      text: "x".repeat(MAX_TEXT),
+      truncated: true,
+      totalBytes: 136_119,
+      totalLines: 1_768,
+    });
+    const perStep = (["format", "lint", "typecheck", "test"] as const).map((phase) =>
+      step({
+        phase,
+        command: `pnpm run ${phase}`,
+        stdout: truncatedOutput,
+        stderr: truncatedOutput,
+      }),
+    );
+    expect(isVerifyEvidenceRecord({ ...validRecord(), perStep }, RECORD_KEY)).toBe(true);
+  });
+
+  it("rejects step output totals that are not safe non-negative integers", () => {
+    for (const total of [1.5, -1, Number.NaN, Number.MAX_SAFE_INTEGER + 1, "136119"] as const) {
+      const perStep = (["format", "lint", "typecheck", "test"] as const).map((phase) =>
+        step({
+          phase,
+          command: `pnpm run ${phase}`,
+          stdout: output({ totalBytes: total }),
+          stderr: output({ totalLines: total }),
+        }),
+      );
+      expect(isVerifyEvidenceRecord({ ...validRecord(), perStep }, RECORD_KEY)).toBe(false);
+    }
+  });
+
+  it("accepts resolved commands at the length a real verify run can emit in a full record", () => {
+    const command = "c".repeat(4096 + 67 * 4096 + 67);
+    expect(
+      isVerifyEvidenceRecord({ ...validRecord(), resolvedCommands: [command] }, RECORD_KEY),
+    ).toBe(true);
+  });
+
+  it("rejects resolved commands over the command limit in a full record", () => {
+    expect(
+      isVerifyEvidenceRecord(
+        { ...validRecord(), resolvedCommands: ["c".repeat(MAX_COMMAND + 1)] },
+        RECORD_KEY,
+      ),
+    ).toBe(false);
   });
 
   it("accepts consistent incomplete and failed verdicts", () => {
