@@ -6,6 +6,7 @@ import {
   containsPathspecCharacter,
   gitImplementationError,
   invalidGitRequest,
+  invalidGitRequestShape,
   GitToolError,
   runGit,
   validateGitText,
@@ -103,7 +104,7 @@ export async function resolvePaths(
   label = "paths",
 ): Promise<string[]> {
   if (!Array.isArray(inputs) || inputs.length === 0) {
-    throw invalidGitRequest(`${label} must not be empty`, label);
+    throw invalidGitRequestShape(`${label} must not be empty`, label);
   }
   const paths = await Promise.all(
     inputs.map((input, index) => resolvePath(repository, input, `${label}[${index}]`)),

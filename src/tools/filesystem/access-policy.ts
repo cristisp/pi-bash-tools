@@ -26,6 +26,10 @@ import type {
   PolicyStore,
 } from "../policy/types.ts";
 import {
+  effectiveOrchestrationFlowId,
+  readProjectCommandOrchestrationContext,
+} from "../project-command/orchestration.ts";
+import {
   authorizeAndPersistFilesystemAccesses,
   loadFilesystemPolicyForRequest,
   type FilesystemAuthorizationContext,
@@ -361,6 +365,8 @@ export function createFilesystemAccessPolicyInterceptor(
           ? sessionIdValue
           : undefined,
       toolCallId: event.toolCallId,
+      mode: ctx.mode,
+      flowId: effectiveOrchestrationFlowId(readProjectCommandOrchestrationContext()),
     });
     return interceptFilesystemToolCall(event, ctx, policy, observe, authorizationRetryTracker);
   };

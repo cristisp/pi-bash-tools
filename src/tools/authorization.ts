@@ -120,6 +120,7 @@ function throwForPersistentDenial<Identity, Request extends PolicyDecisionReques
   options: AuthorizeOrPromptOptions<Identity, Request>,
   timing: PromptTiming,
   retryKey: AuthorizationRetryKey | undefined,
+  decisionSource: Extract<PolicyAuthorization, "deny-global" | "deny-project">,
 ): never {
   const unchangedRetry =
     retryKey === undefined ? undefined : options.retry?.tracker.findUnchangedRetry(retryKey);
@@ -127,11 +128,12 @@ function throwForPersistentDenial<Identity, Request extends PolicyDecisionReques
     observeOutcome(options, timing, {
       outcome: "unchanged-retry-after-denial",
       decisionPersisted: false,
+      decisionSource,
     });
     throw options.error("unchanged-retry");
   }
   recordPersistentDenial(retryKey, options, "denied");
-  observeOutcome(options, timing, { outcome: "denied", decisionPersisted: false });
+  observeOutcome(options, timing, { outcome: "denied", decisionPersisted: false, decisionSource });
   throw options.error("denied");
 }
 
@@ -152,6 +154,7 @@ function observeOutcome(
     executionAttempted: outcome.executionAttempted,
     promptEmitted: timing.promptEmitted,
     promptWaitMs: promptWaitMs(timing),
+    ...(outcome.decisionSource === undefined ? {} : { decisionSource: outcome.decisionSource }),
   });
 }
 
@@ -268,6 +271,7 @@ async function resolvePrompt<Identity, Request extends PolicyDecisionRequest>(
       observeOutcome(options, timing, {
         outcome: "confirmation-timeout",
         decisionPersisted: prompt.persisted,
+        decisionSource: "prompt",
       });
       throw options.error(prompt.persisted ? "timeout" : "save");
     case "cancelled":
@@ -290,26 +294,46 @@ async function resolvePrompt<Identity, Request extends PolicyDecisionRequest>(
   try {
     decision = choiceDecision(prompt.choice);
   } catch {
-    observeOutcome(options, timing, { outcome: "invalid-choice", decisionPersisted: false });
+    observeOutcome(options, timing, {
+      outcome: "invalid-choice",
+      decisionPersisted: false,
+      decisionSource: "prompt",
+    });
     throw options.error("invalid-choice");
   }
   if (decision === "deny-once") {
-    observeOutcome(options, timing, { outcome: "denied-once", decisionPersisted: false });
+    observeOutcome(options, timing, {
+      outcome: "denied-once",
+      decisionPersisted: false,
+      decisionSource: "prompt",
+    });
     throw options.error("denied-once");
   }
   if (decision === "allow-once") {
-    observeOutcome(options, timing, { outcome: "allowed-once", decisionPersisted: false });
+    observeOutcome(options, timing, {
+      outcome: "allowed-once",
+      decisionPersisted: false,
+      decisionSource: "prompt",
+    });
     return undefined;
   }
   if (
     (decision === "allow-global" || decision === "deny-global") &&
     options.allowGlobal === false
   ) {
-    observeOutcome(options, timing, { outcome: "unsafe-global", decisionPersisted: false });
+    observeOutcome(options, timing, {
+      outcome: "unsafe-global",
+      decisionPersisted: false,
+      decisionSource: "prompt",
+    });
     throw options.error("unsafe-global");
   }
   if (decision === "allow-global" && !options.globalSafe) {
-    observeOutcome(options, timing, { outcome: "unsafe-global", decisionPersisted: false });
+    observeOutcome(options, timing, {
+      outcome: "unsafe-global",
+      decisionPersisted: false,
+      decisionSource: "prompt",
+    });
     throw options.error("unsafe-global");
   }
   const request = options.makeRequest(options.identity, decision);
@@ -318,7 +342,11 @@ async function resolvePrompt<Identity, Request extends PolicyDecisionRequest>(
     if (persisted) {
       recordPersistentDenial(retryKeyOf(options), options, "denied");
     }
-    observeOutcome(options, timing, { outcome: "denied", decisionPersisted: persisted });
+    observeOutcome(options, timing, {
+      outcome: "denied",
+      decisionPersisted: persisted,
+      decisionSource: "prompt",
+    });
     if (!persisted) throw options.error("save");
     throw options.error("denied");
   }
@@ -327,11 +355,16 @@ async function resolvePrompt<Identity, Request extends PolicyDecisionRequest>(
     observeOutcome(options, timing, {
       outcome: "allowed-and-persisted",
       decisionPersisted: persisted,
+      decisionSource: "prompt",
     });
     if (!persisted) throw options.error("save");
     return undefined;
   }
-  observeOutcome(options, timing, { outcome: "deferred-persistence", decisionPersisted: false });
+  observeOutcome(options, timing, {
+    outcome: "deferred-persistence",
+    decisionPersisted: false,
+    decisionSource: "prompt",
+  });
   return request;
 }
 
@@ -350,10 +383,14 @@ export async function authorizeOrPrompt<Identity, Request extends PolicyDecision
     throw options.error("load");
   }
   if (authorization === "deny-global" || authorization === "deny-project") {
-    throwForPersistentDenial(options, timing, retryKeyOf(options));
+    throwForPersistentDenial(options, timing, retryKeyOf(options), authorization);
   }
   if (authorization !== "unknown") {
-    observeOutcome(options, timing, { outcome: "authorized", decisionPersisted: false });
+    observeOutcome(options, timing, {
+      outcome: "authorized",
+      decisionPersisted: false,
+      decisionSource: authorization,
+    });
     return undefined;
   }
   throwIfAborted(options, timing);

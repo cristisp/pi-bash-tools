@@ -48,6 +48,8 @@ The result carries the additive `publish` block with `scope`, `flowId`, `publish
 
 A failed or unauthorized publication leaves the read results unchanged and reports `published: false` with a bounded `error`, and nothing is stored. A publication that meets the content caps but exceeds the 384 KiB serialized record bound is rejected with the distinct bounded `error` `Read evidence exceeds the published record size bound.`, so callers can tell a size rejection apart from an unauthorized publication.
 
+The read-batch invocation record mirrors the requested publication as an additive `publication` block (`scope`, optional `flowId`, `published`, optional bounded `error`) and records orchestrated `role` and `delegationId` when the orchestration context provides them. A publish-requested call that fails before its result details are built is recorded without a `publication` block because no result payload exists to describe.
+
 Combining `publish` with `ref` is rejected up front.
 
 ### Lookup result
@@ -190,7 +192,7 @@ The operation uses the separate `delete` capability.
 
 An edit preflight reads at most 256 KiB and diagnoses empty `oldText`, no-op replacements, no match, stale context, ambiguous matches, and overlapping edits before the native edit is allowed to run.
 
-Diagnostics include the nearest candidate line numbers, a `fileFingerprint` (sha256 of the preflight-read content), and bounded repair context (`contentLength`, `lineCount`) without file content. A `read_batch` full-file read records the observed content hash (hash-only, bounded, best-effort): when a later edit no longer matches content that changed since that observation, the failure is classified as `edit-stale-context`; without observed evidence it stays `edit-no-match`. Repeating an identical edit after any preflight failure is rejected once per session with `edit-unchanged-retry` until the edit is rebased on a fresh reread. The extension never retries or rebases a mutation automatically.
+Diagnostics include the nearest candidate line numbers, a `fileFingerprint` (sha256 of the preflight-read content), and bounded repair context (`contentLength`, `lineCount`) without file content. A `read_batch` full-file read records the observed content hash (hash-only, bounded, best-effort): when a later edit no longer matches content that changed since that observation, the failure is classified as `edit-stale-context`; without observed evidence it stays `edit-no-match`. A stale-context or equal-hash no-match diagnostic carries the additive `evidenceBacked: true` flag when an observation existed for the path, so the `edit-stale-context` hit rate is measurable; the flag is omitted when no observation existed. Repeating an identical edit after any preflight failure is rejected once per session with `edit-unchanged-retry` until the edit is rebased on a fresh reread. The extension never retries or rebases a mutation automatically.
 
 The interceptor reports blocked calls as `Tool call blocked by access policy` with the tool, access type, path, and reason.
 

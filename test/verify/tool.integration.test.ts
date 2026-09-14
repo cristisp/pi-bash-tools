@@ -252,7 +252,7 @@ gitIntegration("Verify repository-state cache invalidation", () => {
       activeExecutions += 1;
       maximumActiveExecutions = Math.max(maximumActiveExecutions, activeExecutions);
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, 50);
+        const timer = setTimeout(resolve, 200);
         signal?.addEventListener(
           "abort",
           () => {
@@ -265,11 +265,15 @@ gitIntegration("Verify repository-state cache invalidation", () => {
       activeExecutions -= 1;
       return outcome();
     });
+    const observedState = await createProjectCommandRepositoryStateReader(makeRealGitExec())(
+      repository.directory,
+      undefined,
+    );
     const tool = createVerifyToolForTesting({
       policy: policy(),
       resolver,
       executor,
-      repositoryStateReader: createProjectCommandRepositoryStateReader(makeRealGitExec()),
+      repositoryStateReader: async () => observedState,
       invocationRecorder: (record) => records.push(record),
     });
 

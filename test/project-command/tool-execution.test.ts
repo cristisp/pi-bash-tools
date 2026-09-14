@@ -130,9 +130,11 @@ it("shares one non-mutating evidence execution across overlapping identical requ
         else pendingExecutions.push(resolve);
       }),
   );
+  const records: ProjectCommandInvocationRecord[] = [];
   const tool = createProjectCommandToolForTesting({
     configPath: fixtureData.configPath,
     executor,
+    invocationRecorder: (record) => records.push(record),
     resolver: async (commandDefinition) => {
       resolverCalls += 1;
       if (resolverCalls === 2) resolveSecondResolver?.();
@@ -144,7 +146,9 @@ it("shares one non-mutating evidence execution across overlapping identical requ
     { commandId: "workspace_path" },
     undefined,
     undefined,
-    context(fixtureData.directory),
+    context(fixtureData.directory, {
+      sessionManager: { getSessionId: () => "single-flight-session" },
+    }),
   );
   await executorStarted;
   const second = tool.execute(
@@ -152,7 +156,9 @@ it("shares one non-mutating evidence execution across overlapping identical requ
     { commandId: "workspace_path" },
     undefined,
     undefined,
-    context(fixtureData.directory),
+    context(fixtureData.directory, {
+      sessionManager: { getSessionId: () => "single-flight-session" },
+    }),
   );
   await secondResolverDone;
   await vi.waitFor(() => {
@@ -174,6 +180,25 @@ it("shares one non-mutating evidence execution across overlapping identical requ
     concurrentExecutions: 2,
   });
   expect(secondResult.details.ref).toBe(firstResult.details.ref);
+  const leader = records.find((record) => record.toolCallId === "single-flight-1");
+  const follower = records.find((record) => record.toolCallId === "single-flight-2");
+  expect(leader?.sharedExecution).toBe(false);
+  expect(leader?.preparationDurationMs).toBeGreaterThanOrEqual(0);
+  expect(leader?.authorizationDurationMs).toBeGreaterThanOrEqual(0);
+  expect(leader === undefined ? true : "queueDurationMs" in leader).toBe(false);
+  expect(follower?.sharedExecution).toBe(true);
+  expect(follower?.executionDurationMs).toBe(0);
+  expect(follower?.preparationDurationMs).toBeGreaterThanOrEqual(0);
+  expect(follower?.authorizationDurationMs).toBeGreaterThanOrEqual(0);
+  expect(follower?.queueDurationMs).toBeGreaterThanOrEqual(0);
+  for (const record of records) {
+    const phased =
+      (record.preparationDurationMs ?? 0) +
+      (record.authorizationDurationMs ?? 0) +
+      (record.queueDurationMs ?? 0) +
+      record.executionDurationMs;
+    expect(record.durationMs).toBeGreaterThanOrEqual(phased);
+  }
 }, 15_000);
 
 it("looks up stored evidence and rejects missing references", async () => {
@@ -308,6 +333,18 @@ it("records success and not-found evidence lookup telemetry outcomes", async () 
     success: true,
     outcome: "success",
   });
+  const producer = records.find((record) => record.toolCallId === "lookup-producer");
+  expect(producer?.preparationDurationMs).toBeGreaterThanOrEqual(0);
+  expect(producer?.authorizationDurationMs).toBeGreaterThanOrEqual(0);
+  expect(producer === undefined ? true : "queueDurationMs" in producer).toBe(false);
+  const consumerLookup = records.find((record) => record.toolCallId === "lookup-consumer");
+  expect(consumerLookup === undefined ? true : "preparationDurationMs" in consumerLookup).toBe(
+    false,
+  );
+  expect(consumerLookup === undefined ? true : "authorizationDurationMs" in consumerLookup).toBe(
+    false,
+  );
+  expect(consumerLookup === undefined ? true : "queueDurationMs" in consumerLookup).toBe(false);
 
   const missing = await tool
     .execute(
@@ -329,6 +366,12 @@ it("records success and not-found evidence lookup telemetry outcomes", async () 
     failure: "not-found",
     outcome: "not-found",
   });
+  const missingLookup = records.find((record) => record.toolCallId === "lookup-missing");
+  expect(missingLookup === undefined ? true : "preparationDurationMs" in missingLookup).toBe(false);
+  expect(missingLookup === undefined ? true : "authorizationDurationMs" in missingLookup).toBe(
+    false,
+  );
+  expect(missingLookup === undefined ? true : "queueDurationMs" in missingLookup).toBe(false);
   expect(lookupOutcome).toHaveBeenCalledWith("pc_missing1", undefined);
 });
 

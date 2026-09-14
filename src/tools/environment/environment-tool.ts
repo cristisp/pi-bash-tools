@@ -13,6 +13,10 @@ import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.
 import type { PolicyFileSystem, PolicyStore } from "../policy/types.ts";
 import type { LoadedPolicy } from "../policy/types.ts";
 import {
+  effectiveOrchestrationFlowId,
+  readProjectCommandOrchestrationContext,
+} from "../project-command/orchestration.ts";
+import {
   authorizeAndPersistEnvironmentKeys,
   loadEnvironmentPolicyForRequest,
 } from "./environment-authorization.ts";
@@ -144,6 +148,8 @@ function createEnvironmentToolWithDependencies(
         recorder: authorizationOutcomeRecorder,
         sessionId: environmentSessionId(ctx),
         toolCallId,
+        mode: ctx.mode,
+        flowId: effectiveOrchestrationFlowId(readProjectCommandOrchestrationContext()),
       });
       let loadedPolicy: LoadedPolicy;
       try {

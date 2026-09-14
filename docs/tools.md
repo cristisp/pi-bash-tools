@@ -27,6 +27,8 @@ Edit preflight failures carry structured details: the diagnostic code, nearest c
 
 The interceptor canonicalizes and authorizes the requested path before allowing the native implementation to execute.
 
+Prefer `read_batch` over repeated or multi-file native `read` calls: it returns per-path results, hashes, and repository-state identity in one bounded call, and it is the only file-read path that can report compact `unchanged` metadata for a repeated identical read.
+
 Native `bash` and `user_bash` calls have no filesystem-policy interception from this extension.
 
 ## Common result conventions

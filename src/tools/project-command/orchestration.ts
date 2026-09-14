@@ -45,3 +45,10 @@ export function readProjectCommandOrchestrationContext(
       environment.PI_ORCHESTRATION_EVIDENCE_SCOPE !== undefined,
   };
 }
+
+/** The flow identity a caller may attribute to itself, and only from its own environment. */
+export function effectiveOrchestrationFlowId(
+  orchestration: ProjectCommandOrchestrationContext,
+): string | undefined {
+  return orchestration.effectiveScope === "flow" ? orchestration.flowId : undefined;
+}

@@ -141,6 +141,12 @@ export interface ProjectCommandInvocationRecordInput {
   readonly reused: boolean;
   readonly durationMs: number;
   readonly executionDurationMs: number;
+  /** Time from tool entry to the authorization mark, or to invocation end on a preparation failure. */
+  readonly preparationDurationMs?: number;
+  /** Time spent inside the single authorization call, including any confirmation prompt wait. */
+  readonly authorizationDurationMs?: number;
+  /** Time a single-flight follower waited for the in-flight execution to settle. */
+  readonly queueDurationMs?: number;
   readonly output?: ProjectCommandInvocationOutputMetadata;
   readonly measurements?: ProjectCommandInvocationMeasurements;
   readonly producerScope?: "session" | "flow";
@@ -176,6 +182,9 @@ export interface ProjectCommandInvocationRecord {
   readonly reused: boolean;
   readonly durationMs: number;
   readonly executionDurationMs: number;
+  readonly preparationDurationMs?: number;
+  readonly authorizationDurationMs?: number;
+  readonly queueDurationMs?: number;
   readonly output: ProjectCommandInvocationOutputMetadata;
   readonly measurements?: ProjectCommandInvocationMeasurements;
   readonly producerScope?: "session" | "flow";
@@ -512,6 +521,13 @@ function boundedRecord(record: ProjectCommandInvocationRecord): ProjectCommandIn
     reused: record.reused,
     durationMs: record.durationMs,
     executionDurationMs: record.executionDurationMs,
+    ...(record.preparationDurationMs === undefined
+      ? {}
+      : { preparationDurationMs: record.preparationDurationMs }),
+    ...(record.authorizationDurationMs === undefined
+      ? {}
+      : { authorizationDurationMs: record.authorizationDurationMs }),
+    ...(record.queueDurationMs === undefined ? {} : { queueDurationMs: record.queueDurationMs }),
     output: record.output,
     ...(record.measurements === undefined ? {} : { measurements: record.measurements }),
     ...(record.flowId === undefined ? {} : { flowId: record.flowId }),
@@ -556,6 +572,15 @@ export function buildProjectCommandInvocationRecord(
     reused: input.reused,
     durationMs: boundedNumber(input.durationMs),
     executionDurationMs: boundedNumber(input.executionDurationMs),
+    ...(input.preparationDurationMs === undefined
+      ? {}
+      : { preparationDurationMs: boundedNumber(input.preparationDurationMs) }),
+    ...(input.authorizationDurationMs === undefined
+      ? {}
+      : { authorizationDurationMs: boundedNumber(input.authorizationDurationMs) }),
+    ...(input.queueDurationMs === undefined
+      ? {}
+      : { queueDurationMs: boundedNumber(input.queueDurationMs) }),
     output: boundedOutput(input.output),
     measurements: boundedMeasurements(input.measurements ?? defaultMeasurements(input)),
     ...(input.producerScope === undefined ? {} : { producerScope: input.producerScope }),

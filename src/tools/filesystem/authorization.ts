@@ -202,6 +202,7 @@ export async function authorizeAndPersistFilesystemAccesses(
       decisionPersisted: false,
       promptEmitted: false,
       promptWaitMs: 0,
+      ...(signal?.aborted ? {} : { decisionSource: "prompt" }),
     });
     const request = requests[0];
     if (request === undefined) {
@@ -214,6 +215,7 @@ export async function authorizeAndPersistFilesystemAccesses(
     decisionPersisted: true,
     promptEmitted: false,
     promptWaitMs: 0,
+    decisionSource: "prompt",
   });
   throwIfRequestAborted(signal);
 }

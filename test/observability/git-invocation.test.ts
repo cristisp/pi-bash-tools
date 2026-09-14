@@ -171,6 +171,98 @@ describe("git invocation records", () => {
     expect(record.errorCode).toBe("invalid-request");
   });
 
+  it("omits the additive coercion and retry fields when they are unused", () => {
+    const record = buildGitInvocationRecord(input());
+
+    expect("coercions" in record).toBe(false);
+    expect("retryInvalidation" in record).toBe(false);
+  });
+
+  it("clamps recorded coercions and drops unknown retry invalidations", () => {
+    const record = buildGitInvocationRecord(
+      input({
+        coercions: [1, "b", "c", "d", "e", "f"] as never,
+        retryInvalidation: "not-a-retry-invalidation" as never,
+      }),
+    );
+
+    expect(record.coercions).toEqual(["b", "c", "d", "e"]);
+    expect("retryInvalidation" in record).toBe(false);
+  });
+
+  it("bounds coercion names and keeps the record within the byte cap", () => {
+    const record = buildGitInvocationRecord(
+      input({
+        sessionId: "s".repeat(10_000),
+        coercions: ["x".repeat(10_000), "path:empty-string-omitted"],
+        retryInvalidation: "invalid-request-repeat",
+        repositoryState: {
+          repositoryId: "b".repeat(64),
+          head: "head".padEnd(600, "x"),
+          dirtyDigest: "d".repeat(64),
+          status: "readable",
+        } as never,
+      }),
+    );
+
+    expect(record.coercions?.[0]).toHaveLength(64);
+    expect(record.retryInvalidation).toBe("invalid-request-repeat");
+    expect(Buffer.byteLength(JSON.stringify(record), "utf8")).toBeLessThanOrEqual(
+      GIT_INVOCATION_MAX_BYTES,
+    );
+  });
+
+  it("keeps a record without the additive request fields byte-identical", () => {
+    const record = buildGitInvocationRecord(input());
+
+    expect(record).toEqual({
+      invocationFormatVersion: 1,
+      tool: "git_status",
+      sessionId: "session-1",
+      toolCallId: "call-1",
+      schemaHash: "schema-hash",
+      requestedPaths: 1,
+      reason: "completed",
+      durationMs: 12,
+      unchanged: true,
+      aggregate: { resultBytes: 4_321 },
+    });
+  });
+
+  it("records the git_diff mode, a bounded maxBytes, and the truncation flag when provided", () => {
+    const record = buildGitInvocationRecord(
+      input({ tool: "git_diff", mode: "patch", maxBytes: 4_096, truncated: true }),
+    );
+
+    expect(record.mode).toBe("patch");
+    expect(record.maxBytes).toBe(4_096);
+    expect(record.truncated).toBe(true);
+  });
+
+  it("omits the additive request fields when they are unset or malformed", () => {
+    const record = buildGitInvocationRecord(
+      input({
+        mode: "sideways" as never,
+        maxBytes: -1,
+        truncated: "yes" as never,
+      }),
+    );
+
+    expect("mode" in record).toBe(false);
+    expect("maxBytes" in record).toBe(false);
+    expect("truncated" in record).toBe(false);
+  });
+
+  it("clamps an oversized maxBytes and keeps a false truncation flag", () => {
+    const record = buildGitInvocationRecord(
+      input({ tool: "git_show", maxBytes: Number.MAX_SAFE_INTEGER * 4, truncated: false }),
+    );
+
+    expect(record.maxBytes).toBe(9_999_999_999);
+    expect(record.truncated).toBe(false);
+    expect("mode" in record).toBe(false);
+  });
+
   it("swallows failures from an injected recorder", () => {
     const recorder = vi.fn(() => {
       throw new Error("recorder unavailable");
@@ -181,7 +273,6 @@ describe("git invocation records", () => {
     expect(() => recordGitInvocation(undefined, input())).not.toThrow();
   });
 });
-
 describe("git invocation recorder", () => {
   it("appends custom entries and JSONL stream records", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bash-tools-git-"));

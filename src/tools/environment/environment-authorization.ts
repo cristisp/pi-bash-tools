@@ -189,6 +189,7 @@ export async function authorizeAndPersistEnvironmentKeys(
       decisionPersisted: false,
       promptEmitted: false,
       promptWaitMs: 0,
+      ...(requestSignal?.aborted ? {} : { decisionSource: "prompt" }),
     });
     throw persistenceError(requestSignal);
   }
@@ -197,6 +198,7 @@ export async function authorizeAndPersistEnvironmentKeys(
     decisionPersisted: true,
     promptEmitted: false,
     promptWaitMs: 0,
+    decisionSource: "prompt",
   });
   throwIfRequestAborted(requestSignal);
 }

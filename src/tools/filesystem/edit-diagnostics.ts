@@ -38,6 +38,7 @@ export interface EditDiagnostic {
   readonly fileFingerprint?: string;
   readonly contentLength?: number;
   readonly lineCount?: number;
+  readonly evidenceBacked?: boolean;
   readonly hint: string;
 }
 
@@ -126,6 +127,7 @@ function noMatchDiagnostic(
   context?: EditDiagnosticContext,
 ): EditDiagnostic {
   const whitespaceMismatch = whitespaceOnlyMismatch(content, oldText);
+  const evidenceBacked = context?.observedContentHash !== undefined;
   const stale =
     context?.observedContentHash !== undefined &&
     context.fileFingerprint !== undefined &&
@@ -136,6 +138,7 @@ function noMatchDiagnostic(
       editIndex,
       matchCount: 0,
       nearestCandidates: nearestCandidates(content, oldText),
+      evidenceBacked: true,
       hint: "The file has changed since it was last observed; reread the file and rebase this edit on the current content.",
     };
   }
@@ -145,6 +148,7 @@ function noMatchDiagnostic(
     matchCount: 0,
     nearestCandidates: nearestCandidates(content, oldText),
     ...(whitespaceMismatch ? { whitespaceMismatch: true } : {}),
+    ...(evidenceBacked ? { evidenceBacked: true } : {}),
     hint: whitespaceMismatch
       ? "The text differs only in whitespace; preserve indentation, line endings, and trailing spaces."
       : "Provide a larger unique context that matches the file exactly.",

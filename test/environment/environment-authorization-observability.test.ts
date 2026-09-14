@@ -55,6 +55,8 @@ it("records a persisted denial end to end without a prompt when policy denies", 
       promptEmitted: false,
       promptWaitMs: 0,
       executionAttempted: false,
+      mode: "print",
+      decisionSource: "deny-global",
     },
   ]);
   const saved = JSON.parse(await readFile(fixture.configPath, "utf8"));
@@ -89,6 +91,8 @@ it("records deferred persistence and the later commit for prompt approvals", asy
   ]);
   expect(records.every((record) => record.surface === "environment")).toBe(true);
   expect(records.every((record) => record.sessionId === "observability-session")).toBe(true);
+  expect(records[0]?.decisionSource).toBe("prompt");
+  expect(records[1]?.decisionSource).toBe("prompt");
   const saved = JSON.parse(await readFile(fixture.configPath, "utf8"));
   expect(saved.projects[await realpath(fixture.directory)].allow).toEqual(["ALLOWED_KEY"]);
 });

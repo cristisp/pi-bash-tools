@@ -81,6 +81,45 @@ describe("authorization outcome records", () => {
     expect(record.sessionId.length).toBeLessThanOrEqual(256);
   });
 
+  it("records interaction mode, effective flow, and policy decision source when known", () => {
+    const record = buildAuthorizationOutcomeRecord(
+      input({ mode: "rpc", flowId: "flow-7", decisionSource: "allow-project" }),
+    );
+
+    expect(record.mode).toBe("rpc");
+    expect(record.flowId).toBe("flow-7");
+    expect(record.decisionSource).toBe("allow-project");
+  });
+
+  it("omits unknown attribution and clamps invalid attribution values", () => {
+    const absent = buildAuthorizationOutcomeRecord(input());
+    expect("mode" in absent).toBe(false);
+    expect("flowId" in absent).toBe(false);
+    expect("decisionSource" in absent).toBe(false);
+
+    const invalid = buildAuthorizationOutcomeRecord(
+      input({
+        mode: "unexpected" as never,
+        flowId: "",
+        decisionSource: "unexpected" as never,
+      }),
+    );
+    expect("mode" in invalid).toBe(false);
+    expect("flowId" in invalid).toBe(false);
+    expect("decisionSource" in invalid).toBe(false);
+
+    const bounded = buildAuthorizationOutcomeRecord(input({ flowId: "f".repeat(600) }));
+    expect(bounded.flowId).toHaveLength(256);
+    expect(JSON.stringify(bounded)).not.toContain("private");
+  });
+
+  it("marks an explicitly unknown decision source without policy contents", () => {
+    const record = buildAuthorizationOutcomeRecord(input({ decisionSource: "unknown" }));
+
+    expect(record.decisionSource).toBe("unknown");
+    expect(JSON.stringify(record)).not.toContain("allow");
+  });
+
   it("marks execution attempted when the caller reports it", () => {
     const record = buildAuthorizationOutcomeRecord(input({ executionAttempted: true }));
 
@@ -161,6 +200,60 @@ describe("authorization outcome observer", () => {
         ...core,
       }),
     );
+  });
+
+  it("carries observer mode and flow identity onto every emitted record", () => {
+    const recorder = vi.fn();
+    const observe = createAuthorizationOutcomeObserver({
+      surface: "filesystem",
+      commandId: "read",
+      recorder,
+      sessionId: "session-1",
+      toolCallId: "call-1",
+      mode: "json",
+      flowId: "flow-9",
+    });
+
+    observe?.({
+      outcome: "authorized",
+      decisionPersisted: false,
+      promptEmitted: false,
+      promptWaitMs: 0,
+    });
+
+    expect(recorder).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: "json", flowId: "flow-9" }),
+    );
+  });
+
+  it("emits decision source from the observed core and omits it when absent", () => {
+    const recorder = vi.fn();
+    const observe = createAuthorizationOutcomeObserver({
+      surface: "environment",
+      commandId: "environment",
+      recorder,
+      sessionId: "session-1",
+      toolCallId: "call-1",
+    });
+
+    observe?.({
+      outcome: "authorized",
+      decisionPersisted: false,
+      promptEmitted: false,
+      promptWaitMs: 0,
+      decisionSource: "prompt",
+    });
+    const [withSource] = recorder.mock.calls[0] as [{ decisionSource?: string }];
+    expect(withSource.decisionSource).toBe("prompt");
+
+    observe?.({
+      outcome: "not-authorized",
+      decisionPersisted: false,
+      promptEmitted: false,
+      promptWaitMs: 0,
+    });
+    const [withoutSource] = recorder.mock.calls[1] as [Record<string, unknown>];
+    expect("decisionSource" in withoutSource).toBe(false);
   });
 });
 

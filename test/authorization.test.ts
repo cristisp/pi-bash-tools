@@ -2,7 +2,10 @@
 
 import { expect, it, vi } from "vitest";
 
-import type { AuthorizationOutcomeCore } from "../src/observability/authorization-outcome.ts";
+import type {
+  AuthorizationOutcomeCore,
+  AuthorizationOutcomeObserver,
+} from "../src/observability/authorization-outcome.ts";
 import { authorizeOrPrompt, type AuthorizeOrPromptOptions } from "../src/tools/authorization.ts";
 import { findEnvironmentPolicyDecision } from "../src/tools/policy/decisions.ts";
 import { parsePolicyDocument } from "../src/tools/policy/document.ts";
@@ -408,6 +411,7 @@ it("records an authorized outcome without a prompt when policy already allows", 
       executionAttempted: undefined,
       promptEmitted: false,
       promptWaitMs: 0,
+      decisionSource: "allow-global",
     },
   ]);
 });
@@ -437,6 +441,7 @@ it("records a denied outcome without prompting when policy denies", async () => 
       executionAttempted: undefined,
       promptEmitted: false,
       promptWaitMs: 0,
+      decisionSource: "deny-global",
     },
   ]);
 });
@@ -508,6 +513,7 @@ it("records an allowed-and-persisted outcome when deferral is off", async () => 
       executionAttempted: undefined,
       promptEmitted: true,
       promptWaitMs: expect.any(Number),
+      decisionSource: "prompt",
     },
   ]);
 });
@@ -536,6 +542,7 @@ it("records a save failure when persisting a denial fails", async () => {
       executionAttempted: undefined,
       promptEmitted: true,
       promptWaitMs: expect.any(Number),
+      decisionSource: "prompt",
     },
   ]);
 });
@@ -562,6 +569,7 @@ it("records a confirmation timeout outcome with the persisted deny", async () =>
       executionAttempted: undefined,
       promptEmitted: true,
       promptWaitMs: expect.any(Number),
+      decisionSource: "prompt",
     },
   ]);
 });
@@ -654,3 +662,214 @@ it("records cancelled, dismissed, invalid-choice, unsafe-global, and lookup fail
   expect(lookupFailure.map((outcome) => outcome.outcome)).toEqual(["decision-lookup-failure"]);
   expect(lookupFailure[0]).toMatchObject({ promptEmitted: false, decisionPersisted: false });
 });
+
+function loadedWithEnvironment(
+  environment: {
+    readonly global?: { readonly allow?: readonly string[]; readonly deny?: readonly string[] };
+    readonly project?: { readonly allow?: readonly string[]; readonly deny?: readonly string[] };
+  },
+  timeout = 120_000,
+): LoadedPolicy {
+  const base = loaded(timeout);
+  return {
+    ...base,
+    document: {
+      ...base.document,
+      environment: {
+        ...base.document.environment,
+        global: {
+          allow: [...(environment.global?.allow ?? [])],
+          deny: [...(environment.global?.deny ?? [])],
+        },
+        projects:
+          environment.project === undefined
+            ? {}
+            : {
+                [projectPath]: {
+                  allow: [...(environment.project.allow ?? [])],
+                  deny: [...(environment.project.deny ?? [])],
+                },
+              },
+      },
+    },
+  };
+}
+
+interface ScenarioResult {
+  readonly settled: "resolved" | "rejected";
+  readonly value: unknown;
+  readonly errorKind: string | undefined;
+  readonly recordCalls: readonly unknown[];
+  readonly decisionSources: readonly (string | undefined)[];
+}
+
+async function runScenario(
+  overrides: Partial<AuthorizeOrPromptOptions<string, EnvironmentDecisionRequest>>,
+  observe: AuthorizationOutcomeObserver | undefined,
+): Promise<ScenarioResult> {
+  const recordCalls: unknown[] = [];
+  const decisionSources: (string | undefined)[] = [];
+  const recorder: AuthorizationOutcomeObserver | undefined =
+    observe === undefined
+      ? undefined
+      : (core) => {
+          decisionSources.push(core.decisionSource);
+          observe(core);
+        };
+  const recordDecisions = async (
+    path: string,
+    requests: readonly EnvironmentDecisionRequest[],
+  ): Promise<void> => {
+    recordCalls.push({ path, requests: requests.map((request) => ({ ...request })) });
+  };
+  try {
+    const value = await authorizeOrPrompt(
+      options({ ...overrides, recordDecisions, observe: recorder }),
+    );
+    return {
+      settled: "resolved",
+      value: value ?? null,
+      errorKind: undefined,
+      recordCalls,
+      decisionSources,
+    };
+  } catch (error) {
+    return {
+      settled: "rejected",
+      value: null,
+      errorKind: error instanceof Error ? error.message : String(error),
+      recordCalls,
+      decisionSources,
+    };
+  }
+}
+
+const PRECEDENCE_SCENARIOS: ReadonlyArray<{
+  readonly name: string;
+  readonly decisionSource: string | undefined;
+  readonly overrides: Partial<AuthorizeOrPromptOptions<string, EnvironmentDecisionRequest>>;
+}> = [
+  {
+    name: "configured global allow",
+    decisionSource: "allow-global",
+    overrides: { loaded: loadedWithEnvironment({ global: { allow: ["TOKEN"] } }) },
+  },
+  {
+    name: "configured project allow",
+    decisionSource: "allow-project",
+    overrides: { loaded: loadedWithEnvironment({ project: { allow: ["TOKEN"] } }) },
+  },
+  {
+    name: "configured global deny",
+    decisionSource: "deny-global",
+    overrides: { loaded: loadedWithEnvironment({ global: { deny: ["TOKEN"] } }) },
+  },
+  {
+    name: "configured project deny",
+    decisionSource: "deny-project",
+    overrides: { loaded: loadedWithEnvironment({ project: { deny: ["TOKEN"] } }) },
+  },
+  {
+    name: "non-interactive not authorized",
+    decisionSource: undefined,
+    overrides: {
+      context: { hasUI: false, mode: "print", ui: { select: async () => undefined } },
+    },
+  },
+  {
+    name: "prompt deny once",
+    decisionSource: "prompt",
+    overrides: { context: { hasUI: true, mode: "tui", ui: { select: async () => "Deny once" } } },
+  },
+  {
+    name: "prompt allow once",
+    decisionSource: "prompt",
+    overrides: {
+      context: { hasUI: true, mode: "tui", ui: { select: async () => "Allow once" } },
+    },
+  },
+  {
+    name: "prompt allow for this project",
+    decisionSource: "prompt",
+    overrides: {
+      context: {
+        hasUI: true,
+        mode: "tui",
+        ui: { select: async () => "Allow for this project" },
+      },
+    },
+  },
+  {
+    name: "prompt deny for this project",
+    decisionSource: "prompt",
+    overrides: {
+      context: {
+        hasUI: true,
+        mode: "tui",
+        ui: { select: async () => "Deny for this project" },
+      },
+    },
+  },
+  {
+    name: "prompt unsafe global",
+    decisionSource: "prompt",
+    overrides: {
+      globalSafe: false,
+      context: { hasUI: true, mode: "tui", ui: { select: async () => "Allow globally" } },
+    },
+  },
+  {
+    name: "prompt invalid choice",
+    decisionSource: "prompt",
+    overrides: {
+      context: { hasUI: true, mode: "tui", ui: { select: async () => "Nonsense" } },
+    },
+  },
+  {
+    name: "prompt dismissed",
+    decisionSource: undefined,
+    overrides: {
+      context: { hasUI: true, mode: "tui", ui: { select: async () => undefined } },
+    },
+  },
+  {
+    name: "prompt confirmation failure",
+    decisionSource: undefined,
+    overrides: {
+      context: {
+        hasUI: true,
+        mode: "tui",
+        ui: { select: async () => Promise.reject(new Error("prompt failed")) },
+      },
+    },
+  },
+  {
+    name: "confirmation timeout",
+    decisionSource: "prompt",
+    overrides: {
+      loaded: loaded(1),
+      context: {
+        hasUI: true,
+        mode: "rpc",
+        ui: { select: () => new Promise<string | undefined>(() => undefined) },
+      },
+    },
+  },
+];
+
+it.each(PRECEDENCE_SCENARIOS)(
+  "keeps $name decisions identical with and without outcome attribution",
+  async (scenario) => {
+    const without = await runScenario(scenario.overrides, undefined);
+    const withAttribution = await runScenario(scenario.overrides, () => undefined);
+
+    expect(withAttribution.settled).toBe(without.settled);
+    expect(withAttribution.errorKind).toBe(without.errorKind);
+    expect(withAttribution.value).toEqual(without.value);
+    expect(withAttribution.recordCalls).toEqual(without.recordCalls);
+    expect(withAttribution.decisionSources.length).toBeGreaterThan(0);
+    expect(withAttribution.decisionSources).toContain(scenario.decisionSource);
+    expect(withAttribution.decisionSources).not.toContain("unknown");
+    expect(without.decisionSources).toEqual([]);
+  },
+);

@@ -79,6 +79,39 @@ describe("project command invocation metadata", () => {
     });
   });
 
+  it("records additive phase durations and clamps each independently", () => {
+    const record = buildProjectCommandInvocationRecord(
+      input({
+        preparationDurationMs: 4.9,
+        authorizationDurationMs: -1,
+        queueDurationMs: Number.NaN,
+      }),
+    );
+
+    expect(record.preparationDurationMs).toBe(4);
+    expect(record.authorizationDurationMs).toBe(0);
+    expect(record.queueDurationMs).toBe(0);
+
+    const bounded = buildProjectCommandInvocationRecord(
+      input({
+        preparationDurationMs: Number.POSITIVE_INFINITY,
+        authorizationDurationMs: Number.NEGATIVE_INFINITY,
+        queueDurationMs: 9_999_999_999_999,
+      }),
+    );
+    expect(bounded.preparationDurationMs).toBe(0);
+    expect(bounded.authorizationDurationMs).toBe(0);
+    expect(bounded.queueDurationMs).toBe(9_999_999_999);
+  });
+
+  it("omits phase durations that were never measured", () => {
+    const record = buildProjectCommandInvocationRecord(input());
+
+    expect("preparationDurationMs" in record).toBe(false);
+    expect("authorizationDurationMs" in record).toBe(false);
+    expect("queueDurationMs" in record).toBe(false);
+  });
+
   it("normalizes malformed enum, identifier, numeric, and stream metadata", () => {
     const malformed = {
       ...input(),
@@ -165,6 +198,25 @@ describe("project command invocation metadata", () => {
     expect(malformed.parameters).toBeUndefined();
     expect(malformed.commandId).toBeUndefined();
     expect(malformed.output).toEqual(input().output);
+  });
+
+  it("keeps phase durations when the record falls back to the minimal shape", () => {
+    const minimal = buildProjectCommandInvocationRecord(
+      input({
+        redactedParameters: { oversized: "x".repeat(PROJECT_COMMAND_INVOCATION_MAX_BYTES) },
+        preparationDurationMs: 7,
+        authorizationDurationMs: 3,
+        queueDurationMs: 2,
+      }),
+    );
+
+    expect(minimal.parameters).toBeUndefined();
+    expect(minimal.preparationDurationMs).toBe(7);
+    expect(minimal.authorizationDurationMs).toBe(3);
+    expect(minimal.queueDurationMs).toBe(2);
+    expect(Buffer.byteLength(JSON.stringify(minimal), "utf8")).toBeLessThanOrEqual(
+      PROJECT_COMMAND_INVOCATION_MAX_BYTES,
+    );
   });
 
   it("bounds optional orchestration, state, publication, and coercion metadata", () => {

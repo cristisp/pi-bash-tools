@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, it, vi } from "vitest";
 
+import type { AuthorizationOutcomeRecord } from "../../src/observability/authorization-outcome.ts";
 import { createAuthorizationRetryTracker } from "../../src/tools/authorization-retry.ts";
 import {
   createFilesystemAccessPolicyInterceptor,
@@ -145,6 +146,32 @@ it("persists an approved project path and allows descendants", async () => {
       },
     },
   });
+});
+
+it("attributes deferred filesystem persistence to the prompting decision source", async () => {
+  const directory = await fixtures.createDirectory();
+  const outside = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const records: AuthorizationOutcomeRecord[] = [];
+  const select = vi.fn(async () => "Allow for this project");
+  const intercept = createFilesystemAccessPolicyInterceptor(policy, (record) =>
+    records.push(record),
+  );
+  const approvalContext: FilesystemAccessPolicyContext = {
+    ...context(directory, { mode: "tui", hasUI: true, select }),
+    sessionManager: { getSessionId: () => "observability-session" },
+  };
+
+  expect(await intercept(event("grep", outside), approvalContext)).toBeUndefined();
+
+  expect(records.map((record) => record.outcome)).toEqual([
+    "deferred-persistence",
+    "deferred-decision-persisted",
+  ]);
+  expect(records[0]?.decisionSource).toBe("prompt");
+  expect(records[1]?.decisionSource).toBe("prompt");
 });
 
 it("blocks a policy denial without terminating the agent", async () => {

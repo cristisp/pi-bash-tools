@@ -65,6 +65,7 @@ import { projectCommandModelContent } from "./model-content.ts";
 import { projectCommandMutatesWorkspace } from "./mutability.ts";
 import { createNodeProjectRelevantInputDiscovery } from "./node/relevant-inputs.ts";
 import {
+  effectiveOrchestrationFlowId,
   readProjectCommandOrchestrationContext,
   type ProjectCommandOrchestrationContext,
 } from "./orchestration.ts";
@@ -1093,6 +1094,11 @@ function storeEvidence(
 
 interface ProjectCommandInvocationState {
   readonly startedAt: number;
+  preparationEntered: boolean;
+  authorizationStartedAt: number | undefined;
+  authorizationFinishedAt: number | undefined;
+  queueStartedAt: number | undefined;
+  queueFinishedAt: number | undefined;
   executionStartedAt: number | undefined;
   forced: boolean;
   reused: boolean;
@@ -1137,6 +1143,11 @@ function createInvocationState(
 ): ProjectCommandInvocationState {
   return {
     startedAt,
+    preparationEntered: false,
+    authorizationStartedAt: undefined,
+    authorizationFinishedAt: undefined,
+    queueStartedAt: undefined,
+    queueFinishedAt: undefined,
     executionStartedAt: undefined,
     forced: false,
     reused: false,
@@ -1375,6 +1386,25 @@ function recordInvocation(
         state.executionStartedAt === undefined
           ? 0
           : elapsedMilliseconds(state.executionStartedAt, finishedAt),
+      ...(state.preparationEntered
+        ? {
+            preparationDurationMs: elapsedMilliseconds(
+              state.startedAt,
+              state.authorizationStartedAt ?? finishedAt,
+            ),
+          }
+        : {}),
+      ...(state.authorizationStartedAt === undefined || state.authorizationFinishedAt === undefined
+        ? {}
+        : {
+            authorizationDurationMs: elapsedMilliseconds(
+              state.authorizationStartedAt,
+              state.authorizationFinishedAt,
+            ),
+          }),
+      ...(state.queueStartedAt === undefined || state.queueFinishedAt === undefined
+        ? {}
+        : { queueDurationMs: elapsedMilliseconds(state.queueStartedAt, state.queueFinishedAt) }),
       output: state.output,
       measurements: createProjectCommandInvocationMeasurements(
         state.cacheDecision,
@@ -1543,6 +1573,8 @@ async function prepareProjectCommand(
     recorder: authorizationOutcomeRecorder,
     sessionId: getContextSessionId(executorContext),
     toolCallId,
+    mode: executorContext.mode,
+    flowId: effectiveOrchestrationFlowId(readProjectCommandOrchestrationContext()),
   });
   const requestSignal = signal ?? executorContext.signal;
   const loaded = await loadPolicyObserved(policy, executorContext.cwd, requestSignal, observe);
@@ -1567,17 +1599,22 @@ async function prepareProjectCommand(
   throwIfRequestAborted(requestSignal);
   const identity = projectCommandIdentity(definition, resolved);
   state.authFingerprint = identity.fingerprint;
-  await authorizeCommand(
-    policy,
-    loaded,
-    definition,
-    identity,
-    resolved,
-    executorContext,
-    requestSignal,
-    observe,
-    authorizationRetryTracker,
-  );
+  state.authorizationStartedAt = performance.now();
+  try {
+    await authorizeCommand(
+      policy,
+      loaded,
+      definition,
+      identity,
+      resolved,
+      executorContext,
+      requestSignal,
+      observe,
+      authorizationRetryTracker,
+    );
+  } finally {
+    state.authorizationFinishedAt = performance.now();
+  }
   throwIfRequestAborted(requestSignal);
   const authorizedPolicy = await loadPolicyObserved(
     policy,
@@ -1850,12 +1887,14 @@ async function executePreparedProjectCommand(
     existing.active += 1;
     state.sharedExecution = true;
     state.concurrentExecutions = existing.active;
+    state.queueStartedAt = performance.now();
     try {
       const shared = await awaitWithAbort(
         existing.promise,
         prepared.requestSignal,
         commandCancellationError,
       );
+      state.queueFinishedAt = performance.now();
       state.cacheDecision = shared.cacheDecision;
       state.resultCategory = shared.category;
       state.status = shared.status;
@@ -1880,6 +1919,7 @@ async function executePreparedProjectCommand(
         executionDurationMs: 0,
       });
     } finally {
+      state.queueFinishedAt ??= performance.now();
       existing.active -= 1;
     }
   }
@@ -1962,6 +2002,7 @@ export function createProjectCommandExecute<
           state,
         );
       }
+      state.preparationEntered = true;
       const prepared = await prepareProjectCommand(
         policy,
         resolver,

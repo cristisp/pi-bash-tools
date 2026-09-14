@@ -32,6 +32,11 @@ export interface ToolErrorContract {
   readonly suggestedAction?: string;
   readonly retryable: boolean;
   readonly executed: boolean;
+  /**
+   * Set when the failure depends only on the request shape, so an identical retry is
+   * guaranteed to reproduce it. Only Git request validation sets this today.
+   */
+  readonly shapeDeterministic?: boolean;
 }
 
 export function suggestedActionForCategory(category: ResultCategory): string | undefined {
@@ -76,6 +81,7 @@ export interface ToolErrorContractOptions {
   readonly retryable: boolean;
   readonly executed: boolean;
   readonly invalidField?: string;
+  readonly shapeDeterministic?: boolean;
 }
 
 export function createToolErrorContract(contract: ToolErrorContract): ToolErrorContract {
@@ -91,6 +97,9 @@ export function buildToolErrorContract(options: ToolErrorContractOptions): ToolE
     suggestedAction: suggestedActionForCategory(options.category),
     retryable: options.retryable,
     executed: options.executed,
+    ...(options.shapeDeterministic === undefined
+      ? {}
+      : { shapeDeterministic: options.shapeDeterministic }),
   });
 }
 

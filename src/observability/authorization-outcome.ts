@@ -14,6 +14,18 @@ export type AuthorizationOutcomeSurface =
   | "filesystem"
   | "environment";
 
+/** The bounded Pi interaction modes an authorization can observe. */
+export type AuthorizationInteractionMode = "tui" | "rpc" | "json" | "print";
+
+/** Where a policy-derived outcome came from, without recording any policy contents. */
+export type PolicyDecisionSource =
+  | "deny-global"
+  | "deny-project"
+  | "allow-global"
+  | "allow-project"
+  | "prompt"
+  | "unknown";
+
 export type AuthorizationOutcome =
   | "policy-load-failure"
   | "decision-lookup-failure"
@@ -40,6 +52,7 @@ export interface AuthorizationOutcomeCore {
   readonly promptEmitted: boolean;
   readonly promptWaitMs: number;
   readonly executionAttempted?: boolean;
+  readonly decisionSource?: PolicyDecisionSource;
 }
 
 export interface AuthorizationOutcomeRecordInput extends AuthorizationOutcomeCore {
@@ -47,6 +60,8 @@ export interface AuthorizationOutcomeRecordInput extends AuthorizationOutcomeCor
   readonly commandId?: string;
   readonly sessionId: string;
   readonly toolCallId: string;
+  readonly mode?: AuthorizationInteractionMode;
+  readonly flowId?: string;
 }
 
 export interface AuthorizationOutcomeRecord {
@@ -60,6 +75,9 @@ export interface AuthorizationOutcomeRecord {
   readonly promptEmitted: boolean;
   readonly promptWaitMs: number;
   readonly executionAttempted: boolean;
+  readonly mode?: AuthorizationInteractionMode;
+  readonly flowId?: string;
+  readonly decisionSource?: PolicyDecisionSource;
 }
 
 export type AuthorizationOutcomeRecorder = (record: AuthorizationOutcomeRecord) => void;
@@ -86,6 +104,38 @@ function validSurface(value: unknown): AuthorizationOutcomeSurface {
 
 function isAuthorizationOutcome(value: string): value is AuthorizationOutcome {
   return AUTHORIZATION_OUTCOMES.has(value);
+}
+
+function boundedOptionalIdentifier(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const bounded = boundedIdentifier(value);
+  return bounded.length === 0 ? undefined : bounded;
+}
+
+function validInteractionMode(value: unknown): AuthorizationInteractionMode | undefined {
+  switch (value) {
+    case "tui":
+    case "rpc":
+    case "json":
+    case "print":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function validDecisionSource(value: unknown): PolicyDecisionSource | undefined {
+  switch (value) {
+    case "deny-global":
+    case "deny-project":
+    case "allow-global":
+    case "allow-project":
+    case "prompt":
+    case "unknown":
+      return value;
+    default:
+      return undefined;
+  }
 }
 
 function validOutcome(value: unknown): AuthorizationOutcome {
@@ -120,6 +170,9 @@ export function buildAuthorizationOutcomeRecord(
   input: AuthorizationOutcomeRecordInput,
 ): AuthorizationOutcomeRecord {
   const commandId = typeof input.commandId === "string" ? input.commandId : undefined;
+  const mode = validInteractionMode(input.mode);
+  const flowId = boundedOptionalIdentifier(input.flowId);
+  const decisionSource = validDecisionSource(input.decisionSource);
   return Object.freeze({
     authorizationFormatVersion: AUTHORIZATION_OUTCOME_FORMAT_VERSION,
     surface: validSurface(input.surface),
@@ -133,6 +186,9 @@ export function buildAuthorizationOutcomeRecord(
     promptEmitted: input.promptEmitted,
     promptWaitMs: boundedNumber(input.promptWaitMs),
     executionAttempted: input.executionAttempted === true,
+    ...(mode === undefined ? {} : { mode }),
+    ...(flowId === undefined ? {} : { flowId }),
+    ...(decisionSource === undefined ? {} : { decisionSource }),
   });
 }
 
@@ -174,8 +230,10 @@ export function createAuthorizationOutcomeObserver(options: {
   readonly recorder: AuthorizationOutcomeRecorder | undefined;
   readonly sessionId: string | undefined;
   readonly toolCallId: string;
+  readonly mode?: AuthorizationInteractionMode;
+  readonly flowId?: string;
 }): AuthorizationOutcomeObserver | undefined {
-  const { surface, commandId, recorder, sessionId, toolCallId } = options;
+  const { surface, commandId, recorder, sessionId, toolCallId, mode, flowId } = options;
   if (recorder === undefined || sessionId === undefined) return undefined;
   return (core) => {
     recordAuthorizationOutcome(recorder, {
@@ -188,6 +246,9 @@ export function createAuthorizationOutcomeObserver(options: {
       promptEmitted: core.promptEmitted,
       promptWaitMs: core.promptWaitMs,
       executionAttempted: core.executionAttempted,
+      mode,
+      flowId,
+      decisionSource: core.decisionSource,
     });
   };
 }

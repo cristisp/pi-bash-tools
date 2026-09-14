@@ -34,6 +34,7 @@ import {
   type ReadBatchInvocationAggregate,
   type ReadBatchInvocationItem,
   type ReadBatchInvocationLookupMetadata,
+  type ReadBatchInvocationPublicationMetadata,
   type ReadBatchInvocationReason,
   type ReadBatchInvocationRecorder,
 } from "../../observability/read-batch-invocation.ts";
@@ -52,7 +53,10 @@ import {
 } from "../policy/filesystem.ts";
 import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
 import type { LoadedPolicy, PolicyAuthorization, PolicyStore } from "../policy/types.ts";
-import { readProjectCommandOrchestrationContext } from "../project-command/orchestration.ts";
+import {
+  effectiveOrchestrationFlowId,
+  readProjectCommandOrchestrationContext,
+} from "../project-command/orchestration.ts";
 import type { ProjectCommandRepositoryStateReader } from "../project-command/repository-state.ts";
 import { createProjectCommandRepositoryStateReader } from "../project-command/repository-state.ts";
 import { decodeUtf8Prefix } from "../truncation.ts";
@@ -1159,6 +1163,18 @@ function readEvidencePublicationFailure(
   return { scope: "flow", flowId, published: false, error };
 }
 
+function toInvocationPublication(
+  value: ReadBatchPublicationMetadata | undefined,
+): ReadBatchInvocationPublicationMetadata | undefined {
+  if (value === undefined) return undefined;
+  return {
+    scope: value.scope,
+    flowId: value.flowId,
+    published: value.published,
+    ...(value.error === undefined ? {} : { error: value.error }),
+  };
+}
+
 function publishReadBatchEvidence(
   store: ReadEvidenceStore,
   root: string,
@@ -1248,18 +1264,22 @@ function createReadBatchToolWithDependencies(
       const startedAt = performance.now();
       const sessionId = getSessionId(ctx);
       const observeState = invocationRecorder !== undefined && sessionId !== undefined;
+      const orchestration = readProjectCommandOrchestrationContext();
       const authorizationObserver = createAuthorizationOutcomeObserver({
         surface: "filesystem",
         commandId: "read_batch",
         recorder: authorizationOutcomeRecorder,
         sessionId,
         toolCallId,
+        mode: ctx.mode,
+        flowId: effectiveOrchestrationFlowId(orchestration),
       });
       let workspaceBlock: SharedEvidenceWorkspaceBlock | undefined;
       const record = (options: ReadBatchInvocationOptions): void => {
         if (sessionId === undefined) return;
         const details = options.details;
         const scopeInfo = options.scopeInfo ?? { scope: "session" };
+        const publication = toInvocationPublication(details?.publish);
         recordReadBatchInvocation(invocationRecorder, {
           sessionId,
           toolCallId,
@@ -1274,13 +1294,19 @@ function createReadBatchToolWithDependencies(
           ...(scopeInfo.flowId === undefined ? {} : { flowId: scopeInfo.flowId }),
           ...(workspaceBlock === undefined ? {} : { repositoryState: workspaceBlock }),
           ...(options.lookup === undefined ? {} : { lookup: options.lookup }),
+          ...(orchestration.orchestrated && orchestration.role !== undefined
+            ? { role: orchestration.role }
+            : {}),
+          ...(orchestration.orchestrated && orchestration.delegationId !== undefined
+            ? { delegationId: orchestration.delegationId }
+            : {}),
+          ...(publication === undefined ? {} : { publication }),
         });
       };
       try {
         const request = validateReadBatchRequest(params);
         const requestSignal = signal ?? ctx.signal;
         if (request.kind === "lookup") {
-          const orchestration = readProjectCommandOrchestrationContext();
           const requestedFlowId = request.flowId;
           const unauthorizedFlow =
             requestedFlowId !== undefined &&

@@ -23,6 +23,10 @@ import { createNodePolicyFileSystem, type PolicyFileSystem } from "../policy/fil
 import { createPolicyStore, createPolicyStoreForTesting } from "../policy/store.ts";
 import type { LoadedPolicy, PolicyAuthorization, PolicyStore } from "../policy/types.ts";
 import {
+  effectiveOrchestrationFlowId,
+  readProjectCommandOrchestrationContext,
+} from "../project-command/orchestration.ts";
+import {
   authorizeAndPersistFilesystemAccesses,
   loadFilesystemPolicyForRequest,
   type FilesystemAuthorizationContext,
@@ -277,6 +281,8 @@ function mutationObserver(
     recorder,
     sessionId: sessionId(ctx),
     toolCallId,
+    mode: ctx.mode,
+    flowId: effectiveOrchestrationFlowId(readProjectCommandOrchestrationContext()),
   });
 }
 

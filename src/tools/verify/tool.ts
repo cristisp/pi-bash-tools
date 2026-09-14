@@ -43,7 +43,10 @@ import type { ProjectCommandCacheDecision } from "../project-command/cache.ts";
 import { createProjectCommandExecutor } from "../project-command/execution.ts";
 import type { ProjectCommandExecutionOutcome } from "../project-command/execution.ts";
 import { projectCommandMutatesWorkspace } from "../project-command/mutability.ts";
-import { readProjectCommandOrchestrationContext } from "../project-command/orchestration.ts";
+import {
+  effectiveOrchestrationFlowId,
+  readProjectCommandOrchestrationContext,
+} from "../project-command/orchestration.ts";
 import { createProjectCommandRepositoryStateReader } from "../project-command/repository-state.ts";
 import type { ProjectCommandRepositoryStateReader } from "../project-command/repository-state.ts";
 import {
@@ -1392,6 +1395,8 @@ async function prepareVerifyExecution(
     recorder: dependencies.authorizationOutcomeRecorder,
     sessionId: retrySessionId(ctx),
     toolCallId,
+    mode: ctx.mode,
+    flowId: effectiveOrchestrationFlowId(readProjectCommandOrchestrationContext()),
   });
   let loadedPolicy;
   try {

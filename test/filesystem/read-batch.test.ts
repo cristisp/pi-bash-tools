@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { AuthorizationOutcomeRecord } from "../../src/observability/authorization-outcome.ts";
 import {
   buildReadBatchInvocationRecord,
   type ReadBatchInvocationRecord,
@@ -16,6 +17,7 @@ import {
   createReadBatchToolForTesting,
   type ReadBatchToolContext,
 } from "../../src/tools/filesystem/read-batch-tool.ts";
+import type { ReadEvidenceStore } from "../../src/tools/filesystem/read-evidence-store.ts";
 import { createPolicyTestFixtures } from "../policy/test-fixtures.ts";
 
 const fixtures = createPolicyTestFixtures();
@@ -46,6 +48,15 @@ function recorderCapture(): {
       records.push(record);
     },
     records,
+  };
+}
+
+function storeDouble(published: boolean): ReadEvidenceStore {
+  return {
+    getByRef: () => undefined,
+    lookupOutcome: () => "missing",
+    publish: () => published,
+    clear: () => undefined,
   };
 }
 
@@ -699,5 +710,245 @@ describe("read batch invocation records", () => {
       dirtyDigest: null,
       status: "degraded",
     });
+  });
+
+  it("records orchestration attribution and a failed publication block", async () => {
+    const { configPath } = await invocationFixture();
+    const root = await realpath(dirname(configPath));
+    const capture = recorderCapture();
+    const tool = createReadBatchToolForTesting({
+      configPath,
+      invocationRecorder: capture.recorder,
+    });
+    vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
+    vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
+    vi.stubEnv("PI_ORCHESTRATION_ROLE", "worker");
+    vi.stubEnv("PI_DELEGATION_ID", "delegation-1");
+    try {
+      await tool.execute(
+        "call-1",
+        { paths: [{ path: "missing.txt" }], publish: { flowId: "flow-a" } },
+        undefined,
+        undefined,
+        context(root, "session-1"),
+      );
+
+      expect(capture.records).toHaveLength(1);
+      expect(capture.records[0]).toMatchObject({
+        role: "worker",
+        delegationId: "delegation-1",
+        scope: "flow",
+        flowId: "flow-a",
+        publication: {
+          scope: "flow",
+          flowId: "flow-a",
+          published: false,
+          error: "Published read evidence requires a fresh read of every requested path.",
+        },
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("records a successful publication outcome", async () => {
+    const { configPath } = await invocationFixture();
+    const root = await realpath(dirname(configPath));
+    await writeFile(join(root, "read.ts"), "alpha\n");
+    const capture = recorderCapture();
+    const tool = createReadBatchToolForTesting({
+      configPath,
+      invocationRecorder: capture.recorder,
+      readEvidenceStore: storeDouble(true),
+    });
+    vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
+    vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
+    vi.stubEnv("PI_ORCHESTRATION_ROLE", "worker");
+    vi.stubEnv("PI_DELEGATION_ID", "delegation-1");
+    try {
+      await tool.execute(
+        "call-1",
+        { paths: [{ path: "read.ts" }], publish: { flowId: "flow-a" } },
+        undefined,
+        undefined,
+        context(root, "session-1"),
+      );
+
+      expect(capture.records[0]).toMatchObject({
+        role: "worker",
+        delegationId: "delegation-1",
+        scope: "flow",
+        flowId: "flow-a",
+        publication: { scope: "flow", flowId: "flow-a", published: true },
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("records a store-denied publication outcome", async () => {
+    const { configPath } = await invocationFixture();
+    const root = await realpath(dirname(configPath));
+    await writeFile(join(root, "read.ts"), "alpha\n");
+    const capture = recorderCapture();
+    const tool = createReadBatchToolForTesting({
+      configPath,
+      invocationRecorder: capture.recorder,
+      readEvidenceStore: storeDouble(false),
+    });
+    vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
+    vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
+    try {
+      await tool.execute(
+        "call-1",
+        { paths: [{ path: "read.ts" }], publish: { flowId: "flow-a" } },
+        undefined,
+        undefined,
+        context(root, "session-1"),
+      );
+
+      expect(capture.records[0]).toMatchObject({
+        publication: {
+          scope: "flow",
+          flowId: "flow-a",
+          published: false,
+          error: "Read evidence was not published to the requested flow.",
+        },
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("omits orchestration attribution and publication when not orchestrated", async () => {
+    const { configPath } = await invocationFixture();
+    const root = await realpath(dirname(configPath));
+    await writeFile(join(root, "read.ts"), "alpha\n");
+    const capture = recorderCapture();
+    const tool = createReadBatchToolForTesting({
+      configPath,
+      invocationRecorder: capture.recorder,
+    });
+
+    await tool.execute(
+      "call-1",
+      { paths: [{ path: "read.ts" }] },
+      undefined,
+      undefined,
+      context(root, "session-1"),
+    );
+
+    expect(Object.hasOwn(capture.records[0] ?? {}, "role")).toBe(false);
+    expect(Object.hasOwn(capture.records[0] ?? {}, "delegationId")).toBe(false);
+    expect(Object.hasOwn(capture.records[0] ?? {}, "publication")).toBe(false);
+  });
+
+  it("records attribution on a lookup invocation without a publication block", async () => {
+    const { configPath } = await invocationFixture();
+    const root = await realpath(dirname(configPath));
+    const capture = recorderCapture();
+    const tool = createReadBatchToolForTesting({
+      configPath,
+      invocationRecorder: capture.recorder,
+    });
+    vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
+    vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
+    vi.stubEnv("PI_ORCHESTRATION_ROLE", "reviewer");
+    try {
+      await expect(
+        tool.execute(
+          "call-1",
+          { ref: "rr_000000000000000000000000" },
+          undefined,
+          undefined,
+          context(root, "session-1"),
+        ),
+      ).rejects.toThrow(/not found/u);
+
+      expect(capture.records[0]).toMatchObject({ role: "reviewer" });
+      expect(capture.records[0]?.lookup?.attempted).toBe(true);
+      for (const record of capture.records) {
+        expect(Object.hasOwn(record, "publication")).toBe(false);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("read batch authorization attribution", () => {
+  function authorizationCapture(): {
+    readonly recorder: (record: AuthorizationOutcomeRecord) => void;
+    readonly records: AuthorizationOutcomeRecord[];
+  } {
+    const records: AuthorizationOutcomeRecord[] = [];
+    return { recorder: (record) => records.push(record), records };
+  }
+
+  it("attributes a filesystem authorization to the effective flow scope", async () => {
+    const { configPath } = await invocationFixture();
+    const root = await realpath(dirname(configPath));
+    await writeFile(join(root, "read.ts"), "alpha\n");
+    const capture = authorizationCapture();
+    const tool = createReadBatchToolForTesting({
+      configPath,
+      authorizationOutcomeRecorder: capture.recorder,
+    });
+    vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
+    vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
+    try {
+      await tool.execute(
+        "call-1",
+        { paths: [{ path: "read.ts" }] },
+        undefined,
+        undefined,
+        context(root, "session-1"),
+      );
+
+      expect(capture.records.length).toBeGreaterThan(0);
+      expect(capture.records[0]).toMatchObject({
+        surface: "filesystem",
+        commandId: "read_batch",
+        outcome: "authorized",
+        mode: "print",
+        flowId: "flow-a",
+        decisionSource: "allow-project",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("omits the flow identity from filesystem authorization records for session scope", async () => {
+    const { configPath } = await invocationFixture();
+    const root = await realpath(dirname(configPath));
+    await writeFile(join(root, "read.ts"), "alpha\n");
+    const capture = authorizationCapture();
+    const tool = createReadBatchToolForTesting({
+      configPath,
+      authorizationOutcomeRecorder: capture.recorder,
+    });
+    vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
+    try {
+      await tool.execute(
+        "call-1",
+        { paths: [{ path: "read.ts" }] },
+        undefined,
+        undefined,
+        context(root, "session-1"),
+      );
+
+      expect(capture.records.length).toBeGreaterThan(0);
+      expect(capture.records[0]).toMatchObject({
+        surface: "filesystem",
+        mode: "print",
+        decisionSource: "allow-project",
+      });
+      for (const record of capture.records) {
+        expect(Object.hasOwn(record, "flowId")).toBe(false);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

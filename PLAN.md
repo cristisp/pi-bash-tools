@@ -4,15 +4,16 @@
 
 The current release scope is implemented and documented under [`docs/docs.md`](docs/docs.md).
 
-The active plan now focuses on reducing token and tool-call waste identified in [`research/research-initial.md`](research/research-initial.md) and refined by the version-aware [`research/findings-0909.md`](research/findings-0909.md), with Bash Tools limited to its own execution, evidence, filesystem, Git, validation, and observability responsibilities.
+The active plan now focuses on reducing token and tool-call waste identified in [`research/research-initial.md`](research/research-initial.md) and refined by the version-aware [`research/findings-0909.md`](research/findings-0909.md) and [`research/findings-1409.md`](research/findings-1409.md), with Bash Tools limited to its own execution, evidence, filesystem, Git, validation, and observability responsibilities.
 
-Historical extension-version recovery is complete, but the latest observed `1.0.2` cohort is too small to serve as a stable current-version baseline.
+Historical extension-version recovery is complete, and the `1.0.3` cohort reported by [`research/findings-1409.md`](research/findings-1409.md) (103 unambiguous sessions, 4,963 calls, 4.84% error rate) now serves as the stable current-version baseline.
+Version `1.1.0` is released and loaded from folder, so new sessions report `1.1.0` and the next report can attribute post-`1.0.3` behavior.
 
 Orchestration policy and Codegraph implementation remain owned by their respective extensions.
 
 Codegraph Runner 2.0.2 now implements the counterpart that the producer-neutral evidence contract was waiting on: a producer-owned `cg_` artifact store with a versioned evidence envelope, repository and multi-dimensional index state, bounded retention, opaque non-replayable references, and lookup-time scope, workspace, and freshness reauthorization. Bash Tools now carries that envelope additively on `pc_`, `vr_`, and `rr_` records through a neutral shared envelope module, `rr_` records support opt-in flow publication with reauthorized, state-verified lookup, and the remaining shared-contract work is cross-producer lookup-outcome alignment.
 
-The envelope-adoption slice is implemented, and the next work is the current-version telemetry needed for the remaining P0 measurements.
+The envelope-adoption slice is implemented, `1.1.0` adds opt-in `rr_` flow publication with reauthorized state-verified lookup, and `findings-1409` supplies the accumulated `1.0.3` telemetry; the remaining P0 work is the analyzer and importer handoff plus per-cohort comparison breakdowns from the first `1.1.0` cohort.
 
 Cross-extension work will use compatible evidence contracts rather than direct implementation dependencies.
 
@@ -23,6 +24,7 @@ Cross-extension work will use compatible evidence contracts rather than direct i
 - Make discovery evidence interoperable with Codegraph without making Bash Tools responsible for Codegraph storage or freshness.
 - Reduce oversized read, search, Git, and semantic-discovery results.
 - Improve deterministic edit and request failure diagnostics so unchanged retries are clearly invalid.
+- Reduce deterministic request churn and repeated identical execution against unchanged state.
 - Preserve authorization, cache isolation, bounded output, fail-closed behavior, and compatibility contracts.
 
 ## Scope boundaries
@@ -47,31 +49,36 @@ The raw Pi session scan recovered 782 `bash-tools.tool-inventory` entries across
 
 A single extension version can now be assigned to 641 sessions and 26,998 calls, covering 55.55% of sessions and 45.60% of calls in the historical window.
 
-The latest observed `1.0.2` cohort contains only 40 unambiguous sessions and 142 calls, so its 4.23% observed error rate is provisional rather than a stable production estimate.
+The `findings-1409` rescan of the 30 days ending 2026-09-14 replaces the earlier baseline.
+The latest observed `1.0.3` cohort contains 113 inventory entries across 103 unambiguous sessions and 4,963 calls with a 4.84% error rate, and 7-day version coverage rose to 310 of 321 sessions (96.57%) and 14,046 of 16,637 calls (84.43%).
+The `1.0.3` cohort is now the largest recent cohort and the first one large enough to serve as a stable baseline.
+Version attribution remains coarse for that window: because `EXTENSION_VERSION` is read from `package.json`, every commit after the `1.0.3` release also reported `1.0.3`, so the cohort mixes released `1.0.3` code with later work.
+Version `1.1.0` is released and loaded from folder, so the next report can separate the released `1.0.3` baseline from current behavior for the first time.
 
 - [x] Recover raw Bash Tools inventory entries and join their `sessionId` values to imported sessions.
 - [x] Extract historical extension versions, active-tool snapshots, and tool schema hashes without consulting current source files.
 - [x] Report the historical version distribution and identify the latest observed cohort within the fixed analysis window.
 - [x] Exclude missing-version and multiple-version sessions from version cohorts instead of assigning them by proximity.
-- [ ] Attribute inventory tools by their recorded source so Bash Tools-owned, intercepted native, Codegraph, and unrelated extension tools are not conflated.
-- [ ] Recompute error rates, duplicate requests, result volume, latency, cache decisions, and evidence reuse for each sufficiently covered version cohort.
+- [ ] Attribute inventory tools by their recorded source so Bash Tools-owned, intercepted native, Codegraph, and unrelated extension tools are not conflated. (The data is already recorded: every inventory entry carries `tools[].sourceInfo` with `path`, `source`, `scope`, `origin`, and `baseDir`. The remaining work is analyzer-side; see the analyzer and importer handoff below.)
+- [ ] Recompute error rates, duplicate requests, result volume, latency, cache decisions, and evidence reuse for each sufficiently covered version cohort. (Error rate and estimated result tokens are now reported per cohort — `1.0.3` 4.84% over 4,963 calls, `1.0.2` 9.22% over 3,297, and six older cohorts — while duplicate, latency, cache-decision, and evidence-reuse metrics remain window-level only.)
 - [x] Implement state-aware duplicate classification and report unknown state instead of labeling unsupported duplicates as waste.
 - [x] Improve repository-state coverage beyond the 201 historically attributable calls with `read_batch` observations.
 - [x] Observe repository state on the Git read tools so state coverage is not limited to `read_batch` and command execution.
 - [x] Separate invalid requests, policy outcomes, policy subsystem failures, resolution failures, command failures, timeouts, cancellations, test failures, and successful evidence lookups where historical data supports the distinction.
-- [ ] Report tool-result rates both including and excluding expected authorization and fail-closed outcomes.
-- [ ] Measure repeated `project_command` execution separately from `verify` execution, lookup, reuse, publication, forced execution, and cache ineligibility for each sufficiently covered cohort.
+- [ ] Report tool-result rates both including and excluding expected authorization and fail-closed outcomes. (The components are now reported separately: 4,859 tool-result errors split into 621 `access_policy`, 131 `confirmation_timeout`, 84 `project_command_policy`, 34 `authorization_save_failure`, 20 `authorization_timeout`, 17 `policy_loader_failure`, 11 `authorization_denied`, and 10 `authorized_flow_missing`, with a bounded implementation-defect estimate of 103 results (2.12%); a headline rate excluding expected outcomes is not yet published.)
+- [ ] Measure repeated `project_command` execution separately from `verify` execution, lookup, reuse, publication, forced execution, and cache ineligibility for each sufficiently covered cohort. (Execution reasons are now separated — 2,596 `executed-cache-ineligible`, 1,991 `executed-forced-cache-bypass`, 145 `policy-failure`, 78 `executed-after-cache-miss`, 71 `resolution-failure`, 48 `reused-cache-hit`, 35 `preparation-failure`, 13 `lookup-failure`, and 2 `invalid-request` — but not per version cohort, publication counts are not reported, and `verify` reuse appears only as call and error totals.)
 - [x] Include `read_batch` in read-like artifact analysis.
 - [x] Record aggregate and per-item result size for `read_batch`.
-- [ ] Measure Git summary reuse, patch follow-up frequency, truncation, and repeated state observations.
+- [ ] Measure Git summary reuse, patch follow-up frequency, truncation, and repeated state observations. (The git invocation recorder now emits these records (51 in the 30-day window), repository-state coverage rose from 318 to 1,404 calls, and each record now carries `unchanged`, the effective `git_diff` `mode`, the requested `maxBytes`, and `truncated`, so summary reuse, patch follow-up, truncation, and repeated state observations are all derivable; the computation itself belongs to the analyzer handoff.)
 - [x] Produce a provisional latest-observed-version baseline with explicit sample coverage and uncertainty.
-- [ ] Accumulate enough current-version telemetry to identify which findings in the two research reports remain active.
+- [x] Accumulate enough current-version telemetry to identify which findings in the two research reports remain active. (`findings-1409` supplies a 103-session/4,963-call `1.0.3` cohort at 96.57% 7-day session coverage and identifies the active findings — `project_command` volume, error rate, and duplicate excess; cross-child duplication; typed validation preflight; edit reliability; and near-absent cache reuse — against the previous report's rates.)
 
 #### Policy and authorization outcome analysis
 
-The revised exclusive historical classification contains 912 policy or authorization-related results, representing approximately 18.03% of all recorded tool-result errors.
-
-It separates 625 sandbox or filesystem-containment results, 120 approval-interaction timeouts, 71 non-interactive fail-closed denials, 69 policy-subsystem failures, 17 expected explicit authorization decisions, and 10 evidence-flow or scope failures.
+The `findings-1409` exclusive raw classification contains 935 policy or authorization-related results, or 19.24% of the 4,859 recorded tool-result errors.
+The normalized classifier reported 626 `policy_denied` results, and the older five-way `failureTotals.policy` value was 385; those three totals are intentionally separate measurements and must not be interchanged.
+The grouped outcomes are 578 sandbox or filesystem-containment results, 151 approval-interaction timeouts, 93 policy-subsystem failures, 87 non-interactive fail-closed denials, 16 expected explicit authorization decisions, and 10 evidence-flow or scope failures.
+Structured authorization telemetry recorded 788 decisions across 25 sessions, of which 786 were automatic, exactly 1 emitted a prompt, and 1 was an unchanged retry after a denial.
 
 These results remain relevant to workflow efficiency but must not be treated uniformly as tool implementation failures.
 
@@ -79,13 +86,13 @@ These results remain relevant to workflow efficiency but must not be treated uni
 - [x] Separate explicit user or administrator denials from confirmation timeouts.
 - [x] Separate expected fail-closed decisions from policy-load, policy-save, lock, unsafe-path, and other policy subsystem failures.
 - [x] Classify missing authorized-flow references as evidence-routing outcomes rather than generic interactive policy denials.
-- [ ] Distinguish wrong-flow, unpublished, missing, expired, unauthorized, and unreadable evidence where this can be done without leaking evidence existence. (Recording side implemented: clamped `lookup.outcome` telemetry on `pc_`/`vr_` lookups distinguishes `unauthorized-flow`, `not-found`, and `corrupt`; see the checked item under authorization outcome observability. The measurement itself remains open pending accumulated current-version data.)
+- [ ] Distinguish wrong-flow, unpublished, missing, expired, unauthorized, and unreadable evidence where this can be done without leaking evidence existence. (Recording side implemented and now in-window: clamped `lookup.outcome` telemetry on `pc_`/`vr_` lookups distinguishes `unauthorized-flow`, `not-found`, and `corrupt`; see the checked item under authorization outcome observability. `findings-1409` reports the older taxonomy (10 evidence-flow or scope failures, 13 `lookup-failure` reasons) but not the per-outcome breakdown.)
 - [x] Preserve whether command execution was attempted for every authorization-related outcome.
-- [ ] Segment policy outcomes by root or child session, interaction mode, tool, command ID, effective flow, and policy decision source.
-- [ ] Measure whether an approval prompt, warning, or terminal notification was emitted and how long the request waited. (Recording side implemented: authorization records carry a prompt-emitted flag and bounded wait time; the measurement remains open pending accumulated current-version data.)
-- [ ] Measure whether a timeout or denial was followed by an unchanged retry, later equivalent approval, alternate tool path, or abandoned workflow. (Unchanged retries are now recorded as `unchanged-retry-after-denial`; the remaining follow-up classification is a measurement pending accumulated data.)
-- [ ] Measure token cost, wall-clock delay, and downstream retries separately because approval waits may be latency-heavy without being token-heavy.
-- [ ] Keep the remaining non-policy results divided into invalid requests, repository evidence failures, provider or execution failures, cancellations, implementation failures, and uncategorized outcomes rather than labeling them all as actual errors.
+- [ ] Segment policy outcomes by root or child session, interaction mode, tool, command ID, effective flow, and policy decision source. (Authorization records now segment by surface and command — 698 `filesystem`, 82 `project-command`, 8 `verify`, with per-command outcomes such as 296 authorized `read`, 216 authorized `edit`, 172 authorized `grep`, and 33 authorized `node_test` — while recording of interaction mode, effective flow, and policy decision source is implemented on authorization records (see the checked item under authorization outcome observability), and root-versus-child session recording plus per-cohort reporting of those dimensions remain open.)
+- [x] Measure whether an approval prompt, warning, or terminal notification was emitted and how long the request waited. (`findings-1409` reports 788 authorization records of which exactly 1 emitted a prompt, with the bounded `promptWaitMs` summing to 120,012 ms from that single timed-out prompt; warning and terminal-notification emission are not separately flagged because they accompany the prompt, and the near-zero prompt rate means the 120-second `confirmationTimeoutMs` default is a policy choice to review rather than a measured blocker.)
+- [ ] Measure whether a timeout or denial was followed by an unchanged retry, later equivalent approval, alternate tool path, or abandoned workflow. (Unchanged retries are now measurable: of 854 failures with an exact retry within five calls, 580 repeated the identical request with no intervening change and 7 followed an explicitly non-retryable error, with 561 carrying unknown retryability; later equivalent approval, alternate tool path, and abandoned-workflow classification remain open, and the single `unchanged-retry-after-denial` record shows the new invalidation path in use.)
+- [ ] Measure token cost, wall-clock delay, and downstream retries separately because approval waits may be latency-heavy without being token-heavy. (The components now exist separately — bounded prompt wait (120,012 ms total), latency percentiles (34 ms median, 5,941 ms p95, 120,129 ms p99), downstream retry counts, and computed-versus-reported cost with a 1.34% 30-day delta — and the project-command record now splits preparation, authorization, and queue time, so approval latency is attributable per invocation; the components are not yet joined per approval event across surfaces.)
+- [x] Keep the remaining non-policy results divided into invalid requests, repository evidence failures, provider or execution failures, cancellations, implementation failures, and uncategorized outcomes rather than labeling them all as actual errors. (`findings-1409` reports the split directly: 977 `schema_validation` invalid requests, 1,136 `command_execution`, 207 `provider_timeout_or_unavailable`, 14 `cancelled_or_terminated`, 12 `no_op_edit`, a first-class `orchestration_budget` category of 302 policy-driven stops, and 1,131 explicitly uncategorized results.)
 
 No measurement or implementation change may weaken explicit authorization, automatically approve a request, widen evidence scope, or change fail-closed behavior.
 
@@ -105,6 +112,20 @@ The historical report now provides a bounded proximity baseline, but its 705 pot
 - [ ] Measure repeated or overlapping graph context across children even when graph queries are not byte-identical.
 - [ ] Measure whether `codegraph_affected` narrows validation scope and reduces validation execution.
 - [ ] Track index freshness and workspace mutations when graph evidence is consumed.
+
+#### Analyzer and importer handoff
+
+These measurements are owned by the session analyzer and importer rather than by Bash Tools, and the extension already records their inputs.
+
+- [ ] Persist the provider tool-call id on tool-call messages so custom-entry records join their tool calls exactly instead of by session and command.
+- [ ] Attribute inventory tools by `tools[].sourceInfo` so owned, intercepted native, Codegraph, and unrelated tools are counted separately.
+- [ ] Count edit preflight failures by structured diagnostic code (`edit-no-match`, `edit-stale-context`, `edit-ambiguous`, `edit-overlap`, `edit-no-op`, `edit-unchanged-retry`) instead of normalized message text, so the evidence-backed path is distinguishable from plain no-match.
+- [ ] Present the `publication`, `lookup`, `forced`, `reused`, `verdict`, and `stateDrift` segmentation that invocation records already carry.
+- [ ] Report the new attribution fields per cohort: the project-command phase split (`preparationDurationMs`, `authorizationDurationMs`, `queueDurationMs`), the authorization `mode`/`flowId`/`decisionSource` segmentation, the Git `mode`/`maxBytes`/`truncated` distribution, and the read-batch `role`/`delegationId`/`publication` attribution.
+- [ ] Report the `edit-stale-context` hit rate from the recorded `evidenceBacked` flag, separating evidence-backed stale classifications from plain no-match failures.
+- [ ] Recompute duplicate, latency, cache-decision, and evidence-reuse metrics per version cohort, not only per window.
+- [ ] Confirm that `codegraph_sync` excess calls do not represent repeated work before treating them as waste, because an idempotent unchanged result still counts as an excess call.
+- [ ] Keep the `1.0.3` cohort as the pre-`1.1.0` comparison baseline.
 
 #### Exit criteria
 
@@ -278,6 +299,45 @@ The remaining work is to make repairability and retry behavior explicit without 
 - The next valid action is evident without requiring a broad reread.
 - The extension never retries or rebases a mutation automatically.
 
+### P1: Instrument remaining cost and attribution gaps
+
+`findings-1409` names measurements that cannot be taken from existing records; each needs a bounded additive field rather than a new tool.
+
+- [x] Record preparation, authorization, and queue time separately on `project-command` invocation records. The existing `durationMs` minus `executionDurationMs` already shows 4.17 hours of 7.25 hours unexplained, but not which component dominates.
+      Additive optional `preparationDurationMs`, `authorizationDurationMs`, and `queueDurationMs` are clamped and omitted when not measured.
+      Preparation spans tool entry to the authorization mark, or to invocation end when preparation failed; authorization spans the authorization call including any confirmation prompt wait; queue spans only a single-flight follower's wait.
+      Evidence-`ref` lookups omit all three, and the disjoint-interval invariant is documented in `docs/artifacts.md`.
+- [x] Record `mode`, `maxBytes`, and `truncated` on Git invocation records so summary reuse, patch follow-up, and Git truncation are measurable without parsing result payloads or call arguments. (Additive optional fields; `mode` is the effective `git_diff` mode, `maxBytes` is recorded only when the request supplied one, `truncated` comes from the result truncation block on completed invocations, and each field is omitted when not applicable.)
+- [x] Record `role`, `delegationId`, and an explicit `publication` block on read-batch invocation records so `rr_` consumers are attributable the way `pc_` consumers already are. (Additive bounded fields recorded only when the orchestration context provides them and when the request asked to publish; the `publication` block mirrors the project-command shape, and a publish-requested call that fails before result details exist records no `publication` block because no result payload exists to describe.)
+- [x] Record interaction mode, effective flow, and policy decision source on authorization outcome records so policy outcomes can be segmented beyond surface and command ID.
+      Additive optional `mode`, `flowId`, and `decisionSource` fields are emitted where a bounded value exists and omitted otherwise.
+      `flowId` comes only from the caller's own orchestration context when the effective scope is flow, and `decisionSource` is the configured authorization value or `prompt` for prompt-derived outcomes.
+      Determination: an implicit in-project filesystem access is recorded as `allow-project` because the decision functions flatten it to the same value as a configured project allow and distinguishing them would require changing decision logic.
+- [x] Record whether an edit diagnostic was evidence-backed, so the hit rate of `edit-stale-context` is measurable instead of inferred. (Additive `evidenceBacked: true` on stale-context and equal-hash no-match diagnostics; omitted when no observation exists, and diagnostic codes, hints, and wording are unchanged.)
+
+#### Exit criteria
+
+- Every metric that `findings-1409` marks unmeasurable has a bounded field or an explicit decision not to record it.
+- New fields remain additive, bounded, privacy-preserving, and observational, and none changes a result, error, or authorization decision.
+
+### P1: Reduce deterministic request churn
+
+`findings-1409` attributes 487 errors to deterministically invalid Git requests and 6,242 excess calls to repeated identical work, and it shows that advisory text alone does not stop the loop.
+
+- [x] Coerce or reject empty and conflicting Git request fields without a repeated identical attempt: 333 `git_status` empty `path`, 85 `git_log` empty `revision`, and 69 `git_diff` path-and-`paths` conflicts. (An empty optional `path` or `revision` is treated as absent and named in the bound `coercions` record field; `paths` entries are never dropped; a non-empty `path`-and-`paths` conflict keeps its rejection and wording.)
+- [x] Extend unchanged-retry invalidation beyond authorization denials to deterministic validation failures for `git_status`, `git_log`, and `git_diff`. (Request-shape failures are tracked per session, tool, and effective request hash; a repeat is rejected as `unchanged-invalid-request` without execution, while unsafe paths, cancellation, transient failures, and sessions without identity are never tracked.)
+- [ ] Report an advisory duplicate-execution marker when the same `project_command` request already executed for the same repository state in the same session scope, without changing `reusePolicy`, returning stored results, or weakening the non-reusable rule. (Deferred to the P2 shadow-mode reuse evaluation: an executed-request marker needs a session-scoped fingerprint over request and repository state, which is the reuse-shaped store P2 already owns, and it is never admissible on the current non-reusable path.)
+- [ ] Provide an unchanged or hashed path for repeated identical reads, through the intercepted native `read` or through documented `read_batch` adoption, so an unchanged repeat returns compact metadata instead of full content. (Determination: no interception mechanism exists that can return compact metadata, because `ToolCallEventResult` can only block or mutate `event.input` and cannot rewrite results, so the native-`read` option is closed without changing native read semantics; guidance steering repeated and multi-file reads to `read_batch` was added to `docs/tools.md` and `README.md`, and no unsupported opt-in was built.)
+- [ ] Measure the `read_batch` share of read-like calls plus `rr_` publication and lookup counts, so adoption of the compact read path is visible. (Determination: partially measurable from existing records. The read-batch record carries per-item and aggregate sizes, `unchanged`, `scope`/`flowId`, `repositoryState`, and the `lookup` block, so reuse and lookup counts are derivable, and consumer-role attribution and publication success are now recorded through the `role`, `delegationId`, and `publication` fields added by the instrumentation section; the measurement itself belongs to the next analysis pass.)
+
+Real evidence reuse remains out of scope here: package-script and Fallow execution stay non-reusable until a deterministic command class is proven safe, and the shadow-mode reuse evaluation stays in P2.
+
+#### Exit criteria
+
+- A deterministically invalid request is not repeated unchanged without an explicit corrective change.
+- Repeated identical reads or executions against unchanged state return compact or advisory results instead of full work.
+- No fail-closed behavior, authorization decision, or existing public error wording changes beyond additions.
+
 ### P1: Verify validation evidence correctness and adoption
 
 The current `verify` and `project_command` evidence model already addresses much of the repeated-validation recommendation.
@@ -285,11 +345,11 @@ The current `verify` and `project_command` evidence model already addresses much
 The next work should validate its identity, freshness, and practical use before expanding caching.
 
 - [ ] Confirm which request, script, executable, environment, repository, manifest, and lockfile identities participate in verification evidence.
-- [ ] Confirm how mutating format and lint variants affect evidence reuse and state drift.
+- [ ] Confirm how mutating format and lint variants affect evidence reuse and state drift. (State drift is now recorded on 144 invocations and mutating variants are classified, but the report does not yet compare drift or reuse between mutating and non-mutating variants.)
 - [ ] Confirm the relationship between the project-command process timeout and verify per-step and aggregate guards.
 - [ ] Measure how often callers execute validation when compatible `vr_` evidence already exists.
-- [ ] Measure publication and lookup failures separately from cache misses.
-- [ ] Ensure successful, failed, incomplete, stale, forced, and lookup-only outcomes remain distinguishable.
+- [ ] Measure publication and lookup failures separately from cache misses. (Lookup failures are a distinct execution reason (13 in the window, alongside 71 `resolution-failure`), and publication outcomes are now recorded with `published` and a bounded `error` in the project-command and read-batch `publication` blocks, so publication failures are distinguishable from cache misses in the records; the per-cohort reporting remains with the analyzer.)
+- [ ] Ensure successful, failed, incomplete, stale, forced, and lookup-only outcomes remain distinguishable. (Forced execution (2,064 records), cache decisions, result categories, and state drift are distinguishable in `findings-1409`, and the `verdict`, `stateDrift`, and `lookup` fields are now recorded on the invocation records; incomplete verify verdicts, stale evidence, and lookup-only outcomes are not yet counted separately in the report.)
 - [ ] Keep package-script and Fallow execution non-reusable through `project_command` unless a future deterministic command class is proven safe.
 - [ ] Prefer one complete verification artifact over repeated independent phase execution when repository state and requested scope are compatible.
 
@@ -303,6 +363,9 @@ The next work should validate its identity, freshness, and practical use before 
 
 Shared evidence can save context while introducing stale-result and authorization risks.
 
+`findings-1409` measured 0.96% project-command cache reuse against 2,064 forced bypasses, so the first decision here is whether any deterministic command class may become reusable at all; package-script and Fallow execution stay non-reusable until that is proven.
+
+- [ ] Decide explicitly whether any deterministic command class may become reusable, or keep execution non-reusable and reduce churn through advisory markers instead.
 - [ ] Detect candidate evidence reuse without changing the returned result.
 - [ ] Compare candidates with fresh producer results.
 - [ ] Measure safe matches, stale candidates, authorization denials, false matches, bytes avoided, and latency avoided.
@@ -317,6 +380,9 @@ Shared evidence can save context while introducing stale-result and authorizatio
 - Codegraph-first workflows replace enough `grep`, `find`, and `read` work to offset their larger average result size.
 - Repeated read, Git, and validation evidence against unchanged state decreases across children.
 - Deterministic invalid requests and persistent authorization denials are not repeated unchanged.
+- Deterministically invalid requests are coerced or rejected without a repeated identical attempt.
+- Repeated identical reads and executions against unchanged state return compact or advisory results.
+- Every published or looked-up evidence record is attributable to the session and role that consumed it.
 - Expected policy decisions are excluded from implementation defect rates but included in workflow latency and retry analysis.
 - Evidence lookups do not cross unauthorized root or flow boundaries.
 - Stale workspace or index evidence is detected before reuse.
@@ -339,6 +405,6 @@ The following work is not part of the active efficiency and evidence program.
 - Planner, worker, reviewer, and validator composition policy.
 - Child-session reuse and lifecycle policy.
 - Provider and model retry or fallback behavior.
-- Flow-ledger summaries and incremental ledger reads.
+- Flow-ledger summaries and incremental ledger reads. (`1.1.0` supplies the transport through `rr_` publication and reauthorized lookup; the ledger shape, summaries, and cursors remain with the orchestration layer.)
 - Compact child-response contracts and evidence-routing policy.
 - Codegraph query implementation, index synchronization, and `cg_` artifact storage (implemented in Codegraph Runner 2.0.2).

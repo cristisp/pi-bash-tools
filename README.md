@@ -289,6 +289,10 @@ For new calls, use `paths: ["file"]` for one path or `paths: ["first", "second"]
 The legacy `path` field remains supported for compatibility.
 Empty and duplicate `paths` arrays are rejected.
 
+`git_status` treats an empty optional `path` as absent, `git_log` treats an empty optional `path` or `revision` as absent, `git_diff` treats an empty legacy `path` as absent, and `git_show` treats an empty optional `path` as absent; array entries are never dropped.
+
+A deterministically invalid request shape is remembered per session and re-rejected as `unchanged-invalid-request` until the caller changes it; see [docs/git.md](docs/git.md).
+
 Revisions must be non-empty, non-option-like Git revision expressions without whitespace, path extraction colons, shell-like wildcard characters, or control characters.
 
 `git_show` intentionally implements `git show <revision> -- <path>` path filtering.

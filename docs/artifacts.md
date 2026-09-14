@@ -177,11 +177,22 @@ The block carries `repositoryId` (the SHA-256 of the resolved workspace root), `
 
 Repository-state observation runs only when a recorder and session identity are present, uses the same derivation as `project_command` and `verify`, and never changes read results or errors.
 
+An orchestrated read-batch invocation also carries the additive bounded `role` and `delegationId` fields when the orchestration context provides them.
+
+A read-batch invocation whose request asked to publish read evidence also carries an additive `publication` block with `scope`, an optional bounded `flowId`, `published`, and an optional bounded `error`; the block mirrors the project-command publication shape, which is omitted when no publication was requested.
+The block is derived from the result's own `publish` block, so it reflects the realized outcome and is omitted on early failures that return before result shaping, such as request validation or cancellation.
+
 Git read-tool invocations are recorded as `bash-tools.git-invocation` entries.
 
 Each Git record carries the tool name, session and tool-call identity, the schema hash, the requested path-filter count, the outcome reason (`completed`, `cancelled`, `invalid-request`, or `failed`), a bounded error code, duration, an `unchanged` flag for `git_status` and `git_diff` unchanged repeats, an aggregate block with the model-facing result byte count, and the same additive `repositoryState` workspace block described above.
 
 Git invocation records never contain revision expressions, path strings, or output text, and they are omitted when the session identity is unavailable.
+
+An invocation whose request contained an empty optional field also carries an additive bounded `coercions` list naming each applied coercion, and a blocked identical retry carries `retryInvalidation: "invalid-request-repeat"`.
+
+A `git_diff` record carries the effective `mode` (`summary` or `patch`), and a `git_diff` or `git_show` record carries the requested `maxBytes` when the request supplied one; other Git tools record neither field.
+
+A completed invocation also carries `truncated` from the result's truncation block when that block is present, so Git truncation is measurable without parsing result text.
 
 The Git observation uses the identical repository-state reader and derivation as `read_batch`, runs concurrently with the tool's own Git work, and never changes a Git result or error.
 
@@ -192,6 +203,20 @@ Each authorization record carries the authorization surface (`project-command`, 
 When a session repeats an unchanged request that was persistently denied or timed out earlier in the same session, the authorization layer rejects the retry as an unchanged retry and records `unchanged-retry-after-denial` without prompting again or writing a policy decision.
 
 Authorization records never contain environment values, path strings, commands, or policy contents, and they are omitted when the session identity is unavailable.
+
+An authorization record may also carry additive optional attribution fields: `mode` (`tui`, `rpc`, `json`, or `print`), `flowId`, and `decisionSource`.
+
+`mode` is the interaction mode the caller observed and is omitted when it is not one of those bounded values.
+
+`flowId` is emitted only when the caller's own orchestration context resolves to the flow evidence scope, never from a request field, and it carries no policy or path data.
+
+`decisionSource` is the configured policy authorization (`deny-global`, `deny-project`, `allow-global`, or `allow-project`) for an outcome that came from an existing decision, or `prompt` when the outcome followed a confirmation prompt; the `prompt` value also applies to a deferred prompted approval when it is committed after the prompt.
+
+It is omitted for policy load and decision lookup failures, `not-authorized`, cancellation, dismissal, and confirmation failure, because no policy decision source exists for those outcomes; a cancellation encountered while committing a deferred prompted approval also omits it, because the decision was not recorded.
+
+The closed set also accepts `unknown` as the clamp target when external input supplies an unrecognized value, but the shared authorization path never emits it: an undetermined outcome omits the field instead.
+
+Determination: an implicit in-project filesystem read or write that the policy does not configure is recorded as `allow-project`, because it is flattened to the same value as a configured project allow inside the decision functions and is not distinguishable without changing decision logic, which this instrumentation does not do.
 
 Recording is best effort from the shared authorization path and never changes an authorization decision, error, or fail-closed behavior; lock-level failures inside the policy store still surface as save failures at this layer.
 
@@ -239,7 +264,23 @@ Each record is capped at 8 KiB, and a missing or unwritable path produces a proc
 
 Invocation records may include `flowId`, `delegationId`, `role`, `ref`, `verdict`, `mutating`, `publication`, `lookup` (with the additive clamped `outcome` field), `coercions`, `concurrentExecutions`, `stateDrift`, `sharedExecution`, and aggregate metadata.
 
+A `project-command` invocation record may also carry the additive optional phase durations `preparationDurationMs`, `authorizationDurationMs`, and `queueDurationMs`, each clamped like every other metadata number and omitted when it was never measured.
+
+`preparationDurationMs` spans tool entry to the authorization mark, which is the start of the authorization call, or tool entry to invocation end when the invocation failed during preparation.
+
+`authorizationDurationMs` spans the authorization call only and includes any confirmation prompt wait, so `promptWaitMs` remains the finer breakdown of that prompt.
+
+`queueDurationMs` is recorded only for a single-flight follower that waited on an in-flight execution and covers the wait until that execution settled, and it is omitted on the leader, cache-hit, and other paths.
+
+All three are omitted for evidence-`ref` lookups, which return before preparation, so a lookup record never labels any part of its duration as preparation, authorization, or queue time.
+
+The phase intervals are disjoint, so `preparationDurationMs + authorizationDurationMs + queueDurationMs + executionDurationMs` never exceeds `durationMs`; the unlabeled remainder is the post-authorization preparation gap between the authorization mark and the execution-or-queue mark and is never assigned to a phase.
+
+`executionDurationMs` runs from execution start through record emission, so post-execution result shaping, evidence storage, and publication fall inside `executionDurationMs` rather than in the unlabeled remainder.
+
 Read-batch records add `requestedPaths`, per-item size entries, and an `aggregate` block with `resultBytes` for the full model-facing result text, which supports result-size attribution per read-batch call.
+
+Edit-preflight failure details carry an additive `evidenceBacked: true` flag when a prior `read_batch` observation backed the diagnostic, so the `edit-stale-context` hit rate is measurable from existing details.
 
 `cacheDecision` is one of `miss`, `hit`, `forced`, `ineligible`, or `invalidated`.
 

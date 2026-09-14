@@ -10,6 +10,7 @@ import { renderCallLine, renderStringArgument } from "../../call-render.ts";
 import {
   cancellationError,
   invalidGitRequest,
+  invalidGitRequestShape,
   normalizeGitBoolean,
   runGit,
   validateGitRequestKeys,
@@ -301,7 +302,7 @@ function normalizeGitDiffRequest(params: GitDiffRequestParams): GitDiffRequest {
   const hasLegacyPath = params.path !== undefined;
   const hasPaths = params.paths !== undefined;
   if (hasLegacyPath && hasPaths) {
-    throw invalidGitRequest("provide either path or paths, not both", "path");
+    throw invalidGitRequestShape("provide either path or paths, not both", "path");
   }
   const responseMode = params.mode ?? "summary";
   if (responseMode !== "summary" && responseMode !== "patch") {

@@ -226,6 +226,70 @@ describe("read batch invocation records", () => {
     });
   });
 
+  it("records orchestration attribution and a bounded publication block when provided", () => {
+    const record = buildReadBatchInvocationRecord(
+      input({
+        role: "worker",
+        delegationId: "delegation-1",
+        publication: { scope: "flow", flowId: "flow-9", published: false, error: "denied" },
+      }),
+    );
+
+    expect(record.role).toBe("worker");
+    expect(record.delegationId).toBe("delegation-1");
+    expect(record.publication).toEqual({
+      scope: "flow",
+      flowId: "flow-9",
+      published: false,
+      error: "denied",
+    });
+  });
+
+  it("omits attribution and publication when unused and normalizes malformed values", () => {
+    const record = buildReadBatchInvocationRecord(input());
+
+    expect("role" in record).toBe(false);
+    expect("delegationId" in record).toBe(false);
+    expect("publication" in record).toBe(false);
+
+    const malformed = buildReadBatchInvocationRecord(
+      input({
+        role: "",
+        delegationId: "",
+        publication: { scope: "sideways", flowId: "", published: "yes", error: "" } as never,
+      }),
+    );
+
+    expect("role" in malformed).toBe(false);
+    expect("delegationId" in malformed).toBe(false);
+    expect(malformed.publication).toEqual({ scope: "root", published: false });
+  });
+
+  it("bounds attribution and publication identifiers and keeps records within the byte cap", () => {
+    const record = buildReadBatchInvocationRecord(
+      input({
+        sessionId: "s".repeat(10_000),
+        role: "r".repeat(1_000),
+        delegationId: "d".repeat(1_000),
+        publication: {
+          scope: "flow",
+          flowId: "f".repeat(1_000),
+          published: true,
+          error: "e".repeat(1_000),
+        },
+        items: [item({ ref: "z".repeat(512) })],
+      }),
+    );
+
+    expect(record.role).toHaveLength(256);
+    expect(record.delegationId).toHaveLength(256);
+    expect(record.publication?.flowId).toHaveLength(256);
+    expect(record.publication?.error).toHaveLength(256);
+    expect(Buffer.byteLength(JSON.stringify(record), "utf8")).toBeLessThanOrEqual(
+      READ_BATCH_INVOCATION_MAX_BYTES,
+    );
+  });
+
   it("swallows failures from an injected recorder", () => {
     const recorder = vi.fn(() => {
       throw new Error("recorder unavailable");

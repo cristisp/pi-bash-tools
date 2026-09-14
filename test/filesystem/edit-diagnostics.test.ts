@@ -59,6 +59,7 @@ describe("edit diagnostics", () => {
       { fileFingerprint: "fingerprint-1", observedContentHash: "hash-observed" },
     );
     expect(diagnostic?.code).toBe("edit-stale-context");
+    expect(diagnostic?.evidenceBacked).toBe(true);
     expect(diagnostic?.hint).toBe(
       "The file has changed since it was last observed; reread the file and rebase this edit on the current content.",
     );
@@ -71,6 +72,7 @@ describe("edit diagnostics", () => {
       { fileFingerprint: "hash-observed", observedContentHash: "hash-observed" },
     );
     expect(diagnostic?.code).toBe("edit-no-match");
+    expect(diagnostic?.evidenceBacked).toBe(true);
     expect(diagnostic?.hint).toBe("Provide a larger unique context that matches the file exactly.");
   });
 
@@ -79,6 +81,7 @@ describe("edit diagnostics", () => {
       { oldText: "missing", newText: "new" },
     ]);
     expect(diagnostic?.code).toBe("edit-no-match");
+    expect(diagnostic).not.toHaveProperty("evidenceBacked");
   });
 
   it("classifies stale context even when the mismatch is whitespace-only", () => {
@@ -117,6 +120,7 @@ describe("edit diagnostics", () => {
     expect(diagnostic).not.toHaveProperty("fileFingerprint");
     expect(diagnostic).not.toHaveProperty("contentLength");
     expect(diagnostic).not.toHaveProperty("lineCount");
+    expect(diagnostic).not.toHaveProperty("evidenceBacked");
   });
 
   it("does not classify non-matching replacements as stale without a mismatch", () => {

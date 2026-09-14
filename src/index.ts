@@ -15,6 +15,7 @@ import { createDeleteTool, createMoveTool } from "./tools/filesystem/mutation-to
 import { createReadBatchTool } from "./tools/filesystem/read-batch-tool.ts";
 import { createGitDiffTool } from "./tools/git/diff/tool.ts";
 import { boundedGitExec, type GitExec } from "./tools/git/execution.ts";
+import { createInvalidRequestTracker } from "./tools/git/invalid-request-tracker.ts";
 import { createGitLogTool } from "./tools/git/log/tool.ts";
 import { createGitShowTool } from "./tools/git/show/tool.ts";
 import { createGitStatusTool } from "./tools/git/status/tool.ts";
@@ -33,6 +34,7 @@ export default function (pi: ExtensionAPI): void {
   const gitInvocationRecorder = createGitInvocationRecorder(pi);
   const authorizationOutcomeRecorder = createAuthorizationOutcomeRecorder(pi);
   const authorizationRetryTracker = createAuthorizationRetryTracker();
+  const gitInvalidRequestTracker = createInvalidRequestTracker();
   const gitRepositoryStateReader = createProjectCommandRepositoryStateReader(exec);
   pi.on("session_start", (event, context) => {
     invocationSessionRecorder.onSessionStart(
@@ -54,6 +56,7 @@ export default function (pi: ExtensionAPI): void {
     createGitStatusTool(exec, {
       invocationRecorder: gitInvocationRecorder,
       repositoryStateReader: gitRepositoryStateReader,
+      retryInvalidationTracker: gitInvalidRequestTracker,
     }),
   );
   pi.registerTool(
@@ -61,6 +64,7 @@ export default function (pi: ExtensionAPI): void {
       invocationObservation: {
         invocationRecorder: gitInvocationRecorder,
         repositoryStateReader: gitRepositoryStateReader,
+        retryInvalidationTracker: gitInvalidRequestTracker,
       },
     }),
   );
@@ -68,12 +72,14 @@ export default function (pi: ExtensionAPI): void {
     createGitLogTool(exec, {
       invocationRecorder: gitInvocationRecorder,
       repositoryStateReader: gitRepositoryStateReader,
+      retryInvalidationTracker: gitInvalidRequestTracker,
     }),
   );
   pi.registerTool(
     createGitShowTool(exec, {
       invocationRecorder: gitInvocationRecorder,
       repositoryStateReader: gitRepositoryStateReader,
+      retryInvalidationTracker: gitInvalidRequestTracker,
     }),
   );
   pi.registerTool(createEnvironmentTool(authorizationOutcomeRecorder, authorizationRetryTracker));

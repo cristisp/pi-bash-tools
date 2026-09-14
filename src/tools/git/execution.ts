@@ -181,6 +181,7 @@ function gitContract(
   retryable: boolean,
   executed: boolean,
   invalidField?: string,
+  shapeDeterministic?: boolean,
 ): ToolErrorContract {
   return buildToolErrorContract({
     code,
@@ -189,10 +190,15 @@ function gitContract(
     retryable,
     executed,
     invalidField,
+    shapeDeterministic,
   });
 }
 
-export function invalidGitRequest(message: string, invalidField?: string): GitToolError {
+export function invalidGitRequest(
+  message: string,
+  invalidField?: string,
+  shapeDeterministic?: boolean,
+): GitToolError {
   const action =
     invalidField === undefined
       ? "Correct the request shape or value and retry."
@@ -204,9 +210,38 @@ export function invalidGitRequest(message: string, invalidField?: string): GitTo
     false,
     false,
     invalidField,
+    shapeDeterministic,
   );
   return new GitToolError(
     `${message}; action: ${action}`,
+    withToolErrorContract({ remediation: action }, contract),
+    contract,
+  );
+}
+
+/**
+ * Report an invalid request that depends only on the request shape, so an identical retry is
+ * guaranteed to reproduce the same rejection.
+ */
+export function invalidGitRequestShape(message: string, invalidField?: string): GitToolError {
+  return invalidGitRequest(message, invalidField, true);
+}
+
+/**
+ * Report a shape-deterministic rejection that was already recorded for this session, so the
+ * caller must change the request before retrying.
+ */
+export function unchangedInvalidGitRequest(): GitToolError {
+  const action = "Correct the request shape or value and retry.";
+  const contract = gitContract(
+    "unchanged-invalid-request",
+    "INVALID_REQUEST",
+    "The Git request was already rejected unchanged for this session.",
+    false,
+    false,
+  );
+  return new GitToolError(
+    `Identical invalid Git request was already rejected for this session; change the request before retrying; action: ${action}`,
     withToolErrorContract({ remediation: action }, contract),
     contract,
   );
@@ -316,12 +351,12 @@ export function gitImplementationError(message: string, executed = true): GitToo
 
 export function validateGitText(value: unknown, label: string): asserts value is string {
   if (typeof value !== "string" || value.length === 0) {
-    throw invalidGitRequest(`${label} must not be empty`, label);
+    throw invalidGitRequestShape(`${label} must not be empty`, label);
   }
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
     if (code <= 0x1f || code === 0x7f) {
-      throw invalidGitRequest(`${label} contains a control character`, label);
+      throw invalidGitRequestShape(`${label} contains a control character`, label);
     }
   }
 }

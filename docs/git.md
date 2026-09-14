@@ -14,6 +14,34 @@ When observability is active, every Git read invocation is recorded as a bounded
 
 The record carries identity, timing, outcome classification, result size, and the same repository-state block as other producers; it never contains revisions, paths, or output text, and recording never changes a result or error.
 
+A `git_diff` record also carries the effective `mode`, a `git_diff` or `git_show` record carries the requested `maxBytes` when one was supplied, and a completed record carries the result `truncated` flag when the result exposes it.
+
+## Empty optional fields and deterministic retries
+
+An empty `path` or `revision` field is treated as absent before the request is validated, because an empty string carries no path or revision meaning.
+
+The Git invocation record names each applied coercion as `path:empty-string-omitted` or `revision:empty-string-omitted` in its bounded `coercions` list.
+
+Entries inside a `paths` array are never coerced, because dropping one entry would silently widen the request scope.
+
+A request that supplies both `path` and `paths` is still rejected; an empty `path` is first treated as absent, and a non-empty conflict keeps its existing rejection and wording.
+
+A request-shape failure that an identical retry would reproduce is remembered per session, tool, and effective request shape.
+
+A repeated identical request is rejected without a Git execution with the code `unchanged-invalid-request`, `retryable: false`, and `executed: false`, and its record carries `retryInvalidation: "invalid-request-repeat"`.
+
+Its message is `Identical invalid Git request was already rejected for this session; change the request before retrying; action: Correct the request shape or value and retry.`
+
+Only request-shape validation failures participate: empty or control-character `path` and `revision` text, an empty `paths` array, and the `path`-and-`paths` conflict.
+
+Unsafe paths and unsafe revision expressions, cancellation, spawn failures, command failures, output-limit breaches, and repository-resolution failures never participate, so a transient failure is never blocked from a retry.
+
+A changed request has a different effective shape and proceeds normally.
+
+The tracking state is process-local, bounded to 256 entries with FIFO eviction, and stores only session ids, tool names, and SHA-256 fingerprints of the effective request shape.
+
+When no session identity is available, no retry invalidation is applied and the request executes normally.
+
 ## `git_status`
 
 ### Input
@@ -236,6 +264,8 @@ Structured Git output is capped at 50 KiB and 2,000 records.
 `maxBytes` must be an integer from 1 through 1 MiB.
 
 `revision` must be a non-empty safe Git revision expression.
+
+An empty `revision` is treated as absent and then rejected because the field is required, with the existing `revision must not be empty` wording.
 
 `git_show` implements `git show <revision> -- <path>` filtering and does not implement `REV:path` blob extraction.
 
