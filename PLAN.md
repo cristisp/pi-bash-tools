@@ -79,11 +79,11 @@ These results remain relevant to workflow efficiency but must not be treated uni
 - [x] Separate explicit user or administrator denials from confirmation timeouts.
 - [x] Separate expected fail-closed decisions from policy-load, policy-save, lock, unsafe-path, and other policy subsystem failures.
 - [x] Classify missing authorized-flow references as evidence-routing outcomes rather than generic interactive policy denials.
-- [ ] Distinguish wrong-flow, unpublished, missing, expired, unauthorized, and unreadable evidence where this can be done without leaking evidence existence.
+- [ ] Distinguish wrong-flow, unpublished, missing, expired, unauthorized, and unreadable evidence where this can be done without leaking evidence existence. (Recording side implemented: clamped `lookup.outcome` telemetry on `pc_`/`vr_` lookups distinguishes `unauthorized-flow`, `not-found`, and `corrupt`; see the checked item under authorization outcome observability. The measurement itself remains open pending accumulated current-version data.)
 - [x] Preserve whether command execution was attempted for every authorization-related outcome.
 - [ ] Segment policy outcomes by root or child session, interaction mode, tool, command ID, effective flow, and policy decision source.
-- [ ] Measure whether an approval prompt, warning, or terminal notification was emitted and how long the request waited.
-- [ ] Measure whether a timeout or denial was followed by an unchanged retry, later equivalent approval, alternate tool path, or abandoned workflow.
+- [ ] Measure whether an approval prompt, warning, or terminal notification was emitted and how long the request waited. (Recording side implemented: authorization records carry a prompt-emitted flag and bounded wait time; the measurement remains open pending accumulated current-version data.)
+- [ ] Measure whether a timeout or denial was followed by an unchanged retry, later equivalent approval, alternate tool path, or abandoned workflow. (Unchanged retries are now recorded as `unchanged-retry-after-denial`; the remaining follow-up classification is a measurement pending accumulated data.)
 - [ ] Measure token cost, wall-clock delay, and downstream retries separately because approval waits may be latency-heavy without being token-heavy.
 - [ ] Keep the remaining non-policy results divided into invalid requests, repository evidence failures, provider or execution failures, cancellations, implementation failures, and uncategorized outcomes rather than labeling them all as actual errors.
 
@@ -137,9 +137,9 @@ Remaining shared-contract and Bash Tools work:
 
 - [x] Define a minimal versioned evidence envelope shared by participating extensions.
 - [x] Define root, process, and explicit flow scope without widening existing authorization, including the `root` to `session` naming mapping.
-- [ ] Define current, stale, mismatched, unreadable, and unavailable lookup outcomes consistently across producers.
-- [ ] Preserve provenance, publication status, state drift, truncation, and cache decisions without including secrets or raw policy data.
-- [ ] Document compatibility and version-negotiation rules so extensions do not import each other's implementation modules.
+- [ ] Define current, stale, mismatched, unreadable, and unavailable lookup outcomes consistently across producers. (Bash Tools defines its side: clamped `lookup.outcome` on `pc_`/`vr_` lookups, `repositoryStateStatus`, and `stateDrift`; cross-producer harmonization with Codegraph's freshness states remains open.)
+- [x] Preserve provenance, publication status, state drift, truncation, and cache decisions without including secrets or raw policy data. (Envelope records carry `producer`, `kind`, request and content hashes, `output` truncation blocks, `workspace` state, and `publication`; invocation records carry `publication`, `stateDrift`, and cache decisions, all bounded and privacy-preserving, per docs/artifacts.md.)
+- [x] Document compatibility and version-negotiation rules so extensions do not import each other's implementation modules. (docs/artifacts.md "Compatibility and version negotiation" plus the "Semantic result defaults" independence statement.)
 
 #### Envelope adoption slice
 
@@ -200,9 +200,9 @@ This work should close remaining cross-child and aggregate-payload gaps rather t
 - [x] Prevent overlapping or duplicate ranges from returning duplicate content in one request. (Rejected up front as `invalid-request`; raw-path comparison, so canonical-alias duplicates are not detected — bounded anyway by the per-file and aggregate caps.)
 - [x] Add continuation support when an aggregate result is truncated. (`results.continuation` with `nextIndex`/`totalPaths`; the caller re-issues the remaining bounded path list.)
 - [x] Return stable content hashes and relevant file metadata with each successful observation. (`contentHash` sha256 of file bytes on fresh and unchanged results; size/line metadata already in `output.totalBytes`/`totalLines`.)
-- [ ] Determine whether `rr_` evidence can be safely published to an authorized flow for cross-process consumers.
-- [ ] Reauthorize published read evidence at lookup and compare current artifact state before returning reusable content.
-- [ ] Keep speculative broad batch reads more expensive or more explicit than narrow planned ranges.
+- [x] Determine whether `rr_` evidence can be safely published to an authorized flow for cross-process consumers. (Yes, opt-in and flow-scoped only: `publish: { flowId }` must equal the caller's effective orchestration flow, publication fails closed, records are stored per flow with 32-entry/256 KiB-content/384 KiB-record caps, at most 128 records retained in memory per flow, and durable records bounded by the shared disk cache (2 MiB per record, seven days, 50 MiB per directory), and no session-scope or cross-flow widening is possible.)
+- [x] Reauthorize published read evidence at lookup and compare current artifact state before returning reusable content. (`read_batch { ref }` reauthorizes every recorded path for the current process, re-reads current bytes, compares the exact byte sha256, and returns stored content only for `unchanged` paths; `changed`, `unreadable`, and `unauthorized` paths return no content, and workspace state is compared through `compareWorkspaceBlocks`.)
+- [x] Keep speculative broad batch reads more expensive or more explicit than narrow planned ranges. (No additional penalty was added; broad reads stay explicit and bounded by the 32-path cap, 64 KiB per file, 256 KiB aggregate returned content with per-path `aggregate-limit` errors, and `results.continuation`.)
 
 #### Git state and diff evidence
 

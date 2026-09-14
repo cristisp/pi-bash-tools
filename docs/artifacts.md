@@ -6,7 +6,15 @@ Generated records are diagnostic artifacts and are not authorization inputs.
 
 ## Evidence references
 
-`read_batch` references use the `rr_` prefix and are process-local cache references. Successful `read_batch` results also expose the record's `contentHash` (the lowercase SHA-256 digest of the full file bytes) directly on each item, including unchanged repeats.
+`read_batch` references use the `rr_` prefix and are process-local cache references unless the request opts into publication.
+
+Successful `read_batch` results also expose the record's `contentHash` (the lowercase SHA-256 digest of the full file bytes) directly on each item, including unchanged repeats.
+
+A `read_batch` execution may request explicit publication with `publish: { "flowId": "..." }`.
+
+A published `rr_` batch record is stored under the caller's own authorized flow and is resolvable by the `ref` returned in the additive `publish.ref` result field.
+
+A published `rr_` reference is reauthorized and re-read on every lookup; only paths whose current bytes still match the recorded hash return content.
 
 `project_command` evidence references use the `pc_` prefix.
 
@@ -38,7 +46,11 @@ The outcome is one of `success`, `not-found`, `unauthorized-flow`, or `corrupt`;
 
 `corrupt` is emitted only where the store detects a present-but-invalid record in-process: the `project_command` root map and in-memory flow maps classify present-but-invalid records as `corrupt`, while the verify cache and all durable disk records are never probed for corruption and clamp to `not-found`.
 
-Expiry is not applicable: lookup records have no TTL, so capacity-trimmed records are indistinguishable from missing records and both report `not-found`. `rr_` references have no lookup API today; `rr_` outcome telemetry is deferred together with `rr_` flow publication.
+Expiry is not applicable: lookup records have no TTL, so capacity-trimmed records are indistinguishable from missing records and both report `not-found`.
+
+`rr_` references support the same additive `lookup.outcome` telemetry for lookup requests.
+
+An `rr_` lookup that is unauthorized, missing, or corrupt reports the same generic not-found wording, the wording names only the caller's own flow or no flow, and `unauthorized-flow` is derived only from the caller's own orchestration context before any store query.
 
 ## Shared evidence envelope
 
@@ -119,6 +131,8 @@ The default cache root is `~/.pi/agent/bash-tools`.
 
 Flow-scoped project-command and verification records are stored below `flows/<flow-id>/project-command/`.
 
+Published `rr_` read evidence records share that flow directory and are keyed by their distinct `rr_` logical reference; they are bounded to 384 KiB per record, 256 KiB of stored content, and 32 entries. Each flow retains at most 128 records in memory, while durable records persist until the shared cache evicts them under the per-record, age, and directory bounds below. A record that meets the content caps but exceeds the 384 KiB serialized bound is rejected with a distinct `published: false` error instead of the unauthorized-publication error.
+
 Disk cache files use hashed logical request keys and JSON records rather than user-provided filenames.
 
 Entries are validated before use, capped at 2 MiB per record, evicted after seven days by default, and bounded to 50 MiB per cache directory.
@@ -154,6 +168,8 @@ Read-batch invocations are recorded as `bash-tools.read-batch-invocation` entrie
 Each read-batch record carries the session and tool-call identity, the requested path count, per-path size entries (path hash and length, range, unchanged and truncation flags, file bytes and line totals, returned content bytes, evidence reference, and error code), an aggregate block (model-facing result bytes, returned content bytes, file bytes and line totals, and unchanged, truncated, and error counts), duration, and the evidence scope.
 
 Read-batch records never contain path strings or file content, and they are omitted when the session identity is unavailable.
+
+A read-batch invocation that resolves a published `rr_` reference carries the additive `lookup` block (`attempted`, `success`, optional `failure`, and the clamped `outcome`) with empty per-path items and zeroed aggregate content.
 
 When observability is active, read-batch invocations observe repository state and record it as an additive `repositoryState` block that follows the shared evidence envelope workspace shape.
 

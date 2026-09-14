@@ -17,6 +17,41 @@ const MAX_METADATA_NUMBER = 9_999_999_999;
 
 export type ReadBatchInvocationReason = "completed" | "cancelled" | "invalid-request" | "failed";
 
+export type ReadBatchInvocationLookupOutcome =
+  | "success"
+  | "not-found"
+  | "unauthorized-flow"
+  | "corrupt";
+
+export interface ReadBatchInvocationLookupMetadata {
+  readonly attempted: boolean;
+  readonly success: boolean;
+  readonly failure?: string;
+  readonly outcome?: string;
+}
+
+function isReadBatchInvocationLookupOutcome(
+  value: string,
+): value is ReadBatchInvocationLookupOutcome {
+  switch (value) {
+    case "success":
+    case "not-found":
+    case "unauthorized-flow":
+    case "corrupt":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Clamp an untrusted lookup outcome string to the bounded persisted enum. */
+export function readBatchInvocationLookupOutcome(
+  value: string | undefined,
+): ReadBatchInvocationLookupOutcome | undefined {
+  if (value === undefined || !isReadBatchInvocationLookupOutcome(value)) return undefined;
+  return value;
+}
+
 export interface ReadBatchInvocationRange {
   readonly offset?: number;
   readonly limit?: number;
@@ -58,6 +93,7 @@ export interface ReadBatchInvocationRecordInput {
   readonly scope?: "session" | "flow";
   readonly flowId?: string;
   readonly repositoryState?: SharedEvidenceWorkspaceBlock;
+  readonly lookup?: ReadBatchInvocationLookupMetadata;
 }
 
 export interface ReadBatchInvocationRecord {
@@ -74,6 +110,7 @@ export interface ReadBatchInvocationRecord {
   readonly scope?: "session" | "flow";
   readonly flowId?: string;
   readonly repositoryState?: SharedEvidenceWorkspaceBlock;
+  readonly lookup?: ReadBatchInvocationLookupMetadata;
 }
 
 export type ReadBatchInvocationRecorder = (record: ReadBatchInvocationRecord) => void;
@@ -103,6 +140,28 @@ function validReason(value: unknown): ReadBatchInvocationReason {
 
 function validScope(value: unknown): "session" | "flow" | undefined {
   return value === "session" || value === "flow" ? value : undefined;
+}
+
+function boundedLookup(value: unknown): ReadBatchInvocationLookupMetadata | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const candidate = value as {
+    readonly attempted?: unknown;
+    readonly success?: unknown;
+    readonly failure?: unknown;
+    readonly outcome?: unknown;
+  };
+  if (candidate.attempted !== true) return undefined;
+  const outcome = readBatchInvocationLookupOutcome(
+    typeof candidate.outcome === "string" ? candidate.outcome : undefined,
+  );
+  return {
+    attempted: true,
+    success: candidate.success === true,
+    ...(typeof candidate.failure === "string"
+      ? { failure: boundedIdentifier(candidate.failure) }
+      : {}),
+    ...(outcome === undefined ? {} : { outcome }),
+  };
 }
 
 function validRange(value: unknown): ReadBatchInvocationRange | undefined {
@@ -211,6 +270,7 @@ export function buildReadBatchInvocationRecord(
   const scope = validScope(input.scope);
   const flowId =
     typeof input.flowId === "string" && input.flowId.length > 0 ? input.flowId : undefined;
+  const lookup = boundedLookup(input.lookup);
   const build = (frozenItems: readonly ReadBatchInvocationItem[]): ReadBatchInvocationRecord =>
     Object.freeze({
       invocationFormatVersion: READ_BATCH_INVOCATION_FORMAT_VERSION,
@@ -228,6 +288,7 @@ export function buildReadBatchInvocationRecord(
       ...(isBoundedSharedEvidenceWorkspace(input.repositoryState)
         ? { repositoryState: input.repositoryState }
         : {}),
+      ...(lookup === undefined ? {} : { lookup }),
     });
   let record = build(Object.freeze(items));
   while (items.length > 0) {

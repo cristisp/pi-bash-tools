@@ -80,6 +80,7 @@ It does not intercept `bash` or `user_bash`.
 The extension also registers `read_batch`, `move`, and `delete` tools.
 `read_batch` accepts `{ paths: [{ path, range?: { offset?, limit? } }] }`, reads at most 32 paths, caps each returned file at 64 KiB of text and 2,000 requested lines, and reports a bounded result or error for every path.
 Successful entries report repository-relative paths, a stable `rr_` reference, and a stable `contentHash` (the SHA-256 digest of the full file bytes).
+A request may opt into flow publication with `publish: { flowId }`, which stores the bounded batch under the caller's own authorized flow and returns the aggregate `publish.ref`; a later `read_batch { ref }` lookup reauthorizes and re-reads every recorded path and returns stored content only when the current bytes still match the recorded hash.
 The aggregate returned content across all paths in one request is capped at 256 KiB; once the cap is reached, the first affected path and every later path return a bounded `aggregate-limit` error in request order without being authorized or read, and the result reports `continuation` with `nextIndex` and `totalPaths` so the caller can re-issue the remaining paths in a follow-up request.
 The same path may not appear twice with overlapping ranges in one request; such requests are rejected up front, while disjoint ranges of one path remain allowed.
 A repeated path and range in the same process-local scope returns `unchanged: true` with the prior reference when the file content hash is unchanged.

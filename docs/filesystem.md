@@ -32,6 +32,62 @@ Each `path` is a non-empty repository-relative path of at most 4,096 characters.
 
 `range.limit` is a line count from 1 through 2,000.
 
+A request may instead resolve previously published evidence with `{ "ref": "rr_...", "flowId": "optional-flow", "covers": ["optional"] }`.
+
+The `ref` form rejects `paths`, `publish`, `range`, execution options, and any other unknown field with an `invalid-request` error.
+
+A published-evidence lookup returns `{ "results": [], "lookup": { ... } }` and never executes a file read or a command.
+
+### Publication
+
+An execution request may opt into flow publication with `"publish": { "flowId": "flow-1" }` alongside `paths`.
+
+Publication succeeds only when every requested path was freshly read in that request, the caller's effective orchestration flow equals `publish.flowId`, and the flow cache write succeeds.
+
+The result carries the additive `publish` block with `scope`, `flowId`, `published`, and, on success, the aggregate `ref`.
+
+A failed or unauthorized publication leaves the read results unchanged and reports `published: false` with a bounded `error`, and nothing is stored. A publication that meets the content caps but exceeds the 384 KiB serialized record bound is rejected with the distinct bounded `error` `Read evidence exceeds the published record size bound.`, so callers can tell a size rejection apart from an unauthorized publication.
+
+Combining `publish` with `ref` is rejected up front.
+
+### Lookup result
+
+```json
+{
+  "results": [],
+  "lookup": {
+    "ref": "rr_example",
+    "executed": false,
+    "repositoryStateStatus": "matches",
+    "entries": [
+      {
+        "path": "src/index.ts",
+        "contentHash": "sha256 hex digest of the recorded file bytes",
+        "status": "unchanged",
+        "content": "bounded stored file text",
+        "output": { "truncated": false, "totalBytes": 100, "totalLines": 4 }
+      }
+    ]
+  }
+}
+```
+
+Every recorded path is reauthorized for the current process and re-read when resolving a published reference.
+
+Stored text is served only when it equals the text re-derived from the current bytes, and the returned `output` metadata is re-derived the same way, so a corrupted or tampered record can cause a denial but never wrong content or metadata.
+
+`status` is `unchanged`, `changed`, `unreadable`, or `unauthorized`, and `content` with `output` appears only for `unchanged`.
+
+`repositoryStateStatus` compares the recorded workspace block with the current one and is `matches`, `mismatch`, or `unreadable`.
+
+The recorded workspace block is an observation stored with the record and is not re-derivable, so it remains advisory metadata; the binding guarantee is per-path reauthorization plus content re-derivation.
+
+An unauthorized, missing, corrupt, or trimmed reference returns one generic not-found error that never reveals evidence from another flow. The error names only the caller's own flow, or no flow, in every case.
+
+Published records are bounded to 32 entries, 64 KiB stored content per entry, 256 KiB stored content per record, and 384 KiB per serialized record. Each flow retains at most 128 records in memory, while durable records persist on disk until the shared flow cache evicts them under its byte and age bounds (2 MiB per record, seven days, and 50 MiB per shared directory).
+
+An `rr_` reference returned by a read that did not request publication stays process-local and resolves to the same generic not-found error.
+
 ### Result
 
 ```json
