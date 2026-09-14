@@ -2,6 +2,8 @@
 
 A pi extension that spawns subagents as live pi sessions in their own herdr tabs.
 
+See the [workflow documentation](docs/docs.md) for the current end-to-end workflow, artifact handoffs, and validation model.
+
 Each subagent runs in a herdr tab labeled `worker-1`, `reviewer-2`, etc. (agent name
 plus a persistent per-workspace counter). Its conversation is stored in
 `~/.pi/agent/sessions/subagent-<workspace>-<label>.jsonl` and can be reused across
