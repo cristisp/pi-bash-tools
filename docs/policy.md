@@ -104,6 +104,8 @@ If a process crashes while holding the lock, remove the lock manually only after
 
 Unreadable policy data, unsafe policy paths, lock failures, invalid approval choices, save failures, and unsupported platform behavior deny the request.
 
+A failed confirmation-timeout deny persist or a failed explicit-deny persist re-reads the policy document before reporting the failure: if a concurrent session has already persisted an allow for the same identity, the request proceeds authorized; if a persisted deny exists, it is honored; otherwise the save failure denies the request as usual. Recovery only follows a decision that is already present in the policy document, never writes a decision of its own, and applies to the `verify` and `project-command` surfaces.
+
 Policy decisions never authorize arbitrary shell execution or dependency installation.
 
 See [Environment](environment.md) and [Filesystem tools and policy](filesystem.md) for capability-specific behavior.
