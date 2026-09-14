@@ -69,7 +69,7 @@ Envelope fields are additive on top of each producer's own record shape:
 
 The canonical repository identity and raw paths stay inside producer-owned records; the envelope carries only the digested `repositoryId`.
 
-Producers keep their own record version fields: `pc_` records keep `evidenceFormatVersion: 1`, `vr_` records keep `cacheFormatVersion: 2`, and in-memory `rr_` records use the envelope format version.
+Producers keep their own record version fields: `pc_` records keep `evidenceFormatVersion: 1`, `vr_` records keep `cacheFormatVersion: 2`, and `rr_` records use the envelope format version both in memory and when published to disk.
 
 ### Compatibility and version negotiation
 

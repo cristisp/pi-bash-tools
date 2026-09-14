@@ -10,7 +10,7 @@ Historical extension-version recovery is complete, but the latest observed `1.0.
 
 Orchestration policy and Codegraph implementation remain owned by their respective extensions.
 
-Codegraph Runner 2.0.2 now implements the counterpart that the producer-neutral evidence contract was waiting on: a producer-owned `cg_` artifact store with a versioned evidence envelope, repository and multi-dimensional index state, bounded retention, opaque non-replayable references, and lookup-time scope, workspace, and freshness reauthorization. Bash Tools now carries that envelope additively on `pc_`, `vr_`, and in-memory `rr_` records through a neutral shared envelope module, so the remaining shared-contract work is cross-producer lookup-outcome alignment and `rr_` flow publication.
+Codegraph Runner 2.0.2 now implements the counterpart that the producer-neutral evidence contract was waiting on: a producer-owned `cg_` artifact store with a versioned evidence envelope, repository and multi-dimensional index state, bounded retention, opaque non-replayable references, and lookup-time scope, workspace, and freshness reauthorization. Bash Tools now carries that envelope additively on `pc_`, `vr_`, and `rr_` records through a neutral shared envelope module, `rr_` records support opt-in flow publication with reauthorized, state-verified lookup, and the remaining shared-contract work is cross-producer lookup-outcome alignment.
 
 The envelope-adoption slice is implemented, and the next work is the current-version telemetry needed for the remaining P0 measurements.
 
@@ -122,7 +122,7 @@ Bash Tools and Codegraph should expose compatible evidence metadata while retain
 
 Codegraph Runner 2.0.2 satisfies the producer-side requirements for its `cg_` evidence: a versioned envelope carrying `ref`, `producer`, `kind`, `scope`, `requestHash`, `contentHash`, a `workspace` block with `repositoryId`, `head`, `dirtyDigest`, and `status`, a nested `producerState` with the Codegraph index identity and workspace freshness, an `output` block with truncation and byte totals, and `provenance` creation metadata. References are opaque and non-replayable, retention and content limits are bounded, every lookup is reauthorized against the effective scope, workspace, and index freshness, and lookup outcomes distinguish current, stale, mismatched, missing, expired, corrupt, unauthorized, and unreadable records.
 
-Bash Tools now carries the same envelope additively on `rr_`, `pc_`, and `vr_` records, so the remaining shared-contract work is cross-producer lookup-outcome alignment and `rr_` flow publication.
+Bash Tools now carries the same envelope additively on `rr_`, `pc_`, and `vr_` records, and `rr_` records support opt-in flow publication with reauthorized, state-verified lookup, so the remaining shared-contract work is cross-producer lookup-outcome alignment.
 
 Satisfied by the Codegraph producer:
 
@@ -148,7 +148,7 @@ This slice is preventive correctness work: it changes evidence metadata shape on
 - [x] Add a neutral shared envelope module holding the versioned format constant, the scope mapping, and bounded validators.
 - [x] Add `producer`, `kind`, `requestHash`, `contentHash`, `output`, and `workspace` fields to `pc_` records additively, keeping existing fields and `producerScope` values unchanged.
 - [x] Add the same envelope fields to `vr_` records without changing the `cacheFormatVersion: 2` on-disk validation contract.
-- [x] Bring in-memory `rr_` records into the same envelope, leaving flow publication to a later item.
+- [x] Bring `rr_` records into the same envelope. (Initially in-memory; flow publication followed in the read-batch publication slice.)
 - [x] Document the shared envelope, the `root` to `session` scope mapping, compatibility and version-negotiation rules, and the `workspace` digest comparison rule in [`docs/artifacts.md`](docs/artifacts.md).
 
 #### Ownership
