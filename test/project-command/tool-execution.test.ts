@@ -919,8 +919,15 @@ it("keeps the failure message unchanged when no evidence is stored", async () =>
     fingerprintArgs: definition.argvTemplate,
   } satisfies ResolvedProjectCommand;
   await authorize(fixtureData, definition, resolved);
+  const rejectingEvidence: ProjectCommandEvidenceStore = {
+    getByRef: () => undefined,
+    set: () => false,
+    publish: () => false,
+    clear: () => undefined,
+  };
   const tool = createProjectCommandToolForTesting({
     configPath: fixtureData.configPath,
+    evidence: rejectingEvidence,
     resolver: async () => resolved,
     executor: failingFallowHealthExecutor(),
   });
@@ -1393,7 +1400,9 @@ it("prefers cancellation when the executor rejects after the request is aborted"
     .catch((rejection: unknown) => rejection);
   expect(error).toMatchObject({
     name: "AbortError",
-    message: "Project command request cancelled",
+    message: expect.stringMatching(
+      /^Project command request cancelled(?:; ref: pc_[A-Za-z0-9_-]{8,128})?$/u,
+    ),
     contract: {
       code: "cancelled",
       category: "CANCELLED",

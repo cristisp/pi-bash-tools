@@ -279,6 +279,16 @@ describe("isSafeFailureTail", () => {
     expect(isSafeFailureTail(`failure${ANSI_ESCAPE}[0m`, "failed")).toBe(false);
   });
 
+  it.each([
+    ["colon SGR", `tail${ANSI_ESCAPE}[38:2:0:0:0m`],
+    ["non-SGR CSI", `tail${ANSI_ESCAPE}[2K`],
+    ["OSC with BEL", `tail${ANSI_ESCAPE}]0;title\u0007`],
+    ["OSC with ST", `tail${ANSI_ESCAPE}]8;;http://x${ANSI_ESCAPE}\\`],
+    ["lone escape", `tail${ANSI_ESCAPE}`],
+  ] as const)("rejects a failed tail containing a %s escape", (_reason, failureTail) => {
+    expect(isSafeFailureTail(failureTail, "failed")).toBe(false);
+  });
+
   it.each(["passed", "omitted", "not-run"] as const)("rejects a nonempty tail for %s", (status) => {
     expect(isSafeFailureTail("tail", status)).toBe(false);
   });

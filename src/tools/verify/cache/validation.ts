@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 
 import { isBoundedSharedEvidenceFields } from "../../../evidence/envelope.ts";
+import { PROJECT_COMMAND_DISPLAY_COMMAND_MAX_CHARS } from "../../project-command/parameters/limits.ts";
 import {
   isBoundedInteger,
   isBoundedNonEmptyString,
@@ -13,15 +14,12 @@ import {
   type VerifyEvidenceRecord,
   type VerifyRepositoryState,
 } from "../types.ts";
-import {
-  isSafeFailureTail,
-  isVerifyStepResult,
-  VERIFY_CACHE_MAX_COMMAND,
-} from "./step-validation.ts";
+import { isSafeFailureTail, isVerifyStepResult } from "./step-validation.ts";
 
 const VERIFY_CACHE_MAX_TAIL = 8 * 1024;
 const VERIFY_CACHE_MAX_STEPS = 4;
 const VERIFY_CACHE_MAX_COMMANDS = 4;
+const VERIFY_CACHE_MAX_COMMAND = PROJECT_COMMAND_DISPLAY_COMMAND_MAX_CHARS;
 const VERIFY_CACHE_MAX_COVERS = 64;
 const VERIFY_CACHE_MAX_COVER_LENGTH = 512;
 

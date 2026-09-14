@@ -14,6 +14,7 @@ import {
 } from "../../src/tools/project-command/evidence.ts";
 import { createProjectCommandEvidenceStoreInternal } from "../../src/tools/project-command/evidence/store.ts";
 import type { ProjectCommandOutputDetails } from "../../src/tools/project-command/output.ts";
+import { PROJECT_COMMAND_DISPLAY_COMMAND_MAX_CHARS } from "../../src/tools/project-command/parameters/limits.ts";
 
 const roots: string[] = [];
 
@@ -101,11 +102,19 @@ it("validates complete records on in-memory lookup and rejects malformed replace
   rejectionStore.set(malformedCategory);
   expect(rejectionStore.getByRef(valid.ref)).toBeUndefined();
 
-  const fractionalDuration = {
-    ...valid,
-    details: { ...valid.details, durationMs: 1.5 },
-  };
-  expect(isEvidenceRecord(fractionalDuration)).toBe(false);
+  const fractionalDuration = recordWithDetails({ durationMs: 5983.655499994755 });
+  expect(isEvidenceRecord(fractionalDuration)).toBe(true);
+
+  const rejectedDurations: readonly [string, number][] = [
+    ["negative", -1],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+  ];
+  for (const [label, durationMs] of rejectedDurations) {
+    expect(isEvidenceRecord({ ...valid, details: { ...valid.details, durationMs } }), label).toBe(
+      false,
+    );
+  }
 
   const malformed = {
     ...valid,
@@ -260,7 +269,9 @@ it("rejects malformed evidence details across nested validation branches", () =>
     ["producer scope", { producerScope: "other" }],
     ["reused", { reused: "false" }],
     ["cache decision", { cacheDecision: "unknown" }],
-    ["duration", { durationMs: 1.5 }],
+    ["duration", { durationMs: -1 }],
+    ["NaN duration", { durationMs: Number.NaN }],
+    ["Infinity duration", { durationMs: Number.POSITIVE_INFINITY }],
     ["scope", { scope: { cwdStrategy: "other", projectPath: "/repo" } }],
     ["status", { status: "unknown" }],
     ["category", { category: "UNSUPPORTED" }],
@@ -273,7 +284,10 @@ it("rejects malformed evidence details across nested validation branches", () =>
     ["output metadata", { output: { stdout: {}, stderr: valid.details.output.stderr } }],
     ["diagnostic", { diagnostic: "d".repeat(50 * 1024 + 1) }],
     ["suggested action", { suggestedAction: "s".repeat(1025) }],
-    ["resolved command", { resolvedCommand: "r".repeat(50 * 1024 + 1) }],
+    [
+      "resolved command",
+      { resolvedCommand: "r".repeat(PROJECT_COMMAND_DISPLAY_COMMAND_MAX_CHARS + 1) },
+    ],
     ["parameters", { parameters: oversizedParameters }],
     ["optional fingerprint", { resultFingerprint: "r".repeat(257) }],
     ["optional fingerprint version", { resultFingerprintVersion: 2 }],
@@ -327,32 +341,41 @@ it("accepts evidence details at configured boundaries", () => {
     head: "h".repeat(512),
     dirtyFilesDigest: "d".repeat(256),
   };
+  const uncappedTotals = { totalBytes: 3 * 1024 * 1024, totalLines: 5_000_000 } as const;
   const boundary = recordWithDetails({
     commandId: "c".repeat(128),
     projectPath,
     fingerprint: "f".repeat(256),
     authFingerprint: "a".repeat(256),
     toolCallId: "t".repeat(256),
-    durationMs: 24 * 60 * 60 * 1000,
+    durationMs: 5983.655499994755,
     executionDurationMs: 24 * 60 * 60 * 1000,
     scope: { cwdStrategy: "canonical-project", projectPath },
     stdout: {
       text: "x".repeat(50 * 1024),
       truncated: false,
-      totalBytes: 2 * 1024 * 1024,
-      totalLines: 4_000_000,
+      totalBytes: uncappedTotals.totalBytes,
+      totalLines: uncappedTotals.totalLines,
     },
     stderr: {
       text: "x".repeat(50 * 1024),
       truncated: true,
-      totalBytes: 2 * 1024 * 1024,
-      totalLines: 4_000_000,
+      totalBytes: uncappedTotals.totalBytes,
+      totalLines: uncappedTotals.totalLines,
     },
     output: {
-      stdout: { truncated: false, totalBytes: 2 * 1024 * 1024, totalLines: 4_000_000 },
-      stderr: { truncated: true, totalBytes: 2 * 1024 * 1024, totalLines: 4_000_000 },
+      stdout: {
+        truncated: false,
+        totalBytes: uncappedTotals.totalBytes,
+        totalLines: uncappedTotals.totalLines,
+      },
+      stderr: {
+        truncated: true,
+        totalBytes: uncappedTotals.totalBytes,
+        totalLines: uncappedTotals.totalLines,
+      },
     },
-    resolvedCommand: "r".repeat(50 * 1024),
+    resolvedCommand: "r".repeat(PROJECT_COMMAND_DISPLAY_COMMAND_MAX_CHARS),
     parameters,
     diagnostic: "d".repeat(50 * 1024),
     suggestedAction: "s".repeat(1024),
@@ -380,6 +403,55 @@ it("accepts evidence details at configured boundaries", () => {
     packageManager: { value: "npm" },
   });
   expect(isEvidenceRecord(boundary)).toBe(true);
+});
+
+it("accepts a record shaped like real timed pc_ writer output", () => {
+  const realShape = recordWithDetails({
+    durationMs: 5983.655499994755,
+    executionDurationMs: 5983.655499994755,
+    stdout: {
+      text: "x".repeat(50 * 1024),
+      truncated: true,
+      totalBytes: 136_119,
+      totalLines: 1_768,
+    },
+    stderr: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
+    output: {
+      stdout: { truncated: true, totalBytes: 136_119, totalLines: 1_768 },
+      stderr: { truncated: false, totalBytes: 0, totalLines: 0 },
+    },
+    resolvedCommand: "p".repeat(4096) + " " + "x".repeat(67) + " " + "a".repeat(4096 * 2),
+  });
+  expect(isEvidenceRecord(realShape)).toBe(true);
+});
+
+it("accepts a resolved command at the real maximum display length and rejects one over the shared bound", () => {
+  const executable = "/usr/local/bin/pnpm".padEnd(4096, "e");
+  const pathArgs = Array.from(
+    { length: 64 },
+    (_, index) => `/repo/src/path-${index}/${"p".repeat(4096)}`,
+  );
+  const resolvedCommand = [executable, "run", "test", "--", ...pathArgs].join(" ");
+  expect(resolvedCommand.length).toBeGreaterThan(50 * 1024);
+  const realShape = recordWithDetails({ resolvedCommand });
+  expect(isEvidenceRecord(realShape)).toBe(true);
+
+  const overBound = recordWithDetails({
+    resolvedCommand: "r".repeat(PROJECT_COMMAND_DISPLAY_COMMAND_MAX_CHARS + 1),
+  });
+  expect(isEvidenceRecord(overBound)).toBe(false);
+});
+
+it("stores and returns a fractional-duration record through the real durable store", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bash-tools-evidence-fractional-"));
+  roots.push(root);
+  const store = createProjectCommandEvidenceStore({ rootDirectory: root });
+  const fractional = recordWithDetails({
+    durationMs: 5983.655499994755,
+    executionDurationMs: 5983.655499994755,
+  });
+  expect(store.set(fractional)).toBe(true);
+  expect(store.getByRef(fractional.ref)).toEqual(fractional);
 });
 
 it("validates the evidence envelope and publication scope boundaries", () => {

@@ -8,7 +8,13 @@ import type {
 } from "./types.ts";
 
 const MAX_FAILURE_TAIL = 8 * 1024;
-const ANSI_SGR_PATTERN = new RegExp(`${String.fromCodePoint(0x1b)}\\[[0-9;]*m`, "gu");
+const ANSI_ESCAPE = String.fromCodePoint(0x1b);
+const CSI_PATTERN = new RegExp(`${ANSI_ESCAPE}\\[[0-9:;<=>?]*[ -/]*[@-~]`, "gu");
+const OSC_PATTERN = new RegExp(
+  `${ANSI_ESCAPE}\\][^\\u0007${ANSI_ESCAPE}]*(${ANSI_ESCAPE}\\\\|\\u0007)?`,
+  "gu",
+);
+const LONE_ESCAPE_PATTERN = new RegExp(ANSI_ESCAPE, "gu");
 
 export function outputChunk(value: ProjectCommandExecutionOutcome["stdout"]): VerifyOutputChunk {
   return {
@@ -23,8 +29,12 @@ export function emptyChunk(): VerifyOutputChunk {
   return { text: "", truncated: false, totalBytes: 0, totalLines: 0 };
 }
 
+function sanitizedChunkText(value: string): string {
+  return value.replace(CSI_PATTERN, "").replace(OSC_PATTERN, "").replace(LONE_ESCAPE_PATTERN, "");
+}
+
 function tail(value: string): string | undefined {
-  const sanitized = value.replace(ANSI_SGR_PATTERN, "");
+  const sanitized = sanitizedChunkText(value);
   if (sanitized.length === 0) return undefined;
   return sanitized.length <= MAX_FAILURE_TAIL ? sanitized : sanitized.slice(-MAX_FAILURE_TAIL);
 }
@@ -159,7 +169,7 @@ export function compactOutput(
 }
 
 function fullChunk(value: VerifyOutputChunk): VerifyOutputChunk {
-  return { ...value, text: value.text.replace(ANSI_SGR_PATTERN, "") };
+  return { ...value, text: sanitizedChunkText(value.text) };
 }
 
 function fullStep(step: VerifyStepResult): VerifyStepResult {

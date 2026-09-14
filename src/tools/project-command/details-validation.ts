@@ -49,10 +49,6 @@ export function isFiniteNonNegativeDuration(value: unknown, maximum: number): bo
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= maximum;
 }
 
-export function isIntegerNonNegativeDuration(value: unknown, maximum: number): boolean {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum;
-}
-
 export interface ProjectCommandDetailsValidationInput {
   readonly value: Readonly<Record<string, unknown>>;
   readonly profile: ProjectCommandOutputDetailsValidationProfile;

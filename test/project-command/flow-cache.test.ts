@@ -408,19 +408,23 @@ it("steals an old exclusive lock and evicts entries by age and size", async () =
   }
 });
 
-it("rejects persisted records with oversized numeric output metadata", async () => {
+it("accepts persisted records with uncapped real output totals", async () => {
   authorizeFlow("flow-a");
   const root = await mkdtemp(join(tmpdir(), "bash-tools-flow-cache-"));
   try {
     const cache = createProjectCommandDiskResultCache({ rootDirectory: root, scopeKey: "flow-a" });
-    cache.set("flow-a", {
+    const realTotals = {
       ...cacheEntry(),
       details: {
         ...cacheDetails,
-        stdout: { ...cacheDetails.stdout, totalBytes: Number.MAX_SAFE_INTEGER },
+        stdout: { ...cacheDetails.stdout, totalBytes: 300 * 1024 * 1024, totalLines: 5_000_000 },
       },
+    };
+    cache.set("flow-a", realTotals);
+    expect(cache.get("flow-a", "request-a")).toEqual({
+      cacheFormatVersion: 1,
+      ...realTotals,
     });
-    expect(cache.get("flow-a", "request-a")).toBeUndefined();
   } finally {
     await rm(root, { recursive: true, force: true });
   }

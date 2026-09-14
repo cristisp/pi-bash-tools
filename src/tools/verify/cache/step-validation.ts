@@ -1,3 +1,4 @@
+import { PROJECT_COMMAND_DISPLAY_COMMAND_MAX_CHARS } from "../../project-command/parameters/limits.ts";
 import {
   isBoundedInteger,
   isBoundedNonEmptyString,
@@ -8,7 +9,7 @@ import {
 import { type VerifyOutputChunk, type VerifyStepResult } from "../types.ts";
 
 const VERIFY_CACHE_MAX_TEXT = 50 * 1024;
-export const VERIFY_CACHE_MAX_COMMAND = 300 * 1024;
+const VERIFY_CACHE_MAX_COMMAND = PROJECT_COMMAND_DISPLAY_COMMAND_MAX_CHARS;
 const VERIFY_CACHE_MAX_TAIL = 8 * 1024;
 const ANSI_ESCAPE = String.fromCodePoint(0x1b);
 

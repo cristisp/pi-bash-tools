@@ -9,7 +9,7 @@ import {
 import {
   isBoundedProjectCommandDetails,
   isBoundedProjectCommandOptionalDetails,
-  isIntegerNonNegativeDuration,
+  isFiniteNonNegativeDuration,
   isStandardProjectCommandCacheDecision,
   isStandardProjectCommandStatus,
   type ProjectCommandOptionalDetailsValidationProfile,
@@ -21,6 +21,7 @@ import type {
   ProjectCommandEvidenceRecord,
 } from "../evidence.ts";
 import type { ProjectCommandOutputDetails } from "../output.ts";
+import { PROJECT_COMMAND_DISPLAY_COMMAND_MAX_CHARS } from "../parameters/limits.ts";
 import type { ProjectCommandRepositoryState } from "../repository-state.ts";
 
 const PROJECT_COMMAND_EVIDENCE_FORMAT_VERSION = 1 as const;
@@ -116,13 +117,13 @@ const EVIDENCE_OUTPUT_DETAILS_VALIDATION_PROFILE: ProjectCommandOutputDetailsVal
   commandIdMaxLength: 128,
   projectPathMaxLength: 4096,
   textMaxLength: 50 * 1024,
-  totalBytesMax: 2 * 1024 * 1024,
-  totalLinesMax: 4_000_000,
+  totalBytesMax: Number.MAX_SAFE_INTEGER,
+  totalLinesMax: Number.MAX_SAFE_INTEGER,
   durationMaxMs: 24 * 60 * 60 * 1000,
-  isDuration: isIntegerNonNegativeDuration,
+  isDuration: isFiniteNonNegativeDuration,
   diagnosticMaxLength: 50 * 1024,
   suggestedActionMaxLength: 1024,
-  resolvedCommandMaxLength: 50 * 1024,
+  resolvedCommandMaxLength: PROJECT_COMMAND_DISPLAY_COMMAND_MAX_CHARS,
   isScope: (candidate) =>
     isRecord(candidate) &&
     candidate.cwdStrategy === "canonical-project" &&

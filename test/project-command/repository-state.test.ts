@@ -483,4 +483,63 @@ gitIntegration("real git repository state", () => {
     const state = await reader(repository.directory, undefined);
     expect(state?.dirtyFilesDigest).toMatch(/^[0-9a-f]{64}$/u);
   });
+
+  it("reads defined digests across a real modify/delete merge conflict", async () => {
+    const repository = await gitFixtures.createRepository();
+    const defaultBranch = (
+      await rawGit(repository.directory, ["rev-parse", "--abbrev-ref", "HEAD"])
+    ).trim();
+    await rawGit(repository.directory, ["checkout", "--quiet", "-b", "other"]);
+    await writeFile(join(repository.directory, "README.md"), "other branch README\n", "utf8");
+    await rm(join(repository.directory, "space name.txt"));
+    await rawGit(repository.directory, ["add", "-A"]);
+    await rawGit(repository.directory, ["commit", "--quiet", "-m", "other branch changes"]);
+    await rawGit(repository.directory, ["checkout", "--quiet", defaultBranch]);
+    await rm(join(repository.directory, "README.md"));
+    await writeFile(
+      join(repository.directory, "space name.txt"),
+      "main branch space file\n",
+      "utf8",
+    );
+    await rawGit(repository.directory, ["add", "-A"]);
+    await rawGit(repository.directory, ["commit", "--quiet", "-m", "main branch changes"]);
+    const merge = await makeRealGitExec()("git", ["merge", "--no-commit", "other"], {
+      cwd: repository.directory,
+    });
+    expect(merge.code).toBe(1);
+    const statusRecords = (await rawGit(repository.directory, ["status", "--porcelain=v1", "-z"]))
+      .split("\0")
+      .filter((record) => record.length > 0);
+    expect(statusRecords).toHaveLength(2);
+    const statusByPath = new Map(
+      statusRecords.map((record) => [record.slice(3), record.slice(0, 2)]),
+    );
+    expect(statusByPath.get("README.md")).toBe("DU");
+    expect(statusByPath.get("space name.txt")).toBe("UD");
+    const reader = createProjectCommandRepositoryStateReader(makeRealGitExec());
+    const conflicted = await reader(repository.directory, undefined);
+    expect(conflicted?.head).toMatch(/^[0-9a-f]{40}$/u);
+    expect(conflicted?.dirtyFilesDigest).toMatch(/^[0-9a-f]{64}$/u);
+    const conflictedDigest = conflicted?.dirtyFilesDigest;
+    const survivingPath = join(repository.directory, "space name.txt");
+    const priorContent = readFileSync(survivingPath, "utf8");
+    await writeFile(survivingPath, `${priorContent}<<<<<<< HEAD\n=======\n>>>>>>> other\n`, "utf8");
+    const appended = await reader(repository.directory, undefined);
+    expect(appended?.dirtyFilesDigest).toBeDefined();
+    expect(appended?.dirtyFilesDigest).not.toBe(conflictedDigest);
+    await writeFile(survivingPath, priorContent, "utf8");
+    const restored = await reader(repository.directory, undefined);
+    expect(restored?.dirtyFilesDigest).toBe(conflictedDigest);
+    await rawGit(repository.directory, ["rm", "--quiet", "README.md"]);
+    await rawGit(repository.directory, ["add", "space name.txt"]);
+    const resolvedStatusRecords = (
+      await rawGit(repository.directory, ["status", "--porcelain=v1", "-z"])
+    )
+      .split("\0")
+      .filter((record) => record.length > 0);
+    expect(resolvedStatusRecords).toHaveLength(0);
+    expect(resolvedStatusRecords.some((record) => record.slice(0, 2).includes("U"))).toBe(false);
+    const resolved = await reader(repository.directory, undefined);
+    expect(resolved?.dirtyFilesDigest).toMatch(/^[0-9a-f]{64}$/u);
+  });
 });

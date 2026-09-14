@@ -1349,6 +1349,71 @@ it("limits failure tails to failed steps and strips ANSI escapes", async () => {
   expect(lookup.details.perStep[1]?.stderr.totalBytes).toBe(ansiOutput.length);
 });
 
+it("sanitizes every escape class from failure tails so records stay readable on the flow disk path", async () => {
+  const cwd = await projectFixture();
+  const deps = dependencies("lint");
+  const escapeClasses = [
+    `\u001b[38:2:0:0:0mcolon-sgr\u001b[39:2:0:0:0m`,
+    `\u001b[2Knon-sgr-csi\u001b[H`,
+    `\u001b]0;window title\u0007osc-bel\u001b]8;;http://x\u001b\\osc-st`,
+    `lone\u001bescape`,
+    `\u001b]unterminated-osc`,
+  ];
+  const rawStderr = escapeClasses.join("|");
+  const executor: ProjectCommandExecutor = vi.fn(async (resolved) => {
+    const script = resolved.scriptKey ?? "unknown";
+    const current = outcome(script === "lint" ? "nonzero" : "success");
+    return script === "lint"
+      ? {
+          ...current,
+          stderr: {
+            text: rawStderr,
+            truncated: false,
+            totalBytes: rawStderr.length,
+            totalLines: 1,
+          },
+        }
+      : current;
+  });
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver: deps.resolver,
+    executor,
+    repositoryStateReader: deps.repositoryStateReader,
+  });
+  const result = await tool.execute(
+    "verify-escape-classes",
+    { omit: ["typecheck"] },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  const lintStep = result.details.perStep[1];
+  expect(lintStep?.status).toBe("failed");
+  expect(lintStep?.failureTail).toBeDefined();
+  expect(lintStep?.failureTail).not.toContain("\u001b");
+  expect(lintStep?.failureTail).toContain("colon-sgr");
+  expect(lintStep?.failureTail).toContain("non-sgr-csi");
+  expect(lintStep?.failureTail).toContain("osc-bel");
+  expect(lintStep?.failureTail).toContain("osc-st");
+  expect(lintStep?.failureTail).toContain("lone");
+  expect(lintStep?.failureTail).toContain("escape");
+  expect(lintStep?.failureTail).not.toContain("unterminated-osc");
+  expect(lintStep?.failureTail).not.toContain("]");
+  expectNoAnsi(result.details);
+
+  const lookup = await tool.execute(
+    "verify-escape-classes-ref",
+    { ref: result.details.ref },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  expectNoAnsi(lookup.details);
+  expect(lookup.details.ref).toBe(result.details.ref);
+  expect(lookup.details.failureTail).toBe(lintStep?.failureTail);
+});
+
 it("reruns fresh evidence without changing its stable reference", async () => {
   const cwd = await projectFixture();
   const deps = dependencies();

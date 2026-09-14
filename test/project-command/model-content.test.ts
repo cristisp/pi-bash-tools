@@ -356,7 +356,8 @@ describe("projectCommandModelContent", () => {
     for (const key of OMITTED_INTERNAL_KEYS) {
       expect(content, `serialized content must not expose ${key}`).not.toHaveProperty(key);
     }
-    expect("ref" in content).toBe(false);
+    const ref = content.ref;
+    expect(typeof ref === "string" && ref.startsWith("pc_")).toBe(true);
     expect("publication" in content).toBe(false);
   });
 
