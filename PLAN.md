@@ -7,7 +7,7 @@ The current release scope is implemented and documented under [`docs/docs.md`](d
 The active plan now focuses on reducing token and tool-call waste identified in [`research/research-initial.md`](research/research-initial.md) and refined by the version-aware [`research/findings-0909.md`](research/findings-0909.md) and [`research/findings-1409.md`](research/findings-1409.md), with Bash Tools limited to its own execution, evidence, filesystem, Git, validation, and observability responsibilities.
 
 Historical extension-version recovery is complete, and the `1.0.3` cohort reported by [`research/findings-1409.md`](research/findings-1409.md) (103 unambiguous sessions, 4,963 calls, 4.84% error rate) now serves as the stable current-version baseline.
-Version `1.1.0` is released and loaded from folder, so new sessions report `1.1.0` and the next report can attribute post-`1.0.3` behavior.
+Version `1.1.1` is released and loaded from folder, so new sessions report `1.1.1` and the next report can attribute post-`1.0.3` behavior.
 
 Orchestration policy and Codegraph implementation remain owned by their respective extensions.
 
@@ -53,7 +53,7 @@ The `findings-1409` rescan of the 30 days ending 2026-09-14 replaces the earlier
 The latest observed `1.0.3` cohort contains 113 inventory entries across 103 unambiguous sessions and 4,963 calls with a 4.84% error rate, and 7-day version coverage rose to 310 of 321 sessions (96.57%) and 14,046 of 16,637 calls (84.43%).
 The `1.0.3` cohort is now the largest recent cohort and the first one large enough to serve as a stable baseline.
 Version attribution remains coarse for that window: because `EXTENSION_VERSION` is read from `package.json`, every commit after the `1.0.3` release also reported `1.0.3`, so the cohort mixes released `1.0.3` code with later work.
-Version `1.1.0` is released and loaded from folder, so the next report can separate the released `1.0.3` baseline from current behavior for the first time.
+Version `1.1.1` is released and loaded from folder, so the next report can separate the released `1.0.3` baseline from current behavior for the first time.
 
 - [x] Recover raw Bash Tools inventory entries and join their `sessionId` values to imported sessions.
 - [x] Extract historical extension versions, active-tool snapshots, and tool schema hashes without consulting current source files.
