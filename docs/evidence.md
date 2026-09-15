@@ -33,6 +33,8 @@ A `mismatch` or `unreadable` repository state is not evidence of success.
 A resolved ref is evidence only when its lookup succeeded, and a failed, stale, or not-found lookup is `NOT_RUN` or otherwise unverified.
 
 References minted by a child seat in a flow can be resolved by its siblings and travel upward in the child report.
+Validation refs share the manifest with `read_batch` evidence refs: manifest `knownRefs` entries carry a kind, `vr_` verify refs resolve through a verify ref lookup, and `kind: "read"` entries are `rr_` read refs that resolve through a `read_batch` ref lookup.
+A read ref is advertised only when its minting call published it to the flow, because `read_batch` refs are session-scoped otherwise.
 The root session shares the flow id with its children: the extension sets `PI_ORCHESTRATION_FLOW` in the root process at startup, so a reference minted by the root also resolves from children.
 The root is not a delegation and can publish evidence outside any orchestration context; consumers still confirm every reference by lookup, so published root evidence is a hint with the same guarantees as any other.
 A child with `evidenceScope: "session"` cannot resolve sibling references and must execute the required checks itself.

@@ -12,7 +12,8 @@ Completed implementation history, review rounds, and superseded plans remain ava
 - S2 repository-lock deletion is not authorized and the lock remains enabled.
 - S7 identity-path consolidation remains deferred.
 - The S8 producer artifact-alignment analysis is complete and all seven consumption items are implemented below.
-- The S8 implementation is uncommitted on top of head `8cd169b0`.
+- The S8 implementation is committed as `align producer evidence contract ...` (1.8.0).
+- The optional S9 consumption of `read_batch` evidence refs and structured producer lookup outcomes is implemented below and uncommitted on top of head `dec0dc08`.
 
 ## S4: decide whether `warn` can become `enforce`
 
@@ -103,6 +104,28 @@ Do not enumerate or read producer flow directories from this repository.
 Refs are the only sanctioned transport, and codegraph-runner scope directories are hash-addressed by design.
 Keep the repository write lock and the review-surface dirty-path computation: the envelope carries digests, never path lists.
 Keep refs opaque and non-replayable in the orchestration layer; it transports evidence and never resolves or reinterprets it.
+
+## S9: consume read_batch evidence refs and structured producer lookup outcomes
+
+The producer contract already carries everything needed, so both items stay inside this repository.
+Item A turns cross-turn `read_batch` reuse into first-class evidence: the producer stamps every read-batch result with an `rr_` ref and a `contentHash`, deduplicates unchanged items, and resolves refs through a `read_batch` ref lookup.
+Item B stops discarding the structured `lookup.outcome` classification and the codegraph `producerState` index id that the producers already return.
+
+### S9 work items
+
+- [x] Capture `read_batch` evidence refs in `src/metrics.ts` execution metrics: minted vs unchanged reuse, ref-lookup confirmations, publication outcome, and producer flow provenance, capped per turn.
+- [x] Record structured producer lookup outcomes (`success`, `not-found`, `unauthorized-flow`, `corrupt`) on validation refs and lookup failures, including the implicit `success` outcome of a verify ref-only call that reports reused evidence.
+- [x] Capture codegraph `producerState` index ids from tool results as a bounded per-turn index-state record.
+- [x] Project published `rr_` read refs into the flow's manifest `knownRefs` as `kind: "read"` hints next to the existing `vr_` verify refs, dropping unpublished or provenance-ambiguous read refs.
+- [x] Make the manifest guidance kind-aware: verify refs resolve through a verify ref lookup, read refs through a `read_batch` ref lookup.
+- [x] Aggregate the new signals in `analysis/measure.ts`: read refs minted, reused, and resolved by lookup, the lookup-outcome distribution, and codegraph index results and distinct index ids, rendered per role, flow, and overall.
+- [x] Document the new telemetry fields, the manifest read-ref kind, and the read-batch publication surface in `analysis/TELEMETRY_SCHEMA.md`, `analysis/MEASUREMENT.md`, `docs/artifacts.md`, and `docs/evidence.md`.
+
+### S9 boundaries
+
+Unchanged from S8: refs stay opaque, this repository never enumerates producer stores, and a read ref is advertised only when its minting call published it to the flow because `read_batch` refs are session-scoped otherwise.
+The analyzer reads the same telemetry plus the producer invocation stream, and the producer lookup-outcome field on stream records is classification only.
+Codegraph index ids are observations of producer index state, not freshness verdicts; index identity alone does not validate evidence.
 
 ## Invariants
 

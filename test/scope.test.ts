@@ -130,6 +130,33 @@ describe('review surface and read manifests', () => {
 		expect(withoutFlow.knownRefs).toBeUndefined();
 	});
 
+	it('carries published read refs as kind-read hints and drops unpublished ones', () => {
+		const agentDir = makeTempDir();
+		stubEnv(agentDir);
+		const flowId = 'flow-read-refs';
+		recordKnownRefs({
+			flowId,
+			delegationId: 'turn-1',
+			at: 1000,
+			refs: [],
+			readRefs: [
+				{ ref: 'rr_published', reused: false, publication: 'published' },
+				// Unpublished or failed-publication reads cannot resolve from a sibling lookup.
+				{ ref: 'rr_unpublished', reused: false },
+				{ ref: 'rr_failed', reused: false, publication: 'failed', publicationReason: 'denied' },
+				{ ref: 'rr_conflict', reused: true, publication: 'published', flowIdConflict: true },
+			],
+		});
+
+		const manifest = buildReadManifest({
+			delegationId: 'consumer',
+			flowId,
+			role: 'worker',
+			evidenceScope: 'flow',
+		});
+		expect(manifest.knownRefs).toEqual([{ ref: 'rr_published', kind: 'read', reused: false }]);
+	});
+
 	it('keeps manifests working when persisted refs are malformed', () => {
 		const agentDir = makeTempDir();
 		stubEnv(agentDir);

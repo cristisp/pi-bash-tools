@@ -289,6 +289,8 @@ export interface ProducerInvocation {
 	stateDigest?: string;
 	decision?: string;
 	errorClass?: string;
+	/** Bounded producer lookup-outcome classification, when the record carries it. */
+	lookupOutcome?: string;
 	stateDrift?: boolean;
 	concurrentExecutions?: number;
 	mutating?: boolean;
@@ -468,6 +470,9 @@ function producerInvocationOf(
 			: {}),
 		...(decision ? { decision } : {}),
 		...(errorClass ? { errorClass } : {}),
+		...(lookupOutcomeOfRecord(raw, payload) === undefined
+			? {}
+			: { lookupOutcome: lookupOutcomeOfRecord(raw, payload) }),
 		...(booleanField('stateDrift') === undefined ? {} : { stateDrift: booleanField('stateDrift') }),
 		...(numberField('concurrentExecutions') === undefined
 			? {}
@@ -478,6 +483,22 @@ function producerInvocationOf(
 		executed,
 		lookupFailed,
 	};
+}
+
+const LOOKUP_OUTCOME_VALUES = new Set(['success', 'not-found', 'unauthorized-flow', 'corrupt']);
+
+function lookupOutcomeOfRecord(
+	raw: Record<string, unknown>,
+	payload: Record<string, unknown>,
+): string | undefined {
+	const block =
+		raw.lookup && typeof raw.lookup === 'object' && !Array.isArray(raw.lookup)
+			? (raw.lookup as Record<string, unknown>)
+			: payload.lookup && typeof payload.lookup === 'object' && !Array.isArray(payload.lookup)
+				? (payload.lookup as Record<string, unknown>)
+				: undefined;
+	const value = block && typeof block.outcome === 'string' ? block.outcome : undefined;
+	return value && LOOKUP_OUTCOME_VALUES.has(value) ? value : undefined;
 }
 
 function readProducerRecords(
@@ -578,6 +599,16 @@ export interface ValidationEvidence {
 	/** Failed lookups, kept distinct from a flow that simply had no refs to reuse. */
 	lookupFailures: number;
 	lookupFailureClasses: Record<string, number>;
+	/** Bounded producer lookup-outcome distribution across observed refs and failures. */
+	lookupOutcomes: Record<string, number>;
+	/** read_batch evidence refs minted into the flow and reused unchanged. */
+	readRefsMinted: number;
+	readRefsReused: number;
+	/** read_batch ref lookups that resolved existing evidence. */
+	readRefsResolvedByLookup: number;
+	/** Codegraph results that carried a producer index-state block, with distinct index ids. */
+	codegraphIndexResults: number;
+	codegraphIndexIds: number;
 	/** Successful reuse divided by all successful and failed evidence attempts. */
 	reuseRate: number | null;
 	producerInvocations: number;
@@ -740,6 +771,12 @@ function tallyValidation(
 	let fullValidationPasses = 0;
 	let lookupFailures = 0;
 	let lookupFailureClasses: Record<string, number> = {};
+	const lookupOutcomes: Record<string, number> = {};
+	let readRefsMinted = 0;
+	let readRefsReused = 0;
+	let readRefsResolvedByLookup = 0;
+	let codegraphIndexResults = 0;
+	const codegraphIndexIds = new Set<string>();
 	let stateDriftExecutions = 0;
 	let maxConcurrentExecutions = 0;
 	let mutatingCommands = 0;
@@ -779,7 +816,23 @@ function tallyValidation(
 			lookupFailures++;
 			lookupFailureClasses[failure.errorClass] =
 				(lookupFailureClasses[failure.errorClass] ?? 0) + 1;
+			if (failure.lookupOutcome)
+				lookupOutcomes[failure.lookupOutcome] = (lookupOutcomes[failure.lookupOutcome] ?? 0) + 1;
 			evidenceAttempts++;
+		}
+		for (const ref of refs) {
+			if (ref.lookupOutcome)
+				lookupOutcomes[ref.lookupOutcome] = (lookupOutcomes[ref.lookupOutcome] ?? 0) + 1;
+		}
+		for (const readRef of record.metrics?.readRefs ?? []) {
+			if (readRef.lookup) readRefsResolvedByLookup++;
+			else if (readRef.reused) readRefsReused++;
+			else readRefsMinted++;
+		}
+		const indexState = record.metrics?.codegraphIndex;
+		if (indexState) {
+			codegraphIndexResults += indexState.results;
+			for (const id of indexState.indexIds) codegraphIndexIds.add(id);
 		}
 		for (const execution of record.metrics?.validationExecutions ?? []) {
 			if (execution.stateDrift) stateDriftExecutions++;
@@ -915,6 +968,12 @@ function tallyValidation(
 			: null,
 		lookupFailures,
 		lookupFailureClasses,
+		lookupOutcomes,
+		readRefsMinted,
+		readRefsReused,
+		readRefsResolvedByLookup,
+		codegraphIndexResults,
+		codegraphIndexIds: codegraphIndexIds.size,
 		reuseRate: evidenceAttempts ? Number((successfulReuse / evidenceAttempts).toFixed(2)) : null,
 		producerInvocations: scopedInvocations.length,
 		producerExecutions,
@@ -2238,6 +2297,36 @@ export function renderMarkdown(m: Measurement): string {
 		);
 	}
 	lines.push(row([VALIDATION_BASELINE_LABEL, ...validationColumns.slice(1).map(() => '-')]));
+	lines.push('');
+	lines.push('Read evidence refs, structured lookup outcomes, and codegraph index states:');
+	lines.push('');
+	lines.push(
+		row([
+			'scope',
+			'read minted',
+			'read reused',
+			'read lookups',
+			'lookup outcomes',
+			'codegraph results',
+			'index ids',
+		]),
+	);
+	lines.push(row(['---', '---:', '---:', '---:', '---', '---:', '---:']));
+	for (const v of [m.validation.overall, ...m.validation.byRole, ...m.validation.byFlow]) {
+		lines.push(
+			row([
+				v.scope,
+				v.readRefsMinted,
+				v.readRefsReused,
+				v.readRefsResolvedByLookup,
+				Object.entries(v.lookupOutcomes)
+					.map(([kind, count]) => `${kind}:${count}`)
+					.join(',') || '-',
+				v.codegraphIndexResults,
+				v.codegraphIndexIds,
+			]),
+		);
+	}
 	lines.push('');
 	lines.push('## Repository write lock contention (S2)');
 	lines.push('');

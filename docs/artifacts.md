@@ -22,6 +22,7 @@ It contains:
 | `reports/<label>-<timestamp>.md` | Full settled role reports with identity, scope, manifest, and completion metadata. |
 | `predigest/review-surface.md` | Bounded working-tree status, diff stat, and diff hunk-header snapshot for a scoped delegation. |
 | `predigest/manifests/<delegationId>.json` | Persisted read manifest for the delegation's allowed paths and established artifacts. |
+| `predigest/refs/<delegationId>.json` | Per-turn knownRefs record: the `vr_` validation refs and published `rr_` read refs observed in that turn, capped per turn. |
 
 The flow directory is created when a flow-backed delegation needs it.
 Its manifest tracks participants and liveness.
@@ -92,10 +93,11 @@ See [Validation and evidence](evidence.md) for how those references are consumed
 
 ## Producer evidence publication
 
-A child that runs `verify` or `project_command` can share completed evidence with its flow siblings by adding `publish: { flowId }` with the flow id of its delegation.
+A child that runs `verify`, `project_command`, or `read_batch` can share completed evidence with its flow siblings by adding `publish: { flowId }` with the flow id of its delegation.
 The producers check that request against the flow id they resolve from the environment, so a delegation can only publish into its own flow.
 The extension exports `PI_ORCHESTRATION_FLOW` into delegation launch commands and sets it in the root session process itself, so the root and its children resolve the same flow id, and the installed producers read it: `@ztc/bash-tools` reads it directly, and `@ztc/codegraph-runner` reads `CODEGRAPH_RUNNER_FLOW` first and falls back to `PI_ORCHESTRATION_FLOW`.
 Each producer writes to its own store and issues its own reference shape: `rr_` for bash-tools read and validation evidence, `cg_` for codegraph-runner artifacts.
 Siblings resolve a producer reference with the producer's own lookup surface: the `verify` and `read_batch` lookup forms for bash-tools references, and `codegraph_artifact` for codegraph references.
 Resolving a `cg_` reference needs only the opaque ref plus its flow scope, so a sibling of the same flow resolves it without herdr involvement.
+Published `rr_` read refs, like `vr_` validation refs, are projected into the flow's `knownRefs` for later turns: a read ref carries `kind: "read"` and no verdict, and only refs whose minting call published to the flow are advertised, because a `read_batch` ref is session-scoped otherwise.
 This extension never enumerates or reads the producer stores; the refs recorded in reports, ledger fields, telemetry, and manifest `knownRefs` are the only transport.

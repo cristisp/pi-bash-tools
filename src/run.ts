@@ -392,6 +392,7 @@ function emitDelegationTelemetry(
 		flowId: delegation.flowId,
 		delegationId: delegation.delegationId,
 		refs: currentResult.metrics?.validationRefs ?? [],
+		readRefs: currentResult.metrics?.readRefs,
 	});
 	if (!currentResult.ledgerInjection) currentResult.ledgerInjection = 'none';
 	const normalized = normalizeS4Outcome(

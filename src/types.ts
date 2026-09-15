@@ -283,9 +283,17 @@ export interface ReadManifest {
 	knownRefs?: KnownManifestRef[];
 }
 
+/** Vocabulary of refs observed in a flow's predigest namespace. */
+export type ManifestRefKind = 'verify' | 'read';
+
+/** Producer lookup outcome classification carried by verify and read_batch lookup metadata. */
+export type LookupOutcome = 'success' | 'not-found' | 'unauthorized-flow' | 'corrupt';
+
 /** A flow ref the orchestrator observed a prior turn mint or resolve, with its verdict and freshness. */
 export interface KnownManifestRef {
 	ref: string;
+	/** Ref vocabulary; absent means verify, matching records written before read refs existed. */
+	kind?: ManifestRefKind;
 	verdict?: 'passed' | 'failed' | 'incomplete';
 	/** The observed run reused evidence for unchanged repository state instead of executing the gate. */
 	reused: boolean;
@@ -493,6 +501,10 @@ export interface ExecutionMetrics {
 	failedToolCalls: number;
 	repeatedReads: number;
 	manifestRereads?: number;
+	/** read_batch evidence refs minted or confirmed during this turn, newest first, capped. */
+	readRefs?: ReadReference[];
+	/** Codegraph results that carried a producer index-state block, with distinct index ids. */
+	codegraphIndex?: { results: number; indexIds: string[] };
 	messageCount: number;
 	taskChars: number;
 	outputChars: number;
@@ -530,6 +542,8 @@ export interface ValidationLookupFailure {
 	ref?: string;
 	errorClass: ValidationLookupFailureClass;
 	message?: string;
+	/** Structured producer lookup outcome classification, when the result carries it. */
+	lookupOutcome?: LookupOutcome;
 	/** Producer decision for the failed lookup, when emitted by the validation tool. */
 	decision?: string;
 	/** Producer cache decision for the failed lookup, when emitted by the validation tool. */
@@ -562,6 +576,25 @@ export interface ValidationExecution {
 	flowIdConflict?: boolean;
 }
 
+/** A read_batch evidence ref observed minted or confirmed during one turn. */
+export interface ReadReference {
+	ref: string;
+	/** The item resolved existing evidence instead of minting a new ref. */
+	reused: boolean;
+	/** Set when this entry came from a read_batch ref lookup rather than a read result. */
+	lookup?: boolean;
+	/** Freshness comparison made by the producer on lookup. */
+	repositoryStateStatus?: RepositoryStateStatus;
+	/** Normalized publication outcome when the read requested flow publication. */
+	publication?: 'published' | 'unauthorized' | 'unavailable' | 'failed';
+	/** Producer-provided publication failure reason, whitespace-flattened and bounded. */
+	publicationReason?: string;
+	/** Producer flow provenance; this is not inferred from producerScope. */
+	flowId?: string;
+	/** True when multiple distinct producer flow IDs made provenance ambiguous. */
+	flowIdConflict?: boolean;
+}
+
 export interface ValidationReference {
 	/** Opaque ref issued by the validation tool. */
 	ref: string;
@@ -580,6 +613,8 @@ export interface ValidationReference {
 	stateDigest?: string;
 	/** Freshness comparison made by the producer on lookup. */
 	repositoryStateStatus?: RepositoryStateStatus;
+	/** Structured producer lookup outcome classification, when the result carries it. */
+	lookupOutcome?: LookupOutcome;
 	/** True when the producer observed drift during an execution. */
 	stateDrift?: boolean;
 	/** Number of concurrent validation executions observed by the producer. */

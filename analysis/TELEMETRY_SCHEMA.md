@@ -32,9 +32,16 @@ The top-level `v` field is `1`.
 
 `metrics.validationRefs` records successful validation evidence references in call order.
 Each ref records whether it was a lookup or a minted/reused result, repository state, `repositoryStateStatus`, omitted phases, and producer execution fields such as `stateDrift`, `concurrentExecutions`, `mutating`, and `forced` when returned.
+When the producer returned a structured lookup classification it is recorded as `lookupOutcome` (`success`, `not-found`, `unauthorized-flow`, or `corrupt`); a ref-only verify call that reports reused evidence is recorded with the implicit outcome `success`.
 
-`metrics.lookupFailures` records failed `verify` lookups separately from successful zero-reuse flows.
-Each entry carries the attempted ref when available and an error class of `denied`, `timeout`, `not-found`, or `unknown`.
+`metrics.lookupFailures` records failed `verify` and `read_batch` ref lookups separately from successful zero-reuse flows.
+Each entry carries the attempted ref when available, an error class of `denied`, `timeout`, `not-found`, or `unknown`, and `lookupOutcome` when the producer supplied the structured classification.
+
+`metrics.readRefs` records `read_batch` evidence references minted or confirmed in the turn.
+Each entry carries the `rr_` ref, whether the entry reused unchanged evidence (`reused`), whether it came from a ref lookup (`lookup`), the minting publication outcome (`publication` of `published`, `unpublished`, or `failed`, with `publicationReason`), and the producer flow id when provenance is unambiguous.
+Read refs are session-scoped unless the minting call published them to the flow, so only `publication: "published"` refs are advertised to siblings in `knownRefs`.
+
+`metrics.codegraphIndex` records codegraph producer index states observed in the turn: the number of results that carried a `producerState` block and the distinct `indexId` values, capped at 24 results and 8 ids.
 
 `metrics.validationExecutions` records execution-level producer fields even when an execution did not return a reusable ref.
 
@@ -95,4 +102,5 @@ Analyzer guidance:
 - Treat `metrics.manifestRereads` as a warning signal for subsequent reads of manifest-protected paths and inspect the corresponding evidence gap before reusing the session.
 - Read `metrics.validationRefs` for the tool-issued validation refs a child minted or resolved. `lookup: true` means the child resolved existing evidence instead of running the gate, and a ref only resolves inside the flow that minted it. `head`, `stateDigest`, and `repositoryStateStatus` record the repository state the evidence was minted against and the producer's freshness comparison; refs inside one flow that carry different digests are evidence that crossed a repository state, and `verify:N ran:M unresolved:K` in the spend line counts attempts, executions, and unresolved lookups.
 - Read `metrics.lookupFailures` separately from `validationRefs`: a failed lookup is not a zero-reuse flow and never supplies a passing verdict.
+- Read `metrics.readRefs` and `metrics.codegraphIndex` for the `read_batch` and codegraph evidence a child touched. `readRefs` covers minted, reused, and lookup-confirmed `rr_` refs with their publication outcome; `codegraphIndex` reports how many results carried a producer index-state block and how many distinct indexes served them.
 - Use the analyzer's producer invocation stream when available to join one aggregate record per `verify` call with extension telemetry; do not infer producer invocations from extension records when the stream is absent.

@@ -9,12 +9,25 @@ import {
 } from './budget.ts';
 import type {
 	ExecutionMetrics,
+	LookupOutcome,
+	ReadReference,
 	SingleResult,
 	ValidationExecution,
 	ValidationLookupFailure,
 	ValidationLookupFailureClass,
 	ValidationReference,
 } from './types.ts';
+
+const MAX_READ_REFS = 24;
+const MAX_READ_REF_LENGTH = 200;
+const MAX_CODEGRAPH_INDEX_IDS = 8;
+const MAX_INDEX_ID_LENGTH = 64;
+const LOOKUP_OUTCOMES = new Set<LookupOutcome>([
+	'success',
+	'not-found',
+	'unauthorized-flow',
+	'corrupt',
+]);
 
 export function normalizedPath(value: string): string {
 	return value.replaceAll('\\', '/').replace(/\/$/, '');
@@ -38,7 +51,7 @@ export function measureExecutionMetrics(result: SingleResult, startedAt: number)
 	const validationCalls = new Map<
 		string,
 		{
-			tool: 'verify' | 'project_command';
+			tool: 'verify' | 'project_command' | 'read_batch';
 			lookup: boolean;
 			ref?: string;
 			commandId?: string;
@@ -48,6 +61,9 @@ export function measureExecutionMetrics(result: SingleResult, startedAt: number)
 	const validationRefs: ValidationReference[] = [];
 	const lookupFailures: ValidationLookupFailure[] = [];
 	const validationExecutions: ValidationExecution[] = [];
+	const readRefs: ReadReference[] = [];
+	const codegraphIndexIds: string[] = [];
+	let codegraphIndexResults = 0;
 	for (const message of result.messages) {
 		if (message.role === 'assistant') {
 			turns++;
@@ -85,6 +101,13 @@ export function measureExecutionMetrics(result: SingleResult, startedAt: number)
 							: {}),
 					});
 				}
+				if (part.name === 'read_batch') {
+					validationCalls.set(part.id, {
+						tool: 'read_batch',
+						lookup: typeof part.arguments?.ref === 'string',
+						...(typeof part.arguments?.ref === 'string' ? { ref: part.arguments.ref } : {}),
+					});
+				}
 				if (part.name === 'read') {
 					const readPath = readPathOf(part.arguments);
 					if (readPath) {
@@ -115,7 +138,26 @@ export function measureExecutionMetrics(result: SingleResult, startedAt: number)
 				if (message.isError && call.lookup)
 					lookupFailures.push(verifyLookupFailureOf(message, call.ref));
 			}
-			if (call && !call.lookup) {
+			if (call?.tool === 'read_batch' && message.isError && call.lookup) {
+				lookupFailures.push(verifyLookupFailureOf(message, call.ref));
+			}
+			if (call?.tool === 'read_batch' && !message.isError) {
+				const observed = readRefsOf(message);
+				for (const entry of observed) {
+					if (readRefs.length >= MAX_READ_REFS) break;
+					readRefs.push(entry);
+				}
+			}
+			const indexId = codegraphIndexIdOf(message);
+			if (indexId !== undefined) {
+				codegraphIndexResults++;
+				if (
+					!codegraphIndexIds.includes(indexId) &&
+					codegraphIndexIds.length < MAX_CODEGRAPH_INDEX_IDS
+				)
+					codegraphIndexIds.push(indexId);
+			}
+			if (call && (call.tool === 'verify' || call.tool === 'project_command') && !call.lookup) {
 				validationExecutions.push(validationExecutionOf(message, call));
 			}
 		}
@@ -143,6 +185,10 @@ export function measureExecutionMetrics(result: SingleResult, startedAt: number)
 		...(validationRefs.length > 0 ? { validationRefs } : {}),
 		...(lookupFailures.length > 0 ? { lookupFailures } : {}),
 		...(validationExecutions.length > 0 ? { validationExecutions } : {}),
+		...(readRefs.length > 0 ? { readRefs } : {}),
+		...(codegraphIndexResults > 0
+			? { codegraphIndex: { results: codegraphIndexResults, indexIds: codegraphIndexIds } }
+			: {}),
 	};
 }
 
@@ -282,7 +328,7 @@ const MAX_PUBLICATION_REASON = 200;
  * the reason. Unrecognized shapes are treated as absent.
  */
 function publicationFieldsOf(object: Record<string, unknown>): PublicationFields {
-	const block = jsonPayloadOf(object.publication);
+	const block = jsonPayloadOf(object.publication) ?? jsonPayloadOf(object.publish);
 	if (!block) return {};
 	if (typeof block.state === 'string' && PUBLICATION_STATES.has(block.state)) {
 		const reason = boundedPublicationReason(block.reason);
@@ -308,6 +354,95 @@ function boundedPublicationReason(value: unknown): string | undefined {
 		: flat;
 }
 
+/** Clamps an untrusted lookup-outcome string to the bounded enum. */
+function lookupOutcomeOf(payload: Record<string, unknown>): LookupOutcome | undefined {
+	const block = jsonPayloadOf(payload.lookup);
+	if (!block) return undefined;
+	const value = stringValue(block, 'outcome');
+	if (value === undefined) return undefined;
+	const normalized = value.toLowerCase();
+	return LOOKUP_OUTCOMES.has(normalized as LookupOutcome)
+		? (normalized as LookupOutcome)
+		: undefined;
+}
+
+/** Reads a bounded producer lookup-outcome from any payload candidate of one tool result. */
+function lookupOutcomeOfMessage(message: Message): LookupOutcome | undefined {
+	for (const payload of payloadCandidates(message)) {
+		const outcome = lookupOutcomeOf(payload);
+		if (outcome !== undefined) return outcome;
+	}
+	return undefined;
+}
+
+/**
+ * Extracts read_batch evidence refs from one tool result: minted refs from the per-item `results`
+ * array, or one confirmed ref from a successful ref lookup. Provenance flags travel with the entry
+ * so the manifest projection can drop refs that cannot resolve inside this flow.
+ */
+function readRefsOf(message: Message): ReadReference[] {
+	const producer = producerFieldsOfMessage(message);
+	for (const payload of payloadCandidates(message)) {
+		if (Array.isArray(payload.results)) {
+			const publication = publicationFieldsOf(payload);
+			const refs: ReadReference[] = [];
+			for (const item of payload.results) {
+				const entry = jsonPayloadOf(item);
+				if (!entry) continue;
+				const ref = typeof entry.ref === 'string' ? entry.ref.trim() : '';
+				if (!ref || ref.length > MAX_READ_REF_LENGTH) continue;
+				refs.push({
+					ref,
+					reused: entry.unchanged === true,
+					...(publication.publication === undefined
+						? {}
+						: { publication: publication.publication }),
+					...(publication.publicationReason === undefined
+						? {}
+						: { publicationReason: publication.publicationReason }),
+					...(producer.flowIdConflict ? { flowIdConflict: true } : {}),
+					...(producer.flowIdConflict || producer.flowId === undefined
+						? {}
+						: { flowId: producer.flowId }),
+				});
+			}
+			if (refs.length > 0) return refs;
+		}
+		const lookup = jsonPayloadOf(payload.lookup);
+		if (lookup && typeof lookup.ref === 'string') {
+			const ref = lookup.ref.trim();
+			if (!ref || ref.length > MAX_READ_REF_LENGTH) continue;
+			const status = stringValue(lookup, 'repositoryStateStatus');
+			return [
+				{
+					ref,
+					reused: true,
+					lookup: true,
+					...(status === 'matches' || status === 'mismatch' || status === 'unreadable'
+						? { repositoryStateStatus: status }
+						: {}),
+					...(producer.flowIdConflict ? { flowIdConflict: true } : {}),
+					...(producer.flowIdConflict || producer.flowId === undefined
+						? {}
+						: { flowId: producer.flowId }),
+				},
+			];
+		}
+	}
+	return [];
+}
+
+/** Reads the codegraph producer index id from a result's `producerState` block. */
+function codegraphIndexIdOf(message: Message): string | undefined {
+	for (const payload of payloadCandidates(message)) {
+		const state = jsonPayloadOf(payload.producerState);
+		if (!state) continue;
+		const id = stringValue(state, 'indexId', 'index_id');
+		if (id && id.length <= MAX_INDEX_ID_LENGTH) return id;
+	}
+	return undefined;
+}
+
 /**
  * Reads producer metadata from both the direct result and nested diagnostic objects. Flow identity is
  * deliberately narrower than the decision fields: only a direct flowId or flowId under provenance or
@@ -331,7 +466,7 @@ function producerFieldsOf(payload: Record<string, unknown>): ProducerFields {
 		publication ??= candidatePublication.publication;
 		publicationReason ??= candidatePublication.publicationReason;
 		const parent = path[path.length - 1];
-		if (parent === 'provenance' || parent === 'publication') {
+		if (parent === 'provenance' || parent === 'publication' || parent === 'publish') {
 			const nestedFlowId = stringValue(object, 'flowId', 'flow_id');
 			if (nestedFlowId !== undefined) flowIds.add(nestedFlowId);
 		}
@@ -451,13 +586,20 @@ export function verifyReferenceOf(
 		const rawVerdict =
 			typeof payload.verdict === 'string' ? payload.verdict.toLowerCase() : undefined;
 		const verdict = omitted.length > 0 && rawVerdict === 'passed' ? 'incomplete' : rawVerdict;
+		const resolvesByLookup = lookup ?? payload.reused === true;
+		const lookupOutcome =
+			lookupOutcomeOf(payload) ??
+			// Verify lookup results do not carry the structured block; a ref-only call that reports
+			// reused evidence is by definition a successful lookup.
+			(resolvesByLookup && payload.reused === true ? ('success' as const) : undefined);
 		return {
 			ref: payload.ref,
 			...(verdict === 'passed' || verdict === 'failed' || verdict === 'incomplete'
 				? { verdict }
 				: {}),
 			reused: payload.reused === true,
-			lookup: lookup ?? payload.reused === true,
+			lookup: resolvesByLookup,
+			...(lookupOutcome === undefined ? {} : { lookupOutcome }),
 			...validationFieldsOf(payload, producer.flowIdConflict === true),
 			...(forcedHint !== undefined && payload.forced === undefined ? { forced: forcedHint } : {}),
 		};
@@ -519,10 +661,12 @@ function errorMessageOf(message: Message): string | undefined {
 
 export function verifyLookupFailureOf(message: Message, ref?: string): ValidationLookupFailure {
 	const producer = producerFieldsOfMessage(message);
+	const lookupOutcome = lookupOutcomeOfMessage(message);
 	return {
 		...(ref ? { ref } : {}),
 		errorClass: errorClassOf(message),
 		...(errorMessageOf(message) ? { message: errorMessageOf(message) } : {}),
+		...(lookupOutcome === undefined ? {} : { lookupOutcome }),
 		...(producer.decision === undefined ? {} : { decision: producer.decision }),
 		...(producer.cacheDecision === undefined ? {} : { cacheDecision: producer.cacheDecision }),
 		...(producer.flowId === undefined ? {} : { flowId: producer.flowId }),
@@ -532,13 +676,18 @@ export function verifyLookupFailureOf(message: Message, ref?: string): Validatio
 
 function validationExecutionOf(
 	message: Message,
-	call: { tool: 'verify' | 'project_command'; ref?: string; commandId?: string; forced?: boolean },
+	call: {
+		tool: 'verify' | 'project_command' | 'read_batch';
+		ref?: string;
+		commandId?: string;
+		forced?: boolean;
+	},
 ): ValidationExecution {
 	const payload = payloadCandidates(message)[0];
 	const fields = payload ? validationFieldsOf(payload) : {};
 	const producer = producerFieldsOfMessage(message);
 	return {
-		tool: call.tool,
+		tool: call.tool as 'verify' | 'project_command',
 		...(call.ref ? { ref: call.ref } : {}),
 		...(call.commandId ? { commandId: call.commandId } : {}),
 		...(fields.stateDrift === undefined ? {} : { stateDrift: fields.stateDrift }),

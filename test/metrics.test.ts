@@ -74,6 +74,7 @@ describe('measureExecutionMetrics', () => {
 				verdict: 'passed',
 				reused: true,
 				lookup: true,
+				lookupOutcome: 'success',
 				head: 'deadbeefcafe',
 				stateDigest: 'ab12cd34ef56',
 			},
@@ -577,5 +578,182 @@ describe('measureExecutionMetrics', () => {
 			Date.now() - 10,
 		);
 		expect(metrics.manifestRereads).toBe(1);
+	});
+
+	describe('read_batch evidence refs', () => {
+		it('captures minted refs with publication provenance and unchanged flags', () => {
+			const messages = [
+				assistantMsg('batching reads', {
+					toolCalls: [{ id: 'rb1', name: 'read_batch', args: { paths: [] } }],
+				}),
+				{
+					...toolResultMsg('rb1', 'ok', 'read_batch'),
+					details: {
+						results: [
+							{ path: 'src/a.ts', unchanged: false, ref: 'rr_fresh', contentHash: 'aa11' },
+							{ path: 'src/b.ts', unchanged: true, ref: 'rr_repeat', contentHash: 'bb22' },
+							{ path: 'src/c.ts', error: { code: 'outside-repository' } },
+						],
+						publish: { scope: 'flow', flowId: 'flow-reads', published: true },
+					},
+				},
+			];
+			const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+			expect(metrics.readRefs).toEqual([
+				{ ref: 'rr_fresh', reused: false, publication: 'published', flowId: 'flow-reads' },
+				{ ref: 'rr_repeat', reused: true, publication: 'published', flowId: 'flow-reads' },
+			]);
+		});
+
+		it('records failed publication provenance on read refs', () => {
+			const messages = [
+				assistantMsg('batching reads', {
+					toolCalls: [{ id: 'rb1', name: 'read_batch', args: { paths: [] } }],
+				}),
+				{
+					...toolResultMsg('rb1', 'ok', 'read_batch'),
+					details: {
+						results: [{ path: 'src/a.ts', unchanged: false, ref: 'rr_unpublished' }],
+						publish: { scope: 'flow', flowId: 'flow-reads', published: false, error: 'denied' },
+					},
+				},
+			];
+			const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+			expect(metrics.readRefs).toEqual([
+				{
+					ref: 'rr_unpublished',
+					reused: false,
+					publication: 'failed',
+					publicationReason: 'denied',
+					flowId: 'flow-reads',
+				},
+			]);
+		});
+
+		it('captures a confirmed ref from a successful read_batch lookup', () => {
+			const messages = [
+				assistantMsg('confirming a known ref', {
+					toolCalls: [{ id: 'rb2', name: 'read_batch', args: { ref: 'rr_known' } }],
+				}),
+				{
+					...toolResultMsg('rb2', 'ok', 'read_batch'),
+					details: {
+						results: [],
+						lookup: {
+							ref: 'rr_known',
+							executed: false,
+							repositoryStateStatus: 'matches',
+							entries: [{ path: 'src/a.ts', status: 'unchanged' }],
+						},
+					},
+				},
+			];
+			const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+			expect(metrics.readRefs).toEqual([
+				{ ref: 'rr_known', reused: true, lookup: true, repositoryStateStatus: 'matches' },
+			]);
+			expect(metrics.codegraphIndex).toBeUndefined();
+		});
+
+		it('records failed read_batch lookups as lookup failures', () => {
+			const messages = [
+				assistantMsg('confirming a missing ref', {
+					toolCalls: [{ id: 'rb3', name: 'read_batch', args: { ref: 'rr_missing' } }],
+				}),
+				{
+					...toolResultMsg(
+						'rb3',
+						'read ref rr_missing not found in the effective flow scope flow-reads',
+						'read_batch',
+					),
+					isError: true,
+				},
+			];
+			const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+			expect(metrics.lookupFailures).toEqual([
+				{ ref: 'rr_missing', errorClass: 'not-found', message: expect.any(String) },
+			]);
+			expect(metrics.readRefs).toBeUndefined();
+		});
+
+		it('caps captured read refs per turn', () => {
+			const items = Array.from({ length: 30 }, (_, index) => ({
+				path: `src/f${index}.ts`,
+				unchanged: false,
+				ref: `rr_${index}`,
+			}));
+			const messages = [
+				assistantMsg('batching reads', {
+					toolCalls: [{ id: 'rb4', name: 'read_batch', args: { paths: [] } }],
+				}),
+				{ ...toolResultMsg('rb4', 'ok', 'read_batch'), details: { results: items } },
+			];
+			const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+			expect(metrics.readRefs).toHaveLength(24);
+			expect(metrics.readRefs?.[0]).toMatchObject({ ref: 'rr_0' });
+		});
+	});
+
+	it('marks verify lookup refs with the structured or implicit lookup outcome', () => {
+		const messages = [
+			assistantMsg('resolving', {
+				toolCalls: [
+					{ id: 'v1', name: 'verify', args: { ref: 'vr_hit' } },
+					{ id: 'v2', name: 'verify', args: { ref: 'vr_hit2' } },
+				],
+			}),
+			toolResultMsg(
+				'v1',
+				JSON.stringify({
+					ref: 'vr_hit',
+					verdict: 'passed',
+					reused: true,
+					lookup: { attempted: true, success: true, outcome: 'success' },
+				}),
+				'verify',
+			),
+			toolResultMsg(
+				'v2',
+				JSON.stringify({ ref: 'vr_hit2', verdict: 'passed', reused: true }),
+				'verify',
+			),
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+		expect(metrics.validationRefs?.[0]).toMatchObject({
+			ref: 'vr_hit',
+			lookup: true,
+			lookupOutcome: 'success',
+		});
+		expect(metrics.validationRefs?.[1]).toMatchObject({ ref: 'vr_hit2', lookupOutcome: 'success' });
+	});
+
+	it('captures codegraph producer index states with distinct ids', () => {
+		const messages = [
+			assistantMsg('exploring', {
+				toolCalls: [{ id: 'cg1', name: 'codegraph_explore', args: { query: 'q' } }],
+			}),
+			{
+				...toolResultMsg('cg1', 'ok', 'codegraph_explore'),
+				details: { producerState: { indexId: 'idx-1' } },
+			},
+			{
+				...toolResultMsg('cg1', 'ok', 'codegraph_explore'),
+				details: { producerState: { indexId: 'idx-1' } },
+			},
+			{
+				...toolResultMsg('cg1', 'ok', 'codegraph_explore'),
+				details: { producerState: { indexId: 'idx-2' } },
+			},
+			{ ...toolResultMsg('cg1', 'ok', 'codegraph_explore'), details: {} },
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+		expect(metrics.codegraphIndex).toEqual({ results: 3, indexIds: ['idx-1', 'idx-2'] });
 	});
 });

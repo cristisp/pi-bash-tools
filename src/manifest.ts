@@ -9,6 +9,7 @@ import type {
 	DelegationContext,
 	KnownManifestRef,
 	ReadManifest,
+	ReadReference,
 	RepositoryStateStatus,
 	ValidationReference,
 } from './types.ts';
@@ -20,6 +21,7 @@ const MAX_REF_LENGTH = 200;
 const REFS_SUBDIR = 'refs';
 const VERDICTS = new Set(['passed', 'failed', 'incomplete']);
 const STATE_STATUSES = new Set(['matches', 'mismatch', 'unreadable']);
+const REF_KINDS = new Set(['verify', 'read']);
 
 function reportPaths(flowId: string | undefined): string[] {
 	if (!flowId) return [];
@@ -80,6 +82,19 @@ function knownRefOf(reference: ValidationReference, flowId: string): KnownManife
 }
 
 /**
+ * Projects an observed read_batch reference into the manifest vocabulary. Read refs carry no
+ * verdict, so only refs whose minting call published into this flow are advertised; anything else
+ * cannot resolve from a sibling lookup and would only waste a confirm attempt.
+ */
+function knownReadRefOf(reference: ReadReference): KnownManifestRef | undefined {
+	if (reference.flowIdConflict) return undefined;
+	if (reference.publication !== 'published') return undefined;
+	const ref = reference.ref.trim();
+	if (!ref || ref.length > MAX_REF_LENGTH) return undefined;
+	return { ref, kind: 'read', reused: reference.reused };
+}
+
+/**
  * Persists the validation refs one completed turn minted or resolved into the flow's predigest
  * namespace, so later read manifests can carry them as structured resolution hints. Best-effort:
  * an unwritable flow store must never fail a delegation.
@@ -88,11 +103,14 @@ export function recordKnownRefs(input: {
 	flowId: string | undefined;
 	delegationId: string;
 	refs: ValidationReference[];
+	readRefs?: ReadReference[];
 	at?: number;
 }): void {
-	if (!input.flowId || input.refs.length === 0) return;
-	const refs = input.refs
-		.map((reference) => knownRefOf(reference, input.flowId!))
+	if (!input.flowId) return;
+	const refs = [
+		...input.refs.map((reference) => knownRefOf(reference, input.flowId!)),
+		...(input.readRefs?.map((reference) => knownReadRefOf(reference)) ?? []),
+	]
 		.filter((entry) => entry !== undefined)
 		.slice(0, MAX_KNOWN_REFS);
 	if (refs.length === 0) return;
@@ -115,6 +133,11 @@ function parsedKnownRef(value: unknown): KnownManifestRef | undefined {
 	const entry = value as Record<string, unknown>;
 	const ref = typeof entry.ref === 'string' ? entry.ref.trim() : '';
 	if (!ref || ref.length > MAX_REF_LENGTH || typeof entry.reused !== 'boolean') return undefined;
+	let kind: KnownManifestRef['kind'];
+	if (entry.kind !== undefined) {
+		if (!(typeof entry.kind === 'string' && REF_KINDS.has(entry.kind))) return undefined;
+		kind = entry.kind === 'read' ? 'read' : undefined;
+	}
 	if (
 		entry.verdict !== undefined &&
 		!(typeof entry.verdict === 'string' && VERDICTS.has(entry.verdict))
@@ -131,6 +154,8 @@ function parsedKnownRef(value: unknown): KnownManifestRef | undefined {
 	for (const field of ['head', 'stateDigest'] as const) {
 		if (entry[field] !== undefined && typeof entry[field] !== 'string') return undefined;
 	}
+	// Read refs carry no verdict or state identity: the confirm lookup is the source of truth.
+	if (kind === 'read') return { ref, kind, reused: entry.reused as boolean };
 	return {
 		ref,
 		...(typeof entry.verdict === 'string'
@@ -253,6 +278,7 @@ export function manifestGuidance(manifestPath: string): string {
 		'## Read manifest',
 		`Read the bounded manifest before reacquiring repository context: ${manifestPath}`,
 		'Use its artifact and prior-report references, and avoid reads listed under doNotReread unless required by a documented evidence gap.',
-		'Refs under knownRefs are resolution hints from prior turns: confirm each with a verify lookup instead of rereading prior reports for evidence, and treat a failed, stale, or not-found lookup as NOT_RUN.',
+		'Refs under knownRefs are resolution hints from prior turns: confirm each by looking it up with its minting tool instead of rereading prior reports for evidence, and treat a failed, stale, or not-found lookup as NOT_RUN.',
+		'Verify refs (vr_) resolve through a verify ref lookup; read refs (rr_) resolve through a read_batch ref lookup.',
 	].join('\n');
 }

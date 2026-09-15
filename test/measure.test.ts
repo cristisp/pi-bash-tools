@@ -424,6 +424,43 @@ describe('measure', () => {
 		});
 	});
 
+	it('counts read refs, lookup outcomes, and codegraph index states', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'orchestration-measure-'));
+		mkdirSync(join(dir, 'sessions', '--cwd--'), { recursive: true });
+		writeFileSync(
+			join(dir, 'subagent-herdr.telemetry.jsonl'),
+			[
+				telemetryRecord({
+					flowId: 'f-reads',
+					role: 'worker',
+					metrics: {
+						durationMs: 1,
+						toolCalls: 1,
+						validationRefs: [{ ref: 'vr_a', reused: true, lookup: true, lookupOutcome: 'success' }],
+						lookupFailures: [{ ref: 'vr_b', errorClass: 'not-found', lookupOutcome: 'not-found' }],
+						readRefs: [
+							{ ref: 'rr_mint', reused: false, publication: 'published' },
+							{ ref: 'rr_reuse', reused: true, publication: 'published' },
+							{ ref: 'rr_lookup', reused: true, lookup: true },
+						],
+						codegraphIndex: { results: 2, indexIds: ['idx-1', 'idx-2'] },
+					},
+				}),
+			].join('\n'),
+		);
+
+		const m = measure(dir);
+		expect(m.validation.overall).toMatchObject({
+			readRefsMinted: 1,
+			readRefsReused: 1,
+			readRefsResolvedByLookup: 1,
+			lookupOutcomes: { success: 1, 'not-found': 1 },
+			codegraphIndexResults: 2,
+			codegraphIndexIds: 2,
+		});
+		expect(renderMarkdown(m)).toContain('| overall | 1 | 1 | 1 | not-found:1,success:1 | 2 | 2 |');
+	});
+
 	it('counts a ref resolved by lookup as a resolution, never as an execution', () => {
 		const reviewer = measure(validationFixture()).validation.byRole.find(
 			(r) => r.scope === 'reviewer',
@@ -565,6 +602,43 @@ describe('producer validation invocations', () => {
 			{ ref: 'vr_1', executed: true },
 			{ ref: 'vr_1', executed: false },
 		]);
+	});
+
+	it('carries a structured lookup outcome from the producer record', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'orchestration-producer-'));
+		const file = join(dir, 'invocations.jsonl');
+		writeFileSync(
+			file,
+			[
+				JSON.stringify({
+					toolName: 'verify',
+					flowId: 'f1',
+					ref: 'vr_1',
+					executed: false,
+					lookup: { attempted: true, outcome: 'not-found' },
+				}),
+				JSON.stringify({
+					toolName: 'verify',
+					flowId: 'f1',
+					ref: 'vr_2',
+					executed: false,
+					lookup: { attempted: true, outcome: 'unauthorized-flow' },
+				}),
+				JSON.stringify({
+					toolName: 'verify',
+					flowId: 'f1',
+					ref: 'vr_3',
+					executed: false,
+					lookup: { attempted: true, outcome: 'gibberish' },
+				}),
+			].join('\n'),
+		);
+		expect(readProducerInvocations(dir, file)).toMatchObject([
+			{ ref: 'vr_1', lookupOutcome: 'not-found' },
+			{ ref: 'vr_2', lookupOutcome: 'unauthorized-flow' },
+			{},
+		]);
+		expect(readProducerInvocations(dir, file)[2]).not.toHaveProperty('lookupOutcome');
 	});
 
 	it('deduplicates repeated producer stream records by stable call identity', () => {
