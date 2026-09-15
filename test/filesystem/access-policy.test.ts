@@ -1068,3 +1068,62 @@ it("scopes unchanged-retry tracking per session and bounds it", async () => {
   expect((await editCall("b2", secondPath))?.reason).toContain('"code":"edit-no-match"');
   expect((await editCall("b3", firstPath))?.reason).toContain('"code":"edit-no-match"');
 });
+
+it("carries orchestration attribution on interceptor authorization records", async () => {
+  const directory = await fixtures.createDirectory();
+  const outside = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const records: AuthorizationOutcomeRecord[] = [];
+  const intercept = createFilesystemAccessPolicyInterceptor(policy, (record) =>
+    records.push(record),
+  );
+  const sessionContext: FilesystemAccessPolicyContext = {
+    ...context(directory),
+    sessionManager: { getSessionId: () => "observability-session" },
+  };
+  vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
+  vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
+  vi.stubEnv("PI_ORCHESTRATION_ROLE", "reviewer");
+  vi.stubEnv("PI_DELEGATION_ID", "delegation-1");
+  try {
+    const result = await intercept(event("grep", outside), sessionContext);
+
+    expect(result?.block).toBe(true);
+    expect(records.length).toBeGreaterThan(0);
+    expect(records[0]).toMatchObject({
+      surface: "filesystem",
+      commandId: "grep",
+      role: "reviewer",
+      delegationId: "delegation-1",
+    });
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
+it("omits orchestration attribution from interceptor records without orchestration", async () => {
+  const directory = await fixtures.createDirectory();
+  const outside = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const policy = createPolicyStoreForTesting({ configPath });
+  const records: AuthorizationOutcomeRecord[] = [];
+  const intercept = createFilesystemAccessPolicyInterceptor(policy, (record) =>
+    records.push(record),
+  );
+  const sessionContext: FilesystemAccessPolicyContext = {
+    ...context(directory),
+    sessionManager: { getSessionId: () => "observability-session" },
+  };
+
+  const result = await intercept(event("grep", outside), sessionContext);
+
+  expect(result?.block).toBe(true);
+  expect(records.length).toBeGreaterThan(0);
+  for (const record of records) {
+    expect(Object.hasOwn(record, "role")).toBe(false);
+    expect(Object.hasOwn(record, "delegationId")).toBe(false);
+  }
+});

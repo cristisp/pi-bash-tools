@@ -362,6 +362,7 @@ export function createFilesystemAccessPolicyInterceptor(
   return (event, ctx) => {
     const tool = filesystemToolCall(event);
     const sessionIdValue = ctx.sessionManager?.getSessionId();
+    const orchestration = readProjectCommandOrchestrationContext();
     const observe = createAuthorizationOutcomeObserver({
       surface: "filesystem",
       commandId: tool?.name,
@@ -372,7 +373,8 @@ export function createFilesystemAccessPolicyInterceptor(
           : undefined,
       toolCallId: event.toolCallId,
       mode: ctx.mode,
-      flowId: effectiveOrchestrationFlowId(readProjectCommandOrchestrationContext()),
+      flowId: effectiveOrchestrationFlowId(orchestration),
+      attribution: orchestration,
     });
     return interceptFilesystemToolCall(event, ctx, policy, observe, authorizationRetryTracker);
   };

@@ -212,7 +212,7 @@ An authorization record may also carry additive optional attribution fields: `mo
 
 `flowId` is emitted only when the caller's own orchestration context resolves to the flow evidence scope, never from a request field, and it carries no policy or path data.
 
-`role` and `delegationId` are additive attribution fields carried from the caller's orchestration context when it reports an orchestrated child session with those identifiers; they are currently emitted by the `project-command` and `verify` surfaces, are bounded and omitted like the other identifier fields, and no behavior gates on them.
+`role` and `delegationId` are additive attribution fields carried from the caller's orchestration context when it reports an orchestrated child session with those identifiers; every authorization surface emits them when its caller passes that context, they are bounded and omitted like the other identifier fields, and no behavior gates on them.
 
 `decisionSource` is the configured policy authorization (`deny-global`, `deny-project`, `allow-global`, or `allow-project`) for an outcome that came from an existing decision, or `prompt` when the outcome followed a confirmation prompt; the `prompt` value also applies to a deferred prompted approval when it is committed after the prompt.
 

@@ -1327,6 +1327,7 @@ function createReadBatchToolWithDependencies(
         toolCallId,
         mode: ctx.mode,
         flowId: effectiveOrchestrationFlowId(orchestration),
+        attribution: orchestration,
       });
       let workspaceBlock: SharedEvidenceWorkspaceBlock | undefined;
       let recorded = false;

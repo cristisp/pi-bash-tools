@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { afterEach, expect, it, vi } from "vitest";
 
+import type { AuthorizationOutcomeRecord } from "../../src/observability/authorization-outcome.ts";
 import {
   createDeleteToolForTesting,
   createMoveToolForTesting,
@@ -466,4 +467,65 @@ it("rejects symlink mutation targets", async () => {
     tool.execute("1", { path: link }, undefined, undefined, context(directory)),
   ).rejects.toThrow(/regular file/iu);
   await expect(readFile(target, "utf8")).resolves.toBe("content");
+});
+
+it("carries orchestration attribution on mutation authorization records", async () => {
+  const directory = await fixtures.createDirectory();
+  const outside = await fixtures.createDirectory();
+  const source = join(outside, "source.txt");
+  const destination = join(outside, "destination.txt");
+  await writeFile(source, "content");
+  const records: AuthorizationOutcomeRecord[] = [];
+  const tool = createMoveToolForTesting({
+    configPath: await configPath(directory),
+    authorizationOutcomeRecorder: (record) => records.push(record),
+  });
+  vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
+  vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
+  vi.stubEnv("PI_ORCHESTRATION_ROLE", "reviewer");
+  vi.stubEnv("PI_DELEGATION_ID", "delegation-1");
+  try {
+    await expect(
+      tool.execute("1", { source, destination }, undefined, undefined, {
+        ...context(directory),
+        sessionManager: { getSessionId: () => "observability-session" },
+      }),
+    ).rejects.toThrow(/requires approval that is unavailable/iu);
+
+    expect(records.length).toBeGreaterThan(0);
+    expect(records[0]).toMatchObject({
+      surface: "filesystem",
+      commandId: "move",
+      role: "reviewer",
+      delegationId: "delegation-1",
+    });
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
+it("omits orchestration attribution from mutation authorization records without orchestration", async () => {
+  const directory = await fixtures.createDirectory();
+  const outside = await fixtures.createDirectory();
+  const source = join(outside, "source.txt");
+  const destination = join(outside, "destination.txt");
+  await writeFile(source, "content");
+  const records: AuthorizationOutcomeRecord[] = [];
+  const tool = createMoveToolForTesting({
+    configPath: await configPath(directory),
+    authorizationOutcomeRecorder: (record) => records.push(record),
+  });
+
+  await expect(
+    tool.execute("1", { source, destination }, undefined, undefined, {
+      ...context(directory),
+      sessionManager: { getSessionId: () => "observability-session" },
+    }),
+  ).rejects.toThrow(/requires approval that is unavailable/iu);
+
+  expect(records.length).toBeGreaterThan(0);
+  for (const record of records) {
+    expect(Object.hasOwn(record, "role")).toBe(false);
+    expect(Object.hasOwn(record, "delegationId")).toBe(false);
+  }
 });

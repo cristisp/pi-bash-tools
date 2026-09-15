@@ -133,3 +133,42 @@ it("rejects an unchanged retry after a persisted denial without re-prompting", a
   const saved = JSON.parse(await readFile(fixture.configPath, "utf8"));
   expect(saved.projects[await realpath(fixture.directory)].deny).toEqual(["RETRY_KEY"]);
 });
+
+it("carries orchestration attribution on environment authorization records", async () => {
+  const fixture = await fixtures.createPolicyFixture({ deny: ["DENIED_KEY"] });
+  const records: AuthorizationOutcomeRecord[] = [];
+  const tool = createEnvironmentToolForTesting({
+    configPath: fixture.configPath,
+    environment: { DENIED_KEY: "secret" },
+    authorizationOutcomeRecorder: (record) => records.push(record),
+  });
+  vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
+  vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
+  vi.stubEnv("PI_ORCHESTRATION_ROLE", "reviewer");
+  vi.stubEnv("PI_DELEGATION_ID", "delegation-1");
+  try {
+    await expect(
+      tool.execute(
+        "call-1",
+        { keys: ["DENIED_KEY"] },
+        undefined,
+        undefined,
+        contextWithSession(fixture.directory),
+      ),
+    ).rejects.toThrow(/denied by policy/iu);
+
+    expect(records[0]).toMatchObject({
+      authorizationFormatVersion: 1,
+      surface: "environment",
+      commandId: "environment",
+      sessionId: "observability-session",
+      toolCallId: "call-1",
+      outcome: "denied",
+      decisionSource: "deny-global",
+      role: "reviewer",
+      delegationId: "delegation-1",
+    });
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});

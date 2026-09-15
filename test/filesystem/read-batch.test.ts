@@ -900,6 +900,8 @@ describe("read batch authorization attribution", () => {
     });
     vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
     vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
+    vi.stubEnv("PI_ORCHESTRATION_ROLE", "reviewer");
+    vi.stubEnv("PI_DELEGATION_ID", "delegation-1");
     try {
       await tool.execute(
         "call-1",
@@ -916,6 +918,8 @@ describe("read batch authorization attribution", () => {
         outcome: "authorized",
         mode: "print",
         flowId: "flow-a",
+        role: "reviewer",
+        delegationId: "delegation-1",
         decisionSource: "allow-project",
       });
     } finally {

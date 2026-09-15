@@ -275,6 +275,7 @@ function mutationObserver(
   toolCallId: string,
   recorder: AuthorizationOutcomeRecorder | undefined,
 ): AuthorizationOutcomeObserver | undefined {
+  const orchestration = readProjectCommandOrchestrationContext();
   return createAuthorizationOutcomeObserver({
     surface: "filesystem",
     commandId: operation,
@@ -282,7 +283,8 @@ function mutationObserver(
     sessionId: sessionId(ctx),
     toolCallId,
     mode: ctx.mode,
-    flowId: effectiveOrchestrationFlowId(readProjectCommandOrchestrationContext()),
+    flowId: effectiveOrchestrationFlowId(orchestration),
+    attribution: orchestration,
   });
 }
 

@@ -142,6 +142,7 @@ function createEnvironmentToolWithDependencies(
     ) {
       const keys = validateEnvironmentKeys(params);
       const requestSignal = signal ?? ctx.signal;
+      const orchestration = readProjectCommandOrchestrationContext();
       const observe = createAuthorizationOutcomeObserver({
         surface: "environment",
         commandId: "environment",
@@ -149,7 +150,8 @@ function createEnvironmentToolWithDependencies(
         sessionId: environmentSessionId(ctx),
         toolCallId,
         mode: ctx.mode,
-        flowId: effectiveOrchestrationFlowId(readProjectCommandOrchestrationContext()),
+        flowId: effectiveOrchestrationFlowId(orchestration),
+        attribution: orchestration,
       });
       let loadedPolicy: LoadedPolicy;
       try {
