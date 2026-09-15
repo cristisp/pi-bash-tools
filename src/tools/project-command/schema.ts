@@ -1,4 +1,4 @@
-import { Type, type Static, type TObject } from "typebox";
+import { Type, type Static, type TObject, type TSchema } from "typebox";
 
 import { booleanInputSchema, type BooleanInput } from "../boolean.ts";
 import {
@@ -31,45 +31,23 @@ export type ProjectCommandEvidenceLookup = {
   readonly ref: string;
   readonly flowId?: string;
   readonly covers?: readonly string[];
+  readonly coercions?: readonly string[];
 };
 
 type EvidenceExecutionOptions = {
-  readonly publish?: { readonly flowId: string };
-  readonly covers?: readonly string[];
+  readonly publish?: { readonly flowId: string } | null;
+  readonly covers?: readonly string[] | null;
 };
 
-type InputForDefinition<Definition extends ProjectCommandDefinition> =
-  Definition extends ProjectCommandDefinition
-    ? Definition["commandId"] extends "node_test"
-      ? {
-          readonly commandId: Definition["commandId"];
-          readonly force?: BooleanInput;
-          readonly paths?: readonly string[];
-          readonly variant?: string;
-        } & EvidenceExecutionOptions
-      : Definition["commandId"] extends "node_lint"
-        ? {
-            readonly commandId: Definition["commandId"];
-            readonly force?: BooleanInput;
-            readonly variant?: string;
-          } & EvidenceExecutionOptions
-        : Definition["commandId"] extends "node_format"
-          ? {
-              readonly commandId: Definition["commandId"];
-              readonly force?: BooleanInput;
-              readonly variant?: string;
-            } & EvidenceExecutionOptions
-          : Definition["commandId"] extends "fallow_audit"
-            ? {
-                readonly commandId: Definition["commandId"];
-                readonly force?: BooleanInput;
-                readonly base: string;
-              } & EvidenceExecutionOptions
-            : {
-                readonly commandId: Definition["commandId"];
-                readonly force?: BooleanInput;
-              } & EvidenceExecutionOptions
-    : never;
+type InputForDefinition<Definition extends ProjectCommandDefinition> = {
+  readonly commandId: Definition["commandId"];
+  readonly force?: BooleanInput | null;
+  readonly paths?: readonly string[] | null;
+  readonly variant?: string | null;
+  readonly base?: string | null;
+  readonly ref?: string | null;
+  readonly flowId?: string | null;
+} & EvidenceExecutionOptions;
 
 export type ProjectCommandInputFor<Definitions extends readonly ProjectCommandDefinition[]> =
   | InputForDefinition<Definitions[number]>
@@ -77,15 +55,19 @@ export type ProjectCommandInputFor<Definitions extends readonly ProjectCommandDe
 
 type ProjectCommandRuntimeInputSchema = TObject;
 
+export function optionalNullable<const T extends TSchema>(schema: T) {
+  return Type.Optional(Type.Union([schema, Type.Null()]));
+}
+
 function evidenceProperties() {
   return {
-    publish: Type.Optional(
+    publish: optionalNullable(
       Type.Object(
         { flowId: Type.String({ pattern: "^[A-Za-z0-9_-]{1,64}$" }) },
         { additionalProperties: false, description: "Publish evidence to an authorized flow." },
       ),
     ),
-    covers: Type.Optional(
+    covers: optionalNullable(
       Type.Array(Type.String({ minLength: 1, maxLength: 512 }), {
         maxItems: 64,
         description: "Opaque acceptance-criteria identifiers to preserve in evidence.",
@@ -104,11 +86,14 @@ function legacyVariantCommandId(commandId: string) {
 
 function scriptVariantSchema(description: string) {
   return Type.Optional(
-    Type.String({
-      pattern: PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN,
-      maxLength: PROJECT_COMMAND_MAX_SCRIPT_VARIANT_LENGTH,
-      description,
-    }),
+    Type.Union([
+      Type.String({
+        pattern: PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN,
+        maxLength: PROJECT_COMMAND_MAX_SCRIPT_VARIANT_LENGTH,
+        description,
+      }),
+      Type.Null(),
+    ]),
   );
 }
 
@@ -128,6 +113,7 @@ function testPathsSchema(description?: string) {
       Type.String({
         description: 'JSON array of workspace-relative test paths, for example ["src/index.ts"].',
       }),
+      Type.Null(),
     ]),
   );
 }
@@ -142,9 +128,9 @@ function commandIdSchema(definitions: readonly ProjectCommandDefinition[]) {
     .filter((definition) => SCRIPT_VARIANT_COMMAND_IDS.includes(definition.commandId))
     .map((definition) => legacyVariantCommandId(definition.commandId));
   return Type.Optional(
-    Type.Union([...commandIds, ...legacyAliases], {
+    Type.Union([...commandIds, ...legacyAliases, Type.Null()], {
       description:
-        "One fixed command ID for execution requests, or a legacy variant alias. Omit for lookup-only requests with ref.",
+        "One fixed command ID for execution requests, or a legacy variant alias. Omit or pass null for lookup-only requests with ref.",
     }),
   );
 }
@@ -162,7 +148,7 @@ export function createProjectCommandInputSchema(
   return Type.Object(
     {
       commandId: commandIdSchema(definitions),
-      force: Type.Optional(booleanInputSchema),
+      force: Type.Optional(Type.Union([booleanInputSchema, Type.Null()])),
       paths: Type.Optional(
         testPathsSchema("Optional workspace-relative test paths for node_test."),
       ),
@@ -170,24 +156,33 @@ export function createProjectCommandInputSchema(
         "Optional validated suffix for an existing test:<variant>, lint:<variant>, or format:<variant> package script.",
       ),
       base: Type.Optional(
-        Type.String({
-          pattern: FALLOW_REVISION_PATTERN,
-          description: "Required safe revision used as the Fallow audit base.",
-        }),
+        Type.Union([
+          Type.String({
+            pattern: FALLOW_REVISION_PATTERN,
+            description: "Required safe revision used as the Fallow audit base.",
+          }),
+          Type.Null(),
+        ]),
       ),
       publish,
       covers,
       ref: Type.Optional(
-        Type.String({
-          pattern: "^[A-Za-z0-9_-]{8,128}$",
-          description: "Lookup-only evidence reference.",
-        }),
+        Type.Union([
+          Type.String({
+            pattern: "^[A-Za-z0-9_-]{8,128}$",
+            description: "Lookup-only evidence reference; null means omitted.",
+          }),
+          Type.Null(),
+        ]),
       ),
       flowId: Type.Optional(
-        Type.String({
-          pattern: "^[A-Za-z0-9_-]{1,64}$",
-          description: "Lookup-only evidence flow scope; requires ref.",
-        }),
+        Type.Union([
+          Type.String({
+            pattern: "^[A-Za-z0-9_-]{1,64}$",
+            description: "Lookup-only evidence flow scope; requires ref.",
+          }),
+          Type.Null(),
+        ]),
       ),
     },
     {

@@ -542,6 +542,66 @@ it("reports invocation identity, normalized scope, bounded output metadata, and 
   }
 });
 
+it("executes a full-property payload with null placeholders instead of misrouting to lookup", async () => {
+  const fixtureData = await fixture();
+  const definition = getProjectCommandDefinition("workspace_path");
+  if (definition === undefined) throw new Error("missing workspace_path definition");
+  const resolved = resolveFixedProjectCommand(definition);
+  const projectPath = await authorize(fixtureData, definition, resolved);
+  const tool = createProjectCommandToolForTesting({
+    configPath: fixtureData.configPath,
+    executor: async () => ({
+      status: "success" as const,
+      exit: { code: 0, signal: null },
+      timedOut: false,
+      cancelled: false,
+      stdout: { text: "workspace", truncated: false, totalBytes: 9, totalLines: 1 },
+      stderr: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
+    }),
+  });
+  const response = await tool.execute(
+    "ref-null-full",
+    {
+      commandId: "workspace_path",
+      force: null,
+      paths: null,
+      variant: null,
+      base: null,
+      publish: null,
+      covers: null,
+      ref: null,
+      flowId: null,
+    },
+    undefined,
+    undefined,
+    context(fixtureData.directory),
+  );
+  expect(response.details).toMatchObject({
+    commandId: "workspace_path",
+    projectPath: displayPath(projectPath),
+    toolCallId: "ref-null-full",
+    reused: false,
+    coercions: [
+      "force:null-to-absent",
+      "paths:null-to-absent",
+      "variant:null-to-absent",
+      "base:null-to-absent",
+      "publish:null-to-absent",
+      "covers:null-to-absent",
+      "ref:null-to-absent",
+      "flowId:null-to-absent",
+    ],
+  });
+  expect(response.details).not.toHaveProperty("lookup");
+  expectInvocationMetadata(response.details, "ref-null-full");
+  expect(response.content[0]).toMatchObject({
+    type: "text",
+    text: expect.stringContaining(
+      '"coercions":["force:null-to-absent","paths:null-to-absent","variant:null-to-absent","base:null-to-absent","publish:null-to-absent","covers:null-to-absent","ref:null-to-absent","flowId:null-to-absent"]',
+    ),
+  });
+});
+
 function expectCanonicalCancellation(
   error: ProjectCommandToolError,
   outcome: ProjectCommandExecutionOutcome,

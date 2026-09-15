@@ -20,6 +20,8 @@ A lookup request is a separate shape containing only `ref`, optional `flowId`, a
 
 Lookup requests never execute a command and cannot include `force`, `publish`, or command execution fields.
 
+Every optional field also accepts explicit `null`, treated as omitted (strict-decoder compatibility).
+
 ### Path and variant parameters
 
 `node_test` optionally accepts `paths` as a safe workspace-relative string array or a JSON string containing that array.
@@ -131,7 +133,7 @@ A successful or failed execution returns a details object with the following pri
 
 The details may also include project information, `diagnostic`, `suggestedAction`, fingerprints, relevant inputs, repository state, mutability, concurrency, drift, provenance, publication, and producer fields.
 
-Model-facing content carries the bounded evidence `ref` when a completed execution stored evidence and the `publication` outcome when the request asked to publish, copying both values unchanged; each key is omitted entirely when it is undefined, and the remaining evidence metadata stays in details.
+Model-facing content carries the bounded evidence `ref` when a completed execution stored evidence, the `publication` outcome when the request asked to publish, and the bounded coercion tokens when the request carried nullable placeholders that were treated as absent; each key is omitted entirely when it is undefined, and the remaining evidence metadata stays in details.
 Failing and cancelled executions report the stored `pc_` reference in the failure or cancellation message and keep `ref` and `publication` in their error details and invocation records.
 Only the reference enters the message; the realized publication outcome stays in error details.
 

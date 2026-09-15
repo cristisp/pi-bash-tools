@@ -100,6 +100,7 @@ export interface VerifyOutput {
   readonly recordedRepositoryState?: VerifyRepositoryState;
   readonly currentRepositoryState?: VerifyRepositoryState;
   readonly repositoryStateStatus?: VerifyRepositoryStateStatus;
+  readonly coercions?: readonly string[];
   readonly provenance?: VerifyEvidenceProvenance;
   readonly publication?: VerifyPublication;
   readonly mutating?: boolean;

@@ -44,6 +44,8 @@ Script names use the bounded package-script grammar described in [Project comman
 
 A lookup request uses `ref` and may include `flowId` and `covers`, but it cannot include execution fields such as `fresh`, `publish`, `paths`, `omit`, or `scripts`.
 
+Every optional field also accepts explicit `null`, treated as omitted (strict-decoder compatibility).
+
 ## Result
 
 ```json

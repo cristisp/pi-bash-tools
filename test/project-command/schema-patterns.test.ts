@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 
+import { readBatchParameters } from "../../src/tools/filesystem/read-batch-tool.ts";
 import { getProjectCommandDefinitions } from "../../src/tools/project-command/definitions.ts";
 import {
   FALLOW_REVISION_PATTERN,
@@ -14,6 +15,51 @@ import {
 import { verifyInputSchema } from "../../src/tools/verify/schema.ts";
 
 const LOOKAROUND_PATTERN = /\(\?<?[=!]/u;
+
+function isSchemaNode(schema: unknown): schema is {
+  readonly type?: unknown;
+  readonly anyOf?: readonly unknown[];
+  readonly properties?: Readonly<Record<string, unknown>>;
+  readonly required?: readonly unknown[];
+} {
+  return typeof schema === "object" && schema !== null && !Array.isArray(schema);
+}
+
+function admitsNull(schema: unknown): boolean {
+  if (Array.isArray(schema)) return schema.some(admitsNull);
+  if (!isSchemaNode(schema)) return false;
+  if (schema.type === "null") return true;
+  return Array.isArray(schema.anyOf) && schema.anyOf.some(admitsNull);
+}
+
+function optionalPropertyNames(schema: unknown): string[] {
+  if (!isSchemaNode(schema)) return [];
+  const required = new Set(
+    Array.isArray(schema.required)
+      ? schema.required.filter((value): value is string => typeof value === "string")
+      : [],
+  );
+  return Object.keys(schema.properties ?? {}).filter((key) => !required.has(key));
+}
+
+it("admits explicit null for every optional top-level property in the strict-decoder schemas", () => {
+  const schemas = [
+    ["project_command", projectCommandInputSchema],
+    ["verify", verifyInputSchema],
+    ["read_batch", readBatchParameters],
+  ] as const;
+  for (const [name, schema] of schemas) {
+    const optional = optionalPropertyNames(schema);
+    const properties: Readonly<Record<string, unknown>> = isSchemaNode(schema)
+      ? (schema.properties ?? {})
+      : {};
+    expect(optional.length).toBeGreaterThan(0);
+    for (const key of optional) {
+      const property = properties[key];
+      expect(admitsNull(property), `${name}.${key} must admit explicit null`).toBe(true);
+    }
+  }
+});
 
 function collectSchemaPatterns(value: unknown, patterns: string[] = []): string[] {
   if (Array.isArray(value)) {

@@ -15,6 +15,7 @@ import {
 } from "../../src/observability/read-batch-invocation.ts";
 import {
   createReadBatchToolForTesting,
+  type ReadBatchInput,
   type ReadBatchToolContext,
 } from "../../src/tools/filesystem/read-batch-tool.ts";
 import type { ReadEvidenceStore } from "../../src/tools/filesystem/read-evidence-store.ts";
@@ -951,4 +952,62 @@ describe("read batch authorization attribution", () => {
       vi.unstubAllEnvs();
     }
   });
+});
+
+it("coerces null placeholders to omitted fields and reports the coercions", async () => {
+  const directory = await fixtures.createDirectory();
+  await writeFile(join(directory, "one.ts"), "one\n");
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const tool = createReadBatchToolForTesting({ configPath });
+
+  const result = await tool.execute(
+    "read-null",
+    { paths: [{ path: "one.ts" }], ref: null, flowId: null, covers: null, publish: null },
+    undefined,
+    undefined,
+    context(directory),
+  );
+  expect(result.details.results[0]).toMatchObject({ path: "one.ts", unchanged: false });
+  expect(result.details.coercions).toEqual([
+    "ref:null-to-absent",
+    "flowId:null-to-absent",
+    "covers:null-to-absent",
+    "publish:null-to-absent",
+  ]);
+
+  const ref = result.details.results[0]?.ref;
+  expect(ref).toMatch(/^rr_[a-f0-9]{24}$/u);
+  await expect(
+    tool.execute(
+      "read-null-lookup",
+      { ref, flowId: null, covers: null },
+      undefined,
+      undefined,
+      context(directory),
+    ),
+  ).rejects.toThrow(/not found in the process-local root-session store/u);
+});
+
+it("keeps null placeholders fail-closed for read_batch", async () => {
+  const directory = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const tool = createReadBatchToolForTesting({ configPath });
+
+  await expect(
+    tool.execute("bad-ref", { ref: "junk-string" }, undefined, undefined, context(directory)),
+  ).rejects.toThrow(/ref must be a read_batch evidence reference/u);
+  await expect(
+    tool.execute(
+      "future-null",
+      { futureOption: null, paths: [{ path: "one.ts" }] } as unknown as ReadBatchInput,
+      undefined,
+      undefined,
+      context(directory),
+    ),
+  ).rejects.toThrow(/unsupported request field "futureOption"/u);
+  await expect(
+    tool.execute("empty-ref", { ref: null, paths: [] }, undefined, undefined, context(directory)),
+  ).rejects.toThrow(/paths must contain at least one entry/u);
 });

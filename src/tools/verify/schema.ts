@@ -7,7 +7,8 @@ import {
   PROJECT_COMMAND_MAX_SCRIPT_VARIANT_LENGTH,
   PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN,
 } from "../project-command/parameters.ts";
-import { parseJsonStringArray } from "../project-command/schema/validation.ts";
+import { optionalNullable } from "../project-command/schema.ts";
+import { parseJsonStringArray, stripNullProperties } from "../project-command/schema/validation.ts";
 import { FLOW_ID_PATTERN, isRecord, isValidPublishValue } from "../value-validation.ts";
 import { VERIFY_PHASES, type VerifyPhase } from "./types.ts";
 
@@ -34,46 +35,65 @@ export const verifyInputSchema = Type.Object(
         Type.String({
           description: 'JSON array of workspace-relative test paths, for example ["src/index.ts"].',
         }),
+        Type.Null(),
       ]),
     ),
     omit: Type.Optional(
-      Type.Array(verifyPhaseSchema, {
-        maxItems: VERIFY_PHASES.length,
-        uniqueItems: true,
-        description: "Explicitly omit selected verification phases.",
-      }),
+      Type.Union([
+        Type.Array(verifyPhaseSchema, {
+          maxItems: VERIFY_PHASES.length,
+          uniqueItems: true,
+          description: "Explicitly omit selected verification phases.",
+        }),
+        Type.Null(),
+      ]),
     ),
     scripts: Type.Optional(
-      Type.Object(
-        {
-          format: Type.Optional(packageScriptSchema),
-          lint: Type.Optional(packageScriptSchema),
-          typecheck: Type.Optional(packageScriptSchema),
-          test: Type.Optional(packageScriptSchema),
-        },
-        { additionalProperties: false, description: "Exact package.json script names by phase." },
-      ),
+      Type.Union([
+        Type.Object(
+          {
+            format: Type.Optional(packageScriptSchema),
+            lint: Type.Optional(packageScriptSchema),
+            typecheck: Type.Optional(packageScriptSchema),
+            test: Type.Optional(packageScriptSchema),
+          },
+          { additionalProperties: false, description: "Exact package.json script names by phase." },
+        ),
+        Type.Null(),
+      ]),
     ),
     continueOnFailure: Type.Optional(
-      Type.Boolean({ description: "Run later phases after a phase fails." }),
+      Type.Union([
+        Type.Boolean({ description: "Run later phases after a phase fails." }),
+        Type.Null(),
+      ]),
     ),
     ref: Type.Optional(
-      Type.String({
-        pattern: "^[A-Za-z0-9_-]{8,128}$",
-        description:
-          "Lookup-only stored validation evidence; use with optional flowId and no execution options.",
-      }),
+      Type.Union([
+        Type.String({
+          pattern: "^[A-Za-z0-9_-]{8,128}$",
+          description:
+            "Lookup-only stored validation evidence; use with optional flowId and no execution options; null means omitted.",
+        }),
+        Type.Null(),
+      ]),
     ),
     flowId: Type.Optional(
-      Type.String({
-        pattern: "^[A-Za-z0-9_-]{1,64}$",
-        description: "Lookup-only evidence flow scope; requires ref.",
-      }),
+      Type.Union([
+        Type.String({
+          pattern: "^[A-Za-z0-9_-]{1,64}$",
+          description: "Lookup-only evidence flow scope; requires ref.",
+        }),
+        Type.Null(),
+      ]),
     ),
     fresh: Type.Optional(
-      Type.Boolean({ description: "Force fresh execution; cannot be combined with ref." }),
+      Type.Union([
+        Type.Boolean({ description: "Force fresh execution; cannot be combined with ref." }),
+        Type.Null(),
+      ]),
     ),
-    publish: Type.Optional(
+    publish: optionalNullable(
       Type.Object(
         {
           flowId: Type.String({ pattern: "^[A-Za-z0-9_-]{1,64}$" }),
@@ -84,7 +104,7 @@ export const verifyInputSchema = Type.Object(
         },
       ),
     ),
-    covers: Type.Optional(
+    covers: optionalNullable(
       Type.Array(Type.String({ minLength: 1, maxLength: 512 }), {
         maxItems: 64,
         description: "Opaque acceptance-criteria identifiers to preserve in evidence.",
@@ -95,15 +115,15 @@ export const verifyInputSchema = Type.Object(
 );
 
 export interface VerifyInput {
-  readonly paths?: readonly string[] | string;
-  readonly omit?: readonly VerifyPhase[];
-  readonly scripts?: Partial<Record<VerifyPhase, string>>;
-  readonly continueOnFailure?: boolean;
-  readonly ref?: string;
-  readonly flowId?: string;
-  readonly fresh?: boolean;
-  readonly publish?: { readonly flowId: string };
-  readonly covers?: readonly string[];
+  readonly paths?: readonly string[] | string | null;
+  readonly omit?: readonly VerifyPhase[] | null;
+  readonly scripts?: Partial<Record<VerifyPhase, string>> | null;
+  readonly continueOnFailure?: boolean | null;
+  readonly ref?: string | null;
+  readonly flowId?: string | null;
+  readonly fresh?: boolean | null;
+  readonly publish?: { readonly flowId: string } | null;
+  readonly covers?: readonly string[] | null;
 }
 
 export interface NormalizedVerifyInput {
@@ -376,10 +396,11 @@ export function validateVerifyInput(value: unknown): NormalizedVerifyInput {
     throw new VerifyToolError("invalid-request", "verify input must be an object");
   validateVerifyInputKeys(value);
   const coercions: string[] = [];
-  const executionFields = validateVerifyExecutionFields(value, coercions);
+  const stripped = stripNullProperties(value, coercions, VERIFY_INPUT_KEYS);
+  const executionFields = validateVerifyExecutionFields(stripped, coercions);
   const { paths, omit, scripts, continueOnFailure } = executionFields;
-  const evidence = validateVerifyEvidenceFields(value);
-  validateVerifyLookupRestrictions(value, evidence, omit);
+  const evidence = validateVerifyEvidenceFields(stripped);
+  validateVerifyLookupRestrictions(stripped, evidence, omit);
   return {
     paths,
     omit,

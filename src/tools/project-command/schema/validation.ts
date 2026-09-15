@@ -86,6 +86,24 @@ export function invalidRequest(
   );
 }
 
+const NULL_TO_ABSENT_SUFFIX = "null-to-absent";
+
+export function stripNullProperties(
+  params: Readonly<Record<string, unknown>>,
+  coercions: string[],
+  strippableKeys: ReadonlySet<string>,
+): Readonly<Record<string, unknown>> {
+  let stripped: Record<string, unknown> | undefined;
+  for (const [key, value] of Object.entries(params)) {
+    if (value === null && strippableKeys.has(key)) {
+      coercions.push(`${key}:${NULL_TO_ABSENT_SUFFIX}`);
+      stripped ??= { ...params };
+      delete stripped[key];
+    }
+  }
+  return stripped ?? params;
+}
+
 export function parseJsonStringArray(
   value: unknown,
   maxItems: number,
@@ -351,12 +369,16 @@ function normalizeEvidenceFields(
   };
 }
 
-function normalizeLookupRequest(evidence: NormalizedEvidenceFields): ProjectCommandEvidenceLookup {
+function normalizeLookupRequest(
+  evidence: NormalizedEvidenceFields,
+  coercions: string[],
+): ProjectCommandEvidenceLookup {
   if (evidence.ref === undefined) throw invalidRequest("ref");
   return {
     ref: evidence.ref,
     ...(evidence.flowId === undefined ? {} : { flowId: evidence.flowId }),
     ...(evidence.covers === undefined ? {} : { covers: evidence.covers }),
+    ...(coercions.length === 0 ? {} : { coercions: [...coercions] }),
   };
 }
 
@@ -366,12 +388,25 @@ function normalizedRequest(
   coercions: string[],
 ): NormalizedProjectCommandInput {
   const evidence = normalizeEvidenceFields(params, commandId, coercions);
-  if (commandId === "") return normalizeLookupRequest(evidence);
+  if (commandId === "") return normalizeLookupRequest(evidence, coercions);
   return normalizedCommandRequest(params, commandId, coercions, evidence.evidence);
 }
 
+const PROJECT_COMMAND_INPUT_KEYS = new Set([
+  "commandId",
+  "force",
+  "paths",
+  "variant",
+  "base",
+  "publish",
+  "covers",
+  "ref",
+  "flowId",
+]);
+
 function validateProjectCommandLookup(
   request: Record<string, unknown>,
+  coercions: string[],
 ): NormalizedProjectCommandInput {
   const lookupKeys = ["ref", "flowId", "covers"];
   const invalidLookupKey = Object.keys(request).find((key) => !lookupKeys.includes(key));
@@ -381,12 +416,13 @@ function validateProjectCommandLookup(
       correctedExample: { ref: "pc_example", flowId: "flow-1" },
     });
   }
-  return normalizedRequest(request, "", []);
+  return normalizedRequest(request, "", coercions);
 }
 
 function validateProjectCommandExecution(
   request: Record<string, unknown>,
   definitions: readonly ProjectCommandDefinition[],
+  coercions: string[],
 ): NormalizedProjectCommandInput {
   const requestedCommandId = request.commandId;
   if (typeof requestedCommandId !== "string") {
@@ -408,7 +444,7 @@ function validateProjectCommandExecution(
   const normalized = normalizedRequest(
     legacyVariant === undefined ? request : { ...request, variant: legacyVariant.variant },
     commandId,
-    [],
+    coercions,
   );
   return force === true ? { ...normalized, force: true } : normalized;
 }
@@ -425,9 +461,14 @@ export function validateProjectCommandInput(
     if (!isRecord(params)) {
       throw invalidRequest(undefined, projectCommandIdGuidance("", definitions));
     }
-    return "ref" in params
-      ? validateProjectCommandLookup(params)
-      : validateProjectCommandExecution(params, definitions);
+    const coercions: string[] = [];
+    const stripped = stripNullProperties(params, coercions, PROJECT_COMMAND_INPUT_KEYS) as Record<
+      string,
+      unknown
+    >;
+    return "ref" in stripped
+      ? validateProjectCommandLookup(stripped, coercions)
+      : validateProjectCommandExecution(stripped, definitions, coercions);
   } catch (error) {
     if (error instanceof ProjectCommandToolError) {
       throw error;

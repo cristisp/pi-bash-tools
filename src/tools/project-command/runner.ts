@@ -1969,21 +1969,26 @@ export function createProjectCommandExecute<
         const lookupRecord: Readonly<Record<string, unknown>> = isRecord(validatedLookup)
           ? validatedLookup
           : {};
-        const lookupRef = typeof lookupRecord.ref === "string" ? lookupRecord.ref : undefined;
-        if (lookupRef === undefined) {
-          throw invalidRequest("ref");
+        if (!("commandId" in lookupRecord)) {
+          const lookupRef = typeof lookupRecord.ref === "string" ? lookupRecord.ref : undefined;
+          if (lookupRef === undefined) {
+            throw invalidRequest("ref");
+          }
+          if (invocationOptions.evidence === undefined) {
+            throw evidenceNotFound(lookupRef, undefined);
+          }
+          state.coercions = Array.isArray(lookupRecord.coercions)
+            ? lookupRecord.coercions
+            : undefined;
+          return await executeEvidenceLookup(
+            invocationOptions.evidence,
+            invocationOptions.repositoryStateReader,
+            lookupRef,
+            typeof lookupRecord.flowId === "string" ? lookupRecord.flowId : undefined,
+            requestSignal,
+            state,
+          );
         }
-        if (invocationOptions.evidence === undefined) {
-          throw evidenceNotFound(lookupRef, undefined);
-        }
-        return await executeEvidenceLookup(
-          invocationOptions.evidence,
-          invocationOptions.repositoryStateReader,
-          lookupRef,
-          typeof lookupRecord.flowId === "string" ? lookupRecord.flowId : undefined,
-          requestSignal,
-          state,
-        );
       }
       state.preparationEntered = true;
       const prepared = await prepareProjectCommand(

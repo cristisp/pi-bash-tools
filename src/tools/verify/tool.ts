@@ -1317,6 +1317,10 @@ type VerifyPreparationResult =
   | { readonly cached: AgentToolResult<VerifyOutput> }
   | { readonly prepared: VerifyPreparedExecution };
 
+function withCoercions(output: VerifyOutput, input: NormalizedVerifyInput): VerifyOutput {
+  return input.coercions.length === 0 ? output : { ...output, coercions: input.coercions };
+}
+
 async function lookupVerifyEvidence(options: {
   readonly dependencies: VerifyToolDependencies;
   readonly input: NormalizedVerifyInput;
@@ -1378,7 +1382,7 @@ async function lookupVerifyEvidence(options: {
       outcome: projectCommandInvocationLookupOutcome("success"),
     },
   );
-  return result(fullOutput(record, currentRepositoryState));
+  return result(withCoercions(fullOutput(record, currentRepositoryState), input));
 }
 
 async function prepareVerifyExecution(
@@ -1490,7 +1494,9 @@ async function prepareVerifyExecution(
         { stateMatchesCurrent: true },
         null,
       );
-      return { cached: result(compactOutput(cacheLookup.cached, cacheLookup.state)) };
+      return {
+        cached: result(withCoercions(compactOutput(cacheLookup.cached, cacheLookup.state), input)),
+      };
     }
   }
   return {
@@ -1611,7 +1617,15 @@ async function executePreparedVerify(options: {
     stableForCache ? outputRecord.ref : undefined,
   );
   return result(
-    completedOutput(outputRecord, false, stableForCache ? outputRecord.ref : undefined, finalState),
+    withCoercions(
+      completedOutput(
+        outputRecord,
+        false,
+        stableForCache ? outputRecord.ref : undefined,
+        finalState,
+      ),
+      input,
+    ),
   );
 }
 

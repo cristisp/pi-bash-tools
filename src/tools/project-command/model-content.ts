@@ -78,9 +78,9 @@ type NodeProjectInfoDetails = {
  * Compact, sanitized projection of result details serialized into tool
  * content for the model. Internal authorization, cache, fingerprint, policy,
  * invocation, and timing metadata stay in `details` (which the cache and
- * tests rely on) and never appear in content. The bounded evidence `ref` and
- * the realized `publication` outcome of a requested publication are the only
- * evidence metadata copied through, unchanged.
+ * tests rely on) and never appear in content. The bounded evidence `ref`, the
+ * realized `publication` outcome of a requested publication, and bounded
+ * coercion tokens are copied through, unchanged.
  */
 export interface ProjectCommandModelContent {
   readonly [key: string]: unknown;
@@ -111,6 +111,7 @@ export interface ProjectCommandModelContent {
   readonly producerScope?: "session" | "flow";
   readonly ref?: string;
   readonly publication?: ProjectCommandEvidencePublication;
+  readonly coercions?: readonly string[];
 }
 
 function modelProjectInfo(details: ProjectCommandOutputDetails): Readonly<Record<string, unknown>> {
@@ -163,6 +164,7 @@ export function projectCommandModelContent(
       ["producerScope", details.producerScope],
       ["ref", details.ref],
       ["publication", details.publication],
+      ["coercions", details.coercions],
     ]),
   };
 }

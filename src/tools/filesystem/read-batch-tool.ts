@@ -59,6 +59,7 @@ import {
 } from "../project-command/orchestration.ts";
 import type { ProjectCommandRepositoryStateReader } from "../project-command/repository-state.ts";
 import { createProjectCommandRepositoryStateReader } from "../project-command/repository-state.ts";
+import { stripNullProperties } from "../project-command/schema/validation.ts";
 import { decodeUtf8Prefix } from "../truncation.ts";
 import { FLOW_ID_PATTERN } from "../value-validation.ts";
 import {
@@ -107,6 +108,7 @@ const READ_BATCH_REF_PATTERN = /^rr_[0-9a-f]{24}$/u;
 const READ_BATCH_MAX_FLOW_ID_LENGTH = 64;
 const READ_BATCH_MAX_COVERS = 64;
 const READ_BATCH_MAX_COVER_LENGTH = 512;
+const READ_BATCH_INPUT_KEYS = new Set(["paths", "ref", "flowId", "covers", "publish"]);
 
 const readBatchRangeParameters = Type.Object(
   {
@@ -155,31 +157,48 @@ const readBatchPublishParameters = Type.Object(
 const readBatchParameters = Type.Object(
   {
     paths: Type.Optional(
-      Type.Array(readBatchPathParameters, {
-        minItems: 1,
-        maxItems: READ_BATCH_MAX_PATHS,
-        description: "Repository files to read, each with an optional line range",
-      }),
+      Type.Union([
+        Type.Array(readBatchPathParameters, {
+          minItems: 1,
+          maxItems: READ_BATCH_MAX_PATHS,
+          description: "Repository files to read, each with an optional line range",
+        }),
+        Type.Null(),
+      ]),
     ),
     ref: Type.Optional(
-      Type.String({
-        pattern: "^rr_[0-9a-f]{24}$",
-        maxLength: 32,
-        description: "Published read_batch evidence reference to resolve",
-      }),
+      Type.Union([
+        Type.String({
+          pattern: "^rr_[0-9a-f]{24}$",
+          maxLength: 32,
+          description: "Published read_batch evidence reference to resolve; null means omitted.",
+        }),
+        Type.Null(),
+      ]),
     ),
-    flowId: Type.Optional(Type.String({ minLength: 1, maxLength: READ_BATCH_MAX_FLOW_ID_LENGTH })),
+    flowId: Type.Optional(
+      Type.Union([
+        Type.String({ minLength: 1, maxLength: READ_BATCH_MAX_FLOW_ID_LENGTH }),
+        Type.Null(),
+      ]),
+    ),
     covers: Type.Optional(
-      Type.Array(Type.String({ minLength: 1, maxLength: READ_BATCH_MAX_COVER_LENGTH }), {
-        maxItems: READ_BATCH_MAX_COVERS,
-      }),
+      Type.Union([
+        Type.Array(Type.String({ minLength: 1, maxLength: READ_BATCH_MAX_COVER_LENGTH }), {
+          maxItems: READ_BATCH_MAX_COVERS,
+        }),
+        Type.Null(),
+      ]),
     ),
-    publish: Type.Optional(readBatchPublishParameters),
+    publish: Type.Optional(Type.Union([readBatchPublishParameters, Type.Null()])),
   },
   { additionalProperties: false },
 );
 
 type ReadBatchInput = Static<typeof readBatchParameters>;
+
+export { readBatchParameters };
+export type { ReadBatchInput };
 
 export interface ReadBatchRange {
   readonly offset?: number;
@@ -226,6 +245,7 @@ export interface ReadBatchDetails {
   readonly continuation?: ReadBatchContinuation;
   readonly publish?: ReadBatchPublicationMetadata;
   readonly lookup?: ReadEvidenceLookupResult;
+  readonly coercions?: readonly string[];
 }
 
 export type ReadBatchToolContext = FilesystemAuthorizationContext & {
@@ -514,11 +534,18 @@ function normalizeLookupInput(
   };
 }
 
-function validateReadBatchRequest(params: ReadBatchInput): NormalizedReadBatchRequest {
-  if (!isRecord(params)) {
+function validateReadBatchRequest(rawParams: ReadBatchInput): {
+  readonly request: NormalizedReadBatchRequest;
+  readonly coercions: readonly string[];
+} {
+  if (!isRecord(rawParams)) {
     throw filesystemInvalidRequest("request must be an object", "paths");
   }
-  if (params.ref !== undefined) return normalizeLookupInput(params);
+  const coercions: string[] = [];
+  const params = stripNullProperties(rawParams, coercions, READ_BATCH_INPUT_KEYS) as ReadBatchInput;
+  if (params.ref !== undefined) {
+    return { request: normalizeLookupInput(params), coercions };
+  }
   const invalidKey = Object.keys(params).find((key) => key !== "paths" && key !== "publish");
   if (invalidKey !== undefined) {
     throw filesystemInvalidRequest(`unsupported request field "${invalidKey}"`, invalidKey);
@@ -537,9 +564,12 @@ function validateReadBatchRequest(params: ReadBatchInput): NormalizedReadBatchRe
   const publishFlowId =
     params.publish === undefined ? undefined : normalizePublishInput(params.publish);
   return {
-    kind: "execute",
-    paths: inputs,
-    ...(publishFlowId === undefined ? {} : { publishFlowId }),
+    request: {
+      kind: "execute",
+      paths: inputs,
+      ...(publishFlowId === undefined ? {} : { publishFlowId }),
+    },
+    coercions,
   };
 }
 
@@ -1303,7 +1333,7 @@ function createReadBatchToolWithDependencies(
         });
       };
       try {
-        const request = validateReadBatchRequest(params);
+        const { request, coercions } = validateReadBatchRequest(params);
         const requestSignal = signal ?? ctx.signal;
         if (request.kind === "lookup") {
           const requestedFlowId = request.flowId;
@@ -1396,7 +1426,11 @@ function createReadBatchToolWithDependencies(
                 lookupOutcome = outcome;
               },
             });
-            const outcome = result({ results: Object.freeze([]), lookup: lookupResult });
+            const outcome = result({
+              results: Object.freeze([]),
+              lookup: lookupResult,
+              ...(coercions.length === 0 ? {} : { coercions: [...coercions] }),
+            });
             record({
               reason: "completed",
               details: outcome.details,
@@ -1517,6 +1551,7 @@ function createReadBatchToolWithDependencies(
         let details: ReadBatchDetails = {
           results: Object.freeze(results),
           ...(continuation === undefined ? {} : { continuation }),
+          ...(coercions.length === 0 ? {} : { coercions: [...coercions] }),
         };
         if (request.publishFlowId !== undefined) {
           details = {

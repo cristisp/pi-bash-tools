@@ -78,11 +78,12 @@ it("lists every command ID and the legacy variant aliases in the commandId schem
     "fallow_list_entry_points",
     "fallow_list_boundaries",
   ]);
-  expect(variants.slice(15).map((variant) => variant.pattern)).toEqual([
+  expect(variants.slice(15, 18).map((variant) => variant.pattern)).toEqual([
     expect.stringContaining("^node_test:"),
     expect.stringContaining("^node_lint:"),
     expect.stringContaining("^node_format:"),
   ]);
+  expect(variants[18]).toEqual({ type: "null" });
   expect(variants[0]).toMatchObject({
     description:
       "Report the canonical project directory. Use when the user asks where the project workspace is located.",
@@ -91,47 +92,57 @@ it("lists every command ID and the legacy variant aliases in the commandId schem
 
 it("preserves command-specific field schemas and evidence options", () => {
   const schemaProperties = properties();
+  const withNull = (value: unknown): readonly unknown[] =>
+    isCommandIdVariants(value) ? (value.anyOf ?? []) : [];
 
-  expect(schemaProperties.paths).toMatchObject({
-    anyOf: [
-      {
-        type: "array",
-        maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS,
-        items: { type: "string", maxLength: PROJECT_COMMAND_MAX_PATH_LENGTH },
-      },
-      { type: "string" },
-    ],
-  });
-  expect(schemaProperties.variant).toMatchObject({
-    type: "string",
-    pattern: PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN,
-    maxLength: PROJECT_COMMAND_MAX_SCRIPT_VARIANT_LENGTH,
-  });
-  expect(schemaProperties.base).toMatchObject({
-    type: "string",
-    pattern: FALLOW_REVISION_PATTERN,
-  });
-  expect(schemaProperties.ref).toMatchObject({
-    type: "string",
-    pattern: "^[A-Za-z0-9_-]{8,128}$",
-  });
-  expect(schemaProperties.flowId).toMatchObject({
-    type: "string",
-    pattern: "^[A-Za-z0-9_-]{1,64}$",
-  });
-  expect(schemaProperties.publish).toMatchObject({
-    type: "object",
-    additionalProperties: false,
-    properties: { flowId: { type: "string", pattern: "^[A-Za-z0-9_-]{1,64}$" } },
-  });
-  expect(schemaProperties.covers).toMatchObject({
-    type: "array",
-    maxItems: 64,
-    items: { type: "string", minLength: 1, maxLength: 512 },
-  });
+  expect(withNull(schemaProperties.paths)).toMatchObject([
+    {
+      type: "array",
+      maxItems: PROJECT_COMMAND_MAX_PARAMETER_ITEMS,
+      items: { type: "string", maxLength: PROJECT_COMMAND_MAX_PATH_LENGTH },
+    },
+    { type: "string" },
+    { type: "null" },
+  ]);
+  expect(withNull(schemaProperties.variant)).toMatchObject([
+    {
+      type: "string",
+      pattern: PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN,
+      maxLength: PROJECT_COMMAND_MAX_SCRIPT_VARIANT_LENGTH,
+    },
+    { type: "null" },
+  ]);
+  expect(withNull(schemaProperties.base)).toMatchObject([
+    { type: "string", pattern: FALLOW_REVISION_PATTERN },
+    { type: "null" },
+  ]);
+  expect(withNull(schemaProperties.ref)).toMatchObject([
+    { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+    { type: "null" },
+  ]);
+  expect(withNull(schemaProperties.flowId)).toMatchObject([
+    { type: "string", pattern: "^[A-Za-z0-9_-]{1,64}$" },
+    { type: "null" },
+  ]);
+  expect(withNull(schemaProperties.publish)).toMatchObject([
+    {
+      type: "object",
+      additionalProperties: false,
+      properties: { flowId: { type: "string", pattern: "^[A-Za-z0-9_-]{1,64}$" } },
+    },
+    { type: "null" },
+  ]);
+  expect(withNull(schemaProperties.covers)).toMatchObject([
+    {
+      type: "array",
+      maxItems: 64,
+      items: { type: "string", minLength: 1, maxLength: 512 },
+    },
+    { type: "null" },
+  ]);
 
   expect(JSON.stringify(projectCommandInputSchema)).toContain(
-    '"description":"Lookup-only evidence reference.',
+    '"description":"Lookup-only evidence reference; null means omitted."',
   );
   expect(JSON.stringify(projectCommandInputSchema)).toContain('"force"');
   expect(JSON.stringify(projectCommandInputSchema)).toContain('"true"');

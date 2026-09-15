@@ -1835,3 +1835,44 @@ it("keeps the record failure pointer without duplicating complete step tails by 
   expect(lookup.details.perStep[1]).not.toHaveProperty("failureTail");
   expect(lookup.details.perStep[1]?.stdout.text).toBe("stdout");
 });
+
+it("executes a full-property payload whose optional fields are explicit null", async () => {
+  const cwd = await projectFixture();
+  const deps = dependencies();
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver: deps.resolver,
+    executor: deps.executor,
+    repositoryStateReader: deps.repositoryStateReader,
+  });
+  const completed = await tool.execute(
+    "verify-null-full",
+    {
+      paths: null,
+      omit: null,
+      scripts: null,
+      continueOnFailure: null,
+      ref: null,
+      flowId: null,
+      fresh: null,
+      publish: null,
+      covers: null,
+    },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  expect(completed.details.status).toBe("completed");
+  expect(completed.details.verdict).toBe("passed");
+  expect(completed.details.coercions).toEqual([
+    "paths:null-to-absent",
+    "omit:null-to-absent",
+    "scripts:null-to-absent",
+    "continueOnFailure:null-to-absent",
+    "ref:null-to-absent",
+    "flowId:null-to-absent",
+    "fresh:null-to-absent",
+    "publish:null-to-absent",
+    "covers:null-to-absent",
+  ]);
+});

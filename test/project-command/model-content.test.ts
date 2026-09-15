@@ -190,6 +190,17 @@ describe("projectCommandModelContent", () => {
     expect(withoutPublication).not.toHaveProperty("publication");
   });
 
+  it("includes coercion tokens when defined and omits the key otherwise", () => {
+    const coerced = projectCommandModelContent(
+      detailsFixture({ coercions: ["ref:null-to-absent", "covers:null-to-absent"] }),
+    );
+    expect(coerced.coercions).toEqual(["ref:null-to-absent", "covers:null-to-absent"]);
+
+    const withoutCoercions = projectCommandModelContent(detailsFixture());
+    expect("coercions" in withoutCoercions).toBe(false);
+    expect(withoutCoercions).not.toHaveProperty("coercions");
+  });
+
   it("never emits undefined-valued keys", () => {
     const content = projectCommandModelContent(detailsFixture());
     for (const [key, value] of Object.entries(content)) {
@@ -198,6 +209,7 @@ describe("projectCommandModelContent", () => {
     const keys = Object.keys(content);
     expect(keys).not.toContain("ref");
     expect(keys).not.toContain("publication");
+    expect(keys).not.toContain("coercions");
   });
 
   it("sanitizes ANSI escape and control sequences from output text", () => {

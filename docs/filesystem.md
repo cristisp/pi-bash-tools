@@ -34,6 +34,8 @@ Each `path` is a non-empty repository-relative path of at most 4,096 characters.
 
 A request may instead resolve previously published evidence with `{ "ref": "rr_...", "flowId": "optional-flow", "covers": ["optional"] }`.
 
+Every optional field also accepts explicit `null`, treated as omitted (strict-decoder compatibility).
+
 The `ref` form rejects `paths`, `publish`, `range`, execution options, and any other unknown field with an `invalid-request` error.
 
 A published-evidence lookup returns `{ "results": [], "lookup": { ... } }` and never executes a file read or a command.
