@@ -12,7 +12,7 @@ export const EVIDENCE_ENVELOPE_FORMAT_VERSION = 1 as const;
 
 export const EVIDENCE_PRODUCER = "bash-tools" as const;
 
-const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
+export const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 
 export type SharedEvidenceScope = "session" | "flow";
 
@@ -35,7 +35,7 @@ export interface SharedEvidenceOutputBlock {
   readonly totalLines: number;
 }
 
-export interface SharedEvidenceEnvelopeFields {
+interface SharedEvidenceEnvelopeFields {
   readonly producer: typeof EVIDENCE_PRODUCER;
   readonly kind: SharedEvidenceKind;
   readonly scope: SharedEvidenceScope;
@@ -48,12 +48,6 @@ export interface SharedEvidenceEnvelopeFields {
 export interface SharedEvidenceRecord extends SharedEvidenceEnvelopeFields {
   readonly evidenceFormatVersion: typeof EVIDENCE_ENVELOPE_FORMAT_VERSION;
   readonly ref: string;
-}
-
-export interface SharedEvidenceOutputStream {
-  readonly truncated: boolean;
-  readonly totalBytes: number;
-  readonly totalLines: number;
 }
 
 export function sharedRepositoryId(repositoryIdentity: string): string {
@@ -82,7 +76,7 @@ export function sharedWorkspaceBlock(state: {
 }
 
 export function aggregateSharedEvidenceOutput(
-  streams: readonly SharedEvidenceOutputStream[],
+  streams: readonly SharedEvidenceOutputBlock[],
 ): SharedEvidenceOutputBlock {
   return Object.freeze({
     truncated: streams.some((stream) => stream.truncated),

@@ -1,4 +1,9 @@
-import type { ProjectCommandDiskJsonCache } from "../cache.ts";
+import {
+  createFlowEvidenceStore,
+  type FlowEvidenceDiskCacheFactory,
+  type FlowEvidenceRecordValidator,
+  type FlowEvidenceStoreCore,
+} from "../../../evidence/flow-store.ts";
 import type {
   ProjectCommandEvidencePublication,
   ProjectCommandEvidenceRecord,
@@ -6,38 +11,13 @@ import type {
   ProjectCommandEvidenceStoreOptions,
 } from "../evidence.ts";
 import {
+  effectiveOrchestrationFlowId,
   readProjectCommandOrchestrationContext,
   type ProjectCommandOrchestrationContext,
 } from "../orchestration.ts";
 
 const PROJECT_COMMAND_EVIDENCE_MAX_RECORDS = 256;
 const PROJECT_COMMAND_EVIDENCE_REF_PATTERN = /^pc_[A-Za-z0-9_-]{8,128}$/u;
-
-type EvidenceRecordValidator = (
-  value: unknown,
-  scopeKey?: string,
-) => value is ProjectCommandEvidenceRecord;
-
-type DiskCacheFactory = (
-  rootDirectory: string | undefined,
-  validate: (value: unknown, logicalRequestKey?: string, scopeKey?: string) => boolean,
-) => ProjectCommandDiskJsonCache;
-
-function trimEvidenceRecords(records: Map<string, ProjectCommandEvidenceRecord>): void {
-  while (records.size > PROJECT_COMMAND_EVIDENCE_MAX_RECORDS) {
-    const oldest = records.keys().next().value;
-    if (typeof oldest !== "string") return;
-    records.delete(oldest);
-  }
-}
-
-function classifyEvidenceRecord(
-  value: ProjectCommandEvidenceRecord | undefined,
-  isEvidenceRecord: EvidenceRecordValidator,
-): "found" | "missing" | "corrupt" {
-  if (value === undefined) return "missing";
-  return isEvidenceRecord(value) ? "found" : "corrupt";
-}
 
 function hasValidPublicationScope(
   publication: ProjectCommandEvidencePublication | undefined,
@@ -54,15 +34,15 @@ function hasAuthorizedOrchestrationScope(
 }
 
 function findPublicationSource(
-  root: Map<string, ProjectCommandEvidenceRecord>,
-  flows: Map<string, Map<string, ProjectCommandEvidenceRecord>>,
+  core: FlowEvidenceStoreCore<ProjectCommandEvidenceRecord>,
   ref: string,
   orchestration: ProjectCommandOrchestrationContext,
 ): ProjectCommandEvidenceRecord | undefined {
-  if (orchestration.effectiveScope === "flow" && orchestration.flowId !== undefined) {
-    return flows.get(orchestration.flowId)?.get(ref);
+  const flowId = effectiveOrchestrationFlowId(orchestration);
+  if (flowId !== undefined) {
+    return core.readFlowRecord(flowId, ref);
   }
-  return root.get(ref);
+  return core.readRootRecord(ref);
 }
 
 function isPublishableEvidenceSource(
@@ -70,7 +50,7 @@ function isPublishableEvidenceSource(
   flowId: string,
   repositoryIdentity: string | undefined,
   orchestration: ProjectCommandOrchestrationContext,
-  isEvidenceRecord: EvidenceRecordValidator,
+  isEvidenceRecord: FlowEvidenceRecordValidator<ProjectCommandEvidenceRecord>,
 ): source is ProjectCommandEvidenceRecord {
   const scopeKey = orchestration.effectiveScope === "flow" ? flowId : undefined;
   if (source === undefined || !isEvidenceRecord(source, scopeKey)) return false;
@@ -107,80 +87,35 @@ function createPublishedEvidenceRecord(
   });
 }
 
-function writePublishedEvidence(
-  disk: ProjectCommandDiskJsonCache,
-  flows: Map<string, Map<string, ProjectCommandEvidenceRecord>>,
-  flowId: string,
-  ref: string,
-  published: ProjectCommandEvidenceRecord,
-): boolean {
-  if (!disk.publish(flowId, ref, published)) return false;
-  const flow = flows.get(flowId) ?? new Map<string, ProjectCommandEvidenceRecord>();
-  flow.set(ref, published);
-  trimEvidenceRecords(flow);
-  flows.set(flowId, flow);
-  return true;
-}
-
 export function createProjectCommandEvidenceStoreInternal(
   options: ProjectCommandEvidenceStoreOptions,
-  isEvidenceRecord: EvidenceRecordValidator,
-  createDiskCache: DiskCacheFactory,
+  isEvidenceRecord: FlowEvidenceRecordValidator<ProjectCommandEvidenceRecord>,
+  createDiskCache: FlowEvidenceDiskCacheFactory,
 ): ProjectCommandEvidenceStore {
-  const root = new Map<string, ProjectCommandEvidenceRecord>();
-  const flows = new Map<string, Map<string, ProjectCommandEvidenceRecord>>();
-  const disk = createDiskCache(
-    options.rootDirectory,
-    (value, logicalRequestKey, scopeKey) =>
-      logicalRequestKey !== undefined &&
-      isEvidenceRecord(value, scopeKey) &&
-      value.ref === logicalRequestKey,
-  );
+  const core = createFlowEvidenceStore<ProjectCommandEvidenceRecord>(options.rootDirectory, {
+    refPattern: PROJECT_COMMAND_EVIDENCE_REF_PATTERN,
+    maxFlowRecords: PROJECT_COMMAND_EVIDENCE_MAX_RECORDS,
+    maxRootRecords: PROJECT_COMMAND_EVIDENCE_MAX_RECORDS,
+    validate: isEvidenceRecord,
+    createDiskCache,
+  });
 
   return {
-    getByRef(ref, flowId) {
-      if (!PROJECT_COMMAND_EVIDENCE_REF_PATTERN.test(ref)) return undefined;
-      if (flowId === undefined) {
-        const value = root.get(ref);
-        return value !== undefined && isEvidenceRecord(value) ? value : undefined;
-      }
-      const inMemory = flows.get(flowId)?.get(ref);
-      if (inMemory !== undefined && isEvidenceRecord(inMemory, flowId)) return inMemory;
-      return readProjectCommandOrchestrationContext().effectiveScope === "flow"
-        ? (() => {
-            const value = disk.get(flowId, ref);
-            return isEvidenceRecord(value, flowId) ? value : undefined;
-          })()
-        : undefined;
-    },
-    lookupOutcome(ref, flowId) {
-      if (!PROJECT_COMMAND_EVIDENCE_REF_PATTERN.test(ref)) return "missing";
-      if (flowId === undefined) {
-        return classifyEvidenceRecord(root.get(ref), isEvidenceRecord);
-      }
-      const inMemory = flows.get(flowId)?.get(ref);
-      if (inMemory !== undefined) return isEvidenceRecord(inMemory, flowId) ? "found" : "corrupt";
-      return "missing";
-    },
+    getByRef: core.getByRef,
+    lookupOutcome: core.lookupOutcome,
     set(record, flowId) {
       if (!isEvidenceRecord(record, flowId)) return false;
       if (flowId === undefined) {
-        root.set(record.ref, record);
-        trimEvidenceRecords(root);
+        core.writeRootRecord(record.ref, record);
         return true;
       }
-      if (!disk.set(flowId, record.ref, record)) return false;
-      const flow = flows.get(flowId) ?? new Map<string, ProjectCommandEvidenceRecord>();
-      flow.set(record.ref, record);
-      trimEvidenceRecords(flow);
-      flows.set(flowId, flow);
-      return true;
+      return core.writeFlowRecord(flowId, record.ref, record, "set");
     },
     publish(ref, flowId, repositoryIdentity, publication) {
       if (!hasValidPublicationScope(publication, flowId)) return false;
       const orchestration = readProjectCommandOrchestrationContext();
       if (!hasAuthorizedOrchestrationScope(orchestration, flowId)) return false;
-      const source = findPublicationSource(root, flows, ref, orchestration);
+      const source = findPublicationSource(core, ref, orchestration);
       if (
         !isPublishableEvidenceSource(
           source,
@@ -194,12 +129,8 @@ export function createProjectCommandEvidenceStoreInternal(
       }
       const published = createPublishedEvidenceRecord(source, flowId, publication);
       if (!isEvidenceRecord(published, flowId)) return false;
-      return writePublishedEvidence(disk, flows, flowId, ref, published);
+      return core.writeFlowRecord(flowId, ref, published, "publish");
     },
-    clear() {
-      root.clear();
-      flows.clear();
-      disk.clear();
-    },
+    clear: core.clear,
   };
 }

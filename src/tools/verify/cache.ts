@@ -2,7 +2,10 @@ import {
   createProjectCommandDiskJsonCache,
   type ProjectCommandDiskJsonCache,
 } from "../project-command/cache.ts";
-import { readProjectCommandOrchestrationContext } from "../project-command/orchestration.ts";
+import {
+  effectiveOrchestrationFlowId,
+  readProjectCommandOrchestrationContext,
+} from "../project-command/orchestration.ts";
 import {
   isVerifyEvidenceCacheRecord,
   isVerifyEvidenceRecord,
@@ -35,19 +38,20 @@ function createDiskCache(options: VerifyEvidenceCacheOptions): ProjectCommandDis
   );
 }
 
-function unwrapRequest(
-  value: unknown,
-  logicalRequestKey: string,
-): VerifyEvidenceRecord | undefined {
-  return isVerifyEvidenceRecord(value, logicalRequestKey) ? value : undefined;
+function unwrapRequest(value: unknown, key: string): VerifyEvidenceRecord | undefined {
+  return isVerifyEvidenceRecord(value) && value.key === key ? value : undefined;
 }
 
 function unwrapRef(value: unknown, ref: string): VerifyEvidenceRecord | undefined {
-  const logicalRequestKey = `ref:${ref}`;
-  return isVerifyRefAlias(value, logicalRequestKey) ? value.record : undefined;
+  if (isVerifyEvidenceRecord(value) && value.ref === ref) return value;
+  return isVerifyRefAlias(value, `ref:${ref}`) ? value.record : undefined;
 }
 
 export { isVerifyEvidenceCacheRecord, isVerifyEvidenceRecord } from "./cache/validation.ts";
+
+function requestRef(key: string): string {
+  return `vr_${key.slice(0, 24)}`;
+}
 
 export function createVerifyEvidenceCache(
   options: VerifyEvidenceCacheOptions = {},
@@ -58,8 +62,9 @@ export function createVerifyEvidenceCache(
   return {
     get(key) {
       const orchestration = readProjectCommandOrchestrationContext();
-      if (orchestration.effectiveScope === "flow" && orchestration.flowId !== undefined) {
-        return unwrapRequest(disk.get(orchestration.flowId, key), key);
+      const flowId = effectiveOrchestrationFlowId(orchestration);
+      if (flowId !== undefined) {
+        return unwrapRequest(disk.get(flowId, `ref:${requestRef(key)}`), key);
       }
       return local.get(key);
     },
@@ -71,19 +76,17 @@ export function createVerifyEvidenceCache(
         }
         return unwrapRef(disk.get(requestedFlowId, `ref:${ref}`), ref);
       }
-      if (orchestration.effectiveScope === "flow" && orchestration.flowId !== undefined) {
-        return unwrapRef(disk.get(orchestration.flowId, `ref:${ref}`), ref);
+      const flowId = effectiveOrchestrationFlowId(orchestration);
+      if (flowId !== undefined) {
+        return unwrapRef(disk.get(flowId, `ref:${ref}`), ref);
       }
       return byRef.get(ref);
     },
     set(record) {
       const orchestration = readProjectCommandOrchestrationContext();
-      if (orchestration.effectiveScope === "flow" && orchestration.flowId !== undefined) {
-        disk.set(orchestration.flowId, record.key, record);
-        disk.set(orchestration.flowId, `ref:${record.ref}`, {
-          key: `ref:${record.ref}`,
-          record,
-        });
+      const flowId = effectiveOrchestrationFlowId(orchestration);
+      if (flowId !== undefined) {
+        disk.set(flowId, `ref:${record.ref}`, record);
         return;
       }
       const previous = local.get(record.key);
@@ -128,12 +131,8 @@ export function createVerifyEvidenceCache(
           published: true,
         },
       };
-      const firstWrite = disk.publish(flowId, published.key, published);
-      const secondWrite = disk.publish(flowId, `ref:${published.ref}`, {
-        key: `ref:${published.ref}`,
-        record: published,
-      });
-      return firstWrite && secondWrite ? published : undefined;
+      const firstWrite = disk.publish(flowId, `ref:${published.ref}`, published);
+      return firstWrite ? published : undefined;
     },
   };
 }

@@ -4,6 +4,14 @@ import {
   isBoundedSharedEvidenceWorkspace,
   type SharedEvidenceWorkspaceBlock,
 } from "../evidence/envelope.ts";
+import {
+  boundedErrorCode,
+  boundedIdentifier,
+  boundedLookupOutcome,
+  boundedNumber,
+  boundedOptionalIdentifier,
+  validCompletionReason,
+} from "./bounded.ts";
 import { appendInvocationStreamRecord } from "./invocation-stream.ts";
 
 const READ_BATCH_INVOCATION_FORMAT_VERSION = 1 as const;
@@ -11,45 +19,13 @@ export const READ_BATCH_INVOCATION_ENTRY_TYPE = "bash-tools.read-batch-invocatio
 export const READ_BATCH_INVOCATION_MAX_BYTES = 8 * 1024;
 export const READ_BATCH_INVOCATION_MAX_ITEMS = 32;
 
-const MAX_IDENTIFIER_LENGTH = 256;
-const MAX_ERROR_CODE_LENGTH = 128;
-const MAX_METADATA_NUMBER = 9_999_999_999;
-
 export type ReadBatchInvocationReason = "completed" | "cancelled" | "invalid-request" | "failed";
-
-export type ReadBatchInvocationLookupOutcome =
-  | "success"
-  | "not-found"
-  | "unauthorized-flow"
-  | "corrupt";
 
 export interface ReadBatchInvocationLookupMetadata {
   readonly attempted: boolean;
   readonly success: boolean;
   readonly failure?: string;
   readonly outcome?: string;
-}
-
-function isReadBatchInvocationLookupOutcome(
-  value: string,
-): value is ReadBatchInvocationLookupOutcome {
-  switch (value) {
-    case "success":
-    case "not-found":
-    case "unauthorized-flow":
-    case "corrupt":
-      return true;
-    default:
-      return false;
-  }
-}
-
-/** Clamp an untrusted lookup outcome string to the bounded persisted enum. */
-export function readBatchInvocationLookupOutcome(
-  value: string | undefined,
-): ReadBatchInvocationLookupOutcome | undefined {
-  if (value === undefined || !isReadBatchInvocationLookupOutcome(value)) return undefined;
-  return value;
 }
 
 export interface ReadBatchInvocationRange {
@@ -130,33 +106,8 @@ export type ReadBatchInvocationRecorder = (record: ReadBatchInvocationRecord) =>
 
 export type ReadBatchInvocationAPI = Pick<ExtensionAPI, "appendEntry">;
 
-function boundedIdentifier(value: string): string {
-  if (value.length <= MAX_IDENTIFIER_LENGTH) return value;
-  return `${value.slice(0, MAX_IDENTIFIER_LENGTH - 1)}…`;
-}
-
-function boundedErrorCode(value: string): string {
-  if (value.length <= MAX_ERROR_CODE_LENGTH) return value;
-  return `${value.slice(0, MAX_ERROR_CODE_LENGTH - 1)}…`;
-}
-
-function boundedNumber(value: number): number {
-  if (!Number.isFinite(value) || value < 0) return 0;
-  return value > MAX_METADATA_NUMBER ? MAX_METADATA_NUMBER : Math.floor(value);
-}
-
-function validReason(value: unknown): ReadBatchInvocationReason {
-  return value === "completed" || value === "cancelled" || value === "invalid-request"
-    ? value
-    : "failed";
-}
-
 function validScope(value: unknown): "session" | "flow" | undefined {
   return value === "session" || value === "flow" ? value : undefined;
-}
-
-function boundedOptionalIdentifier(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? boundedIdentifier(value) : undefined;
 }
 
 function boundedPublication(value: unknown): ReadBatchInvocationPublicationMetadata | undefined {
@@ -186,7 +137,7 @@ function boundedLookup(value: unknown): ReadBatchInvocationLookupMetadata | unde
     readonly outcome?: unknown;
   };
   if (candidate.attempted !== true) return undefined;
-  const outcome = readBatchInvocationLookupOutcome(
+  const outcome = boundedLookupOutcome(
     typeof candidate.outcome === "string" ? candidate.outcome : undefined,
   );
   return {
@@ -316,7 +267,7 @@ export function buildReadBatchInvocationRecord(
       toolCallId: boundedIdentifier(input.toolCallId),
       schemaHash: boundedIdentifier(input.schemaHash),
       requestedPaths: boundedNumber(input.requestedPaths),
-      reason: validReason(input.reason),
+      reason: validCompletionReason(input.reason),
       executed: input.executed,
       durationMs: boundedNumber(input.durationMs),
       items: frozenItems,

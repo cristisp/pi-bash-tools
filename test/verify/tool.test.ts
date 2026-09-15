@@ -1,6 +1,6 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion */
 
-import { mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -610,7 +610,7 @@ it("rejects contradictory persisted evidence", () => {
     stderr: chunk,
   });
   const record = {
-    cacheFormatVersion: 2 as const,
+    cacheFormatVersion: 3 as const,
     key: "request-key",
     ref: "vr_request-key",
     projectPath: "/tmp/verify-project",
@@ -630,7 +630,16 @@ it("rejects contradictory persisted evidence", () => {
   expect(isVerifyEvidenceRecord({ ...record, cacheFormatVersion: 1 }, record.key)).toBe(false);
   const alias = { key: `ref:${record.ref}`, record };
   expect(isVerifyEvidenceCacheRecord(alias, `ref:${record.ref}`)).toBe(true);
-  expect(isVerifyEvidenceCacheRecord(record, `ref:${record.ref}`)).toBe(false);
+  expect(isVerifyEvidenceCacheRecord(record, `ref:${record.ref}`)).toBe(true);
+  expect(
+    isVerifyEvidenceCacheRecord(
+      { key: `ref:${record.ref}`, record: { ...record, cacheFormatVersion: 2 } },
+      `ref:${record.ref}`,
+    ),
+  ).toBe(true);
+  expect(
+    isVerifyEvidenceCacheRecord({ ...record, cacheFormatVersion: 2 }, `ref:${record.ref}`),
+  ).toBe(false);
   expect(isVerifyEvidenceCacheRecord({ ...alias, key: "ref:other-ref" }, "ref:other-ref")).toBe(
     false,
   );
@@ -746,7 +755,7 @@ it("rejects contradictory persisted evidence", () => {
   ).toBe(false);
 });
 
-it("rejects pre-remediation durable records with unsafe tails or fractional durations", async () => {
+it("rejects durable records with unsafe tails or fractional durations", async () => {
   const cwd = await projectFixture();
   const cacheRoot = await mkdtemp(join(tmpdir(), "bash-tools-verify-compat-"));
   fixtureDirectories.push(cacheRoot);
@@ -774,7 +783,7 @@ it("rejects pre-remediation durable records with unsafe tails or fractional dura
       stderr: chunk,
     }));
     const record: VerifyEvidenceRecord = {
-      cacheFormatVersion: 2,
+      cacheFormatVersion: 3,
       key: "compatibility-key",
       ref: "vr_compatibility-key",
       projectPath: cwd,
@@ -795,27 +804,10 @@ it("rejects pre-remediation durable records with unsafe tails or fractional dura
       ),
     };
     const cacheDirectory = join(cacheRoot, "flows", "verify-compat-flow", "project-command");
-    const files = await readdir(cacheDirectory);
+    const files = (await readdir(cacheDirectory)).filter((file) => file.endsWith(".json"));
+    expect(files.length).toBe(1);
     await Promise.all(
-      files
-        .filter((file) => file.endsWith(".json"))
-        .map(async (file) => {
-          const filePath = join(cacheDirectory, file);
-          const parsed: unknown = JSON.parse(await readFile(filePath, "utf8"));
-          if (
-            typeof parsed !== "object" ||
-            parsed === null ||
-            !("key" in parsed) ||
-            typeof parsed.key !== "string"
-          ) {
-            return;
-          }
-          if (parsed.key === record.key) {
-            await writeFile(filePath, JSON.stringify(invalidRecord));
-          } else if (parsed.key === `ref:${record.ref}`) {
-            await writeFile(filePath, JSON.stringify({ key: parsed.key, record: invalidRecord }));
-          }
-        }),
+      files.map((file) => writeFile(join(cacheDirectory, file), JSON.stringify(invalidRecord))),
     );
     const reloaded = createVerifyEvidenceCache({ rootDirectory: cacheRoot });
     expect(reloaded.get(record.key)).toBeUndefined();
@@ -880,32 +872,9 @@ it("persists flow evidence, resolves refs, and invalidates changed repository st
     );
     expect(lookup.details.perStep[0]?.stdout.text).toBe("stdout");
     const flowDirectory = join(cacheRoot, "flows", "verify-flow-test", "project-command");
-    const files = await readdir(flowDirectory);
-    const entries = await Promise.all(
-      files.map(async (file) => {
-        const filePath = join(flowDirectory, file);
-        return { filePath, parsed: JSON.parse(await readFile(filePath, "utf8")) as unknown };
-      }),
-    );
-    const refEntry = entries.find(({ parsed }) => {
-      return (
-        typeof parsed === "object" &&
-        parsed !== null &&
-        "key" in parsed &&
-        typeof parsed.key === "string" &&
-        parsed.key.startsWith("ref:") &&
-        "record" in parsed
-      );
-    });
-    if (
-      refEntry !== undefined &&
-      typeof refEntry.parsed === "object" &&
-      refEntry.parsed !== null &&
-      "record" in refEntry.parsed
-    ) {
-      const serialized = JSON.stringify(refEntry.parsed.record);
-      if (serialized !== undefined) await writeFile(refEntry.filePath, serialized);
-    }
+    const files = (await readdir(flowDirectory)).filter((file) => file.endsWith(".json"));
+    expect(files.length).toBe(1);
+    await Promise.all(files.map((file) => writeFile(join(flowDirectory, file), "{}")));
     await expect(
       secondTool.execute(
         "verify-corrupt-ref",
@@ -967,7 +936,7 @@ function oversizedTotalsRecord(key: string, projectPath: string): VerifyEvidence
     stderr: chunk,
   }));
   return {
-    cacheFormatVersion: 2,
+    cacheFormatVersion: 3,
     key,
     ref: `vr_${key.slice(0, 24)}`,
     projectPath,

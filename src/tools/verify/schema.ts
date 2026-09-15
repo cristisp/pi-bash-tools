@@ -8,7 +8,7 @@ import {
   PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN,
 } from "../project-command/parameters.ts";
 import { parseJsonStringArray } from "../project-command/schema/validation.ts";
-import { isRecord, isValidPublishValue } from "../value-validation.ts";
+import { FLOW_ID_PATTERN, isRecord, isValidPublishValue } from "../value-validation.ts";
 import { VERIFY_PHASES, type VerifyPhase } from "./types.ts";
 
 const packageScriptNamePattern = PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN;
@@ -263,7 +263,7 @@ function validateVerifyRef(value: unknown): string | undefined {
 }
 
 function validateVerifyFlowId(value: unknown): string | undefined {
-  if (value !== undefined && (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,64}$/u.test(value))) {
+  if (value !== undefined && (typeof value !== "string" || !FLOW_ID_PATTERN.test(value))) {
     throw new VerifyToolError(
       "invalid-request",
       'verify field flowId must be a bounded lookup scope and requires ref; expected string, for example "flow-1"',

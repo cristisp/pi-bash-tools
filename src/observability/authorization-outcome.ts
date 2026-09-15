@@ -1,12 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+import { boundedIdentifier, boundedNumber, boundedOptionalIdentifier } from "./bounded.ts";
 import { appendInvocationStreamRecord } from "./invocation-stream.ts";
 
 const AUTHORIZATION_OUTCOME_FORMAT_VERSION = 1 as const;
 export const AUTHORIZATION_OUTCOME_ENTRY_TYPE = "bash-tools.authorization-outcome" as const;
-
-const MAX_IDENTIFIER_LENGTH = 256;
-const MAX_METADATA_NUMBER = 9_999_999_999;
 
 export type AuthorizationOutcomeSurface =
   | "project-command"
@@ -86,16 +84,6 @@ export type AuthorizationOutcomeObserver = (core: AuthorizationOutcomeCore) => v
 
 export type AuthorizationOutcomeAPI = Pick<ExtensionAPI, "appendEntry">;
 
-function boundedIdentifier(value: string): string {
-  if (value.length <= MAX_IDENTIFIER_LENGTH) return value;
-  return `${value.slice(0, MAX_IDENTIFIER_LENGTH - 1)}…`;
-}
-
-function boundedNumber(value: number): number {
-  if (!Number.isFinite(value) || value < 0) return 0;
-  return value > MAX_METADATA_NUMBER ? MAX_METADATA_NUMBER : Math.floor(value);
-}
-
 function validSurface(value: unknown): AuthorizationOutcomeSurface {
   return value === "project-command" || value === "verify" || value === "filesystem"
     ? value
@@ -104,12 +92,6 @@ function validSurface(value: unknown): AuthorizationOutcomeSurface {
 
 function isAuthorizationOutcome(value: string): value is AuthorizationOutcome {
   return AUTHORIZATION_OUTCOMES.has(value);
-}
-
-function boundedOptionalIdentifier(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined;
-  const bounded = boundedIdentifier(value);
-  return bounded.length === 0 ? undefined : bounded;
 }
 
 function validInteractionMode(value: unknown): AuthorizationInteractionMode | undefined {

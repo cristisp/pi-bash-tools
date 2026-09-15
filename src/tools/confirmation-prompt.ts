@@ -1,4 +1,4 @@
-export type TimedPromptResult =
+type TimedPromptResult =
   | { readonly kind: "selected"; readonly choice: string | undefined }
   | { readonly kind: "timeout" }
   | { readonly kind: "cancelled" }

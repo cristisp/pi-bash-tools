@@ -10,7 +10,9 @@ export interface ProjectCommandOrchestrationContext {
   readonly orchestrated: boolean;
 }
 
-const ORCHESTRATION_IDENTIFIER_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
+import { FLOW_ID_PATTERN } from "../value-validation.ts";
+
+const ORCHESTRATION_IDENTIFIER_PATTERN = FLOW_ID_PATTERN;
 
 function boundedIdentifier(value: string | undefined): string | undefined {
   return value !== undefined && ORCHESTRATION_IDENTIFIER_PATTERN.test(value) ? value : undefined;

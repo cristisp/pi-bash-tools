@@ -424,6 +424,10 @@ it("accepts persisted records with uncapped real output totals", async () => {
     expect(cache.get("flow-a", "request-a")).toEqual({
       cacheFormatVersion: 1,
       ...realTotals,
+      provenance: {
+        ...realTotals.provenance,
+        writeTimestamp: expect.any(Number),
+      },
     });
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -481,7 +485,7 @@ it("validates persisted error contracts and their optional fields", async () => 
     if (!isRecord(persisted)) throw new Error("cache entry is not an object");
     const validError = {
       code: "failed",
-      category: "FAILED",
+      category: "IMPLEMENTATION_FAILURE",
       explanation: "the command failed",
       invalidField: "commandId",
       suggestedAction: "retry",

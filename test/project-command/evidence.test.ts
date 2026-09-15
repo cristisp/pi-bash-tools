@@ -261,7 +261,7 @@ it("rejects malformed evidence details across nested validation branches", () =>
   );
   const malformed: readonly [string, Record<string, unknown>][] = [
     ["details ref", { ref: "pc_wrong" }],
-    ["command id", { commandId: "c".repeat(129) }],
+    ["command id", { commandId: "c".repeat(257) }],
     ["project path", { projectPath: "p".repeat(4097) }],
     ["fingerprint", { fingerprint: "f".repeat(257) }],
     ["auth fingerprint", { authFingerprint: "a".repeat(257) }],
@@ -343,7 +343,7 @@ it("accepts evidence details at configured boundaries", () => {
   };
   const uncappedTotals = { totalBytes: 3 * 1024 * 1024, totalLines: 5_000_000 } as const;
   const boundary = recordWithDetails({
-    commandId: "c".repeat(128),
+    commandId: "c".repeat(256),
     projectPath,
     fingerprint: "f".repeat(256),
     authFingerprint: "a".repeat(256),
@@ -547,6 +547,37 @@ it("maps the pc_ request identity into the envelope request hash", () => {
   );
   expect(changed.requestHash).not.toBe(first.requestHash);
   expect(changed.contentHash).not.toBe(first.contentHash);
+});
+
+it("accepts the unified command-id bound and legacy variant command ids", () => {
+  expect(isEvidenceRecord(recordWithDetails({ commandId: "c".repeat(256) }))).toBe(true);
+  expect(isEvidenceRecord(recordWithDetails({ commandId: "c".repeat(257) }))).toBe(false);
+  const legacyVariant = `node_format:${"v".repeat(128)}`;
+  expect(legacyVariant.length).toBe(140);
+  expect(isEvidenceRecord(recordWithDetails({ commandId: legacyVariant }))).toBe(true);
+});
+
+it("enforces the unified exit, text, and parameters bounds on evidence records", () => {
+  const withExit = (code: number | null) =>
+    isEvidenceRecord(recordWithDetails({ exit: { code, signal: null } }));
+  expect(withExit(0)).toBe(true);
+  expect(withExit(255)).toBe(true);
+  expect(withExit(-1)).toBe(false);
+  expect(withExit(256)).toBe(false);
+
+  const withStdoutText = (text: string) =>
+    isEvidenceRecord(
+      recordWithDetails({
+        stdout: { text, truncated: false, totalBytes: text.length, totalLines: 1 },
+      }),
+    );
+  expect(withStdoutText("x".repeat(50 * 1024))).toBe(true);
+  expect(withStdoutText("x".repeat(50 * 1024 + 1))).toBe(false);
+
+  const parameters = (keys: number) =>
+    Object.fromEntries(Array.from({ length: keys }, (_, index) => [`parameter-${index}`, true]));
+  expect(isEvidenceRecord(recordWithDetails({ parameters: parameters(128) }))).toBe(true);
+  expect(isEvidenceRecord(recordWithDetails({ parameters: parameters(129) }))).toBe(false);
 });
 
 it("accepts legacy pc_ records without envelope fields and rejects malformed envelope values", () => {

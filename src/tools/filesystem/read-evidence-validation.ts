@@ -4,9 +4,10 @@ import {
   EVIDENCE_PRODUCER,
   isBoundedSharedEvidenceOutput,
   isBoundedSharedEvidenceWorkspace,
+  SHA256_PATTERN,
   sharedEvidenceContentHash,
 } from "../../evidence/envelope.ts";
-import { isRecord } from "../value-validation.ts";
+import { FLOW_ID_PATTERN, isRecord } from "../value-validation.ts";
 import type {
   ReadEvidenceEntry,
   ReadEvidenceRange,
@@ -14,17 +15,15 @@ import type {
 } from "./read-evidence-store.ts";
 
 export const READ_EVIDENCE_REF_PATTERN = /^rr_[0-9a-f]{24}$/u;
-export const READ_EVIDENCE_REF_PREFIX = "rr_";
-export const READ_EVIDENCE_MAX_ENTRIES = 32;
-export const READ_EVIDENCE_MAX_PATH_LENGTH = 4_096;
-export const READ_EVIDENCE_MAX_OFFSET = 1_000_000;
-export const READ_EVIDENCE_MAX_RANGE_LINES = 2_000;
-export const READ_EVIDENCE_MAX_CONTENT_BYTES = 64 * 1024;
-export const READ_EVIDENCE_MAX_AGGREGATE_CONTENT_BYTES = 256 * 1024;
-export const READ_EVIDENCE_MAX_RECORD_BYTES = 384 * 1024;
+const READ_EVIDENCE_REF_PREFIX = "rr_";
 
-const READ_EVIDENCE_FLOW_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
-const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
+const READ_EVIDENCE_MAX_PATH_LENGTH = 4_096;
+const READ_EVIDENCE_MAX_OFFSET = 1_000_000;
+const READ_EVIDENCE_MAX_RANGE_LINES = 2_000;
+const READ_EVIDENCE_MAX_CONTENT_BYTES = 64 * 1024;
+const READ_EVIDENCE_MAX_ENTRIES = 32;
+const READ_EVIDENCE_MAX_AGGREGATE_CONTENT_BYTES = 256 * 1024;
+export const READ_EVIDENCE_MAX_RECORD_BYTES = 384 * 1024;
 
 export function readEvidenceRecordRef(contentHash: string): string {
   const digest = createHash("sha256")
@@ -94,7 +93,7 @@ function isBoundedProvenance(
     isRecord(value) &&
     value.scope === "flow" &&
     typeof value.flowId === "string" &&
-    READ_EVIDENCE_FLOW_ID_PATTERN.test(value.flowId)
+    FLOW_ID_PATTERN.test(value.flowId)
   );
 }
 

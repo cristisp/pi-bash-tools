@@ -1,4 +1,3 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
 
 import { sharedRepositoryId, sharedWorkspaceBlock } from "../../evidence/envelope.ts";
@@ -283,8 +282,4 @@ export function observeGitInvocation<P extends TSchema, D extends object>(
       throw error;
     }
   };
-}
-
-export interface GitInvocationSessionContext extends GitToolContext {
-  readonly sessionManager?: Pick<ExtensionContext["sessionManager"], "getSessionId">;
 }

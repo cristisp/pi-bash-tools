@@ -5,7 +5,7 @@ import {
   withToolErrorContract,
   type ToolErrorContract,
 } from "../../errors.ts";
-import { isRecord, isValidPublishValue } from "../../value-validation.ts";
+import { FLOW_ID_PATTERN, isRecord, isValidPublishValue } from "../../value-validation.ts";
 import { projectCommandIdGuidance } from "../command-id-guidance.ts";
 import { getProjectCommandDefinitions, type ProjectCommandDefinition } from "../definitions.ts";
 import { boundedEvidenceRefSegment } from "../diagnostics.ts";
@@ -312,7 +312,7 @@ function normalizeEvidenceFields(
 ): NormalizedEvidenceFields {
   const covers = validateEvidenceCovers(params.covers, commandId);
   const ref = validateEvidenceIdentifier(params.ref, "ref", /^[A-Za-z0-9_-]{8,128}$/u);
-  const flowId = validateEvidenceIdentifier(params.flowId, "flowId", /^[A-Za-z0-9_-]{1,64}$/u);
+  const flowId = validateEvidenceIdentifier(params.flowId, "flowId", FLOW_ID_PATTERN);
   const publishValue = params.publish;
   let publish: { readonly flowId: string } | undefined;
   if (publishValue !== undefined) {

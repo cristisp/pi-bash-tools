@@ -16,6 +16,8 @@ import {
 } from "../types.ts";
 import { isSafeFailureTail, isVerifyStepResult } from "./step-validation.ts";
 
+const VERIFY_CACHE_LEGACY_DISK_FORMAT_VERSION = 2 as const;
+
 const VERIFY_CACHE_MAX_TAIL = 8 * 1024;
 const VERIFY_CACHE_MAX_STEPS = 4;
 const VERIFY_CACHE_MAX_COMMANDS = 4;
@@ -102,10 +104,11 @@ function isVerifyRecordOptionalMetadata(value: Readonly<Record<string, unknown>>
 
 function isVerifyRecordMetadata(
   value: Readonly<Record<string, unknown>>,
+  version: number,
   logicalRequestKey: string | undefined,
 ): boolean {
   return (
-    value.cacheFormatVersion === VERIFY_CACHE_FORMAT_VERSION &&
+    value.cacheFormatVersion === version &&
     isVerifyRecordIdentity(value, logicalRequestKey) &&
     isVerifyRecordProjectPath(value) &&
     isVerifyRecordRepositoryState(value) &&
@@ -148,16 +151,34 @@ function isVerifyRecordEnvelopeFields(value: Readonly<Record<string, unknown>>):
   return isBoundedSharedEvidenceFields(value, ["verify"]);
 }
 
-export function isVerifyEvidenceRecord(
+function isVerifyEvidenceRecordVersion(
   value: unknown,
+  version: number,
   logicalRequestKey?: string,
 ): value is VerifyEvidenceRecord {
   if (!isRecord(value)) return false;
   return (
-    isVerifyRecordMetadata(value, logicalRequestKey) &&
+    isVerifyRecordMetadata(value, version, logicalRequestKey) &&
     isVerifyRecordSteps(value) &&
     isVerifyRecordOutcome(value) &&
     isVerifyRecordEnvelopeFields(value)
+  );
+}
+
+export function isVerifyEvidenceRecord(
+  value: unknown,
+  logicalRequestKey?: string,
+): value is VerifyEvidenceRecord {
+  return isVerifyEvidenceRecordVersion(value, VERIFY_CACHE_FORMAT_VERSION, logicalRequestKey);
+}
+
+function isReadableVerifyEvidenceRecord(
+  value: unknown,
+  logicalRequestKey?: string,
+): value is VerifyEvidenceRecord {
+  return (
+    isVerifyEvidenceRecordVersion(value, VERIFY_CACHE_FORMAT_VERSION, logicalRequestKey) ||
+    isVerifyEvidenceRecordVersion(value, VERIFY_CACHE_LEGACY_DISK_FORMAT_VERSION, logicalRequestKey)
   );
 }
 
@@ -168,7 +189,7 @@ export function isVerifyRefAlias(
   if (!isRecord(value) || !isBoundedString(value.key, 256) || value.key !== logicalRequestKey) {
     return false;
   }
-  if (!isVerifyEvidenceRecord(value.record)) return false;
+  if (!isReadableVerifyEvidenceRecord(value.record)) return false;
   return (
     value.key === `ref:${value.record.ref}` &&
     value.record.ref === logicalRequestKey.slice("ref:".length)
@@ -177,6 +198,8 @@ export function isVerifyRefAlias(
 
 export function isVerifyEvidenceCacheRecord(value: unknown, logicalRequestKey: string): boolean {
   if (logicalRequestKey.startsWith("ref:")) {
+    const ref = logicalRequestKey.slice("ref:".length);
+    if (isVerifyEvidenceRecord(value) && value.ref === ref) return true;
     return isVerifyRefAlias(value, logicalRequestKey);
   }
   return isVerifyEvidenceRecord(value, logicalRequestKey);

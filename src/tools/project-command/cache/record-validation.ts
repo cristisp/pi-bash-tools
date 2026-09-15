@@ -3,21 +3,18 @@ import type { ProjectCommandCacheProvenance } from "../cache.ts";
 import {
   isBoundedProjectCommandDetails,
   isBoundedProjectCommandOptionalDetails,
-  isFiniteNonNegativeDuration,
-  isStandardProjectCommandStatus,
-  type ProjectCommandOptionalDetailsValidationProfile,
-  type ProjectCommandOutputDetailsValidationProfile,
 } from "../details-validation.ts";
+import {
+  CACHE_PROJECT_COMMAND_OPTIONAL_DETAILS_PROFILE,
+  projectCommandOutputDetailsProfile,
+} from "../output-details-profiles.ts";
 import type { ProjectCommandOutputDetails } from "../output.ts";
+import { PROJECT_COMMAND_DISPLAY_COMMAND_MAX_CHARS } from "../parameters/limits.ts";
 import type { ProjectCommandStateSnapshot } from "../state-snapshot.ts";
 
 const CACHE_ENTRY_FORMAT_VERSION = 1 as const;
-const CACHE_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
 const CACHE_FIELD_MAX_LENGTH = 8 * 1024;
 const CACHE_ARRAY_MAX_ITEMS = 4_096;
-const CACHE_TOTAL_BYTES_MAX = Number.MAX_SAFE_INTEGER;
-const CACHE_TOTAL_LINES_MAX = Number.MAX_SAFE_INTEGER;
-const CACHE_DURATION_MAX_MS = 24 * 60 * 60 * 1_000;
 
 type DiskCacheRecord = {
   readonly cacheFormatVersion: typeof CACHE_ENTRY_FORMAT_VERSION;
@@ -47,83 +44,12 @@ function isStateSnapshot(value: unknown): value is ProjectCommandStateSnapshot {
   );
 }
 
-function isBoundedNonNegativeInteger(value: unknown, maximum: number): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum;
-}
-
-function isExit(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    (value.code === null || isBoundedNonNegativeInteger(value.code, 255)) &&
-    (value.signal === null || isBoundedString(value.signal, 128))
-  );
-}
-
-function isScope(value: unknown): boolean {
-  return (
-    isRecord(value) && isBoundedString(value.cwdStrategy, 128) && isBoundedString(value.projectPath)
-  );
-}
-
-function isErrorContract(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    isBoundedString(value.code, 256) &&
-    isBoundedString(value.category, 256) &&
-    isBoundedString(value.explanation) &&
-    (value.invalidField === undefined || isBoundedString(value.invalidField, 256)) &&
-    (value.suggestedAction === undefined || isBoundedString(value.suggestedAction)) &&
-    typeof value.retryable === "boolean" &&
-    typeof value.executed === "boolean"
-  );
-}
-
-function isRelevantInputs(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    Array.isArray(value.files) &&
-    value.files.length <= CACHE_ARRAY_MAX_ITEMS &&
-    value.files.every(
-      (file) => isRecord(file) && file.kind === "file" && isBoundedString(file.path),
-    ) &&
-    Array.isArray(value.values) &&
-    value.values.length <= CACHE_ARRAY_MAX_ITEMS &&
-    value.values.every(
-      (entry) =>
-        isRecord(entry) &&
-        entry.kind === "value" &&
-        isBoundedString(entry.name, 256) &&
-        isBoundedString(entry.value),
-    )
-  );
-}
-
-const CACHE_OUTPUT_DETAILS_VALIDATION_PROFILE: ProjectCommandOutputDetailsValidationProfile = {
-  commandIdMaxLength: 256,
+const CACHE_OUTPUT_DETAILS_VALIDATION_PROFILE = projectCommandOutputDetailsProfile({
   projectPathMaxLength: CACHE_FIELD_MAX_LENGTH,
-  textMaxLength: CACHE_ENTRY_MAX_BYTES,
-  totalBytesMax: CACHE_TOTAL_BYTES_MAX,
-  totalLinesMax: CACHE_TOTAL_LINES_MAX,
-  durationMaxMs: CACHE_DURATION_MAX_MS,
-  isDuration: isFiniteNonNegativeDuration,
-  diagnosticMaxLength: CACHE_FIELD_MAX_LENGTH,
-  suggestedActionMaxLength: CACHE_FIELD_MAX_LENGTH,
-  resolvedCommandMaxLength: CACHE_ENTRY_MAX_BYTES,
-  isScope,
-  isErrorContract,
-  isExit,
-  isParameters: isRecord,
-  isCacheDecision: (decision) => isBoundedString(decision, 128),
-  isStatus: isStandardProjectCommandStatus,
-  isCategory: (category) => isBoundedString(category, 256),
-};
-
-const CACHE_OPTIONAL_DETAILS_VALIDATION_PROFILE: ProjectCommandOptionalDetailsValidationProfile = {
-  isRelevantInputs,
-  nodeVersionMaxLength: 256,
-  arrayMaxItems: CACHE_ARRAY_MAX_ITEMS,
-  arrayItemMaxLength: 256,
-};
+  diagnosticMaxLength: 50 * 1024,
+  suggestedActionMaxLength: 1024,
+  resolvedCommandMaxLength: PROJECT_COMMAND_DISPLAY_COMMAND_MAX_CHARS,
+});
 
 function isOutputDetails(value: unknown): value is ProjectCommandOutputDetails {
   if (!isRecord(value)) return false;
@@ -134,7 +60,7 @@ function isOutputDetails(value: unknown): value is ProjectCommandOutputDetails {
     }) &&
     isBoundedProjectCommandOptionalDetails({
       value,
-      profile: CACHE_OPTIONAL_DETAILS_VALIDATION_PROFILE,
+      profile: CACHE_PROJECT_COMMAND_OPTIONAL_DETAILS_PROFILE,
     })
   );
 }

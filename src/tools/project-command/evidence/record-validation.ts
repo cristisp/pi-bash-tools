@@ -1,6 +1,5 @@
 import { isBoundedSharedEvidenceFields } from "../../../evidence/envelope.ts";
 import { hashCanonicalJson } from "../../../observability/canonical-json.ts";
-import { RESULT_CATEGORIES } from "../../errors.ts";
 import {
   isBoundedInteger,
   isBoundedNonEmptyString as isBoundedString,
@@ -9,17 +8,16 @@ import {
 import {
   isBoundedProjectCommandDetails,
   isBoundedProjectCommandOptionalDetails,
-  isFiniteNonNegativeDuration,
-  isStandardProjectCommandCacheDecision,
-  isStandardProjectCommandStatus,
-  type ProjectCommandOptionalDetailsValidationProfile,
-  type ProjectCommandOutputDetailsValidationProfile,
 } from "../details-validation.ts";
 import type {
   ProjectCommandEvidenceProvenance,
   ProjectCommandEvidencePublication,
   ProjectCommandEvidenceRecord,
 } from "../evidence.ts";
+import {
+  EVIDENCE_PROJECT_COMMAND_OPTIONAL_DETAILS_PROFILE,
+  projectCommandOutputDetailsProfile,
+} from "../output-details-profiles.ts";
 import type { ProjectCommandOutputDetails } from "../output.ts";
 import { PROJECT_COMMAND_DISPLAY_COMMAND_MAX_CHARS } from "../parameters/limits.ts";
 import type { ProjectCommandRepositoryState } from "../repository-state.ts";
@@ -44,49 +42,12 @@ function isRepositoryState(value: unknown): value is ProjectCommandRepositorySta
   );
 }
 
-function isExit(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    (value.code === null || isBoundedInteger(value.code, -1, 255)) &&
-    (value.signal === null || isBoundedString(value.signal, 128))
-  );
-}
-
-function isBoundedParameters(value: unknown): boolean {
-  if (!isRecord(value) || Object.keys(value).length > 128) return false;
-  try {
-    return Buffer.byteLength(JSON.stringify(value), "utf8") <= 64 * 1024;
-  } catch {
-    return false;
-  }
-}
-
 function isBoundedJson(value: unknown, maxBytes: number): boolean {
   try {
     return Buffer.byteLength(JSON.stringify(value), "utf8") <= maxBytes;
   } catch {
     return false;
   }
-}
-
-function isResultCategory(value: unknown): boolean {
-  return typeof value === "string" && RESULT_CATEGORIES.some((category) => category === value);
-}
-
-function isErrorContract(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    isBoundedString(value.code, 256) &&
-    typeof value.category === "string" &&
-    value.category !== "PASS" &&
-    isResultCategory(value.category) &&
-    isBoundedString(value.explanation, 8 * 1024) &&
-    (value.invalidField === undefined || isBoundedString(value.invalidField, 256)) &&
-    (value.correctedExample === undefined || isBoundedJson(value.correctedExample, 16 * 1024)) &&
-    (value.suggestedAction === undefined || isBoundedString(value.suggestedAction, 8 * 1024)) &&
-    typeof value.retryable === "boolean" &&
-    typeof value.executed === "boolean"
-  );
 }
 
 function isProvenance(value: unknown): value is ProjectCommandEvidenceProvenance {
@@ -113,36 +74,12 @@ function isPublication(value: unknown): value is ProjectCommandEvidencePublicati
   );
 }
 
-const EVIDENCE_OUTPUT_DETAILS_VALIDATION_PROFILE: ProjectCommandOutputDetailsValidationProfile = {
-  commandIdMaxLength: 128,
+const EVIDENCE_OUTPUT_DETAILS_VALIDATION_PROFILE = projectCommandOutputDetailsProfile({
   projectPathMaxLength: 4096,
-  textMaxLength: 50 * 1024,
-  totalBytesMax: Number.MAX_SAFE_INTEGER,
-  totalLinesMax: Number.MAX_SAFE_INTEGER,
-  durationMaxMs: 24 * 60 * 60 * 1000,
-  isDuration: isFiniteNonNegativeDuration,
   diagnosticMaxLength: 50 * 1024,
   suggestedActionMaxLength: 1024,
   resolvedCommandMaxLength: PROJECT_COMMAND_DISPLAY_COMMAND_MAX_CHARS,
-  isScope: (candidate) =>
-    isRecord(candidate) &&
-    candidate.cwdStrategy === "canonical-project" &&
-    isBoundedString(candidate.projectPath, 4096),
-  isErrorContract,
-  isExit,
-  isParameters: isBoundedParameters,
-  isCacheDecision: isStandardProjectCommandCacheDecision,
-  isStatus: isStandardProjectCommandStatus,
-  isCategory: isResultCategory,
-};
-
-const EVIDENCE_OPTIONAL_DETAILS_VALIDATION_PROFILE: ProjectCommandOptionalDetailsValidationProfile =
-  {
-    isRelevantInputs: isBoundedParameters,
-    nodeVersionMaxLength: 128,
-    arrayMaxItems: 256,
-    arrayItemMaxLength: 256,
-  };
+});
 
 function isBoundedEvidenceCovers(value: Readonly<Record<string, unknown>>): boolean {
   return (
@@ -232,7 +169,7 @@ function isEvidenceDetails(value: unknown, ref: string): value is ProjectCommand
     isBoundedEvidenceDetailsExtensions(value) &&
     isBoundedProjectCommandOptionalDetails({
       value,
-      profile: EVIDENCE_OPTIONAL_DETAILS_VALIDATION_PROFILE,
+      profile: EVIDENCE_PROJECT_COMMAND_OPTIONAL_DETAILS_PROFILE,
     }) &&
     isBoundedEvidenceMetadata(value)
   );

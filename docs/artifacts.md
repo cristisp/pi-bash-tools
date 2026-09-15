@@ -75,7 +75,7 @@ Envelope fields are additive on top of each producer's own record shape:
 
 The canonical repository identity and raw paths stay inside producer-owned records; the envelope carries only the digested `repositoryId`.
 
-Producers keep their own record version fields: `pc_` records keep `evidenceFormatVersion: 1`, `vr_` records keep `cacheFormatVersion: 2`, and `rr_` records use the envelope format version both in memory and when published to disk.
+Producers keep their own record version fields: `pc_` records keep `evidenceFormatVersion: 1`, `vr_` records keep `cacheFormatVersion: 3`, and `rr_` records use the envelope format version both in memory and when published to disk.
 
 ### Compatibility and version negotiation
 
@@ -109,18 +109,6 @@ The `workspace` block describes Git workspace freshness only; Codegraph index fr
 
 A `degraded` status means the producer could not fully observe the workspace and consumers must not treat the block as a complete identity.
 
-### Cross-producer repository-state comparison
-
-The `head` field is the only directly comparable workspace field across producers: it holds a Git commit object ID, and exact string equality of two non-null `head` values is authoritative evidence that both producers observed the same commit.
-
-A `head` that is null on either side is unknown state, never a match.
-
-The `repositoryId` and `dirtyDigest` fields are producer-local identities: Bash Tools hashes the realpath of the Git toplevel while Codegraph hashes its canonical root plus Git directory, and the dirty-digest inputs and bounds differ, so cross-producer equality of those fields must never be treated as authoritative.
-
-Any `degraded` status on either side makes the whole cross-producer comparison unknown.
-
-Cross-producer comparison consumes only envelope workspace fields, never private cache records, and no module is imported from the Codegraph extension.
-
 ### Semantic result defaults
 
 The default cross-extension semantic result is bounded source snippets, precise file ranges, signatures, and relevance summaries.
@@ -139,7 +127,7 @@ Flow-scoped project-command and verification records are stored below `flows/<fl
 
 Published `rr_` read evidence records share that flow directory and are keyed by their distinct `rr_` logical reference; they are bounded to 384 KiB per record, 256 KiB of stored content, and 32 entries. Each flow retains at most 128 records in memory, while durable records persist until the shared cache evicts them under the per-record, age, and directory bounds below. A record that meets the content caps but exceeds the 384 KiB serialized bound is rejected with a distinct `published: false` error instead of the unauthorized-publication error.
 
-Disk cache files use hashed logical request keys and JSON records rather than user-provided filenames.
+Disk cache files use hashed logical request keys and JSON records rather than user-provided filenames. Each `vr_` verification record is written once, keyed by its own reference, so request-key and reference lookups resolve the same durable record; records from the earlier double-written key layout stay resolvable by reference until they are overwritten or evicted.
 
 Entries are validated before use, capped at 2 MiB per record, evicted after seven days by default, and bounded to 50 MiB per cache directory.
 

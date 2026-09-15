@@ -60,6 +60,7 @@ import {
 import type { ProjectCommandRepositoryStateReader } from "../project-command/repository-state.ts";
 import { createProjectCommandRepositoryStateReader } from "../project-command/repository-state.ts";
 import { decodeUtf8Prefix } from "../truncation.ts";
+import { FLOW_ID_PATTERN } from "../value-validation.ts";
 import {
   authorizeAndPersistFilesystemAccesses,
   loadFilesystemPolicyForRequest,
@@ -103,7 +104,6 @@ const READ_BATCH_MAX_FILE_BYTES = 8 * 1024 * 1024;
 const READ_BATCH_MAX_CACHE_ENTRIES = 512;
 const READ_BATCH_REF_PREFIX = "rr_";
 const READ_BATCH_REF_PATTERN = /^rr_[0-9a-f]{24}$/u;
-const READ_BATCH_FLOW_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 const READ_BATCH_MAX_FLOW_ID_LENGTH = 64;
 const READ_BATCH_MAX_COVERS = 64;
 const READ_BATCH_MAX_COVER_LENGTH = 512;
@@ -460,7 +460,7 @@ function normalizePublishInput(value: unknown): string {
     throw filesystemInvalidRequest(`unsupported publish field "${invalidKey}"`, "publish");
   }
   const flowId = value.flowId;
-  if (typeof flowId !== "string" || !READ_BATCH_FLOW_ID_PATTERN.test(flowId)) {
+  if (typeof flowId !== "string" || !FLOW_ID_PATTERN.test(flowId)) {
     throw filesystemInvalidRequest("publish.flowId must be a bounded flow identifier", "publish");
   }
   return flowId;
@@ -480,7 +480,7 @@ function normalizeLookupInput(
   }
   const flowId = params.flowId;
   if (flowId !== undefined) {
-    if (typeof flowId !== "string" || !READ_BATCH_FLOW_ID_PATTERN.test(flowId)) {
+    if (typeof flowId !== "string" || !FLOW_ID_PATTERN.test(flowId)) {
       throw filesystemInvalidRequest("flowId must be a bounded flow identifier", "flowId");
     }
   }
@@ -589,9 +589,8 @@ function readReference(
 
 function cacheScope(): string {
   const context = readProjectCommandOrchestrationContext();
-  return context.effectiveScope === "flow" && context.flowId !== undefined
-    ? `flow:${context.flowId}`
-    : "session";
+  const flowId = effectiveOrchestrationFlowId(context);
+  return flowId !== undefined ? `flow:${flowId}` : "session";
 }
 
 interface ReadBatchScopeMetadata {
@@ -1311,7 +1310,7 @@ function createReadBatchToolWithDependencies(
           const unauthorizedFlow =
             requestedFlowId !== undefined &&
             (orchestration.effectiveScope !== "flow" || orchestration.flowId !== requestedFlowId);
-          const flowId = orchestration.effectiveScope === "flow" ? orchestration.flowId : undefined;
+          const flowId = effectiveOrchestrationFlowId(orchestration);
           const scopeInfo = scopeMetadata(cacheScope());
           let lookupOutcome: ReadEvidenceLookupOutcome | undefined;
           let lookupRoot: ResolvedReadBatchRoot | undefined;

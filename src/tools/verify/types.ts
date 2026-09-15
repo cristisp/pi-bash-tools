@@ -6,7 +6,7 @@ import type {
 import { EVIDENCE_PRODUCER } from "../../evidence/envelope.ts";
 
 export const VERIFY_PHASES = ["format", "lint", "typecheck", "test"] as const;
-export const VERIFY_CACHE_FORMAT_VERSION = 2 as const;
+export const VERIFY_CACHE_FORMAT_VERSION = 3 as const;
 
 export type VerifyPhase = (typeof VERIFY_PHASES)[number];
 export type VerifyStepStatus = "passed" | "failed" | "omitted" | "not-run";

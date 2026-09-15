@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSy
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { isRecord } from "../value-validation.ts";
+import { isRecord, FLOW_ID_PATTERN } from "../value-validation.ts";
 import {
   acquireGlobalMutationLock,
   acquireLock,
@@ -88,14 +88,13 @@ const DEFAULT_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 const DEFAULT_CACHE_MAX_BYTES = 50 * 1024 * 1024;
 const CACHE_ENTRY_FORMAT_VERSION = 1 as const;
 const CACHE_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
-const CACHE_SCOPE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 
 function cacheFileKey(scopeKey: string, logicalRequestKey: string): string {
   return createHash("sha256").update(scopeKey).update("\0").update(logicalRequestKey).digest("hex");
 }
 
 function safeScopeKey(value: string): boolean {
-  return CACHE_SCOPE_PATTERN.test(value);
+  return FLOW_ID_PATTERN.test(value);
 }
 
 function createDiskCachePath(rootDirectory: string, scopeKey: string): string | undefined {
@@ -238,7 +237,7 @@ function createProjectCommandDiskJsonCacheInternal(
       return writeRecord(authorizedScopeKey, logicalRequestKey, record);
     },
     publish(scopeKey, logicalRequestKey, record) {
-      if (!CACHE_SCOPE_PATTERN.test(scopeKey)) return false;
+      if (!FLOW_ID_PATTERN.test(scopeKey)) return false;
       return writeRecord(scopeKey, logicalRequestKey, record);
     },
     delete(scopeKey, logicalRequestKey) {

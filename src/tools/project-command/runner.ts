@@ -558,9 +558,9 @@ function getContextSessionId(ctx: ProjectCommandToolContext): string | undefined
 }
 
 function createDefaultProjectCommandResultCache(): ProjectCommandResultCache {
-  const orchestration = readProjectCommandOrchestrationContext();
-  if (orchestration.effectiveScope === "flow" && orchestration.flowId !== undefined) {
-    return createProjectCommandDiskResultCache({ scopeKey: orchestration.flowId });
+  const flowId = effectiveOrchestrationFlowId(readProjectCommandOrchestrationContext());
+  if (flowId !== undefined) {
+    return createProjectCommandDiskResultCache({ scopeKey: flowId });
   }
   return createProjectCommandResultCache();
 }
@@ -1676,7 +1676,7 @@ function evidenceLookupFlowId(
       ? requested
       : undefined;
   }
-  return orchestration.effectiveScope === "flow" ? orchestration.flowId : undefined;
+  return effectiveOrchestrationFlowId(orchestration);
 }
 
 function evidenceNotFound(ref: string, flowId: string | undefined): ProjectCommandToolError {

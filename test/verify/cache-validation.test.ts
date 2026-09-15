@@ -44,7 +44,7 @@ function validRecord(overrides: Record<string, unknown> = {}): Record<string, un
     step({ phase, command: `pnpm run ${phase}`, resolvedCommand: `pnpm run ${phase}` }),
   );
   return {
-    cacheFormatVersion: 2,
+    cacheFormatVersion: 3,
     key: "request-key",
     ref: "vr_request-key",
     projectPath: "/tmp/verify-project",
@@ -302,6 +302,7 @@ describe("isVerifyEvidenceRecord boundary validation", () => {
 
     const malformed: readonly [string, Record<string, unknown>, string | undefined][] = [
       ["cache version", { cacheFormatVersion: 1 }, undefined],
+      ["legacy cache version", { cacheFormatVersion: 2 }, undefined],
       ["empty key", { key: "" }, undefined],
       ["oversized key", { key: "k".repeat(257) }, undefined],
       ["wrong logical key", {}, "different-request-key"],

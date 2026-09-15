@@ -2,11 +2,6 @@ import { createHash } from "node:crypto";
 
 export const DEFAULT_MAX_ENTRIES = 256;
 
-export interface ObservedContentStore {
-  record(path: string, contentHash: string): void;
-  lookup(path: string): string | undefined;
-}
-
 function pathKey(path: string): string {
   return createHash("sha256").update(path, "utf8").digest("hex");
 }

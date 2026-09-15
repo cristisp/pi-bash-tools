@@ -1,4 +1,4 @@
-const FLOW_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
+export const FLOW_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 
 export function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

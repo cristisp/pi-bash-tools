@@ -5,12 +5,15 @@ import {
   type ProjectCommandDiskCacheClaim,
   type ProjectCommandDiskJsonCache,
 } from "../../project-command/cache.ts";
-import { readProjectCommandOrchestrationContext } from "../../project-command/orchestration.ts";
+import {
+  effectiveOrchestrationFlowId,
+  readProjectCommandOrchestrationContext,
+} from "../../project-command/orchestration.ts";
+import { FLOW_ID_PATTERN } from "../../value-validation.ts";
 import { MAX_CONTENT_BYTES, MAX_RECORDS } from "../output.ts";
 import type { GitDiffSummaryOutput } from "./output.ts";
 
 const GIT_DIFF_SUMMARY_CACHE_FORMAT_VERSION = 1 as const;
-const CACHE_SCOPE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 const CACHE_TEXT_MAX_LENGTH = MAX_CONTENT_BYTES;
 const CACHE_TOTAL_LINES_MAX = 4_096_000;
 
@@ -171,7 +174,7 @@ function isCacheRecord(
     !isSummary(value.summary) ||
     !isBoundedSummary(value.state, value.summary) ||
     typeof value.flowId !== "string" ||
-    !CACHE_SCOPE_PATTERN.test(value.flowId) ||
+    !FLOW_ID_PATTERN.test(value.flowId) ||
     (scopeKey !== undefined && value.flowId !== scopeKey)
   ) {
     return false;
@@ -200,10 +203,7 @@ function equalState(left: GitDiffSummaryCacheState, right: GitDiffSummaryCacheSt
 }
 
 function flowScope(): string | undefined {
-  const context = readProjectCommandOrchestrationContext();
-  return context.effectiveScope === "flow" && context.flowId !== undefined
-    ? context.flowId
-    : undefined;
+  return effectiveOrchestrationFlowId(readProjectCommandOrchestrationContext());
 }
 
 export function createGitDiffSummaryCache(

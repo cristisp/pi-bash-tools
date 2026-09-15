@@ -131,6 +131,13 @@ Authorization outcomes are recorded as bounded `bash-tools.authorization-outcome
 - [ ] Evaluate child-session approval visibility only after measuring prompt and notification outcomes. (Gate satisfied: 786 of 788 decisions were automatic, exactly 1 prompt was emitted, and it timed out after 120,012 ms, so the evaluation is unblocked and nothing in the data suggests a prompt-visibility problem that warrants code changes.)
 - [ ] Do not add automatic approval, implicit permission inheritance, or authorization bypasses to reduce failure counts.
 
+#### Approval interaction and permission visibility (exploratory, no design yet)
+
+Tracked direction, not committed work: approval notification handling and a permission overview surface.
+
+- [ ] Improve approval notification handling by hooking into `subagent-herdr` events so approval requests and outcomes surface correctly across root and child sessions. Cross-extension: Bash Tools must not import from or depend on `subagent-herdr`, so this is a compatible event or notification contract between extensions, with Bash Tools owning only its own approval-authorization side and never adding automatic approval or bypasses.
+- [ ] Evaluate a visual display of active permissions, globally and for the active workspace, so amendments to policy decisions can be made quickly. Shape is undecided; any write path must go through the existing policy store (lock, validation, fail-closed, same precedence), display must stay read-only until a designed amendment flow exists, and policy content must never leak into logs or telemetry.
+
 #### Exit criteria
 
 - Expected authorization decisions no longer inflate the implementation defect rate.
@@ -153,6 +160,39 @@ The invocation record's `availability` field was determined to be N/A by design 
 - [ ] Add digest-on-repeat to `read_batch`: the current `unchanged` path returns only the flag, `ref`, and `contentHash` with no content, and its cache key is path plus exact range, so windowed repeats and cross-range re-reads re-ship identical content (53 of 508 repeat items re-shipped 0.20 MB byte-identical; zero false-unchanged flags). Keep a session-scoped per-path map of the latest full-file content hash and `ref` fed by every successful batch item regardless of range; when a repeat re-read matches that hash, return a compact bounded digest line plus the existing `ref` instead of full content, and record a `digestOnRepeat` marker on the invocation record so adoption is measurable. Native `read` cannot be digested because interceptors cannot rewrite results, so the `read_batch`-owned result channel is the implementable surface.
 - [ ] Emit a structured code for `project_command` confirmation timeouts (and a bounded forced-bypass marker) on result details so the analyzer stops classifying `Project command confirmation timed out` results from message text. Additive, optional, bounded; the `authorization-outcome` records already carry the structured outcome for the surfaces that record them.
 - [ ] Decide whether intercepted native `grep` defaults should change: `context >= 2` carries 14.7 MB of the 16.79 MB grep result total while `context: 0` has a median result of 627 B, so defaulting context to 0 and tightening the limit saves roughly 10 MB per week. This is a native-tool behavior change (interceptors can mutate `event.input`), so it needs an explicit task-success trade-off decision and should not ship silently. A global 8 KB result cap on native results remains closed by the interception determination; caps on Bash Tools-owned results already exist, and `project_command` measured fine at 2.50 MB total with a 2.2 KB p95.
+
+### P1: Simplify evidence infrastructure
+
+A fallow and source-level analysis found the disk-cache engine and canonical-JSON hashing well centralized, but the same wrappers and validators re-implemented per evidence family with drifting bounds, plus dead weight. The work is batched by risk: Batch 1 is zero-risk deletion, Batch 2 is contained refactoring, Batch 3 touches on-disk or analyzer-visible shapes and needs versioned format decisions. A single cross-family store abstraction is deliberately not planned: per-family fail-closed publish gating is the package's core safety surface.
+
+#### Batch 1: zero-risk deletions and mechanical unification
+
+- [x] Delete `compareWorkspaceBlocksCrossProducer` and its types from `src/evidence/repository-state-comparison.ts` with its tests, and trim the corresponding `docs/artifacts.md` section. `WorkspaceBlockStateStatus` and `compareWorkspaceBlocks` stay (live production importers); coverage was added for the surviving `compareWorkspaceBlocks`.
+- [x] Delete the dead root-map branch in `ReadEvidenceStore`: the `root` map is never written, so the `flowId === undefined` paths in `getByRef` and `lookupOutcome` always return `undefined`/`missing`. The pc store's `root` map is real (runner lookups without flowId) and stays.
+- [x] Reconcile the fallow dead-code list to 0 issues. Outcome: the four fallow-flagged symbols `isNullableBoundedInteger`, `isValidPublishValue`, `truncateRenderText`, `sharedEvidenceContentHash` turned out to have live production callers and stay; the actual dead set was un-exported (`TimedPromptResult`, the `ReadBatchInvocationLookupOutcome` type, read-evidence store/validation constants and types, `READ_EVIDENCE_REF_PREFIX` and its re-export) and two fully dead types were deleted (`GitInvocationSessionContext`, `ObservedContentStore`).
+- [x] Collapse `SharedEvidenceOutputStream` into `SharedEvidenceOutputBlock`; `SharedEvidenceEnvelopeFields` was un-exported in the same pass.
+- [x] Centralize the flow-id pattern (`^[A-Za-z0-9_-]{1,64}$`, 8 call sites) in `value-validation.ts` as `FLOW_ID_PATTERN` and `SHA256_PATTERN` in `envelope.ts`; JSON-schema `pattern:` string literals intentionally unchanged.
+- Disposition on `lookupOutcome` `corrupt`: kept as-is and documented as in-memory-only via the store comment (the disk layer drops corrupt reads before classification, so the branch fires only on in-memory mutation); no taxonomy change.
+
+#### Batch 2: contained deduplication, shapes unchanged
+
+- [x] Shared `observability/bounded.ts` replaces the helper copies across `git-invocation`, `read-batch-invocation`, `project-command-invocation`, and `authorization-outcome`. Genuinely divergent variants stay local in `project-command-invocation` (empty-string `boundedOptionalIdentifier`, typed-input `boundedLookup`/`boundedPublication`, 16-item `boundedCoercions`, 12-reason `validReason`), and the field-by-field `boundedRecord` fallback stays explicit because the fallback deliberately omits `commandId`/`parameters`/`producerScope`; a JSON round-trip would widen the oversized-record persisted shape.
+- [x] Generic flow-scoped two-tier evidence store factory at `src/evidence/flow-store.ts` replaces the duplicated wiring in `project-command/evidence/store.ts` and `filesystem/read-evidence-store.ts`; the pc store enables the real root tier (runner lookups without flowId), read-evidence keeps root-scope lookups constant `undefined`/`missing`; per-family fail-closed publish gating and disk interaction order are unchanged; the fallow clone family `dup:7c838253` is gone (dupes 0 clone groups).
+- [x] `ProjectCommandOutputDetailsValidationProfile` unified at `src/tools/project-command/output-details-profiles.ts` with explicit per-profile deltas. Evidence-backed unifications: commandId 256 both (legacy variant strings up to 140 chars were being rejected on read), exit `null | 0..255` with nonempty signal (<=128) both, text 50KiB both, parameters <=128 keys / <=1MiB JSON both, diagnostic 50KiB both, suggestedAction 1024 both, resolvedCommand display cap both. Kept divergent on purpose: projectPathMaxLength 4096 vs 8192 (pinned test), `isRelevantInputs` shapes, nodeVersionMaxLength 128 vs 256, arrayMaxItems 256 vs 4096.
+- [x] `project-command-invocation.ts` split into a facade plus `types`, `bound`, `build`, `summarize`, and `recorder` modules; verbatim moves with one shared-helper delegation, no circular imports, fallow dead-code 0.
+- [x] Flow-scope gating consolidated onto `effectiveOrchestrationFlowId` at 8 sites (`runner.ts`, `read-batch-tool.ts`, `git/diff/cache.ts`, `evidence/store.ts`, `verify/cache.ts`, `verify/tool.ts`); requested-flow comparisons, producerScope assignments, and boolean-form gating remain divergent by design.
+- Accepted type-surface narrowings (zero importers, compile-proven): the invocation facade no longer re-exports 7 type-only names, and the read-evidence store keeps `READ_EVIDENCE_FORMAT_VERSION`, `MAX_PUBLISHED_READ_EVIDENCE_ENTRIES`, `ReadEvidenceProvenance`, and `ReadEvidenceStoreOptions` module-private.
+
+#### Batch 3: versioned shape changes (needs format decisions and analyzer coordination)
+
+- [x] Verify disk records are now keyed by ref with a single write per record (disk format version 2 to 3): `set`/`publish` write the bare record once at the `ref:` location, request lookup derives the ref from the key's 24-hex prefix and requires a current-version record whose key matches (fail-closed on prefix collisions), and `getByRef` tolerantly reads both bare v3 records and legacy v2-era `ref:` alias wrappers, so existing `vr_` analyzer references keep resolving; v1 records miss. The `vr_` ref format, publish gating, and public error wording are unchanged. Known limitation: `writeRecord` has no write-time version validation, so publishing a legacy v2 source record (unreachable via the tool path) would persist an unreadable record - candidate follow-up.
+- [ ] Strip duplicated provenance and repository-state encodings from the `pc_` evidence record. Design is ready in `research/pc-evidence-dedup-design.md` (drop top-level `producerScope`/`flowId`/`producerRole`/`producerDelegationId` and the envelope `workspace` block plus `scope`, keep `provenance` and raw `repositoryState` as canonical; `evidenceFormatVersion` 1 to 2 with tolerant v1 read normalization and strict v2 write validation; analyzer consumes invocation records and tool results, not pc disk records, so coordination is procedural rather than blocking). Implementation still pending user go-ahead.
+
+#### Exit criteria
+
+- No fallow dead-code findings, no fallow duplication introduced, and all gates stay green after each batch.
+- On-disk evidence formats change only with explicit version bumps, and persisted analyzer-facing fields are never dropped without coordination.
+- Fail-closed publish gating, per-family authorization semantics, and public error wording are unchanged.
 
 ### P1: Align with compact Codegraph evidence
 

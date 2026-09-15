@@ -1257,7 +1257,7 @@ function verifyLookupNotFoundError(
   const bucket =
     input.flowId !== undefined
       ? `the effective flow scope ${input.flowId}`
-      : orchestration.effectiveScope === "flow" && orchestration.flowId !== undefined
+      : effectiveOrchestrationFlowId(orchestration) !== undefined
         ? `the effective flow scope ${orchestration.flowId}`
         : "the process-local root-session cache";
   const guidance =

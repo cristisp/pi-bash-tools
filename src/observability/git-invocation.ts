@@ -4,17 +4,20 @@ import {
   isBoundedSharedEvidenceWorkspace,
   type SharedEvidenceWorkspaceBlock,
 } from "../evidence/envelope.ts";
+import {
+  boundedErrorCode,
+  boundedIdentifier,
+  boundedNumber,
+  validCompletionReason,
+} from "./bounded.ts";
 import { appendInvocationStreamRecord } from "./invocation-stream.ts";
 
 const GIT_INVOCATION_FORMAT_VERSION = 1 as const;
 export const GIT_INVOCATION_ENTRY_TYPE = "bash-tools.git-invocation" as const;
 export const GIT_INVOCATION_MAX_BYTES = 8 * 1024;
 
-const MAX_IDENTIFIER_LENGTH = 256;
-const MAX_ERROR_CODE_LENGTH = 128;
 const MAX_COERCION_NAME_LENGTH = 64;
 const MAX_COERCIONS = 4;
-const MAX_METADATA_NUMBER = 9_999_999_999;
 
 export type GitInvocationToolName = "git_status" | "git_diff" | "git_log" | "git_show";
 
@@ -69,21 +72,6 @@ export type GitInvocationRecorder = (record: GitInvocationRecord) => void;
 
 export type GitInvocationAPI = Pick<ExtensionAPI, "appendEntry">;
 
-function boundedIdentifier(value: string): string {
-  if (value.length <= MAX_IDENTIFIER_LENGTH) return value;
-  return `${value.slice(0, MAX_IDENTIFIER_LENGTH - 1)}…`;
-}
-
-function boundedErrorCode(value: string): string {
-  if (value.length <= MAX_ERROR_CODE_LENGTH) return value;
-  return `${value.slice(0, MAX_ERROR_CODE_LENGTH - 1)}…`;
-}
-
-function boundedNumber(value: number): number {
-  if (!Number.isFinite(value) || value < 0) return 0;
-  return value > MAX_METADATA_NUMBER ? MAX_METADATA_NUMBER : Math.floor(value);
-}
-
 function validTool(value: unknown): GitInvocationToolName {
   return value === "git_status" ||
     value === "git_diff" ||
@@ -91,12 +79,6 @@ function validTool(value: unknown): GitInvocationToolName {
     value === "git_show"
     ? value
     : "git_status";
-}
-
-function validReason(value: unknown): GitInvocationReason {
-  return value === "completed" || value === "cancelled" || value === "invalid-request"
-    ? value
-    : "failed";
 }
 
 function boundedCoercions(value: unknown): readonly string[] | undefined {
@@ -147,7 +129,7 @@ export function buildGitInvocationRecord(input: GitInvocationRecordInput): GitIn
     toolCallId: boundedIdentifier(input.toolCallId),
     schemaHash: boundedIdentifier(input.schemaHash),
     requestedPaths: boundedNumber(input.requestedPaths),
-    reason: validReason(input.reason),
+    reason: validCompletionReason(input.reason),
     durationMs: boundedNumber(input.durationMs),
     unchanged: input.unchanged,
     aggregate: Object.freeze({
