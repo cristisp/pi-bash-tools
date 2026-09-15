@@ -22,7 +22,8 @@ import type { ProjectCommandOutputDetails } from "../output.ts";
 import { PROJECT_COMMAND_DISPLAY_COMMAND_MAX_CHARS } from "../parameters/limits.ts";
 import type { ProjectCommandRepositoryState } from "../repository-state.ts";
 
-const PROJECT_COMMAND_EVIDENCE_FORMAT_VERSION = 1 as const;
+export const PROJECT_COMMAND_EVIDENCE_FORMAT_VERSION = 2 as const;
+const PROJECT_COMMAND_EVIDENCE_LEGACY_FORMAT_VERSION = 1 as const;
 const PROJECT_COMMAND_EVIDENCE_REF_PATTERN = /^pc_[A-Za-z0-9_-]{8,128}$/u;
 
 export function safeEvidenceKey(value: unknown): string {
@@ -210,7 +211,7 @@ function isEvidenceRecordRepositoryState(value: Readonly<Record<string, unknown>
 }
 
 function isEvidenceRecordProvenance(value: Readonly<Record<string, unknown>>): boolean {
-  return value.provenance === undefined || isProvenance(value.provenance);
+  return isProvenance(value.provenance);
 }
 
 function isEvidenceRecordPublication(value: Readonly<Record<string, unknown>>): boolean {
@@ -219,17 +220,6 @@ function isEvidenceRecordPublication(value: Readonly<Record<string, unknown>>): 
 
 function isEvidenceRecordEnvelopeFields(value: Readonly<Record<string, unknown>>): boolean {
   return isBoundedSharedEvidenceFields(value, ["project-command"]);
-}
-
-function isEvidenceRecordProducer(value: Readonly<Record<string, unknown>>): boolean {
-  return (
-    (value.producerScope === undefined ||
-      value.producerScope === "session" ||
-      value.producerScope === "flow") &&
-    (value.flowId === undefined || isBoundedString(value.flowId, 64)) &&
-    (value.producerRole === undefined || isBoundedString(value.producerRole, 64)) &&
-    (value.producerDelegationId === undefined || isBoundedString(value.producerDelegationId, 64))
-  );
 }
 
 function isEvidenceRecordScope(
@@ -242,6 +232,64 @@ function isEvidenceRecordScope(
       value.provenance.scope === "flow" &&
       value.provenance.flowId === scopeKey)
   );
+}
+
+function legacyEvidenceProvenance(
+  value: Readonly<Record<string, unknown>>,
+): ProjectCommandEvidenceProvenance | undefined {
+  const scope = value.producerScope;
+  if (scope !== "session" && scope !== "flow") return undefined;
+  const flowId = isBoundedString(value.flowId, 64) ? value.flowId : undefined;
+  if (scope === "flow" && flowId === undefined) return undefined;
+  const producerRole = isBoundedString(value.producerRole, 64) ? value.producerRole : undefined;
+  const producerDelegationId = isBoundedString(value.producerDelegationId, 64)
+    ? value.producerDelegationId
+    : undefined;
+  const details = isRecord(value.details) ? value.details : undefined;
+  const producerInvocationId = details?.producerInvocationId;
+  const boundedProducerInvocationId = isBoundedString(producerInvocationId, 256)
+    ? producerInvocationId
+    : undefined;
+  return {
+    scope,
+    ...(flowId === undefined ? {} : { flowId }),
+    ...(producerRole === undefined ? {} : { producerRole }),
+    ...(producerDelegationId === undefined ? {} : { producerDelegationId }),
+    ...(boundedProducerInvocationId === undefined
+      ? {}
+      : { producerInvocationId: boundedProducerInvocationId }),
+  };
+}
+
+const PC_EVIDENCE_DROPPED_LEGACY_FIELDS = [
+  "producerScope",
+  "flowId",
+  "producerRole",
+  "producerDelegationId",
+  "workspace",
+  "scope",
+] as const;
+
+export function normalizeEvidenceRecord(
+  value: unknown,
+  scopeKey?: string,
+): ProjectCommandEvidenceRecord | undefined {
+  if (!isRecord(value)) return undefined;
+  if (value.evidenceFormatVersion === PROJECT_COMMAND_EVIDENCE_FORMAT_VERSION) {
+    return isEvidenceRecord(value, scopeKey) ? value : undefined;
+  }
+  if (value.evidenceFormatVersion !== PROJECT_COMMAND_EVIDENCE_LEGACY_FORMAT_VERSION) {
+    return undefined;
+  }
+  if (value.provenance !== undefined && !isProvenance(value.provenance)) return undefined;
+  const provenance = value.provenance ?? legacyEvidenceProvenance(value);
+  if (provenance === undefined) return undefined;
+  const normalized: Record<string, unknown> = { ...value, provenance };
+  for (const field of PC_EVIDENCE_DROPPED_LEGACY_FIELDS) {
+    delete normalized[field];
+  }
+  normalized.evidenceFormatVersion = PROJECT_COMMAND_EVIDENCE_FORMAT_VERSION;
+  return isEvidenceRecord(normalized, scopeKey) ? Object.freeze(normalized) : undefined;
 }
 
 export function isEvidenceRecord(
@@ -259,7 +307,6 @@ export function isEvidenceRecord(
     isEvidenceRecordProvenance(record) &&
     isEvidenceRecordPublication(record) &&
     isEvidenceRecordEnvelopeFields(record) &&
-    isEvidenceRecordProducer(record) &&
     isEvidenceRecordScope(record, scopeKey)
   );
 }

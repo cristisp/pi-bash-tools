@@ -1,21 +1,21 @@
 import {
   aggregateSharedEvidenceOutput,
   EVIDENCE_PRODUCER,
-  mapEvidenceScope,
   sharedEvidenceRequestHash,
-  sharedWorkspaceBlock,
   type SharedEvidenceKind,
   type SharedEvidenceOutputBlock,
-  type SharedEvidenceWorkspaceBlock,
 } from "../../evidence/envelope.ts";
 import { createProjectCommandDiskJsonCache } from "./cache.ts";
-import { isEvidenceRecord, safeEvidenceKey } from "./evidence/record-validation.ts";
-export { isEvidenceRecord };
+import {
+  isEvidenceRecord,
+  normalizeEvidenceRecord,
+  PROJECT_COMMAND_EVIDENCE_FORMAT_VERSION,
+  safeEvidenceKey,
+} from "./evidence/record-validation.ts";
+export { isEvidenceRecord, normalizeEvidenceRecord };
 import { createProjectCommandEvidenceStoreInternal } from "./evidence/store.ts";
 import type { ProjectCommandOutputDetails } from "./output.ts";
 import type { ProjectCommandRepositoryState } from "./repository-state.ts";
-
-const PROJECT_COMMAND_EVIDENCE_FORMAT_VERSION = 1 as const;
 
 export interface ProjectCommandEvidenceProvenance {
   readonly scope: "session" | "flow";
@@ -43,16 +43,10 @@ export interface ProjectCommandEvidenceRecord {
   readonly createdAt: number;
   readonly producer?: typeof EVIDENCE_PRODUCER;
   readonly kind?: SharedEvidenceKind;
-  readonly scope?: "session" | "flow";
   readonly requestHash?: string;
   readonly contentHash?: string;
-  readonly workspace?: SharedEvidenceWorkspaceBlock;
   readonly output?: SharedEvidenceOutputBlock;
-  readonly producerScope?: "session" | "flow";
-  readonly flowId?: string;
-  readonly producerRole?: string;
-  readonly producerDelegationId?: string;
-  readonly provenance?: ProjectCommandEvidenceProvenance;
+  readonly provenance: ProjectCommandEvidenceProvenance;
   readonly publication?: ProjectCommandEvidencePublication;
 }
 
@@ -104,12 +98,13 @@ export function createProjectCommandEvidenceRecord(
     | "createdAt"
     | "producer"
     | "kind"
-    | "scope"
     | "requestHash"
     | "contentHash"
-    | "workspace"
     | "output"
-  > & { readonly repositoryState?: ProjectCommandRepositoryState },
+  > & {
+    readonly repositoryState?: ProjectCommandRepositoryState;
+    readonly provenance: ProjectCommandEvidenceProvenance;
+  },
 ): ProjectCommandEvidenceRecord {
   const digest = projectCommandEvidenceDigest(details);
   const ref = `pc_${digest.slice(0, 24)}`;
@@ -119,28 +114,18 @@ export function createProjectCommandEvidenceRecord(
     ref,
     producer: EVIDENCE_PRODUCER,
     kind: "project-command" as const,
-    scope: mapEvidenceScope(options.producerScope ?? "session"),
     requestHash: sharedEvidenceRequestHash({
       commandId: details.commandId,
       projectPath: details.projectPath,
       parameters: details.parameters,
     }),
     contentHash: digest,
-    ...(options.repositoryState === undefined
-      ? {}
-      : { workspace: sharedWorkspaceBlock(options.repositoryState) }),
     output: aggregateSharedEvidenceOutput([details.output.stdout, details.output.stderr]),
     details: Object.freeze({ ...details, ref }),
     ...(options.repositoryState === undefined ? {} : { repositoryState: options.repositoryState }),
     covers: Object.freeze([...(options.covers ?? [])].slice(0, 64)),
     createdAt: Date.now(),
-    ...(options.producerScope === undefined ? {} : { producerScope: options.producerScope }),
-    ...(options.flowId === undefined ? {} : { flowId: options.flowId }),
-    ...(options.producerRole === undefined ? {} : { producerRole: options.producerRole }),
-    ...(options.producerDelegationId === undefined
-      ? {}
-      : { producerDelegationId: options.producerDelegationId }),
-    ...(options.provenance === undefined ? {} : { provenance: options.provenance }),
+    provenance: options.provenance,
     ...(options.publication === undefined ? {} : { publication: options.publication }),
   });
 }
@@ -156,5 +141,6 @@ export function createProjectCommandEvidenceStore(
         rootDirectory === undefined ? {} : { rootDirectory },
         validate,
       ),
+    normalizeEvidenceRecord,
   );
 }

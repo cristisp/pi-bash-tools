@@ -75,7 +75,12 @@ Envelope fields are additive on top of each producer's own record shape:
 
 The canonical repository identity and raw paths stay inside producer-owned records; the envelope carries only the digested `repositoryId`.
 
-Producers keep their own record version fields: `pc_` records keep `evidenceFormatVersion: 1`, `vr_` records keep `cacheFormatVersion: 3`, and `rr_` records use the envelope format version both in memory and when published to disk.
+Producers keep their own record version fields: `pc_` records keep `evidenceFormatVersion: 2`, `vr_` records keep `cacheFormatVersion: 3`, and `rr_` records use the envelope format version both in memory and when published to disk.
+
+A canonical `pc_` record carries its producer identity once in `provenance` (`scope`, an optional `flowId`, and optional producer invocation, session, role, and delegation identifiers), keeps the raw `repositoryState` block that model-facing details need, and carries the envelope identity fields (`producer`, `kind`, `requestHash`, `contentHash`) without a duplicate top-level identity or `workspace` block.
+
+`pc_` readers accept stored `evidenceFormatVersion: 1` records by normalizing them in memory into the canonical shape: top-level producer identity fields are mapped into `provenance` when it is absent, and the redundant `workspace` and envelope `scope` fields are ignored.
+Normalization is never persisted, so an in-memory read of a legacy record returns the canonical view while the stored bytes stay unchanged until the next write at the same reference overwrites them with a version 2 record.
 
 ### Compatibility and version negotiation
 

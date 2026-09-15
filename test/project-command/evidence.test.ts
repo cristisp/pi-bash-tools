@@ -9,6 +9,7 @@ import {
   createProjectCommandEvidenceRecord,
   createProjectCommandEvidenceStore,
   isEvidenceRecord,
+  normalizeEvidenceRecord,
   type ProjectCommandEvidenceRecord,
   type ProjectCommandEvidenceStore,
 } from "../../src/tools/project-command/evidence.ts";
@@ -61,8 +62,6 @@ function record(scope: "session" | "flow" = "session") {
       head: "HEAD",
       dirtyFilesDigest: "clean",
     },
-    producerScope: scope,
-    ...(scope === "flow" ? { flowId: "flow-a" } : {}),
     provenance:
       scope === "flow"
         ? { scope: "flow", flowId: "flow-a", producerInvocationId: "producer" }
@@ -79,7 +78,6 @@ function recordWithDetails(overrides: Record<string, unknown>) {
         head: "HEAD",
         dirtyFilesDigest: "clean",
       },
-      producerScope: "session",
       provenance: { scope: "session", producerInvocationId: "producer" },
     },
   );
@@ -240,8 +238,6 @@ it("rejects publication from one effective flow into another", () => {
       head: "HEAD",
       dirtyFilesDigest: "clean",
     },
-    producerScope: "flow",
-    flowId: "flow-a",
     provenance: { scope: "flow", flowId: "flow-a" },
   });
   store.set(flowRecord, "flow-a");
@@ -457,7 +453,9 @@ it("stores and returns a fractional-duration record through the real durable sto
 it("validates the evidence envelope and publication scope boundaries", () => {
   const valid = record();
   const malformed: readonly [string, Record<string, unknown>][] = [
-    ["format version", { evidenceFormatVersion: 2 }],
+    ["format version", { evidenceFormatVersion: 1 }],
+    ["future format version", { evidenceFormatVersion: 3 }],
+    ["missing provenance", { provenance: undefined }],
     ["key", { key: "not-the-content-key" }],
     ["ref", { ref: "invalid-ref" }],
     ["covers", { covers: Array.from({ length: 65 }, () => "cover") }],
@@ -466,10 +464,6 @@ it("validates the evidence envelope and publication scope boundaries", () => {
     ["repository state", { repositoryState: { head: 1 } }],
     ["provenance", { provenance: { scope: "other" } }],
     ["publication", { publication: { scope: "session" } }],
-    ["producer scope", { producerScope: "other" }],
-    ["flow id", { flowId: "f".repeat(65) }],
-    ["producer role", { producerRole: "r".repeat(65) }],
-    ["delegation id", { producerDelegationId: "d".repeat(65) }],
   ];
   for (const [label, overrides] of malformed) {
     expect(isEvidenceRecord({ ...valid, ...overrides }), label).toBe(false);
@@ -495,12 +489,10 @@ it("validates the evidence envelope and publication scope boundaries", () => {
         flowId: "f".repeat(64),
         published: false,
       },
-      producerScope: "session",
-      flowId: "f".repeat(64),
-      producerRole: "r".repeat(64),
-      producerDelegationId: "d".repeat(64),
     }),
   ).toBe(true);
+
+  expect(isEvidenceRecord({ ...valid, producerScope: "other", flowId: "f".repeat(65) })).toBe(true);
 
   const flow = record("flow");
   expect(isEvidenceRecord(flow, "flow-a")).toBe(true);
@@ -519,31 +511,49 @@ it("carries the shared evidence envelope additively on pc_ records", () => {
   }
   expect(created.producer).toBe("bash-tools");
   expect(created.kind).toBe("project-command");
-  expect(created.scope).toBe("session");
+  expect(created.evidenceFormatVersion).toBe(2);
   expect(created.requestHash).toMatch(/^[0-9a-f]{64}$/u);
   expect(created.contentHash).toMatch(/^[0-9a-f]{64}$/u);
   expect(created.ref).toBe(`pc_${created.contentHash.slice(0, 24)}`);
-  expect(created.workspace).toEqual({
-    repositoryId: sharedRepositoryId("/repo"),
-    head: "HEAD",
-    dirtyDigest: "clean",
-    status: "readable",
+  expect(created.provenance).toEqual({
+    scope: "session",
+    producerInvocationId: "producer",
   });
   expect(created.output).toEqual({ truncated: false, totalBytes: 2, totalLines: 1 });
   expect(isEvidenceRecord(created)).toBe(true);
 
   const flowRecord = record("flow");
-  expect(flowRecord.scope).toBe("flow");
-  expect(flowRecord.producerScope).toBe("flow");
+  expect(flowRecord.provenance).toEqual({
+    scope: "flow",
+    flowId: "flow-a",
+    producerInvocationId: "producer",
+  });
+  const serialized = JSON.stringify(created);
+  const createdKeys = Object.keys(created);
+  for (const dropped of [
+    "scope",
+    "workspace",
+    "producerScope",
+    "flowId",
+    "producerRole",
+    "producerDelegationId",
+  ]) {
+    expect(createdKeys.includes(dropped), dropped).toBe(false);
+  }
+  expect(serialized).toContain('"evidenceFormatVersion":2');
 });
 
 it("maps the pc_ request identity into the envelope request hash", () => {
-  const first = createProjectCommandEvidenceRecord(details(), {});
-  const second = createProjectCommandEvidenceRecord(details(), {});
+  const first = createProjectCommandEvidenceRecord(details(), {
+    provenance: { scope: "session", producerInvocationId: "producer" },
+  });
+  const second = createProjectCommandEvidenceRecord(details(), {
+    provenance: { scope: "session", producerInvocationId: "producer" },
+  });
   expect(first.requestHash).toBe(second.requestHash);
   const changed = createProjectCommandEvidenceRecord(
     { ...details(), parameters: { variant: "check" } },
-    {},
+    { provenance: { scope: "session", producerInvocationId: "producer" } },
   );
   expect(changed.requestHash).not.toBe(first.requestHash);
   expect(changed.contentHash).not.toBe(first.contentHash);
@@ -619,6 +629,126 @@ it("accepts legacy pc_ records without envelope fields and rejects malformed env
   ];
   for (const [label, overrides] of malformed) {
     expect(isEvidenceRecord({ ...created, ...overrides }), label).toBe(false);
+  }
+});
+
+function legacyRecordFixture(
+  detailsOverrides: Record<string, unknown> = {},
+): ProjectCommandEvidenceRecord {
+  const legacy = {
+    ...createProjectCommandEvidenceRecord(
+      { ...details(), ...detailsOverrides },
+      {
+        repositoryState: {
+          repositoryIdentity: "/repo",
+          head: "HEAD",
+          dirtyFilesDigest: "clean",
+        },
+        provenance: { scope: "flow", flowId: "flow-a", producerInvocationId: "producer" },
+      },
+    ),
+  };
+  Reflect.set(legacy, "evidenceFormatVersion", 1);
+  Reflect.set(legacy, "provenance", undefined);
+  Reflect.set(legacy, "producerScope", "flow");
+  Reflect.set(legacy, "flowId", "flow-a");
+  Reflect.set(legacy, "producerRole", "worker");
+  Reflect.set(legacy, "producerDelegationId", "delegation-1");
+  return legacy;
+}
+
+it("normalizes legacy v1 records into canonical v2 shape and misses unnormalizable ones", () => {
+  const legacy = legacyRecordFixture();
+  expect(isEvidenceRecord(legacy)).toBe(false);
+  const normalized = normalizeEvidenceRecord(legacy);
+  expect(normalized).toBeDefined();
+  if (normalized === undefined) throw new Error("missing normalized record");
+  expect(normalized.evidenceFormatVersion).toBe(2);
+  expect(normalized.provenance).toEqual({
+    scope: "flow",
+    flowId: "flow-a",
+    producerRole: "worker",
+    producerDelegationId: "delegation-1",
+  });
+  expect(isEvidenceRecord(normalized)).toBe(true);
+  const normalizedKeys = Object.keys(normalized);
+  for (const dropped of ["workspace", "scope", "producerScope"]) {
+    expect(normalizedKeys.includes(dropped), dropped).toBe(false);
+  }
+
+  const stripped = legacyRecordFixture();
+  for (const field of [
+    "producerScope",
+    "flowId",
+    "producerRole",
+    "producerDelegationId",
+    "scope",
+  ]) {
+    Reflect.deleteProperty(stripped, field);
+  }
+  expect(normalizeEvidenceRecord(stripped)).toBeUndefined();
+
+  const brokenProvenance = { ...legacyRecordFixture(), provenance: { scope: "other" } };
+  expect(normalizeEvidenceRecord(brokenProvenance)).toBeUndefined();
+});
+
+it("maps legacy producer invocation identity into the normalized provenance", () => {
+  const legacy = legacyRecordFixture({ producerInvocationId: "call-1" });
+  const normalized = normalizeEvidenceRecord(legacy);
+  expect(normalized?.provenance).toEqual({
+    scope: "flow",
+    flowId: "flow-a",
+    producerRole: "worker",
+    producerDelegationId: "delegation-1",
+    producerInvocationId: "call-1",
+  });
+});
+
+it("rejects legacy v1 writes, resolves durable v1 reads normalized, and heals by overwrite", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bash-tools-evidence-legacy-"));
+  roots.push(root);
+  vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
+  vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
+  const store = createProjectCommandEvidenceStore({ rootDirectory: root });
+  const current = record("flow");
+  const legacy = legacyRecordFixture();
+
+  expect(store.set(legacy)).toBe(false);
+  expect(store.getByRef(current.ref, "flow-a")).toBeUndefined();
+
+  const seeded = createProjectCommandEvidenceStore({ rootDirectory: root });
+  expect(seeded.set(current, "flow-a")).toBe(true);
+
+  const directory = join(root, "flows", "flow-a", "project-command");
+  const [fileName] = await readdir(directory);
+  if (fileName === undefined) throw new Error("missing persisted evidence file");
+  const filePath = join(directory, fileName);
+  const serialized = await readFile(filePath, "utf8");
+  const degraded = JSON.stringify({ ...JSON.parse(serialized), ...legacy });
+  await writeFile(filePath, degraded, "utf8");
+
+  const reloaded = createProjectCommandEvidenceStore({ rootDirectory: root });
+  const resolved = reloaded.getByRef(current.ref, "flow-a");
+  expect(resolved?.evidenceFormatVersion).toBe(2);
+  expect(resolved?.provenance).toEqual({
+    scope: "flow",
+    flowId: "flow-a",
+    producerRole: "worker",
+    producerDelegationId: "delegation-1",
+  });
+
+  const healed = record("flow");
+  expect(healed.ref).toBe(current.ref);
+  expect(reloaded.set(healed, "flow-a")).toBe(true);
+
+  const [healedFileName] = await readdir(directory);
+  if (healedFileName === undefined) throw new Error("missing persisted evidence file");
+  const healedText = await readFile(join(directory, healedFileName), "utf8");
+  const healedRecord: Record<string, unknown> = JSON.parse(healedText);
+  expect(healedRecord.evidenceFormatVersion).toBe(2);
+  const healedKeys = Object.keys(healedRecord);
+  for (const dropped of ["producerScope", "flowId", "workspace", "scope"]) {
+    expect(healedKeys.includes(dropped), dropped).toBe(false);
   }
 });
 

@@ -18,10 +18,6 @@ export type SharedEvidenceScope = "session" | "flow";
 
 export type SharedEvidenceKind = "project-command" | "verify" | "read-batch";
 
-export function mapEvidenceScope(scope: "root" | "session" | "flow"): SharedEvidenceScope {
-  return scope === "flow" ? "flow" : "session";
-}
-
 export interface SharedEvidenceWorkspaceBlock {
   readonly repositoryId: string;
   readonly head: string | null;

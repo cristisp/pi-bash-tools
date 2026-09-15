@@ -1,5 +1,6 @@
 import type { ProjectCommandDiskJsonCache } from "../tools/project-command/cache.ts";
 import { readProjectCommandOrchestrationContext } from "../tools/project-command/orchestration.ts";
+import { isRecord } from "../tools/value-validation.ts";
 
 export type FlowEvidenceRecordValidator<RecordT> = (
   value: unknown,
@@ -18,6 +19,8 @@ export interface FlowEvidenceStoreOptions<RecordT extends { readonly ref: string
   readonly maxFlowRecords: number;
   readonly maxRootRecords?: number;
   readonly validate: FlowEvidenceRecordValidator<RecordT>;
+  /** Tolerant read for legacy records; returned copies are read views and never persisted. */
+  readonly normalize?: (value: unknown, scopeKey?: string) => RecordT | undefined;
   readonly createDiskCache: FlowEvidenceDiskCacheFactory;
 }
 
@@ -46,6 +49,9 @@ export function createFlowEvidenceStore<RecordT extends { readonly ref: string }
   options: FlowEvidenceStoreOptions<RecordT>,
 ): FlowEvidenceStoreCore<RecordT> {
   const { refPattern, validate } = options;
+  const readRecord: (value: unknown, scopeKey?: string) => RecordT | undefined =
+    options.normalize ??
+    ((value: unknown, scopeKey?: string) => (validate(value, scopeKey) ? value : undefined));
   const maxRootRecords = options.maxRootRecords;
   const root = maxRootRecords === undefined ? undefined : new Map<string, RecordT>();
   const flows = new Map<string, Map<string, RecordT>>();
@@ -53,8 +59,9 @@ export function createFlowEvidenceStore<RecordT extends { readonly ref: string }
     rootDirectory,
     (value, logicalRequestKey, scopeKey) =>
       logicalRequestKey !== undefined &&
-      validate(value, scopeKey) &&
-      value.ref === logicalRequestKey,
+      isRecord(value) &&
+      value.ref === logicalRequestKey &&
+      readRecord(value, scopeKey) !== undefined,
   );
 
   function trim(records: Map<string, RecordT>, maxRecords: number): void {
@@ -87,15 +94,15 @@ export function createFlowEvidenceStore<RecordT extends { readonly ref: string }
       if (flowId === undefined) {
         if (root === undefined) return undefined;
         const value = root.get(ref);
-        return value !== undefined && validate(value) ? value : undefined;
+        return value === undefined ? undefined : readRecord(value);
       }
       const inMemory = flows.get(flowId)?.get(ref);
-      if (inMemory !== undefined && validate(inMemory, flowId)) return inMemory;
+      if (inMemory !== undefined) {
+        const normalized = readRecord(inMemory, flowId);
+        if (normalized !== undefined) return normalized;
+      }
       return readProjectCommandOrchestrationContext().effectiveScope === "flow"
-        ? (() => {
-            const value = disk.get(flowId, ref);
-            return validate(value, flowId) ? value : undefined;
-          })()
+        ? readRecord(disk.get(flowId, ref), flowId)
         : undefined;
     },
     lookupOutcome(ref, flowId) {
@@ -104,10 +111,12 @@ export function createFlowEvidenceStore<RecordT extends { readonly ref: string }
         if (root === undefined) return "missing";
         const value = root.get(ref);
         if (value === undefined) return "missing";
-        return validate(value) ? "found" : "corrupt";
+        return readRecord(value) !== undefined ? "found" : "corrupt";
       }
       const inMemory = flows.get(flowId)?.get(ref);
-      if (inMemory !== undefined) return validate(inMemory, flowId) ? "found" : "corrupt";
+      if (inMemory !== undefined) {
+        return readRecord(inMemory, flowId) !== undefined ? "found" : "corrupt";
+      }
       return "missing";
     },
     readFlowRecord: (flowId, ref) => flows.get(flowId)?.get(ref),

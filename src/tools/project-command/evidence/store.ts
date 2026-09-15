@@ -16,6 +16,11 @@ import {
   type ProjectCommandOrchestrationContext,
 } from "../orchestration.ts";
 
+type FlowEvidenceRecordNormalizer = (
+  value: unknown,
+  scopeKey?: string,
+) => ProjectCommandEvidenceRecord | undefined;
+
 const PROJECT_COMMAND_EVIDENCE_MAX_RECORDS = 256;
 const PROJECT_COMMAND_EVIDENCE_REF_PATTERN = /^pc_[A-Za-z0-9_-]{8,128}$/u;
 
@@ -45,20 +50,26 @@ function findPublicationSource(
   return core.readRootRecord(ref);
 }
 
-function isPublishableEvidenceSource(
+function publishableEvidenceSource(
   source: ProjectCommandEvidenceRecord | undefined,
   flowId: string,
   repositoryIdentity: string | undefined,
   orchestration: ProjectCommandOrchestrationContext,
-  isEvidenceRecord: FlowEvidenceRecordValidator<ProjectCommandEvidenceRecord>,
-): source is ProjectCommandEvidenceRecord {
+  normalize: FlowEvidenceRecordNormalizer,
+): ProjectCommandEvidenceRecord | undefined {
   const scopeKey = orchestration.effectiveScope === "flow" ? flowId : undefined;
-  if (source === undefined || !isEvidenceRecord(source, scopeKey)) return false;
-  if (source.provenance?.scope === "flow" && source.provenance.flowId !== flowId) return false;
-  return (
-    repositoryIdentity !== undefined &&
-    source.repositoryState?.repositoryIdentity === repositoryIdentity
-  );
+  const candidate = source === undefined ? undefined : normalize(source, scopeKey);
+  if (candidate === undefined) return undefined;
+  if (candidate.provenance.scope === "flow" && candidate.provenance.flowId !== flowId) {
+    return undefined;
+  }
+  if (
+    repositoryIdentity === undefined ||
+    candidate.repositoryState?.repositoryIdentity !== repositoryIdentity
+  ) {
+    return undefined;
+  }
+  return candidate;
 }
 
 function createPublishedEvidenceRecord(
@@ -76,10 +87,8 @@ function createPublishedEvidenceRecord(
   return Object.freeze({
     ...source,
     details: Object.freeze({ ...source.details, publication: publishedMetadata }),
-    producerScope: "flow" as const,
-    flowId,
     provenance: {
-      ...(source.provenance ?? { scope: "session" as const }),
+      ...source.provenance,
       scope: "flow" as const,
       flowId,
     },
@@ -91,12 +100,15 @@ export function createProjectCommandEvidenceStoreInternal(
   options: ProjectCommandEvidenceStoreOptions,
   isEvidenceRecord: FlowEvidenceRecordValidator<ProjectCommandEvidenceRecord>,
   createDiskCache: FlowEvidenceDiskCacheFactory,
+  normalize: FlowEvidenceRecordNormalizer = (value, scopeKey) =>
+    isEvidenceRecord(value, scopeKey) ? value : undefined,
 ): ProjectCommandEvidenceStore {
   const core = createFlowEvidenceStore<ProjectCommandEvidenceRecord>(options.rootDirectory, {
     refPattern: PROJECT_COMMAND_EVIDENCE_REF_PATTERN,
     maxFlowRecords: PROJECT_COMMAND_EVIDENCE_MAX_RECORDS,
     maxRootRecords: PROJECT_COMMAND_EVIDENCE_MAX_RECORDS,
     validate: isEvidenceRecord,
+    normalize,
     createDiskCache,
   });
 
@@ -116,18 +128,15 @@ export function createProjectCommandEvidenceStoreInternal(
       const orchestration = readProjectCommandOrchestrationContext();
       if (!hasAuthorizedOrchestrationScope(orchestration, flowId)) return false;
       const source = findPublicationSource(core, ref, orchestration);
-      if (
-        !isPublishableEvidenceSource(
-          source,
-          flowId,
-          repositoryIdentity,
-          orchestration,
-          isEvidenceRecord,
-        )
-      ) {
-        return false;
-      }
-      const published = createPublishedEvidenceRecord(source, flowId, publication);
+      const candidate = publishableEvidenceSource(
+        source,
+        flowId,
+        repositoryIdentity,
+        orchestration,
+        normalize,
+      );
+      if (candidate === undefined) return false;
+      const published = createPublishedEvidenceRecord(candidate, flowId, publication);
       if (!isEvidenceRecord(published, flowId)) return false;
       return core.writeFlowRecord(flowId, ref, published, "publish");
     },

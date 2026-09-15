@@ -1062,7 +1062,7 @@ function withEvidencePublication(
           repositoryState: record.repositoryState,
           recordedRepositoryState: record.repositoryState,
         }),
-    ...(record.provenance === undefined ? {} : { provenance: record.provenance }),
+    provenance: record.provenance,
     ...(state.publication === undefined ? {} : { publication: state.publication }),
   };
 }
@@ -1083,10 +1083,6 @@ function storeEvidence(
   const record = createProjectCommandEvidenceRecord(details, {
     repositoryState: state.repositoryState,
     covers: state.covers,
-    producerScope: state.producerScope ?? "session",
-    ...(state.flowId === undefined ? {} : { flowId: state.flowId }),
-    ...(state.producerRole === undefined ? {} : { producerRole: state.producerRole }),
-    ...(state.delegationId === undefined ? {} : { producerDelegationId: state.delegationId }),
     provenance,
   });
   state.evidenceRef = record.ref;
@@ -1736,21 +1732,7 @@ async function executeEvidenceLookup(
     }
   }
   const status = repositoryStateStatus(record.repositoryState, currentRepositoryState);
-  const provenance =
-    record.provenance ??
-    (record.producerScope === undefined
-      ? undefined
-      : {
-          scope: record.producerScope,
-          ...(record.flowId === undefined ? {} : { flowId: record.flowId }),
-          ...(record.producerRole === undefined ? {} : { producerRole: record.producerRole }),
-          ...(record.producerDelegationId === undefined
-            ? {}
-            : { producerDelegationId: record.producerDelegationId }),
-          ...(record.details.producerInvocationId === undefined
-            ? {}
-            : { producerInvocationId: record.details.producerInvocationId }),
-        });
+  const provenance = record.provenance;
   const details = {
     ...record.details,
     ref: record.ref,
@@ -1763,7 +1745,7 @@ async function executeEvidenceLookup(
         }),
     ...(currentRepositoryState === undefined ? {} : { currentRepositoryState }),
     repositoryStateStatus: status,
-    ...(provenance === undefined ? {} : { provenance }),
+    provenance,
     ...(record.publication === undefined ? {} : { publication: record.publication }),
   } satisfies ProjectCommandOutputDetails;
   state.commandId = record.details.commandId;

@@ -8,19 +8,10 @@ import {
   isBoundedSharedEvidenceOutput,
   isBoundedSharedEvidenceRecord,
   isBoundedSharedEvidenceWorkspace,
-  mapEvidenceScope,
   sharedEvidenceRequestHash,
   sharedRepositoryId,
   sharedWorkspaceBlock,
 } from "../../src/evidence/envelope.ts";
-
-describe("mapEvidenceScope", () => {
-  it("maps the root session name to the envelope session scope", () => {
-    expect(mapEvidenceScope("root")).toBe("session");
-    expect(mapEvidenceScope("session")).toBe("session");
-    expect(mapEvidenceScope("flow")).toBe("flow");
-  });
-});
 
 describe("workspace blocks", () => {
   it("hashes the repository identity and keeps workspace digests", () => {
