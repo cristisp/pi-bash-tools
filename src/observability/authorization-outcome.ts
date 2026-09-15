@@ -60,6 +60,8 @@ export interface AuthorizationOutcomeRecordInput extends AuthorizationOutcomeCor
   readonly toolCallId: string;
   readonly mode?: AuthorizationInteractionMode;
   readonly flowId?: string;
+  readonly role?: string;
+  readonly delegationId?: string;
 }
 
 export interface AuthorizationOutcomeRecord {
@@ -75,12 +77,21 @@ export interface AuthorizationOutcomeRecord {
   readonly executionAttempted: boolean;
   readonly mode?: AuthorizationInteractionMode;
   readonly flowId?: string;
+  readonly role?: string;
+  readonly delegationId?: string;
   readonly decisionSource?: PolicyDecisionSource;
 }
 
 export type AuthorizationOutcomeRecorder = (record: AuthorizationOutcomeRecord) => void;
 
 export type AuthorizationOutcomeObserver = (core: AuthorizationOutcomeCore) => void;
+
+/** Structural slice of an orchestration context that may carry worker identity. */
+export interface AuthorizationOutcomeAttribution {
+  readonly orchestrated?: boolean;
+  readonly role?: string;
+  readonly delegationId?: string;
+}
 
 export type AuthorizationOutcomeAPI = Pick<ExtensionAPI, "appendEntry">;
 
@@ -154,6 +165,8 @@ export function buildAuthorizationOutcomeRecord(
   const commandId = typeof input.commandId === "string" ? input.commandId : undefined;
   const mode = validInteractionMode(input.mode);
   const flowId = boundedOptionalIdentifier(input.flowId);
+  const role = boundedOptionalIdentifier(input.role);
+  const delegationId = boundedOptionalIdentifier(input.delegationId);
   const decisionSource = validDecisionSource(input.decisionSource);
   return Object.freeze({
     authorizationFormatVersion: AUTHORIZATION_OUTCOME_FORMAT_VERSION,
@@ -170,6 +183,8 @@ export function buildAuthorizationOutcomeRecord(
     executionAttempted: input.executionAttempted === true,
     ...(mode === undefined ? {} : { mode }),
     ...(flowId === undefined ? {} : { flowId }),
+    ...(role === undefined ? {} : { role }),
+    ...(delegationId === undefined ? {} : { delegationId }),
     ...(decisionSource === undefined ? {} : { decisionSource }),
   });
 }
@@ -202,6 +217,18 @@ export function createAuthorizationOutcomeRecorder(
   };
 }
 
+/** Resolve the attribution identifiers an orchestrated caller may carry onto records. */
+function attributionIdentifiers(attribution: AuthorizationOutcomeAttribution | undefined): {
+  readonly role?: string;
+  readonly delegationId?: string;
+} {
+  if (attribution?.orchestrated !== true) return {};
+  return {
+    ...(attribution.role === undefined ? {} : { role: attribution.role }),
+    ...(attribution.delegationId === undefined ? {} : { delegationId: attribution.delegationId }),
+  };
+}
+
 /**
  * Create a per-call observer that fills in surface identity and emits bounded records.
  * Returns undefined when observability is inactive so authorization stays untouched.
@@ -214,9 +241,12 @@ export function createAuthorizationOutcomeObserver(options: {
   readonly toolCallId: string;
   readonly mode?: AuthorizationInteractionMode;
   readonly flowId?: string;
+  readonly attribution?: AuthorizationOutcomeAttribution;
 }): AuthorizationOutcomeObserver | undefined {
-  const { surface, commandId, recorder, sessionId, toolCallId, mode, flowId } = options;
+  const { surface, commandId, recorder, sessionId, toolCallId, mode, flowId, attribution } =
+    options;
   if (recorder === undefined || sessionId === undefined) return undefined;
+  const { role, delegationId } = attributionIdentifiers(attribution);
   return (core) => {
     recordAuthorizationOutcome(recorder, {
       surface,
@@ -230,6 +260,8 @@ export function createAuthorizationOutcomeObserver(options: {
       executionAttempted: core.executionAttempted,
       mode,
       flowId,
+      role,
+      delegationId,
       decisionSource: core.decisionSource,
     });
   };

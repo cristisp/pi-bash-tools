@@ -18,7 +18,10 @@ import {
   type ReadBatchInput,
   type ReadBatchToolContext,
 } from "../../src/tools/filesystem/read-batch-tool.ts";
-import type { ReadEvidenceStore } from "../../src/tools/filesystem/read-evidence-store.ts";
+import type {
+  ReadEvidenceRecord,
+  ReadEvidenceStore,
+} from "../../src/tools/filesystem/read-evidence-store.ts";
 import { createPolicyTestFixtures } from "../policy/test-fixtures.ts";
 
 const fixtures = createPolicyTestFixtures();
@@ -1010,4 +1013,193 @@ it("keeps null placeholders fail-closed for read_batch", async () => {
   await expect(
     tool.execute("empty-ref", { ref: null, paths: [] }, undefined, undefined, context(directory)),
   ).rejects.toThrow(/paths must contain at least one entry/u);
+});
+
+describe("records one invocation per terminal path", () => {
+  function storeBackedDouble(): ReadEvidenceStore {
+    const records = new Map<string, ReadEvidenceRecord>();
+    return {
+      getByRef: (ref) => records.get(ref),
+      lookupOutcome: (ref) => (records.has(ref) ? "found" : "missing"),
+      publish: (record) => {
+        records.set(record.ref, record);
+        return true;
+      },
+      clear: () => records.clear(),
+    };
+  }
+
+  it("records exactly one completed lookup record for a lookup hit", async () => {
+    const { configPath } = await invocationFixture();
+    const root = await realpath(dirname(configPath));
+    await writeFile(join(root, "read.ts"), "alpha\n");
+    const capture = recorderCapture();
+    const tool = createReadBatchToolForTesting({
+      configPath,
+      invocationRecorder: capture.recorder,
+      readEvidenceStore: storeBackedDouble(),
+    });
+    vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
+    vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
+    try {
+      const published = await tool.execute(
+        "publish",
+        { paths: [{ path: "read.ts" }], publish: { flowId: "flow-a" } },
+        undefined,
+        undefined,
+        context(root, "session-1"),
+      );
+      const ref = published.details.publish?.ref;
+      expect(ref).toMatch(/^rr_[a-f0-9]{24}$/u);
+
+      const lookup = await tool.execute(
+        "lookup",
+        { ref },
+        undefined,
+        undefined,
+        context(root, "session-1"),
+      );
+
+      expect(lookup.details.lookup?.executed).toBe(false);
+      expect(capture.records).toHaveLength(2);
+      expect(capture.records[1]).toMatchObject({
+        reason: "completed",
+        executed: false,
+        requestedPaths: 0,
+        lookup: { attempted: true, success: true, outcome: "success" },
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("records exactly one completed not-found record for a lookup miss", async () => {
+    const { configPath } = await invocationFixture();
+    const root = await realpath(dirname(configPath));
+    const capture = recorderCapture();
+    const tool = createReadBatchToolForTesting({
+      configPath,
+      invocationRecorder: capture.recorder,
+      readEvidenceStore: storeDouble(false),
+    });
+
+    await expect(
+      tool.execute(
+        "call-1",
+        { ref: "rr_000000000000000000000000" },
+        undefined,
+        undefined,
+        context(root, "session-1"),
+      ),
+    ).rejects.toThrow(/not found/u);
+
+    expect(capture.records).toHaveLength(1);
+    expect(capture.records[0]).toMatchObject({
+      reason: "completed",
+      executed: false,
+      requestedPaths: 0,
+      lookup: { attempted: true, success: false, failure: "not-found", outcome: "not-found" },
+    });
+  });
+
+  it("records exactly one failed record when the store lookup throws", async () => {
+    const { configPath } = await invocationFixture();
+    const root = await realpath(dirname(configPath));
+    const capture = recorderCapture();
+    const failingStore: ReadEvidenceStore = {
+      getByRef: () => {
+        throw new Error("store unavailable");
+      },
+      lookupOutcome: () => "missing",
+      publish: () => false,
+      clear: () => undefined,
+    };
+    const tool = createReadBatchToolForTesting({
+      configPath,
+      invocationRecorder: capture.recorder,
+      readEvidenceStore: failingStore,
+    });
+
+    await expect(
+      tool.execute(
+        "call-1",
+        { ref: "rr_000000000000000000000000" },
+        undefined,
+        undefined,
+        context(root, "session-1"),
+      ),
+    ).rejects.toThrow(/store unavailable/u);
+
+    expect(capture.records).toHaveLength(1);
+    expect(capture.records[0]).toMatchObject({
+      reason: "failed",
+      executed: false,
+      lookup: { attempted: true, success: false, failure: "lookup-failure" },
+    });
+  });
+
+  it("records exactly one completed record for a normal batch read", async () => {
+    const { configPath } = await invocationFixture();
+    const root = await realpath(dirname(configPath));
+    await writeFile(join(root, "read.ts"), "alpha\n");
+    const capture = recorderCapture();
+    const tool = createReadBatchToolForTesting({
+      configPath,
+      invocationRecorder: capture.recorder,
+    });
+
+    await tool.execute(
+      "call-1",
+      { paths: [{ path: "read.ts" }] },
+      undefined,
+      undefined,
+      context(root, "session-1"),
+    );
+
+    expect(capture.records).toHaveLength(1);
+    expect(capture.records[0]).toMatchObject({ reason: "completed", executed: true });
+  });
+
+  it("records exactly one invalid-request record for invalid params", async () => {
+    const { configPath } = await invocationFixture();
+    const root = await realpath(dirname(configPath));
+    const capture = recorderCapture();
+    const tool = createReadBatchToolForTesting({
+      configPath,
+      invocationRecorder: capture.recorder,
+    });
+
+    await expect(
+      tool.execute("call-1", { paths: [] }, undefined, undefined, context(root, "session-1")),
+    ).rejects.toThrow();
+
+    expect(capture.records).toHaveLength(1);
+    expect(capture.records[0]).toMatchObject({ reason: "invalid-request", executed: false });
+  });
+
+  it("records exactly one cancelled record when the signal aborts before work", async () => {
+    const { configPath } = await invocationFixture();
+    const root = await realpath(dirname(configPath));
+    await writeFile(join(root, "read.ts"), "alpha\n");
+    const capture = recorderCapture();
+    const tool = createReadBatchToolForTesting({
+      configPath,
+      invocationRecorder: capture.recorder,
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      tool.execute(
+        "call-1",
+        { paths: [{ path: "read.ts" }] },
+        controller.signal,
+        undefined,
+        context(root, "session-1"),
+      ),
+    ).rejects.toMatchObject({ contract: { code: "cancelled", category: "CANCELLED" } });
+
+    expect(capture.records).toHaveLength(1);
+    expect(capture.records[0]).toMatchObject({ reason: "cancelled", executed: false });
+  });
 });

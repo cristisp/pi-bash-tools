@@ -1397,6 +1397,7 @@ async function prepareVerifyExecution(
     invocationStartedAt,
     recordInvocation,
   } = options;
+  const orchestration = readProjectCommandOrchestrationContext();
   const observe = createAuthorizationOutcomeObserver({
     surface: "verify",
     commandId: "verify",
@@ -1404,7 +1405,8 @@ async function prepareVerifyExecution(
     sessionId: retrySessionId(ctx),
     toolCallId,
     mode: ctx.mode,
-    flowId: effectiveOrchestrationFlowId(readProjectCommandOrchestrationContext()),
+    flowId: effectiveOrchestrationFlowId(orchestration),
+    attribution: orchestration,
   });
   let loadedPolicy;
   try {

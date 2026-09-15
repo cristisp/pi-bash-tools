@@ -113,6 +113,21 @@ describe("authorization outcome records", () => {
     expect(JSON.stringify(bounded)).not.toContain("private");
   });
 
+  it("omits empty role and delegation identifiers and clamps overly long values", () => {
+    const absent = buildAuthorizationOutcomeRecord(input({ role: "", delegationId: undefined }));
+    expect("role" in absent).toBe(false);
+    expect("delegationId" in absent).toBe(false);
+
+    const bounded = buildAuthorizationOutcomeRecord(
+      input({
+        role: "r".repeat(600),
+        delegationId: "d".repeat(600),
+      }),
+    );
+    expect(bounded.role).toHaveLength(256);
+    expect(bounded.delegationId).toHaveLength(256);
+  });
+
   it("marks an explicitly unknown decision source without policy contents", () => {
     const record = buildAuthorizationOutcomeRecord(input({ decisionSource: "unknown" }));
 
@@ -224,6 +239,83 @@ describe("authorization outcome observer", () => {
     expect(recorder).toHaveBeenCalledWith(
       expect.objectContaining({ mode: "json", flowId: "flow-9" }),
     );
+  });
+
+  it("carries orchestrated attribution onto every emitted record", () => {
+    const recorder = vi.fn();
+    const observe = createAuthorizationOutcomeObserver({
+      surface: "project-command",
+      commandId: "node_test",
+      recorder,
+      sessionId: "session-1",
+      toolCallId: "call-1",
+      attribution: { orchestrated: true, role: "worker", delegationId: "delegation-1" },
+    });
+
+    observe?.({
+      outcome: "authorized",
+      decisionPersisted: false,
+      promptEmitted: false,
+      promptWaitMs: 0,
+    });
+    observe?.({
+      outcome: "denied",
+      decisionPersisted: false,
+      promptEmitted: false,
+      promptWaitMs: 0,
+    });
+
+    expect(recorder).toHaveBeenCalledTimes(2);
+    for (const call of recorder.mock.calls) {
+      const [record] = call as [Record<string, unknown>];
+      expect(record.role).toBe("worker");
+      expect(record.delegationId).toBe("delegation-1");
+    }
+  });
+
+  it("omits attribution identifiers when the caller is not orchestrated", () => {
+    const recorder = vi.fn();
+    const observe = createAuthorizationOutcomeObserver({
+      surface: "verify",
+      commandId: "verify",
+      recorder,
+      sessionId: "session-1",
+      toolCallId: "call-1",
+      attribution: { orchestrated: false, role: "worker", delegationId: "delegation-1" },
+    });
+
+    observe?.({
+      outcome: "authorized",
+      decisionPersisted: false,
+      promptEmitted: false,
+      promptWaitMs: 0,
+    });
+
+    const [record] = recorder.mock.calls[0] as [Record<string, unknown>];
+    expect("role" in record).toBe(false);
+    expect("delegationId" in record).toBe(false);
+  });
+
+  it("omits observer role and delegation identity when absent", () => {
+    const recorder = vi.fn();
+    const observe = createAuthorizationOutcomeObserver({
+      surface: "verify",
+      commandId: "verify",
+      recorder,
+      sessionId: "session-1",
+      toolCallId: "call-1",
+    });
+
+    observe?.({
+      outcome: "authorized",
+      decisionPersisted: false,
+      promptEmitted: false,
+      promptWaitMs: 0,
+    });
+
+    const [record] = recorder.mock.calls[0] as [Record<string, unknown>];
+    expect("role" in record).toBe(false);
+    expect("delegationId" in record).toBe(false);
   });
 
   it("emits decision source from the observed core and omits it when absent", () => {

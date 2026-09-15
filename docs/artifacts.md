@@ -164,6 +164,9 @@ One aggregate invocation record is emitted for each `verify` call rather than on
 
 Read-batch invocations are recorded as `bash-tools.read-batch-invocation` entries.
 
+One invocation record is emitted per execute call for lookup and batch paths alike, and the outcome reason is one of `completed`, `cancelled`, `invalid-request`, or `failed`.
+A lookup whose store outcome was observed records `completed` with the outcome in the lookup block, while a lookup that fails before any outcome is observed records `failed` with the bounded `failure` label `lookup-failure`.
+
 Each read-batch record carries the session and tool-call identity, the requested path count, per-path size entries (path hash and length, range, unchanged and truncation flags, file bytes and line totals, returned content bytes, evidence reference, and error code), an aggregate block (model-facing result bytes, returned content bytes, file bytes and line totals, and unchanged, truncated, and error counts), duration, and the evidence scope.
 
 Read-batch records never contain path strings or file content, and they are omitted when the session identity is unavailable.
@@ -208,6 +211,8 @@ An authorization record may also carry additive optional attribution fields: `mo
 `mode` is the interaction mode the caller observed and is omitted when it is not one of those bounded values.
 
 `flowId` is emitted only when the caller's own orchestration context resolves to the flow evidence scope, never from a request field, and it carries no policy or path data.
+
+`role` and `delegationId` are additive attribution fields carried from the caller's orchestration context when it reports an orchestrated child session with those identifiers; they are currently emitted by the `project-command` and `verify` surfaces, are bounded and omitted like the other identifier fields, and no behavior gates on them.
 
 `decisionSource` is the configured policy authorization (`deny-global`, `deny-project`, `allow-global`, or `allow-project`) for an outcome that came from an existing decision, or `prompt` when the outcome followed a confirmation prompt; the `prompt` value also applies to a deferred prompted approval when it is committed after the prompt.
 

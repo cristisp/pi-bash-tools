@@ -1564,6 +1564,7 @@ async function prepareProjectCommand(
   };
   const definition = byId.get(params.commandId);
   if (definition === undefined) throw invalidRequest("commandId");
+  const orchestration = readProjectCommandOrchestrationContext();
   const observe = createAuthorizationOutcomeObserver({
     surface: "project-command",
     commandId: state.commandId,
@@ -1571,7 +1572,8 @@ async function prepareProjectCommand(
     sessionId: getContextSessionId(executorContext),
     toolCallId,
     mode: executorContext.mode,
-    flowId: effectiveOrchestrationFlowId(readProjectCommandOrchestrationContext()),
+    flowId: effectiveOrchestrationFlowId(orchestration),
+    attribution: orchestration,
   });
   const requestSignal = signal ?? executorContext.signal;
   const loaded = await loadPolicyObserved(policy, executorContext.cwd, requestSignal, observe);

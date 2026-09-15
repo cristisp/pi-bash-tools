@@ -1123,13 +1123,38 @@ function classifyReadBatchFailure(error: unknown): ReadBatchInvocationReason {
   return "failed";
 }
 
+function lookupInvocationOutcomeMetadata(
+  outcome: ReadEvidenceLookupOutcome,
+): ReadBatchInvocationLookupMetadata {
+  return outcome === "success"
+    ? { attempted: true, success: true, outcome: "success" }
+    : { attempted: true, success: false, failure: "not-found", outcome };
+}
+
 function lookupInvocationMetadata(
   outcome: ReadEvidenceLookupOutcome | undefined,
 ): ReadBatchInvocationLookupMetadata | undefined {
   if (outcome === undefined) return undefined;
-  return outcome === "success"
-    ? { attempted: true, success: true, outcome: "success" }
-    : { attempted: true, success: false, failure: "not-found", outcome };
+  return lookupInvocationOutcomeMetadata(outcome);
+}
+
+function readBatchLookupCatchReason(
+  classified: ReadBatchInvocationReason,
+  lookupOutcome: ReadEvidenceLookupOutcome | undefined,
+): ReadBatchInvocationReason {
+  if (classified !== "failed" || lookupOutcome === undefined || lookupOutcome === "success") {
+    return classified;
+  }
+  return "completed";
+}
+
+function readBatchLookupCatchMetadata(
+  lookupOutcome: ReadEvidenceLookupOutcome | undefined,
+): ReadBatchInvocationLookupMetadata {
+  if (lookupOutcome === undefined) {
+    return { attempted: true, success: false, failure: "lookup-failure" };
+  }
+  return lookupInvocationOutcomeMetadata(lookupOutcome);
 }
 
 function readBatchInvocationItem(pathResult: ReadBatchPathResult): ReadBatchInvocationItem {
@@ -1304,8 +1329,10 @@ function createReadBatchToolWithDependencies(
         flowId: effectiveOrchestrationFlowId(orchestration),
       });
       let workspaceBlock: SharedEvidenceWorkspaceBlock | undefined;
+      let recorded = false;
       const record = (options: ReadBatchInvocationOptions): void => {
-        if (sessionId === undefined) return;
+        if (sessionId === undefined || recorded) return;
+        recorded = true;
         const details = options.details;
         const scopeInfo = options.scopeInfo ?? { scope: "session" };
         const publication = toInvocationPublication(details?.publish);
@@ -1441,12 +1468,13 @@ function createReadBatchToolWithDependencies(
             });
             return outcome;
           } catch (error) {
+            const classified = classifyReadBatchFailure(error);
             record({
-              reason: classifyReadBatchFailure(error),
+              reason: readBatchLookupCatchReason(classified, lookupOutcome),
               executed: false,
               scopeInfo,
               requestedPaths: 0,
-              lookup: lookupInvocationMetadata(lookupOutcome),
+              lookup: readBatchLookupCatchMetadata(lookupOutcome),
             });
             throw error;
           }

@@ -8,7 +8,7 @@ import type {
   GitInvocationToolName,
 } from "../../src/observability/git-invocation.ts";
 import {
-  cancellationError,
+  gitCancellationError,
   GitToolError,
   invalidGitRequest,
   invalidGitRequestShape,
@@ -234,7 +234,7 @@ describe("git invocation observation", () => {
   });
 
   it("never invalidates a retry after a cancellation", async () => {
-    const execute = throwingExecute(cancellationError(true));
+    const execute = throwingExecute(gitCancellationError(true));
     const records: GitInvocationRecord[] = [];
     const observed = observedWith(execute, records, createInvalidRequestTracker());
 

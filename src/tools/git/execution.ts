@@ -275,7 +275,7 @@ export function validateGitRequestKeys(
   }
 }
 
-export function cancellationError(executed: boolean): GitToolError {
+export function gitCancellationError(executed: boolean): GitToolError {
   const contract = gitContract(
     "cancelled",
     "CANCELLED",
@@ -395,7 +395,7 @@ export async function runGit(
   maxOutputBytes?: number,
 ): Promise<GitExecResult> {
   if (signal?.aborted) {
-    throw cancellationError(false);
+    throw gitCancellationError(false);
   }
   let result: GitExecResult;
   try {
@@ -406,7 +406,7 @@ export async function runGit(
     });
   } catch (error) {
     if (signal?.aborted) {
-      throw cancellationError(true);
+      throw gitCancellationError(true);
     }
     if (error instanceof GitOutputLimitError) {
       throw outputLimitFailure(operation, maxOutputBytes ?? error.maxOutputBytes);
@@ -414,7 +414,7 @@ export async function runGit(
     throw spawnError();
   }
   if (signal?.aborted) {
-    throw cancellationError(true);
+    throw gitCancellationError(true);
   }
   if (
     maxOutputBytes !== undefined &&

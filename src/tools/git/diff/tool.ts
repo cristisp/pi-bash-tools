@@ -8,7 +8,7 @@ import { hashToolParameters } from "../../../observability/canonical-json.ts";
 import { booleanInputSchema } from "../../boolean.ts";
 import { renderCallLine, renderStringArgument } from "../../call-render.ts";
 import {
-  cancellationError,
+  gitCancellationError,
   invalidGitRequest,
   invalidGitRequestShape,
   normalizeGitBoolean,
@@ -567,7 +567,7 @@ async function executeGitDiffSummary(
   if (claimResult.summary !== undefined) {
     return attachSummaryIdentity(claimResult.summary, cacheState, requestKey, previousByRequest);
   }
-  if (claimResult.cancelled) throw cancellationError(true);
+  if (claimResult.cancelled) throw gitCancellationError(true);
   const claim = claimResult.claim;
   if (claim === undefined) throw new Error("summary claim was lost before computation");
   const summary = await computeAndCacheSummary(
