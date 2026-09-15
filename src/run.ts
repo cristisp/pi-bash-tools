@@ -14,7 +14,7 @@ import {
 } from './delegation.ts';
 import { ensureFlow, recordFlowParticipant } from './flow.ts';
 import { ensureReviewSurface, type ReviewSurfaceSnapshot } from './scope.ts';
-import { manifestGuidance, writeReadManifest } from './manifest.ts';
+import { manifestGuidance, recordKnownRefs, writeReadManifest } from './manifest.ts';
 import {
 	appendLedgerRevision,
 	ledgerPrefixBlock,
@@ -122,11 +122,13 @@ function applyReviewSurface(
 		delegation.reviewSurfacePath = surface.path;
 		delegation.reviewSurfaceRevision = surface.revision;
 		delegation.reviewSurfaceRefreshed = surface.refreshed;
+		delegation.reviewSurfaceHead = surface.head;
 		delegation.dirtyPaths = surface.dirtyPaths;
 	}
 	currentResult.reviewSurfacePath = delegation.reviewSurfacePath;
 	currentResult.reviewSurfaceRevision = delegation.reviewSurfaceRevision;
 	currentResult.reviewSurfaceRefreshed = delegation.reviewSurfaceRefreshed;
+	currentResult.reviewSurfaceHead = delegation.reviewSurfaceHead;
 	currentResult.dirtyPaths = delegation.dirtyPaths;
 }
 
@@ -386,6 +388,11 @@ function emitDelegationTelemetry(
 		childFields,
 	});
 	if (revision) currentResult.ledgerRevision = revision.revision;
+	recordKnownRefs({
+		flowId: delegation.flowId,
+		delegationId: delegation.delegationId,
+		refs: currentResult.metrics?.validationRefs ?? [],
+	});
 	if (!currentResult.ledgerInjection) currentResult.ledgerInjection = 'none';
 	const normalized = normalizeS4Outcome(
 		childFields,

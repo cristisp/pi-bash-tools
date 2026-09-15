@@ -7,6 +7,7 @@ import {
 	registerSetupCommand,
 } from './src/commands.ts';
 import { registerBudgetEnforcement } from './src/budget.ts';
+import { deriveFlowId, ENV_FLOW } from './src/delegation.ts';
 import { HERDR_ENV, HERDR_PANE_ID, HERDR_SOCKET_PATH, NESTED } from './src/herdr.ts';
 import { pruneFlows } from './src/flow.ts';
 import { registerInputHandler } from './src/input.ts';
@@ -27,10 +28,14 @@ export default function (pi: ExtensionAPI) {
 	if (NESTED) registerBudgetEnforcement(pi);
 	if (!NESTED) {
 		reconcileRegistry().catch(() => {});
-		pi.on('session_start', () => {
+		pi.on('session_start', (_event, ctx) => {
 			reconcileRegistry().catch(() => {});
 			try {
 				pruneFlows();
+			} catch {}
+			try {
+				const flowId = deriveFlowId(ctx.sessionManager.getSessionFile());
+				if (flowId) process.env[ENV_FLOW] = flowId;
 			} catch {}
 		});
 		registerSubagentCloseTool(pi);

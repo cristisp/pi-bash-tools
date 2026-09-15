@@ -11,6 +11,7 @@ import {
 	isExclusiveWriteCommandId,
 	isReportRead,
 	readRequestKey,
+	readRequestKeysOf,
 	registerBudgetEnforcement,
 	scopeCallAllowance,
 	scopedRoleBudget,
@@ -50,6 +51,8 @@ function settleBudget(handlers: Record<string, Handler>, ctx: { abort(): void })
 describe('budget classification', () => {
 	it('classifies discovery, validation, and ordinary calls', () => {
 		expect(classifyToolCall('read', { path: 'src/index.ts' })).toBe('discovery');
+		expect(classifyToolCall('read_batch', { paths: [{ path: 'src/index.ts' }] })).toBe('discovery');
+		expect(classifyToolCall('codegraph_sync', {})).toBe('discovery');
 		expect(classifyToolCall('codegraph_artifact', { ref: 'cg_abc' })).toBe('discovery');
 		expect(classifyToolCall('project_command', { commandId: 'node_test' })).toBe('validation');
 		expect(classifyToolCall('project_command', { commandId: 'node_project_info' })).toBe(
@@ -114,6 +117,16 @@ describe('budget classification', () => {
 		expect(isReportRead('read', { path: '/tmp/flows/f1/reports/worker.md' }, 'f2')).toBe(false);
 		expect(isReportRead('read', { path: '/tmp/src/ledger.md' })).toBe(false);
 		expect(readRequestKey({ path: 'src/a.ts', offset: 1, limit: 2 })).toBe('src/a.ts:1:2');
+		expect(readRequestKeysOf('read', { path: 'src/a.ts' })).toEqual(['src/a.ts::']);
+		expect(
+			readRequestKeysOf('read_batch', {
+				paths: [{ path: 'src/a.ts' }, { path: 'src/b.ts', range: { offset: 2, limit: 5 } }],
+			}),
+		).toEqual(['src/a.ts::', 'src/b.ts:2:5']);
+		expect(readRequestKeysOf('read_batch', { paths: 'not-an-array' })).toEqual([]);
+		expect(readRequestKeysOf('read_batch', { paths: [{ path: 7 }, 'junk', undefined] })).toEqual(
+			[],
+		);
 	});
 });
 

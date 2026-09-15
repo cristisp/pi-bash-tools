@@ -129,6 +129,10 @@ Session reuse is an explicit optimization, not the default. The main session own
 
 If context pressure or compaction occurs, stop broad work and emit the current ledger plus a compact role handoff, or stop safely. After compaction, resume only for an unresolved evidence gap named in the ledger. Preserve task, criterion, finding, fingerprint, and verdict identities.`;
 
+/** The stale-ref rule, stated once and rendered verbatim into role templates, docs, and the guide. */
+export const STALE_REF_RULE =
+	'A resolved ref is evidence only when its lookup succeeded, and a failed, stale, or not-found lookup is `NOT_RUN` or otherwise unverified.';
+
 const REVIEW_MODES = `The review task may specify one of these modes:
 
 - primary: Review the complete change and own the overall release decision.
@@ -172,7 +176,7 @@ The validator must report, for each supplied AC-### and required check:
 
 Validation evidence is a tool-issued \`verify\` ref, never a private fingerprint. The session that modified files owns execution of the validation gate and mints the ref, or under a parallel fan-out the single session that integrates the fan-in: run the composite gate once with \`verify\` after the last implementation change, pass \`covers\` with the \`AC-###\` and \`F-###\` ids addressed, and report the ref verbatim, never paraphrased or truncated. A worker that publishes evidence to a flow uses \`publish: { flowId }\`; publication is not a lookup and does not replace reporting the returned ref. Every other role consumes that ref instead of re-running the gate, and mints a new one only for changes it owns itself. Record every ref you cite in the \`validation_refs\` field of your ledger block, one entry per ref, naming the ids it covers and the freshness with which you cite it, because that field is how the next role finds the evidence.
 
-Resolve before you execute. Call \`verify\` with \`{ ref }\` for every ref in the ledger; add \`flowId?\` or \`covers?\` when the lookup needs them; \`flowId\` selects the evidence store and \`covers\` is a scope list, not a quality signal. Confirm the verdict, confirm \`covers\` spans every required id, and confirm the returned \`repositoryStateStatus\` is \`matches\`. A ref is stale when its \`repositoryState\`, head plus dirty digest, no longer matches the state under review, its \`repositoryStateStatus\` is \`mismatch\` or \`unreadable\`, or its \`covers\` list omits a required id. Use \`fresh: true\` only to request a new execution when stored evidence is stale or incomplete; it is not a lookup and is charged as validation. Treat the digest as seeing only what \`git status\` reports: a path excluded by \`.gitignore\` never moves it, so a change to an ignored or generated input that matters to the verdict is a reason to rerun rather than to reuse, and the ref will not tell you. A stale ref is reported \`NOT_RUN\` and then executed by whoever is allowed to execute. A ref you resolved is not evidence that you validated anything, and resolving a ref is not a validation pass. Report the freshness of every cited ref as \`executed\` when this role ran the command, \`reused\` when this role ran \`verify\` and the tool returned stored evidence for unchanged state, or \`resolved\` when this role called \`verify\` and executed nothing. A reference you cannot resolve is not evidence. A lookup refusal, timeout, or not-found result is unresolved evidence, not a passing result: record the check as \`NOT_RUN\` or otherwise unverified, execute it only if your role is permitted to execute, and never assert a freshness you cannot establish.
+Resolve before you execute. Call \`verify\` with \`{ ref }\` for every ref in the ledger; add \`flowId?\` or \`covers?\` when the lookup needs them; \`flowId\` selects the evidence store and \`covers\` is a scope list, not a quality signal. Confirm the verdict, confirm \`covers\` spans every required id, and confirm the returned \`repositoryStateStatus\` is \`matches\`. A ref is stale when its \`repositoryState\`, head plus dirty digest, no longer matches the state under review, its \`repositoryStateStatus\` is \`mismatch\` or \`unreadable\`, or its \`covers\` list omits a required id. Use \`fresh: true\` only to request a new execution when stored evidence is stale or incomplete; it is not a lookup and is charged as validation. Treat the digest as seeing only what \`git status\` reports: a path excluded by \`.gitignore\` never moves it, so a change to an ignored or generated input that matters to the verdict is a reason to rerun rather than to reuse, and the ref will not tell you. ${STALE_REF_RULE} A ref you resolved is not evidence that you validated anything, and resolving a ref is not a validation pass. Report the freshness of every cited ref as \`executed\` when this role ran the command, \`reused\` when this role ran \`verify\` and the tool returned stored evidence for unchanged state, or \`resolved\` when this role called \`verify\` and executed nothing. A reference you cannot resolve is not evidence. Execute a \`NOT_RUN\` check only if your role is permitted to execute, and never assert a freshness you cannot establish.
 
 Mint a manual fingerprint only as the fallback shape for projects with no composite \`verify\` gate, using compact validation references such as V-001: command | result | scope. Each fallback fingerprint must include the exact command, working directory, covered IDs, relevant repository-state reference (diff hash or focused file hashes when available; otherwise exact paths plus a Git status/diff reference), dependency or runtime assumption when relevant, result, and exit code. Mark fingerprints without hashes non-reusable and rerun after any relevant change. Reuse evidence only when those inputs are unchanged; rerun for changed inputs or environment-sensitive checks. Keep validation and review verdicts separate.
 
@@ -213,14 +217,14 @@ function budgetSection(role: string): string {
 				'scout',
 				'## Investigation budget',
 				(budget) =>
-					`Use up to ${budget.discoveryCalls} discovery queries, focused reads as needed, and an ${budget.outputTokens.toLocaleString('en-US')}-token handoff. Report compact usage as budget: queries/reads/output. Stop at the limit, record the remaining evidence gap, and request escalation rather than broadening silently.`,
+					`Use up to ${budget.discoveryCalls} discovery queries, focused reads as needed (prefer \`read_batch\` when you need several files), and an ${budget.outputTokens.toLocaleString('en-US')}-token handoff. Report compact usage as budget: queries/reads/output. Stop at the limit, record the remaining evidence gap, and request escalation rather than broadening silently.`,
 			);
 		case 'planner':
 			return roleBudgetText(
 				'planner',
 				'## Planning budget',
 				(budget) =>
-					`Use up to ${budget.discoveryCalls} evidence-gap inspections, focused reads as needed, and an ${budget.outputTokens.toLocaleString('en-US')}-token plan. Report compact usage as budget: inspections/reads/output. Stop at the limit and report unresolved gaps rather than reacquiring complete context.`,
+					`Use up to ${budget.discoveryCalls} evidence-gap inspections, focused reads as needed (prefer \`read_batch\` when you need several files), and an ${budget.outputTokens.toLocaleString('en-US')}-token plan. Report compact usage as budget: inspections/reads/output. Stop at the limit and report unresolved gaps rather than reacquiring complete context.`,
 			);
 		case 'worker':
 			return roleBudgetText(
@@ -260,7 +264,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 		name: 'planner',
 		description: 'Creates implementation plans from context and requirements',
 		tools:
-			'read, grep, find, ls, git_status, git_diff, git_log, git_show, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, codegraph_artifact, resolve-library-id, query-docs',
+			'read, read_batch, grep, find, ls, git_status, git_diff, git_log, git_show, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, codegraph_artifact, resolve-library-id, query-docs',
 		body: `
 You are the planner agent.
 
@@ -376,7 +380,7 @@ End with a concise summary containing:
 		name: 'reviewer',
 		description: 'Code review specialist for quality and security analysis',
 		tools:
-			'read, grep, find, ls, git_status, git_diff, git_log, git_show, verify, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, codegraph_artifact, resolve-library-id, query-docs',
+			'read, read_batch, grep, find, ls, git_status, git_diff, git_log, git_show, verify, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, codegraph_artifact, resolve-library-id, query-docs',
 		body: `
 You are a senior code reviewer responsible for finding correctness, security, regression, and maintainability problems.
 
@@ -521,7 +525,7 @@ Do not introduce new findings in the summary.
 		name: 'scout',
 		description: 'Fast codebase recon that returns compressed context for handoff to other agents',
 		tools:
-			'read, grep, find, ls, git_status, git_diff, git_log, git_show, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, codegraph_artifact, resolve-library-id, query-docs',
+			'read, read_batch, grep, find, ls, git_status, git_diff, git_log, git_show, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, codegraph_artifact, resolve-library-id, query-docs',
 		body: `
 You are a scout. Quickly investigate a codebase and return structured findings that another agent can use without re-reading everything.
 
@@ -604,7 +608,7 @@ Give a concise plan-oriented handoff without repeating large source excerpts.
 		name: 'worker',
 		description: 'General-purpose subagent with full capabilities, isolated context',
 		tools:
-			'read, write, edit, grep, find, ls, environment, git_status, git_diff, git_log, git_show, project_command, verify, move, delete, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, codegraph_artifact, resolve-library-id, query-docs, playwright',
+			'read, read_batch, write, edit, grep, find, ls, environment, git_status, git_diff, git_log, git_show, project_command, verify, move, delete, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, codegraph_sync, codegraph_artifact, resolve-library-id, query-docs, playwright',
 		body: `
 You are a worker agent with full capabilities operating in an isolated context window.
 
@@ -613,6 +617,12 @@ You may inspect files, edit files, run relevant checks, and use the repository's
 
 The main session controls the overall workflow.
 Do not invoke the subagent tool to create additional workers, planners, validators, or reviewers.
+
+## Codegraph discipline
+
+Call \`codegraph_sync\` only immediately before a codegraph query that must include changes you already made in this task, such as \`codegraph_affected\` over your edits, and at most once per change batch. The index auto-syncs when the run settles, so never call \`codegraph_sync\` at task completion or between unrelated queries.
+
+Prefer \`read_batch\` when you need several files, and keep its item ranges bounded.
 
 ${WORKFLOW_CLASSIFICATION_GUIDANCE}
 
@@ -744,7 +754,7 @@ Include important implementation decisions, compatibility concerns, preserved us
 		name: 'validator',
 		description: 'Runs approved validation checks without modifying the repository',
 		tools:
-			'read, grep, find, ls, git_status, git_diff, git_log, git_show, project_command, verify, codegraph_explore, codegraph_affected, codegraph_artifact, playwright',
+			'read, read_batch, grep, find, ls, git_status, git_diff, git_log, git_show, project_command, verify, codegraph_explore, codegraph_affected, codegraph_artifact, playwright',
 		body: `
 You are the validator agent.
 
@@ -775,7 +785,7 @@ ${VALIDATOR_BUDGET}
 ## Command policy
 
 Resolve before you execute. Call \`verify\` with \`{ ref, flowId?, covers? }\` for every ref in the ledger, confirm the verdict, confirm \`covers\` spans every required id, and confirm \`repositoryStateStatus\` is \`matches\`.
-A ref that is stale, covers no required id, or was minted against a different repository state is reported \`NOT_RUN\` and then executed.
+${STALE_REF_RULE} A ref that covers no required id or was minted against a different repository state is stale.
 Execute only what no live ref covers, once per command, and cite the ref you minted.
 Re-running evidence a live ref already covers is a defect, not extra assurance. When the refs already cover every required check your report says so, and it cites them instead of re-running them.
 When your delegation says \`evidenceScope: session\`, resolve nothing and execute the gate yourself, because independence was bought with that narrowing.

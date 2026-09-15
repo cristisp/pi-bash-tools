@@ -66,7 +66,7 @@ A primary reviewer plus focused security or validation reviewers only when a spe
 Plan validation as one composite `verify` ref plus one review owner.
 The session that modifies files, or the session integrating a parallel fan-in, owns the final gate; consumers resolve refs rather than rerunning covered checks.
 Use `evidenceScope: "session"` only when independent execution is required.
-A stale, unresolved, or mismatched ref is `NOT_RUN` or otherwise unverified.
+A resolved ref is evidence only when its lookup succeeded, and a failed, stale, or not-found lookup is `NOT_RUN` or otherwise unverified.
 Reviewers inspect refs and the required `## Files Reviewed` contract; they do not execute project validation.
 
 ## Escalation triggers
@@ -198,8 +198,8 @@ resolved
 Validation evidence is tool-issued and tied to a repository state and `covers` scope.
 Consumers resolve refs instead of rerunning covered checks; resolving a ref is not a validation pass.
 Report freshness as `executed`, `reused`, or `resolved`.
-Stale, unresolvable, or mismatched refs are `NOT_RUN` or otherwise unverified.
-Refs minted in a delegation flow resolve for its siblings and travel upward through `validation_refs`; main-session refs do not resolve from children.
+A resolved ref is evidence only when its lookup succeeded, and a failed, stale, or not-found lookup is `NOT_RUN` or otherwise unverified.
+Refs minted in a delegation flow resolve for its siblings and travel upward through `validation_refs`; the root session shares the flow id, so refs it mints resolve from children the same way.
 Use a compact `V-###` fingerprint only when the project has no composite `verify` gate.
 Reuse evidence only when the command, scope, and repository state are unchanged.
 A matching reference is evidence reuse, not code approval.

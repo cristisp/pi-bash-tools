@@ -886,6 +886,7 @@ async function executeParallelMode(
 					reviewSurfacePath: reviewSurface.path,
 					reviewSurfaceRevision: reviewSurface.revision,
 					reviewSurfaceRefreshed: reviewSurface.refreshed,
+					reviewSurfaceHead: reviewSurface.head,
 					dirtyPaths: reviewSurface.dirtyPaths,
 				},
 			}

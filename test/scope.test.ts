@@ -1,9 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { flowReportsDir } from '../src/flow.ts';
+import { flowDirFor, flowReportsDir } from '../src/flow.ts';
 import { ensureReviewSurface } from '../src/scope.ts';
-import { buildReadManifest, writeReadManifest } from '../src/manifest.ts';
+import { buildReadManifest, recordKnownRefs, writeReadManifest } from '../src/manifest.ts';
 import { resolveDelegation, sanitizeReviewScope } from '../src/delegation.ts';
 import { makeTempDir, stubEnv } from './helpers.ts';
 
@@ -57,6 +57,104 @@ describe('review surface and read manifests', () => {
 		);
 		expect(JSON.parse(fs.readFileSync(written.path, 'utf8')).allowedPaths).toEqual(['src/run.ts']);
 		expect(fs.existsSync(written.manifest.persistedPath as string)).toBe(true);
+	});
+
+	it('records the git head alongside the review-surface fingerprint', () => {
+		const agentDir = makeTempDir();
+		stubEnv(agentDir);
+		const flowId = 'flow-git-head';
+		const surface = ensureReviewSurface(flowId, process.cwd());
+		expect(surface).toBeDefined();
+		expect(surface!.head).toMatch(/^[0-9a-f]{40}$/);
+		const content = fs.readFileSync(surface!.path, 'utf8');
+		expect(content).toContain(`git_head: ${surface!.head}`);
+		expect(content).toMatch(/^snapshot_fingerprint: [0-9a-f]{64}$/m);
+		const second = ensureReviewSurface(flowId, process.cwd());
+		expect(second?.head).toBe(surface?.head);
+		expect(second?.refreshed).toBe(false);
+	});
+
+	it('carries prior flow refs with verdict and freshness in read manifests', () => {
+		const agentDir = makeTempDir();
+		stubEnv(agentDir);
+		const flowId = 'flow-known-refs';
+		recordKnownRefs({
+			flowId,
+			delegationId: 'turn-1',
+			at: 1000,
+			refs: [
+				{
+					ref: 'vr_older',
+					verdict: 'passed',
+					reused: false,
+					lookup: false,
+					head: 'deadbeefcafe',
+					stateDigest: 'ab12cd34ef56',
+				},
+				{
+					ref: 'vr_resolved',
+					verdict: 'passed',
+					reused: true,
+					lookup: true,
+					repositoryStateStatus: 'matches',
+				},
+				// Refs minted under a different flow are not resolvable here.
+				{ ref: 'vr_other_flow', reused: true, lookup: true, flowId: 'flow-other' },
+				// Ambiguous provenance is dropped.
+				{ ref: 'vr_conflict', reused: true, lookup: true, flowIdConflict: true },
+			],
+		});
+		recordKnownRefs({
+			flowId,
+			delegationId: 'turn-2',
+			at: 2000,
+			refs: [{ ref: 'vr_older', verdict: 'failed', reused: true, lookup: true }],
+		});
+
+		const manifest = buildReadManifest({
+			delegationId: 'consumer',
+			flowId,
+			role: 'validator',
+			evidenceScope: 'flow',
+		});
+		expect(manifest.knownRefs).toEqual([
+			{ ref: 'vr_resolved', verdict: 'passed', reused: true, repositoryStateStatus: 'matches' },
+			{ ref: 'vr_older', verdict: 'failed', reused: true },
+		]);
+
+		const withoutFlow = buildReadManifest({
+			delegationId: 'consumer',
+			role: 'validator',
+			evidenceScope: 'flow',
+		});
+		expect(withoutFlow.knownRefs).toBeUndefined();
+	});
+
+	it('keeps manifests working when persisted refs are malformed', () => {
+		const agentDir = makeTempDir();
+		stubEnv(agentDir);
+		const flowId = 'flow-bad-refs';
+		recordKnownRefs({
+			flowId,
+			delegationId: 'turn-bad',
+			refs: [{ ref: 'vr_keep', verdict: 'passed', reused: false, lookup: false }],
+		});
+		fs.writeFileSync(
+			path.join(flowDirFor(flowId), 'predigest', 'refs', 'corrupt.json'),
+			'{not json',
+		);
+		fs.writeFileSync(
+			path.join(flowDirFor(flowId), 'predigest', 'refs', 'badshape.json'),
+			JSON.stringify({ v: 1, at: 1, refs: [{ ref: 'vr_bad', reused: 'yes' }, 'vr_worse'] }),
+		);
+
+		const manifest = buildReadManifest({
+			delegationId: 'consumer',
+			flowId,
+			role: 'validator',
+			evidenceScope: 'flow',
+		});
+		expect(manifest.knownRefs).toEqual([{ ref: 'vr_keep', verdict: 'passed', reused: false }]);
 	});
 
 	it('canonicalizes safe scope paths and drops traversal or absolute paths', () => {

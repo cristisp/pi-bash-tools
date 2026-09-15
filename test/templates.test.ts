@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { configPath, getConfig } from '../src/config.ts';
 import { registerBudgetEnforcement } from '../src/budget.ts';
 import { registerEntry } from '../src/registry.ts';
-import { AGENT_TEMPLATES, renderAgentFile } from '../src/templates.ts';
+import { AGENT_TEMPLATES, renderAgentFile, STALE_REF_RULE } from '../src/templates.ts';
 import { makeRegistryEntry, makeTempDir, stubEnv } from './helpers.ts';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
@@ -48,7 +48,7 @@ describe('renderAgentFile', () => {
 			'description: Creates implementation plans from context and requirements',
 		);
 		expect(out).toContain(
-			'tools: read, grep, find, ls, git_status, git_diff, git_log, git_show, codegraph_explore',
+			'tools: read, read_batch, grep, find, ls, git_status, git_diff, git_log, git_show, codegraph_explore',
 		);
 		expect(out).not.toContain('model:');
 		expect(out).toContain('## Goal');
@@ -179,8 +179,9 @@ describe('renderAgentFile', () => {
 		expect(validator?.body).toContain('A ref is stale when its `repositoryState`');
 		expect(validator?.body).toContain('head plus dirty digest');
 		expect(validator?.body).toContain('a path excluded by `.gitignore` never moves it');
+		expect(validator?.body).toContain(STALE_REF_RULE);
 		expect(validator?.body).toContain(
-			'A stale ref is reported `NOT_RUN` and then executed by whoever is allowed to execute',
+			'Execute a `NOT_RUN` check only if your role is permitted to execute',
 		);
 		expect(validator?.body).toContain(
 			'A ref you resolved is not evidence that you validated anything',
@@ -265,6 +266,31 @@ describe('renderAgentFile', () => {
 			);
 		}
 	});
+	it('ships read_batch to every role that reads and codegraph_sync only to the worker', () => {
+		for (const template of AGENT_TEMPLATES) {
+			const tools = (template.tools ?? '')
+				.split(',')
+				.map((tool) => tool.trim())
+				.filter(Boolean);
+			expect(tools, `${template.name} must read`).toContain('read');
+			expect(tools, `${template.name} must read files in bulk via read_batch`).toContain(
+				'read_batch',
+			);
+		}
+		const workerTools = (AGENT_TEMPLATES.find((t) => t.name === 'worker')?.tools ?? '')
+			.split(',')
+			.map((tool) => tool.trim());
+		expect(
+			workerTools,
+			'the worker edits files and must sync the graph before querying its own changes',
+		).toContain('codegraph_sync');
+		for (const template of AGENT_TEMPLATES.filter((t) => t.name !== 'worker')) {
+			const tools = (template.tools ?? '').split(',').map((tool) => tool.trim());
+			expect(tools, `${template.name} never edits, so it never needs a manual sync`).not.toContain(
+				'codegraph_sync',
+			);
+		}
+	});
 	it('gives the verify gate to the roles that execute validation', () => {
 		for (const role of ['worker', 'validator']) {
 			const tools = (AGENT_TEMPLATES.find((t) => t.name === role)?.tools ?? '')
@@ -324,8 +350,10 @@ describe('renderAgentFile', () => {
 			'Run a remainder check only when the plan or an acceptance criterion requires it',
 		);
 		expect(policy).not.toContain('node_format:check');
-		expect(policy).toContain('A ref that is stale, covers no required id');
-		expect(policy).toContain('is reported `NOT_RUN` and then executed');
+		expect(policy).toContain(STALE_REF_RULE);
+		expect(policy).toContain(
+			'A ref that covers no required id or was minted against a different repository state is stale',
+		);
 		expect(policy).toContain(
 			'evidenceScope: session`, resolve nothing and execute the gate yourself',
 		);

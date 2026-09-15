@@ -32,6 +32,7 @@ const DISCOVERY_TOOLS = new Set([
 	'find',
 	'ls',
 	'read',
+	'read_batch',
 	'git_status',
 	'git_diff',
 	'git_log',
@@ -41,6 +42,7 @@ const DISCOVERY_TOOLS = new Set([
 	'codegraph_callees',
 	'codegraph_impact',
 	'codegraph_affected',
+	'codegraph_sync',
 	'codegraph_artifact',
 	'resolve-library-id',
 	'query-docs',
@@ -263,6 +265,31 @@ export function readRequestKey(input: Record<string, unknown>): string | undefin
 	const filePath = typeof input.file_path === 'string' ? input.file_path : input.path;
 	if (typeof filePath !== 'string') return undefined;
 	return `${filePath}:${String(input.offset ?? '')}:${String(input.limit ?? '')}`;
+}
+
+/**
+ * Every read request one tool call carries, keyed like {@link readRequestKey}. `read` carries one;
+ * `read_batch` may carry several, so its items are charged individually against the repeated-reads
+ * metric instead of one multi-path call hiding repeated reads, including duplicates within one call.
+ */
+export function readRequestKeysOf(name: string, input: Record<string, unknown>): string[] {
+	if (name === 'read') {
+		const key = readRequestKey(input);
+		return key ? [key] : [];
+	}
+	if (name !== 'read_batch' || !Array.isArray(input.paths)) return [];
+	const keys: string[] = [];
+	for (const item of input.paths) {
+		if (typeof item !== 'object' || item === null) continue;
+		const entry = item as { path?: unknown; range?: unknown };
+		if (typeof entry.path !== 'string') continue;
+		const range =
+			typeof entry.range === 'object' && entry.range !== null
+				? (entry.range as { offset?: unknown; limit?: unknown })
+				: undefined;
+		keys.push(`${entry.path}:${String(range?.offset ?? '')}:${String(range?.limit ?? '')}`);
+	}
+	return keys;
 }
 
 export function readPathOf(input: Record<string, unknown> | undefined): string | undefined {
@@ -751,9 +778,8 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		}
 		if (category === 'discovery') state.usage.discoveryCalls++;
 		if (category === 'validation') state.usage.fullValidationPasses++;
-		if (event.toolName === 'read') {
-			const key = readRequestKey(event.input);
-			if (key) {
+		if (event.toolName === 'read' || event.toolName === 'read_batch') {
+			for (const key of readRequestKeysOf(event.toolName, event.input)) {
 				const prior = readKeys.get(key) ?? 0;
 				if (prior > 0) state.usage.repeatedReads++;
 				readKeys.set(key, prior + 1);

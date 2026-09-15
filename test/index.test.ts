@@ -13,6 +13,7 @@ vi.mock('../src/herdr.ts', async (importOriginal) => {
 
 import { closeTab, getAgentStatus } from '../src/herdr.ts';
 import { DEFAULT_CONFIG, getConfig } from '../src/config.ts';
+import { deriveFlowId } from '../src/delegation.ts';
 import { PRESET_ENTRY_TYPE } from '../src/presets.ts';
 import { makeRegistryEntry, makeTempDir, stubEnv } from './helpers.ts';
 
@@ -96,6 +97,25 @@ describe('extension registration', () => {
 		expect(events).toContain('session_start');
 		expect(events).toContain('input');
 		expect(events.filter((e) => e === 'session_start')).toHaveLength(2);
+	});
+
+	it('exports the derived flow id into the root process on session start', async () => {
+		const { default: register } = await loadIndex();
+		const pi = mockPi();
+		register(pi as never);
+		delete process.env.PI_ORCHESTRATION_FLOW;
+		const handlers = pi.on.mock.calls
+			.filter((c) => c[0] === 'session_start')
+			.map((c) => c[1]) as Array<(event: unknown, ctx: unknown) => Promise<void>>;
+		const event = { type: 'session_start', reason: 'startup' };
+		for (const handler of handlers) await handler(event, statusCtx());
+		expect(process.env.PI_ORCHESTRATION_FLOW).toBe(deriveFlowId('/sess/a.jsonl'));
+		for (const handler of handlers)
+			await handler(
+				event,
+				statusCtx([], { sessionManager: { getSessionFile: () => '/sess/b.jsonl' } }),
+			);
+		expect(process.env.PI_ORCHESTRATION_FLOW).toBe(deriveFlowId('/sess/b.jsonl'));
 	});
 
 	it('registers the explicit list, stats, and reuse guidance', async () => {

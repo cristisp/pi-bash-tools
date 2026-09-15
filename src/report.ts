@@ -355,6 +355,8 @@ export function writeRoleReport(write: RoleReportWrite): string | undefined {
 		meta.push(`- criteria: ${delegation.acceptanceCriteria.join(', ')}`);
 	if (delegation.scope) meta.push(`- scope: ${JSON.stringify(delegation.scope)}`);
 	if (delegation.reviewSurfacePath) meta.push(`- reviewSurface: ${delegation.reviewSurfacePath}`);
+	if (delegation.reviewSurfaceHead)
+		meta.push(`- reviewSurfaceHead: ${delegation.reviewSurfaceHead}`);
 	const manifestPath = write.readManifest?.persistedPath ?? write.readManifest?.manifestPath;
 	if (manifestPath) meta.push(`- readManifest: ${manifestPath}`);
 	const doc = `# Role report: ${write.label} (${delegation.role})\n\n${meta.join('\n')}\n- completedAt: ${new Date(now).toISOString()}\n- reportTokens: ~${estimateTokens(write.output)}\n\n---\n\n${write.output}\n`;

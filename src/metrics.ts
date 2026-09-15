@@ -185,6 +185,23 @@ function stateOf(payload: Record<string, unknown>): Record<string, unknown> | un
 	return jsonPayloadOf(payload.repositoryState) ?? jsonPayloadOf(payload.repository_state);
 }
 
+const WORKSPACE_STATUSES = new Set(['readable', 'degraded', 'unreadable', 'non-git']);
+
+/**
+ * Reads the producer-neutral shared evidence envelope `workspace` block (`head`, `dirtyDigest`,
+ * `status`). Bash-tools narrows `status` to `readable` and `degraded`; codegraph-runner widens it
+ * with `unreadable` and `non-git`. An unknown or malformed shape is treated as absent so the
+ * producer detail fields and snake_case aliases stay the fallback.
+ */
+function workspaceOf(payload: Record<string, unknown>): Record<string, unknown> | undefined {
+	const block = jsonPayloadOf(payload.workspace);
+	if (!block) return undefined;
+	if (typeof block.status !== 'string' || !WORKSPACE_STATUSES.has(block.status)) return undefined;
+	if (block.head !== null && typeof block.head !== 'string') return undefined;
+	if (block.dirtyDigest !== null && typeof block.dirtyDigest !== 'string') return undefined;
+	return block;
+}
+
 function stringValue(payload: Record<string, unknown>, ...keys: string[]): string | undefined {
 	for (const key of keys) {
 		if (typeof payload[key] === 'string' && payload[key]) return payload[key] as string;
@@ -214,7 +231,13 @@ function repositoryStateStatusOf(
 		stringValue(payload, 'repositoryStateStatus', 'repository_state_status') ??
 		stringValue(state, 'repositoryStateStatus', 'repository_state_status', 'status') ??
 		stringValue(comparison, 'repositoryStateStatus', 'status');
-	return value === 'matches' || value === 'mismatch' || value === 'unreadable' ? value : undefined;
+	if (value === 'matches' || value === 'mismatch' || value === 'unreadable') return value;
+	// A degraded or unreadable workspace observation cannot confirm freshness; map it to the
+	// producer comparison vocabulary's conservative verdict instead of claiming a match.
+	const workspace = workspaceOf(payload);
+	if (workspace && (workspace.status === 'degraded' || workspace.status === 'unreadable'))
+		return 'unreadable';
+	return undefined;
 }
 
 function omittedPhasesOf(payload: Record<string, unknown>): string[] {
@@ -237,8 +260,52 @@ function omittedPhasesOf(payload: Record<string, unknown>): string[] {
 interface ProducerFields {
 	decision?: string;
 	cacheDecision?: string;
+	publication?: 'published' | 'unauthorized' | 'unavailable' | 'failed';
+	publicationReason?: string;
 	flowId?: string;
 	flowIdConflict?: boolean;
+}
+
+interface PublicationFields {
+	publication?: ProducerFields['publication'];
+	publicationReason?: string;
+}
+
+const PUBLICATION_STATES = new Set(['published', 'unauthorized', 'unavailable', 'failed']);
+const MAX_PUBLICATION_REASON = 200;
+
+/**
+ * Normalizes the two producer publication vocabularies into one state set before any surfacing in
+ * digests, reports, or telemetry. Bash-tools reports `{ published, error }`; codegraph-runner reports
+ * `{ state, reason }`. The codegraph states are the neutral vocabulary because they are the more
+ * expressive set, so a bash-tools `published: false` becomes `failed` and its `error` text becomes
+ * the reason. Unrecognized shapes are treated as absent.
+ */
+function publicationFieldsOf(object: Record<string, unknown>): PublicationFields {
+	const block = jsonPayloadOf(object.publication);
+	if (!block) return {};
+	if (typeof block.state === 'string' && PUBLICATION_STATES.has(block.state)) {
+		const reason = boundedPublicationReason(block.reason);
+		return {
+			publication: block.state as PublicationFields['publication'],
+			...(reason ? { publicationReason: reason } : {}),
+		};
+	}
+	if (typeof block.published === 'boolean') {
+		if (block.published) return { publication: 'published' };
+		const reason = boundedPublicationReason(block.error);
+		return { publication: 'failed', ...(reason ? { publicationReason: reason } : {}) };
+	}
+	return {};
+}
+
+function boundedPublicationReason(value: unknown): string | undefined {
+	if (typeof value !== 'string') return undefined;
+	const flat = value.replace(/\s+/g, ' ').trim();
+	if (!flat) return undefined;
+	return flat.length > MAX_PUBLICATION_REASON
+		? `${flat.slice(0, MAX_PUBLICATION_REASON)}...`
+		: flat;
 }
 
 /**
@@ -249,6 +316,8 @@ interface ProducerFields {
 function producerFieldsOf(payload: Record<string, unknown>): ProducerFields {
 	let decision: string | undefined;
 	let cacheDecision: string | undefined;
+	let publication: ProducerFields['publication'];
+	let publicationReason: string | undefined;
 	const flowIds = new Set<string>();
 	const directFlowId = stringValue(payload, 'flowId', 'flow_id');
 	if (directFlowId !== undefined) flowIds.add(directFlowId);
@@ -258,6 +327,9 @@ function producerFieldsOf(payload: Record<string, unknown>): ProducerFields {
 		if (!object) return;
 		decision ??= stringValue(object, 'decision', 'producerDecision', 'producer_decision');
 		cacheDecision ??= stringValue(object, 'cacheDecision', 'cache_decision');
+		const candidatePublication = publicationFieldsOf(object);
+		publication ??= candidatePublication.publication;
+		publicationReason ??= candidatePublication.publicationReason;
 		const parent = path[path.length - 1];
 		if (parent === 'provenance' || parent === 'publication') {
 			const nestedFlowId = stringValue(object, 'flowId', 'flow_id');
@@ -273,6 +345,8 @@ function producerFieldsOf(payload: Record<string, unknown>): ProducerFields {
 	return {
 		...(decision === undefined ? {} : { decision }),
 		...(cacheDecision === undefined ? {} : { cacheDecision }),
+		...(publication === undefined ? {} : { publication }),
+		...(publicationReason === undefined ? {} : { publicationReason }),
 		...(flowIdConflict ? { flowIdConflict: true } : {}),
 		...(flowIdConflict || flowId === undefined ? {} : { flowId }),
 	};
@@ -312,8 +386,18 @@ function validationFieldsOf(
 	const state = stateOf(payload);
 	const execution = jsonPayloadOf(payload.execution) ?? {};
 	const producer = producerFieldsOf(payload);
-	const head = shortHash(state?.head);
-	const stateDigest = shortHash(state?.dirtyFilesDigest ?? state?.dirty_digest);
+	// The shared workspace block is the primary freshness input; a degraded or unreadable block is
+	// not a complete identity, so producer detail fields win there. Null block values are unknown
+	// state and also fall through to the producer detail fields.
+	const workspace = workspaceOf(payload);
+	const workspaceUsable =
+		workspace !== undefined && (workspace.status === 'readable' || workspace.status === 'non-git');
+	const head = shortHash((workspaceUsable ? workspace.head : undefined) ?? state?.head);
+	const stateDigest = shortHash(
+		(workspaceUsable ? workspace.dirtyDigest : undefined) ??
+			state?.dirtyFilesDigest ??
+			state?.dirty_digest,
+	);
 	const stateDrift =
 		booleanValue(payload, 'stateDrift', 'state_drift') ??
 		booleanValue(execution, 'stateDrift', 'state_drift');
@@ -337,6 +421,10 @@ function validationFieldsOf(
 		...(forced === undefined ? {} : { forced }),
 		...(producer.decision === undefined ? {} : { decision: producer.decision }),
 		...(producer.cacheDecision === undefined ? {} : { cacheDecision: producer.cacheDecision }),
+		...(producer.publication === undefined ? {} : { publication: producer.publication }),
+		...(producer.publicationReason === undefined
+			? {}
+			: { publicationReason: producer.publicationReason }),
 		...(messageFlowIdConflict || producer.flowIdConflict ? { flowIdConflict: true } : {}),
 		...(messageFlowIdConflict || producer.flowIdConflict || producer.flowId === undefined
 			? {}
@@ -463,6 +551,10 @@ function validationExecutionOf(
 			: { forced: fields.forced ?? call.forced }),
 		...(producer.decision === undefined ? {} : { decision: producer.decision }),
 		...(producer.cacheDecision === undefined ? {} : { cacheDecision: producer.cacheDecision }),
+		...(producer.publication === undefined ? {} : { publication: producer.publication }),
+		...(producer.publicationReason === undefined
+			? {}
+			: { publicationReason: producer.publicationReason }),
 		...(producer.flowId === undefined ? {} : { flowId: producer.flowId }),
 		...(producer.flowIdConflict ? { flowIdConflict: true } : {}),
 	};

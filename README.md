@@ -141,7 +141,7 @@ multi-worker fan-out, a remediation round, or any task the guide classifies abov
 worker. An unconditional system-prompt read costs the whole guide before the first delegation. When an older hand-maintained copy such as `~/.pi/agent/SUBAGENTS_GUIDE.md` still
 exists, the command reports it as superseded - delete it, because two copies of one contract drift.
 
-The installed `bash-tools` 1.0.2 producer grants one composite operator per project for flow-scoped child seats by default; `paths` are no longer part of that authorization identity.
+The installed `bash-tools` 1.1.4 producer grants one composite operator per project for flow-scoped child seats by default; `paths` are no longer part of that authorization identity.
 The extension consumes that policy but does not write the producer policy file.
 Workers publish reusable evidence with `publish: { flowId }`, consumers resolve with `{ ref, flowId?, covers? }`, and `fresh: true` is an execution request rather than a lookup.
 Single-flight coordination is process-local; flow publication shares completed evidence but does not coordinate active executions across child processes.
@@ -348,14 +348,10 @@ The contract:
 - the same immutability applies to the appended system prompt, which is why the
   flow ledger reaches a child as a pointer (see below) instead of as its body
 
-Refs minted by `verify` inherit the scope of the process that minted them, which
-has one consequence worth knowing before you plan a validation handoff: a ref the
-main session mints is process-local and no child can resolve it, because a main
-session carries no flow id. When the main session modifies files, it either owns
-the validation of that change outright or delegates the remaining work and expects
-the child to report the already-run checks as `NOT_RUN` rather than trust a
-reference it cannot resolve. Refs travel child to parent as text, and resolution
-travels the other way only inside one flow.
+Refs minted by `verify` inherit the scope of the process that minted them.
+The extension sets `PI_ORCHESTRATION_FLOW` in the root process at startup and exports it into every delegation launch command, so the main session and its children share one flow id: a ref either side mints is resolvable from the other.
+When the main session modifies files and then delegates, the child can resolve the main session's already-run checks instead of reporting them as `NOT_RUN`.
+Refs travel child to parent as text, and resolution travels the other way only inside one flow.
 
 ## Orchestration store
 
@@ -586,7 +582,7 @@ Two mechanical guards back the prose while `repositoryWriteLock` is on. A comman
 
 The details that decide whether this helps or wedges the work: a session is identified by label *and* flow, so two flows sharing one checkout contend even when both allocate a `worker-1`, and a session never blocks on its own hold. A `{ ref }` lookup is never blocked. A refusal costs a tool call and no validation pass, because the command did not run, and the block reason says to report the contention after three retries. The hold is taken only once the call has cleared every other refusal, so a budget-refused command cannot exclude its siblings for a write that never happened. The key is the nearest ancestor holding `.git`, or the working directory itself outside any checkout, so unrelated directories never contend, and each key is the first 32 hex characters of the SHA-256 of that path stored as `<agent directory>/subagent-herdr/repo-locks/<hash>.lock`, which is the file to inspect or delete when a hold looks stuck. A hold left behind by a killed child expires after 5 minutes, an entry that cannot be decoded stops excluding anyone after 2 seconds, and an unusable lock store allows the call rather than blocking every write in the flow. An entry this session cannot *read* is the one case it will not clear on your behalf: it is held until it is older than the TTL plus a minute of clock headroom, and only then removed by whoever finds it, because a reader that cannot inspect a hold is not entitled to free it. A hold that is genuinely stuck is the operator's to delete, and the refusal names the holder, the command and the age, so nobody has to guess which session to interrupt.
 
-Classification is conservative before execution because the consumer must decide whether a command may run before the producer returns its result. `bash-tools` 1.0.2 also reports `mutating` on execution and decision records. A project script that writes through an unrecognised name is therefore not excluded, and an unrecognised variant of a family that has a writing form is excluded conservatively; the guide rule about who owns the gate is what covers the remainder.
+Classification is conservative before execution because the consumer must decide whether a command may run before the producer returns its result. `bash-tools` also reports `mutating` on execution and decision records. A project script that writes through an unrecognised name is therefore not excluded, and an unrecognised variant of a family that has a writing form is excluded conservatively; the guide rule about who owns the gate is what covers the remainder.
 
 ### Upgrading from an earlier configuration
 

@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { STALE_REF_RULE } from '../src/templates.ts';
 import { isExclusiveWriteCommandId, verifySetsScriptOverrides } from '../src/budget.ts';
 import { DEFAULT_CONFIG, DEFAULT_ROLE_BUDGETS, roleBudgetFor } from '../src/config.ts';
 import {
@@ -252,9 +253,7 @@ describe('renderOrchestrationGuide', () => {
 		expect(guide).toContain('Consumers resolve refs instead of rerunning covered checks');
 		expect(guide).toContain('resolving a ref is not a validation pass');
 		expect(guide).toContain('Report freshness as `executed`, `reused`, or `resolved`.');
-		expect(guide).toContain(
-			'Stale, unresolvable, or mismatched refs are `NOT_RUN` or otherwise unverified.',
-		);
+		expect(guide).toContain(STALE_REF_RULE);
 		expect(guide).toContain('A matching reference is evidence reuse, not code approval.');
 	});
 
@@ -264,7 +263,7 @@ describe('renderOrchestrationGuide', () => {
 			'Validation evidence is tool-issued',
 			'Consumers resolve refs instead of rerunning covered checks',
 			'Report freshness as `executed`, `reused`, or `resolved`',
-			'Stale, unresolvable, or mismatched refs are `NOT_RUN` or otherwise unverified',
+			'A resolved ref is evidence only when its lookup succeeded',
 			'Use a compact `V-###` fingerprint only when the project has no composite `verify` gate',
 		];
 		const positions = ordered.map((sentence) => refs.indexOf(sentence));

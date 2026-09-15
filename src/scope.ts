@@ -44,6 +44,8 @@ export interface ReviewSurfaceSnapshot {
 	path: string;
 	revision: number;
 	refreshed: boolean;
+	/** Git head recorded with the snapshot, for comparison against published evidence without recomputing state. */
+	head: string;
 	dirtyPaths: string[];
 }
 
@@ -51,6 +53,7 @@ interface SnapshotInputs {
 	status: string;
 	stat: string;
 	diff: string;
+	head: string;
 	fingerprint: string;
 	dirtyPaths: string[];
 }
@@ -77,8 +80,9 @@ function snapshotInputs(cwd: string): SnapshotInputs {
 	const status = gitOutput(cwd, ['status', '--short']).trim() || '(clean)';
 	const stat = gitOutput(cwd, ['diff', '--stat']).trim() || '(none)';
 	const diff = gitOutput(cwd, ['diff', '--no-color', '--unified=0']);
-	const fingerprint = createHash('sha256').update(`${status}\n${stat}`).digest('hex');
-	return { status, stat, diff, fingerprint, dirtyPaths: dirtyPathsFromStatus(status) };
+	const head = gitOutput(cwd, ['rev-parse', 'HEAD']).trim();
+	const fingerprint = createHash('sha256').update(`${status}\n${stat}\n${head}`).digest('hex');
+	return { status, stat, diff, head, fingerprint, dirtyPaths: dirtyPathsFromStatus(status) };
 }
 
 function snapshotText(
@@ -94,6 +98,7 @@ function snapshotText(
 			`flow_id: ${flowId}`,
 			`snapshot_fingerprint: ${inputs.fingerprint}`,
 			`snapshot_revision: ${revision}`,
+			`git_head: ${inputs.head}`,
 			`cwd: ${cwd}`,
 			'',
 			'## Working-tree status',
@@ -143,6 +148,7 @@ export function ensureReviewSurface(
 					path: target,
 					revision: previous.revision,
 					refreshed: false,
+					head: inputs.head,
 					dirtyPaths: inputs.dirtyPaths,
 				};
 			}
@@ -152,7 +158,13 @@ export function ensureReviewSurface(
 				encoding: 'utf8',
 				mode: 0o600,
 			});
-			return { path: target, revision, refreshed: true, dirtyPaths: inputs.dirtyPaths };
+			return {
+				path: target,
+				revision,
+				refreshed: true,
+				head: inputs.head,
+				dirtyPaths: inputs.dirtyPaths,
+			};
 		});
 	} catch {
 		return undefined;

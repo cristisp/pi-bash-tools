@@ -80,6 +80,207 @@ describe('measureExecutionMetrics', () => {
 		]);
 	});
 
+	it('reads the shared workspace envelope block as the primary freshness input', () => {
+		const messages = [
+			assistantMsg('validating', {
+				toolCalls: [
+					{ id: 'v1', name: 'verify', args: {} },
+					{ id: 'v2', name: 'verify', args: {} },
+					{ id: 'v3', name: 'verify', args: {} },
+				],
+			}),
+			toolResultMsg(
+				'v1',
+				JSON.stringify({
+					ref: 'vr_env',
+					verdict: 'passed',
+					reused: true,
+					workspace: {
+						repositoryId: 'a'.repeat(64),
+						head: 'feedface0001feedface0002',
+						dirtyDigest: '9988776655443322',
+						status: 'readable',
+					},
+				}),
+				'verify',
+			),
+			toolResultMsg(
+				'v2',
+				JSON.stringify({
+					ref: 'vr_env_wins',
+					verdict: 'passed',
+					reused: true,
+					repositoryState: {
+						head: 'deadbeefcafe1234',
+						dirtyFilesDigest: 'ab12cd34ef56ab78',
+					},
+					workspace: {
+						repositoryId: 'a'.repeat(64),
+						head: 'feedface0001feedface0002',
+						dirtyDigest: '9988776655443322',
+						status: 'readable',
+					},
+				}),
+				'verify',
+			),
+			toolResultMsg(
+				'v3',
+				JSON.stringify({
+					ref: 'vr_degraded',
+					verdict: 'passed',
+					reused: true,
+					repositoryState: {
+						head: 'deadbeefcafe1234',
+						dirtyFilesDigest: 'ab12cd34ef56ab78',
+					},
+					workspace: {
+						repositoryId: 'a'.repeat(64),
+						head: 'feedface0001feedface0002',
+						dirtyDigest: null,
+						status: 'degraded',
+					},
+				}),
+				'verify',
+			),
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 10);
+
+		expect(metrics.validationRefs?.[0]).toMatchObject({
+			ref: 'vr_env',
+			head: 'feedface0001',
+			stateDigest: '998877665544',
+		});
+		expect(metrics.validationRefs?.[1]).toMatchObject({
+			ref: 'vr_env_wins',
+			head: 'feedface0001',
+			stateDigest: '998877665544',
+		});
+		expect(metrics.validationRefs?.[2]).toMatchObject({
+			ref: 'vr_degraded',
+			repositoryStateStatus: 'unreadable',
+			head: 'deadbeefcafe',
+			stateDigest: 'ab12cd34ef56',
+		});
+	});
+
+	it('falls back to producer detail fields on a malformed workspace block and keeps explicit status', () => {
+		const messages = [
+			assistantMsg('validating', {
+				toolCalls: [
+					{ id: 'v1', name: 'verify', args: {} },
+					{ id: 'v2', name: 'verify', args: {} },
+				],
+			}),
+			toolResultMsg(
+				'v1',
+				JSON.stringify({
+					ref: 'vr_bad',
+					verdict: 'passed',
+					reused: true,
+					repositoryState: {
+						head: 'deadbeefcafe1234',
+						dirtyFilesDigest: 'ab12cd34ef56ab78',
+					},
+					workspace: { repositoryId: 'a'.repeat(64), head: 42, status: 'partial' },
+				}),
+				'verify',
+			),
+			toolResultMsg(
+				'v2',
+				JSON.stringify({
+					ref: 'vr_explicit',
+					verdict: 'passed',
+					reused: true,
+					repositoryStateStatus: 'mismatch',
+					workspace: {
+						repositoryId: 'a'.repeat(64),
+						head: 'feedface0001feedface0002',
+						dirtyDigest: '9988776655443322',
+						status: 'degraded',
+					},
+				}),
+				'verify',
+			),
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 10);
+
+		expect(metrics.validationRefs?.[0]).toMatchObject({
+			ref: 'vr_bad',
+			head: 'deadbeefcafe',
+			stateDigest: 'ab12cd34ef56',
+		});
+		expect(metrics.validationRefs?.[0]?.repositoryStateStatus).toBeUndefined();
+		expect(metrics.validationRefs?.[1]).toMatchObject({
+			ref: 'vr_explicit',
+			repositoryStateStatus: 'mismatch',
+		});
+		expect(metrics.validationRefs?.[1]?.head).toBeUndefined();
+		expect(metrics.validationRefs?.[1]?.stateDigest).toBeUndefined();
+	});
+
+	it('normalizes publication outcomes from both producer vocabularies', () => {
+		const publicationCases: Record<string, unknown>[] = [
+			{ state: 'published', ref: 'cg_fresh', reason: null },
+			{ state: 'unauthorized', ref: null, reason: null },
+			{ state: 'failed', ref: null, reason: 'store write rejected' },
+			{ scope: 'flow', flowId: 'f1', published: true },
+			{
+				scope: 'flow',
+				flowId: 'f1',
+				published: false,
+				error: 'Evidence publication was  not\navailable.',
+			},
+			{ status: 'wat' },
+		];
+		const messages = [
+			assistantMsg('validating', {
+				toolCalls: publicationCases.map((_, index) => ({
+					id: `v${index}`,
+					name: 'verify',
+					args: {},
+				})),
+			}),
+			...publicationCases.map((publication, index) =>
+				toolResultMsg(
+					`v${index}`,
+					JSON.stringify({
+						ref: `vr_pub_${index}`,
+						verdict: 'passed',
+						reused: false,
+						publication,
+					}),
+					'verify',
+				),
+			),
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 10);
+
+		expect(metrics.validationRefs?.[0]).toMatchObject({
+			ref: 'vr_pub_0',
+			publication: 'published',
+		});
+		expect(metrics.validationRefs?.[1]).toMatchObject({
+			ref: 'vr_pub_1',
+			publication: 'unauthorized',
+		});
+		expect(metrics.validationRefs?.[2]).toMatchObject({
+			ref: 'vr_pub_2',
+			publication: 'failed',
+			publicationReason: 'store write rejected',
+		});
+		expect(metrics.validationRefs?.[3]).toMatchObject({
+			ref: 'vr_pub_3',
+			publication: 'published',
+		});
+		expect(metrics.validationRefs?.[4]).toMatchObject({
+			ref: 'vr_pub_4',
+			publication: 'failed',
+			publicationReason: 'Evidence publication was not available.',
+		});
+		expect(metrics.validationRefs?.[5]?.publication).toBeUndefined();
+		expect(metrics.validationRefs?.[5]?.publicationReason).toBeUndefined();
+	});
+
 	it('records failed lookups and preserves producer freshness fields', () => {
 		const messages = [
 			assistantMsg('lookup and execute', {

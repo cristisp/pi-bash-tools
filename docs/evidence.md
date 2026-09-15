@@ -30,10 +30,11 @@ Consumers must confirm:
 `resolved` means a consumer looked up stored evidence and ran nothing.
 It is not a validation pass.
 A `mismatch` or `unreadable` repository state is not evidence of success.
-An unresolved, stale, denied, timed-out, or not-found reference is `NOT_RUN` or otherwise unverified.
+A resolved ref is evidence only when its lookup succeeded, and a failed, stale, or not-found lookup is `NOT_RUN` or otherwise unverified.
 
 References minted by a child seat in a flow can be resolved by its siblings and travel upward in the child report.
-A reference minted by the root session has no flow id and is process-local, so a child cannot resolve it.
+The root session shares the flow id with its children: the extension sets `PI_ORCHESTRATION_FLOW` in the root process at startup, so a reference minted by the root also resolves from children.
+The root is not a delegation and can publish evidence outside any orchestration context; consumers still confirm every reference by lookup, so published root evidence is a hint with the same guarantees as any other.
 A child with `evidenceScope: "session"` cannot resolve sibling references and must execute the required checks itself.
 A child with the default `flow` scope may resolve completed sibling evidence.
 A request can narrow scope from `flow` to `session`, but cannot widen the configured policy.

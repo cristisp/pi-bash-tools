@@ -279,6 +279,22 @@ export interface ReadManifest {
 	priorReports: string[];
 	establishedEvidence: string[];
 	doNotReread: string[];
+	/** Structured refs minted or resolved by prior turns in this flow. Resolution hints, not verdicts: each must still be confirmed by a lookup. */
+	knownRefs?: KnownManifestRef[];
+}
+
+/** A flow ref the orchestrator observed a prior turn mint or resolve, with its verdict and freshness. */
+export interface KnownManifestRef {
+	ref: string;
+	verdict?: 'passed' | 'failed' | 'incomplete';
+	/** The observed run reused evidence for unchanged repository state instead of executing the gate. */
+	reused: boolean;
+	/** Freshness comparison made by the producer on lookup, when one ran. */
+	repositoryStateStatus?: RepositoryStateStatus;
+	/** First 12 chars of HEAD the evidence was minted against. */
+	head?: string;
+	/** First 12 chars of the dirty-state digest the evidence was minted against. */
+	stateDigest?: string;
 }
 
 /** Orchestration context supplied by the delegating call. */
@@ -312,6 +328,8 @@ export interface OrchestrationContext {
 	reviewSurfaceRevision?: number;
 	/** Whether this delegation caused the review surface to be rewritten. */
 	reviewSurfaceRefreshed?: boolean;
+	/** Git head recorded with the review surface snapshot, for comparison against published evidence. */
+	reviewSurfaceHead?: string;
 	/** Dirty paths captured while producing the review surface snapshot. */
 	dirtyPaths?: string[];
 }
@@ -356,6 +374,7 @@ export interface RunSummary {
 	reviewSurfacePath?: string;
 	reviewSurfaceRevision?: number;
 	reviewSurfaceRefreshed?: boolean;
+	reviewSurfaceHead?: string;
 	dirtyPaths?: string[];
 	readManifest?: ReadManifest;
 	budget?: BudgetSummary;
@@ -421,6 +440,7 @@ export interface RegistryEntry {
 	reviewSurfacePath?: string;
 	reviewSurfaceRevision?: number;
 	reviewSurfaceRefreshed?: boolean;
+	reviewSurfaceHead?: string;
 	dirtyPaths?: string[];
 	readManifest?: ReadManifest;
 	/**
@@ -492,7 +512,7 @@ export interface ExecutionMetrics {
 	reasoningTokens?: number;
 	/**
 	 * Tool-issued validation refs this child minted or resolved, in call order. Refs are resolvable inside
-	 * the flow that minted them; refs minted by a root session are process-local and never reach a child.
+	 * the flow that minted them; the root session shares the flow id, so refs it mints resolve from children too.
 	 */
 	validationRefs?: ValidationReference[];
 	/** Failed validation-evidence lookups, kept separate from successful zero-reuse runs. */
@@ -532,6 +552,10 @@ export interface ValidationExecution {
 	decision?: string;
 	/** Producer cache decision for the execution, when emitted by the validation tool. */
 	cacheDecision?: string;
+	/** Normalized publication outcome when the execution requested flow publication. */
+	publication?: 'published' | 'unauthorized' | 'unavailable' | 'failed';
+	/** Producer-provided publication failure reason, whitespace-flattened and bounded. */
+	publicationReason?: string;
 	/** Producer flow provenance; this is not inferred from producerScope. */
 	flowId?: string;
 	/** True when multiple distinct producer flow IDs made provenance ambiguous. */
@@ -568,6 +592,10 @@ export interface ValidationReference {
 	decision?: string;
 	/** Producer cache decision for this ref, when emitted by the validation tool. */
 	cacheDecision?: string;
+	/** Normalized publication outcome when the run requested flow publication. */
+	publication?: 'published' | 'unauthorized' | 'unavailable' | 'failed';
+	/** Producer-provided publication failure reason, whitespace-flattened and bounded. */
+	publicationReason?: string;
 	/** Producer flow provenance; this is not inferred from producerScope. */
 	flowId?: string;
 	/** True when multiple distinct producer flow IDs made provenance ambiguous. */
@@ -628,6 +656,7 @@ export interface TelemetryRecord {
 	reviewSurfacePath?: string;
 	reviewSurfaceRevision?: number;
 	reviewSurfaceRefreshed?: boolean;
+	reviewSurfaceHead?: string;
 	dirtyPaths?: string[];
 	readManifest?: ReadManifest;
 	budget?: BudgetSummary;
@@ -660,6 +689,7 @@ export interface SingleResult {
 	reviewSurfacePath?: string;
 	reviewSurfaceRevision?: number;
 	reviewSurfaceRefreshed?: boolean;
+	reviewSurfaceHead?: string;
 	dirtyPaths?: string[];
 	readManifest?: ReadManifest;
 	flowId?: string;
