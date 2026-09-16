@@ -1,8 +1,10 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion */
 
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -28,6 +30,7 @@ import { isReadEvidenceRecord } from "../../src/tools/filesystem/read-evidence-v
 import { createPolicyTestFixtures } from "../policy/test-fixtures.ts";
 
 const fixtures = createPolicyTestFixtures();
+const execFileAsync = promisify(execFile);
 
 afterEach(async () => {
   vi.useRealTimers();
@@ -106,6 +109,22 @@ describe("read evidence store", () => {
 
       const reopened = createReadEvidenceStore({ rootDirectory: cacheRoot });
       expect(reopened.getByRef(record.ref, flowId)).toEqual(record);
+    });
+  });
+
+  it("does not retain a ref when the durable flow write fails", async () => {
+    const record = createPublishedReadEvidenceRecord({
+      root: "/repo",
+      flowId: "flow-write-failure",
+      entries: [entry("src/one.ts", "first\n")],
+    });
+    await withFlow("flow-write-failure", async () => {
+      const store = createReadEvidenceStoreInternal({}, isReadEvidenceRecord, () => ({
+        ...FAKE_DISK,
+        publish: () => false,
+      }));
+      expect(store.publish(record, "flow-write-failure")).toBe(false);
+      expect(store.getByRef(record.ref, "flow-write-failure")).toBeUndefined();
     });
   });
 
@@ -443,6 +462,79 @@ describe("read_batch evidence publication", () => {
     });
   });
 
+  it("resolves a published ref from a fresh child process", async () => {
+    const directory = await fixtures.createDirectory();
+    const canonical = await realpath(directory);
+    const cacheRoot = join(canonical, "cache");
+    await writeFile(join(canonical, "src.ts"), "first\nsecond\n");
+    const configPath = join(canonical, "bash-tools.json");
+    await writeFile(configPath, JSON.stringify({ version: 1 }));
+    const store = createReadEvidenceStore({ rootDirectory: cacheRoot });
+    await withFlow("flow-child", async () => {
+      const tool = createReadBatchToolForTesting({ configPath, readEvidenceStore: store });
+      const published = await tool.execute(
+        "publish-child",
+        { paths: [{ path: "src.ts" }], publish: { flowId: "flow-child" } },
+        undefined,
+        undefined,
+        context(canonical),
+      );
+      const ref = published.details.publish?.ref;
+      expect(ref).toMatch(/^rr_[0-9a-f]{24}$/u);
+      if (ref === undefined) throw new Error("expected a published ref");
+
+      const readBatchUrl = new URL("../../src/tools/filesystem/read-batch-tool.ts", import.meta.url)
+        .href;
+      const evidenceStoreUrl = new URL(
+        "../../src/tools/filesystem/read-evidence-store.ts",
+        import.meta.url,
+      ).href;
+      const childCode = `
+        const { createReadBatchToolForTesting } = await import(${JSON.stringify(readBatchUrl)});
+        const { createReadEvidenceStore } = await import(${JSON.stringify(evidenceStoreUrl)});
+        const tool = createReadBatchToolForTesting({
+          configPath: process.env.BASH_TOOLS_CONFIG,
+          readEvidenceStore: createReadEvidenceStore({ rootDirectory: process.env.BASH_TOOLS_CACHE }),
+        });
+        const context = {
+          cwd: process.env.BASH_TOOLS_CWD,
+          mode: "print",
+          hasUI: false,
+          signal: undefined,
+          ui: { select: async () => undefined },
+        };
+        const result = await tool.execute(
+          "lookup-child",
+          { ref: process.env.BASH_TOOLS_REF, covers: ["AC-CHILD"] },
+          undefined,
+          undefined,
+          context,
+        );
+        console.log(JSON.stringify({
+          ref: result.details.lookup?.ref,
+          status: result.details.lookup?.entries[0]?.status,
+        }));
+      `;
+      const child = await execFileAsync(
+        process.execPath,
+        ["--input-type=module", "--eval", childCode],
+        {
+          cwd: canonical,
+          env: {
+            ...process.env,
+            BASH_TOOLS_CACHE: cacheRoot,
+            BASH_TOOLS_CONFIG: configPath,
+            BASH_TOOLS_CWD: canonical,
+            BASH_TOOLS_REF: ref,
+            PI_ORCHESTRATION_FLOW: "flow-child",
+            PI_ORCHESTRATION_EVIDENCE_SCOPE: "flow",
+          },
+        },
+      );
+      expect(JSON.parse(child.stdout)).toEqual({ ref, status: "unchanged" });
+    });
+  });
+
   it("records a clamped lookup outcome without read-phase items", async () => {
     const directory = await fixtures.createDirectory();
     const canonical = await realpath(directory);
@@ -563,6 +655,38 @@ describe("read_batch evidence publication", () => {
       expect(read.details.publish?.published).toBe(false);
       expect(read.details.publish?.ref).toBeUndefined();
       expect(read.details.results[0]?.content).toContain("alpha");
+    });
+  });
+
+  it("reports publication failure when the store throws", async () => {
+    const directory = await fixtures.createDirectory();
+    const canonical = await realpath(directory);
+    await writeFile(join(canonical, "src.ts"), "alpha\n");
+    const configPath = join(canonical, "bash-tools.json");
+    await writeFile(configPath, JSON.stringify({ version: 1 }));
+    const store: ReadEvidenceStore = {
+      getByRef: () => undefined,
+      lookupOutcome: () => "missing",
+      publish: () => {
+        throw new Error("cache unavailable");
+      },
+      clear: () => undefined,
+    };
+    await withFlow("flow-throw", async () => {
+      const tool = createReadBatchToolForTesting({ configPath, readEvidenceStore: store });
+      const read = await tool.execute(
+        "publish-throw",
+        { paths: [{ path: "src.ts" }], publish: { flowId: "flow-throw" } },
+        undefined,
+        undefined,
+        context(canonical),
+      );
+      expect(read.details.publish).toEqual({
+        scope: "flow",
+        flowId: "flow-throw",
+        published: false,
+        error: "Read evidence was not published to the requested flow.",
+      });
     });
   });
 

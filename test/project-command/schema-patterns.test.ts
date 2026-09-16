@@ -75,11 +75,44 @@ function collectSchemaPatterns(value: unknown, patterns: string[] = []): string[
   return patterns;
 }
 
+it("reports the read_batch flow shape used by runtime validation", () => {
+  const schema = readBatchParameters;
+  const properties: Readonly<Record<string, unknown>> = isSchemaNode(schema)
+    ? (schema.properties ?? {})
+    : {};
+  const flowId = properties.flowId;
+  const flowIdVariants = isSchemaNode(flowId) ? (flowId.anyOf ?? []) : [];
+  expect(flowIdVariants[0]).toMatchObject({
+    type: "string",
+    pattern: "^[A-Za-z0-9_-]{1,64}$",
+    description: expect.stringContaining("Lookup-only"),
+  });
+  const covers = properties.covers;
+  const coversVariants = isSchemaNode(covers) ? (covers.anyOf ?? []) : [];
+  expect(coversVariants[0]).toMatchObject({
+    type: "array",
+    description: expect.stringContaining("acceptance-criteria"),
+  });
+  const publish = properties.publish;
+  const publishVariants = isSchemaNode(publish) ? (publish.anyOf ?? []) : [];
+  expect(publishVariants[0]).toMatchObject({
+    type: "object",
+    description: expect.stringContaining("Execution-only"),
+  });
+  expect(schema).toMatchObject({
+    type: "object",
+    additionalProperties: false,
+    description: expect.stringContaining("lookup uses ref"),
+  });
+  expect(Object.keys(properties).sort()).toEqual(["covers", "flowId", "paths", "publish", "ref"]);
+});
+
 it("keeps every model-facing schema pattern free of lookaround constructs", () => {
   const schemas = [
     projectCommandInputSchema,
     createProjectCommandInputSchema(getProjectCommandDefinitions()),
     verifyInputSchema,
+    readBatchParameters,
   ];
   const patterns = schemas.flatMap((schema) => collectSchemaPatterns(schema));
   expect(patterns.length).toBeGreaterThan(0);

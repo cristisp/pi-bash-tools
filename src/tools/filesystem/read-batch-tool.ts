@@ -127,7 +127,10 @@ const readBatchRangeParameters = Type.Object(
       }),
     ),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    description: "Optional line range; omit both fields to read the complete file.",
+  },
 );
 
 const readBatchPathParameters = Type.Object(
@@ -135,11 +138,14 @@ const readBatchPathParameters = Type.Object(
     path: Type.String({
       minLength: 1,
       maxLength: READ_BATCH_MAX_PATH_LENGTH,
-      description: "Path to a repository file",
+      description: "Non-empty repository-relative path to a regular file",
     }),
     range: Type.Optional(readBatchRangeParameters),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    description: "One repository-relative file and optional bounded line range to read.",
+  },
 );
 
 const readBatchPublishParameters = Type.Object(
@@ -147,11 +153,15 @@ const readBatchPublishParameters = Type.Object(
     flowId: Type.String({
       minLength: 1,
       maxLength: READ_BATCH_MAX_FLOW_ID_LENGTH,
-      pattern: "^[A-Za-z0-9_-]{1,64}$",
-      description: "Authorized orchestration flow to publish read evidence to",
+      pattern: FLOW_ID_PATTERN.source,
+      description: "Flow ID authorized to receive the freshly read evidence",
     }),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    description:
+      "Execution-only publication request. The resulting aggregate ref is durable and lookupable by authorized children in this flow.",
+  },
 );
 
 const readBatchParameters = Type.Object(
@@ -161,7 +171,8 @@ const readBatchParameters = Type.Object(
         Type.Array(readBatchPathParameters, {
           minItems: 1,
           maxItems: READ_BATCH_MAX_PATHS,
-          description: "Repository files to read, each with an optional line range",
+          description:
+            "Execution request: one or more repository-relative files to read. Required unless ref is supplied for lookup.",
         }),
         Type.Null(),
       ]),
@@ -171,28 +182,53 @@ const readBatchParameters = Type.Object(
         Type.String({
           pattern: "^rr_[0-9a-f]{24}$",
           maxLength: 32,
-          description: "Published read_batch evidence reference to resolve; null means omitted.",
+          description:
+            "Lookup request: previously published read_batch evidence ref. Use this instead of paths; it must not be combined with publish.",
         }),
         Type.Null(),
       ]),
     ),
     flowId: Type.Optional(
       Type.Union([
-        Type.String({ minLength: 1, maxLength: READ_BATCH_MAX_FLOW_ID_LENGTH }),
+        Type.String({
+          minLength: 1,
+          maxLength: READ_BATCH_MAX_FLOW_ID_LENGTH,
+          pattern: FLOW_ID_PATTERN.source,
+          description:
+            "Lookup-only flow scope; requires ref. For execution publication, use publish.flowId instead.",
+        }),
         Type.Null(),
       ]),
     ),
     covers: Type.Optional(
       Type.Union([
-        Type.Array(Type.String({ minLength: 1, maxLength: READ_BATCH_MAX_COVER_LENGTH }), {
-          maxItems: READ_BATCH_MAX_COVERS,
-        }),
+        Type.Array(
+          Type.String({
+            minLength: 1,
+            maxLength: READ_BATCH_MAX_COVER_LENGTH,
+            description: "Acceptance-criteria identifier to associate with this lookup",
+          }),
+          {
+            maxItems: READ_BATCH_MAX_COVERS,
+            description:
+              "Optional bounded acceptance-criteria identifiers for a published-ref lookup; valid only with ref.",
+          },
+        ),
         Type.Null(),
       ]),
     ),
-    publish: Type.Optional(Type.Union([readBatchPublishParameters, Type.Null()])),
+    publish: Type.Optional(
+      Type.Union([readBatchPublishParameters, Type.Null()], {
+        description:
+          "Optional execution-only publication. Do not combine with ref; publication must target the caller's authorized flow.",
+      }),
+    ),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    description:
+      "Two request forms are supported: execution uses paths and may include publish.flowId; lookup uses ref and may include flowId and covers. Do not combine execution and lookup fields. Explicit null on optional fields is treated as omitted, and invalid combinations are rejected at runtime.",
+  },
 );
 
 type ReadBatchInput = Static<typeof readBatchParameters>;
@@ -1272,12 +1308,19 @@ function publishReadBatchEvidence(
       "Read evidence exceeds the published record size bound.",
     );
   }
-  return store.publish(record, flowId)
-    ? { scope: "flow", flowId, published: true, ref: record.ref }
-    : readEvidencePublicationFailure(
-        flowId,
-        "Read evidence was not published to the requested flow.",
-      );
+  try {
+    return store.publish(record, flowId)
+      ? { scope: "flow", flowId, published: true, ref: record.ref }
+      : readEvidencePublicationFailure(
+          flowId,
+          "Read evidence was not published to the requested flow.",
+        );
+  } catch {
+    return readEvidencePublicationFailure(
+      flowId,
+      "Read evidence was not published to the requested flow.",
+    );
+  }
 }
 
 function createReadBatchToolWithDependencies(
@@ -1296,8 +1339,8 @@ function createReadBatchToolWithDependencies(
     name: "read_batch",
     label: "Batch read",
     description:
-      "Read bounded repository-relative file ranges in one request, returning per-path errors and stable content references for unchanged repeats.",
-    promptSnippet: "Read multiple repository files with optional line ranges",
+      "Read bounded repository-relative file ranges, or resolve previously published read evidence. Use paths for execution, ref for lookup, publish.flowId for authorized flow publication, and covers for lookup attribution.",
+    promptSnippet: "Read files or resolve published evidence",
     parameters: readBatchParameters,
     executionMode: "sequential",
     renderCall(args, theme) {
