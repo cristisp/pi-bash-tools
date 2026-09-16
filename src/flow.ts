@@ -9,7 +9,7 @@ import type { FlowManifest, FlowParticipant } from './types.ts';
 const MAX_PARTICIPANTS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export const REPORTS_SUBDIR = 'reports';
+const REPORTS_SUBDIR = 'reports';
 export const PREDIGEST_SUBDIR = 'predigest';
 const MANIFEST_NAME = 'flow.json';
 
@@ -21,7 +21,7 @@ export function flowDirFor(flowId: string): string {
 	return path.join(flowsRoot(), sanitizeSegment(flowId));
 }
 
-export function flowManifestPath(flowId: string): string {
+function flowManifestPath(flowId: string): string {
 	return path.join(flowDirFor(flowId), MANIFEST_NAME);
 }
 

@@ -22,7 +22,7 @@ const FILES_REVIEWED_HEADING = /^##[ \t]+Files Reviewed[ \t]*$/im;
 const NEXT_H2_HEADING = /^##[ \t]+/gm;
 
 /** Character heuristic for budget arithmetic; the analyzer uses real token counts. */
-export const CHARS_PER_TOKEN = 4;
+const CHARS_PER_TOKEN = 4;
 const TRUNCATION_ALLOWANCE = 220;
 
 export interface LedgerBlock {
@@ -94,9 +94,12 @@ export function parseLedgerBlock(output: string): LedgerBlock | null {
 	return found;
 }
 
+function normalizeS4StatusValue(value: unknown): string {
+	return typeof value === 'string' ? value.trim().toLowerCase().replaceAll('-', '_') : 'unknown';
+}
+
 export function normalizeS4Quality(value: unknown): S4Quality {
-	if (typeof value !== 'string') return 'unknown';
-	const normalized = value.trim().toLowerCase().replaceAll('-', '_');
+	const normalized = normalizeS4StatusValue(value);
 	if (/^(pass|passed|ok|success|successful|complete|completed)$/.test(normalized)) return 'pass';
 	if (/^(fail|failed|failure|error|errors)$/.test(normalized)) return 'fail';
 	if (/^(incomplete|partial|blocked|unfinished)$/.test(normalized)) return 'incomplete';
@@ -105,8 +108,7 @@ export function normalizeS4Quality(value: unknown): S4Quality {
 }
 
 function normalizeS4IndependentReviewStatus(value: string | undefined): S4IndependentReviewStatus {
-	if (value === undefined) return 'unknown';
-	const normalized = value.trim().toLowerCase().replaceAll('-', '_');
+	const normalized = normalizeS4StatusValue(value);
 	if (/^(pass|passed|ok|success|successful)$/.test(normalized)) return 'pass';
 	if (/^(fail|failed|failure|error|errors)$/.test(normalized)) return 'fail';
 	if (/^(pending|in_progress|inprogress|not_run|notrun)$/.test(normalized)) return 'pending';
@@ -156,8 +158,12 @@ export function normalizeS4Outcome(
 ): NormalizedS4Outcome {
 	const validationStatus = normalizeS4Quality(fields?.validation_verdict);
 	const reviewStatus = normalizeS4Quality(fields?.review_verdict);
+	const reportOnlyOutputBreach =
+		budget?.outcome === 'report_only' &&
+		budget.breaches.length > 0 &&
+		budget.breaches.every((breach) => breach.metric === 'outputTokens');
 	const budgetStatus: S4Quality = budget
-		? budget.outcome === 'within'
+		? budget.outcome === 'within' || reportOnlyOutputBreach
 			? 'pass'
 			: budget.outcome === 'aborted'
 				? 'fail'

@@ -336,6 +336,7 @@ describe('measureExecutionMetrics', () => {
 		expect(metrics.validationExecutions).toEqual([
 			{
 				tool: 'verify',
+				ref: 'vr_fresh',
 				stateDrift: true,
 				concurrentExecutions: 2,
 				mutating: false,

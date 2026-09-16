@@ -31,6 +31,8 @@ Consumers must confirm:
 It is not a validation pass.
 A `mismatch` or `unreadable` repository state is not evidence of success.
 A resolved ref is evidence only when its lookup succeeded, and a failed, stale, or not-found lookup is `NOT_RUN` or otherwise unverified.
+For `read_batch` refs, use the minimal `{ ref }` lookup by default; the current producer also supports lookup-only `flowId` and `covers` when explicit flow selection or attribution is needed.
+After one failed, stale, unauthorized, or unsupported-field lookup, stop retries for that ref and path batch, record `NOT_RUN`, and reacquire the required files once with a fresh bounded request.
 
 References minted by a child seat in a flow can be resolved by its siblings and travel upward in the child report.
 Validation refs share the manifest with `read_batch` evidence refs: manifest `knownRefs` entries carry a kind, `vr_` verify refs resolve through a verify ref lookup, and `kind: "read"` entries are `rr_` read refs that resolve through a `read_batch` ref lookup.

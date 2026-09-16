@@ -28,11 +28,27 @@ export type BudgetMetric =
 
 export type BudgetOutcome = 'within' | 'steered' | 'report_only' | 'aborted';
 
+export type BudgetPhase = 'discovery' | 'implementation' | 'finalization' | 'report';
+
+export type BudgetCause =
+	| 'discovery'
+	| 'repeated_reads'
+	| 'failed_calls'
+	| 'tool_calls'
+	| 'validation'
+	| 'report_output'
+	| 'finalization_reserve'
+	| 'wall_time';
+
 export interface RoleBudget {
 	toolCalls: number;
 	discoveryCalls: number;
 	/** Worker-only discovery allowance before the first implementation tool call. */
 	implementationDiscoveryCalls?: number;
+	/** Tool calls reserved for the worker's final affected-test query, validation, and report. */
+	finalizationReserveCalls?: number;
+	/** Validation passes reserved for final-state evidence. */
+	finalizationReserveValidationPasses?: number;
 	fullValidationPasses: number;
 	failedToolCalls: number;
 	repeatedReads: number;
@@ -87,6 +103,14 @@ export interface BudgetSummary {
 	registryPersists?: number;
 	/** Number of tool calls refused because another session held the repository write lock. */
 	repositoryWriteLockRefusals?: number;
+	/** Phase reached when this turn settled. */
+	phase?: BudgetPhase;
+	/** First material cause recorded for a stop or protected-phase refusal. */
+	cause?: BudgetCause;
+	/** Whether the worker entered its protected finalization window. */
+	finalizationReady?: boolean;
+	/** Whether the final validation was observed after the last accepted implementation change. */
+	finalStateValidation?: boolean;
 }
 
 export type EvidenceScope = 'session' | 'flow';
@@ -637,6 +661,8 @@ export interface ValidationReference {
 	flowIdConflict?: boolean;
 	/** Validation phases reported as omitted rather than passed. */
 	omitted?: string[];
+	/** Whether this evidence was minted after the worker's final accepted implementation change. */
+	finalState?: boolean;
 }
 
 export interface TelemetryRecord {

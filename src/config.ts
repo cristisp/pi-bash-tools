@@ -78,6 +78,8 @@ const DEFAULT_ROLE_BUDGET: RoleBudget = {
 	toolCalls: 24,
 	discoveryCalls: 24,
 	implementationDiscoveryCalls: 12,
+	finalizationReserveCalls: 0,
+	finalizationReserveValidationPasses: 0,
 	fullValidationPasses: 2,
 	failedToolCalls: 3,
 	repeatedReads: 3,
@@ -89,7 +91,12 @@ const DEFAULT_ROLE_BUDGET: RoleBudget = {
 export const DEFAULT_ROLE_BUDGETS: Record<string, RoleBudget> = {
 	scout: { ...DEFAULT_ROLE_BUDGET, toolCalls: 20, discoveryCalls: 8, outputTokens: 800 },
 	planner: { ...DEFAULT_ROLE_BUDGET, toolCalls: 20, discoveryCalls: 6, outputTokens: 800 },
-	worker: { ...DEFAULT_ROLE_BUDGET, outputTokens: 1000 },
+	worker: {
+		...DEFAULT_ROLE_BUDGET,
+		outputTokens: 1000,
+		finalizationReserveCalls: 6,
+		finalizationReserveValidationPasses: 1,
+	},
 	// A validator resolves the worker's `verify` ref first, so it executes at most what the ref does not
 	// cover. The limit is three passes: the uncovered remainder, plus retries for flakiness and an
 	// environment split. A validator that needs more is re-running evidence that already exists.
@@ -167,6 +174,8 @@ const BUDGET_KEYS = [
 	'toolCalls',
 	'discoveryCalls',
 	'implementationDiscoveryCalls',
+	'finalizationReserveCalls',
+	'finalizationReserveValidationPasses',
 	'fullValidationPasses',
 	'failedToolCalls',
 	'repeatedReads',
@@ -195,7 +204,7 @@ const NUMERIC_KEYS = [
 	'ledgerMaxRevisions',
 ] as const satisfies readonly (keyof SubagentHerdrConfig)[];
 
-export function parseEvidenceScopes(raw: unknown): Record<string, EvidenceScope> {
+function parseEvidenceScopes(raw: unknown): Record<string, EvidenceScope> {
 	const scopes: Record<string, EvidenceScope> = {};
 	if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return scopes;
 	for (const [role, value] of Object.entries(raw as Record<string, unknown>)) {
@@ -205,7 +214,7 @@ export function parseEvidenceScopes(raw: unknown): Record<string, EvidenceScope>
 	return scopes;
 }
 
-export function parseRoleNames(raw: unknown): string[] {
+function parseRoleNames(raw: unknown): string[] {
 	if (!Array.isArray(raw)) return [];
 	const names: string[] = [];
 	for (const value of raw) {

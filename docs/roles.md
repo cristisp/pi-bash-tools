@@ -43,6 +43,7 @@ invariants
 changed_files
 validation_refs
 validation_omitted
+evidence_recovery
 findings
 baseline_failures
 environment_blockers

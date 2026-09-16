@@ -19,7 +19,9 @@ import type { RepositoryWriteContention, RepositoryWriteLockHandle } from './rep
 import { updateRegistryEntry } from './registry.ts';
 import type {
 	BudgetBreach,
+	BudgetCause,
 	BudgetMetric,
+	BudgetPhase,
 	BudgetSummary,
 	BudgetUsage,
 	RoleBudget,
@@ -104,7 +106,7 @@ const ARTIFACT_WRITING_VARIANT_PATTERNS = [
 	/write/,
 ];
 
-export function commandIdOf(input: Record<string, unknown> | undefined): string {
+function commandIdOf(input: Record<string, unknown> | undefined): string {
 	return typeof input?.commandId === 'string' ? input.commandId : '';
 }
 
@@ -141,7 +143,7 @@ export const BUDGET_STEER_MESSAGE = `${BUDGET_STEER_PREFIX} A per-role budget wa
 
 function noopAbort(): void {}
 
-export function emptyBudgetUsage(): BudgetUsage {
+function emptyBudgetUsage(): BudgetUsage {
 	return {
 		toolCalls: 0,
 		discoveryCalls: 0,
@@ -195,12 +197,24 @@ export function scopedRoleBudget(
 	};
 }
 
+/** The number of total tool calls that must remain available for a worker's finalization path. */
+function finalizationReserveCalls(limits: RoleBudget): number {
+	const requested = Math.trunc(limits.finalizationReserveCalls ?? 0);
+	return Math.max(0, Math.min(requested, Math.max(0, Math.trunc(limits.toolCalls) - 1)));
+}
+
+/** The number of validation passes protected for final-state evidence. */
+function finalizationReserveValidationPasses(limits: RoleBudget): number {
+	const requested = Math.trunc(limits.finalizationReserveValidationPasses ?? 0);
+	return Math.max(0, Math.min(requested, Math.max(0, Math.trunc(limits.fullValidationPasses) - 1)));
+}
+
 /**
  * A `verify` call that passes a `ref` resolves stored evidence without executing anything, so it is not
  * a validation pass. Every other `verify` call runs the package-script gate, including calls that omit
  * phases.
  */
-export function verifyResolvesRef(input: Record<string, unknown> | undefined): boolean {
+function verifyResolvesRef(input: Record<string, unknown> | undefined): boolean {
 	return typeof input?.ref === 'string' && input.ref.trim().length > 0;
 }
 
@@ -345,6 +359,10 @@ function budgetSummary(
 	implementationGateReached = false,
 	registryPersists = 0,
 	repositoryWriteLockRefusals = 0,
+	phase: BudgetPhase = 'discovery',
+	cause?: BudgetCause,
+	finalizationReady = false,
+	finalStateValidation = false,
 ): BudgetSummary {
 	return {
 		role,
@@ -359,6 +377,10 @@ function budgetSummary(
 		implementationGateReached,
 		registryPersists,
 		repositoryWriteLockRefusals,
+		phase,
+		...(cause ? { cause } : {}),
+		finalizationReady,
+		finalStateValidation,
 	};
 }
 
@@ -391,6 +413,10 @@ export function budgetSummaryFromMetrics(
 		existing?.implementationGateReached ?? false,
 		existing?.registryPersists ?? 0,
 		existing?.repositoryWriteLockRefusals ?? 0,
+		existing?.phase ?? (breaches.length > 0 ? 'report' : 'discovery'),
+		existing?.cause,
+		existing?.finalizationReady ?? false,
+		existing?.finalStateValidation ?? false,
 	);
 }
 
@@ -408,6 +434,11 @@ interface MutableBudgetState {
 	implementationGateReached: boolean;
 	registryPersists: number;
 	repositoryWriteLockRefusals: number;
+	phase: BudgetPhase;
+	cause?: BudgetCause;
+	finalizationReady: boolean;
+	finalizationStarted: boolean;
+	finalStateValidation: boolean;
 }
 
 function currentBreach(state: MutableBudgetState): BudgetBreach | undefined {
@@ -435,6 +466,10 @@ function summaryOf(state: MutableBudgetState): BudgetSummary {
 		state.implementationGateReached,
 		state.registryPersists,
 		state.repositoryWriteLockRefusals,
+		state.phase,
+		state.cause,
+		state.finalizationReady,
+		state.finalStateValidation,
 	);
 }
 
@@ -462,6 +497,11 @@ function resetTurn(state: MutableBudgetState): void {
 	state.implementationStarted = false;
 	state.implementationGateReached = false;
 	state.repositoryWriteLockRefusals = 0;
+	state.phase = 'discovery';
+	state.cause = undefined;
+	state.finalizationReady = false;
+	state.finalizationStarted = false;
+	state.finalStateValidation = false;
 }
 
 function abortForBudget(ctx: { abort(): void }, state: MutableBudgetState): void {
@@ -486,6 +526,25 @@ function steerForBudget(
 	});
 }
 
+function causeForMetric(metric: BudgetMetric): BudgetCause {
+	switch (metric) {
+		case 'discoveryCalls':
+			return 'discovery';
+		case 'repeatedReads':
+			return 'repeated_reads';
+		case 'failedToolCalls':
+			return 'failed_calls';
+		case 'fullValidationPasses':
+			return 'validation';
+		case 'outputTokens':
+			return 'report_output';
+		case 'wallTimeMs':
+			return 'wall_time';
+		default:
+			return 'tool_calls';
+	}
+}
+
 function enforceNewBreach(
 	pi: Pick<ExtensionAPI, 'sendUserMessage'>,
 	ctx: { abort(): void },
@@ -494,6 +553,7 @@ function enforceNewBreach(
 ): boolean {
 	const breach = addCurrentBreach(state);
 	if (!breach) return false;
+	state.cause ??= causeForMetric(breach.metric);
 	if (state.limits.budgetPolicy === 'abort') {
 		abortForBudget(ctx, state);
 		beforeSteer?.();
@@ -513,6 +573,8 @@ function enforceNewBreach(
 function noteReportBreach(state: MutableBudgetState): boolean {
 	const breach = addCurrentBreach(state);
 	if (!breach) return false;
+	state.cause ??= causeForMetric(breach.metric);
+	state.phase = 'report';
 	if (state.outcome !== 'aborted') {
 		state.outcome = 'report_only';
 		state.reportOnly = true;
@@ -594,6 +656,10 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		implementationGateReached: false,
 		registryPersists: 0,
 		repositoryWriteLockRefusals: 0,
+		phase: 'discovery',
+		finalizationReady: false,
+		finalizationStarted: false,
+		finalStateValidation: false,
 	};
 	let turnStartedAt = Date.now();
 	let wallTimer: ReturnType<typeof setTimeout> | undefined;
@@ -772,6 +838,66 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 			}
 		}
 		const category = classifyToolCall(event.toolName, event.input);
+		const implementationCall = isImplementationTool(event.toolName);
+		const protectedWriteCall =
+			implementationCall ||
+			(event.toolName === 'project_command' && isMutatingCommandId(commandId)) ||
+			(event.toolName === 'verify' && verifySetsScriptOverrides(event.input));
+		const hasImplementation = state.implementationStarted || implementationCall;
+		const reserve = role === 'worker' ? finalizationReserveCalls(limits) : 0;
+		const reserveThreshold = limits.toolCalls - reserve;
+		const executingValidation = category === 'validation' && !verifyIsRefLookupOnly(event.input);
+		const finalValidation = event.toolName === 'verify' && executingValidation;
+		const reportRead = isReportRead(event.toolName, event.input, flowId);
+		const finalizationCall =
+			reportRead || event.toolName === 'codegraph_affected' || category === 'validation';
+		const startsFinalization =
+			role === 'worker' &&
+			reserve > 0 &&
+			executingValidation &&
+			(state.finalizationReady || finalValidation);
+		if (role === 'worker' && hasImplementation && reserve > 0) {
+			if (state.usage.toolCalls >= reserveThreshold) state.finalizationReady = true;
+			if (state.finalizationStarted && protectedWriteCall) {
+				state.cause ??= 'finalization_reserve';
+				persist(label, state);
+				return {
+					block: true,
+					reason:
+						'Worker final validation has started; implementation writes are refused because they would invalidate the final-state evidence. Start a fresh remediation attempt for another edit.',
+				};
+			}
+			if (
+				state.finalizationReady &&
+				state.usage.toolCalls >= reserveThreshold &&
+				!finalizationCall
+			) {
+				state.cause ??= 'finalization_reserve';
+				persist(label, state);
+				return {
+					block: true,
+					reason:
+						'Worker finalization reserve reached; complete the affected-test query, final validation, and report, or request a fresh remediation attempt before more discovery.',
+				};
+			}
+			const validationReserve = finalizationReserveValidationPasses(limits);
+			if (
+				category === 'validation' &&
+				!verifyIsRefLookupOnly(event.input) &&
+				!state.finalizationStarted &&
+				!finalValidation &&
+				validationReserve > 0 &&
+				state.usage.fullValidationPasses > limits.fullValidationPasses - validationReserve
+			) {
+				state.cause ??= 'finalization_reserve';
+				persist(label, state);
+				return {
+					block: true,
+					reason:
+						'Worker final-state validation reserve is protected; finish implementation and enter finalization before spending the reserved validation pass.',
+				};
+			}
+		}
 		if (writeLockEnabled) {
 			const contended = repositoryReadGuard(event.toolName, event.input, commandId, category);
 			if (contended) return contended;
@@ -785,7 +911,6 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 				readKeys.set(key, prior + 1);
 			}
 		}
-		const reportRead = isReportRead(event.toolName, event.input, flowId);
 		const breached = enforceNewBreach(pi, ctx, state, () => persist(label, state));
 		if (state.outcome === 'aborted')
 			return {
@@ -809,10 +934,6 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 				reason: `Budget exhausted for role ${role}: ${state.breaches.at(-1)?.metric}`,
 			};
 		}
-		if (isImplementationTool(event.toolName) && !state.implementationStarted) {
-			state.implementationStarted = true;
-			persist(label, state);
-		}
 		const gateWasReached = state.implementationGateReached;
 		if (blocksBeforeImplementation(state, event.toolName, event.input, flowId)) {
 			if (!gateWasReached) persist(label, state);
@@ -830,6 +951,17 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 				category,
 			);
 			if (contended) return contended;
+		}
+		if (implementationCall && !state.implementationStarted) {
+			state.implementationStarted = true;
+			state.phase = 'implementation';
+			persist(label, state);
+		}
+		if (startsFinalization) {
+			state.finalizationStarted = true;
+			state.phase = 'finalization';
+			state.finalStateValidation = true;
+			persist(label, state);
 		}
 		return undefined;
 	});
@@ -861,6 +993,7 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		}
 		state.usage.wallTimeMs = Math.max(state.usage.wallTimeMs, Date.now() - turnStartedAt);
 		if (deliveredReport) {
+			state.phase = 'report';
 			noteReportBreach(state);
 			persist(label, state);
 			return;

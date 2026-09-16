@@ -5,7 +5,7 @@ import type { HerdrStatus } from './types.ts';
 export const HERDR_ENV = process.env.HERDR_ENV === '1';
 export const HERDR_SOCKET_PATH = process.env.HERDR_SOCKET_PATH;
 export const HERDR_PANE_ID = process.env.HERDR_PANE_ID;
-export const HERDR_WORKSPACE_ID = process.env.HERDR_WORKSPACE_ID;
+const HERDR_WORKSPACE_ID = process.env.HERDR_WORKSPACE_ID;
 const HERDR_SESSION = process.env.HERDR_SESSION || '';
 export const NESTED = process.env.PI_SUBAGENT_NESTED === '1';
 

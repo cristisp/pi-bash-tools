@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { configPath, getConfig } from '../src/config.ts';
 import { registerBudgetEnforcement } from '../src/budget.ts';
 import { registerEntry } from '../src/registry.ts';
-import { AGENT_TEMPLATES, renderAgentFile, STALE_REF_RULE } from '../src/templates.ts';
+import {
+	AGENT_TEMPLATES,
+	REF_RECOVERY_RULE,
+	renderAgentFile,
+	STALE_REF_RULE,
+} from '../src/templates.ts';
 import { makeRegistryEntry, makeTempDir, stubEnv } from './helpers.ts';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
@@ -208,6 +213,11 @@ describe('renderAgentFile', () => {
 		expect(validator?.body).toContain('diff hash or focused file hashes when available');
 		expect(validator?.body).toContain('Mark fingerprints without hashes non-reusable');
 		expect(validator?.body).toContain('Reuse evidence only when those inputs are unchanged');
+		expect(worker?.body).toContain(REF_RECOVERY_RULE);
+		expect(worker?.body).toContain(
+			'For `read_batch` refs, the canonical first request is exactly `{ ref }`',
+		);
+		expect(worker?.body).toContain('stop retrying that ref or path batch');
 		const reviewer = AGENT_TEMPLATES.find((t) => t.name === 'reviewer');
 		expect(reviewer?.body).toContain('## Test integrity');
 		expect(reviewer?.body).toContain('would fail for a plausible broken implementation');
@@ -234,6 +244,8 @@ describe('renderAgentFile', () => {
 		const planner = AGENT_TEMPLATES.find((t) => t.name === 'planner');
 		expect(scout?.body).toContain('Use up to 8 discovery queries');
 		expect(planner?.body).toContain('Use up to 6 evidence-gap inspections');
+		expect(planner?.body).toContain('one or two bullets per required section');
+		expect(planner?.body).toContain('keep the plan at or below the configured');
 	});
 	it('gives the validator read-only validation tools', () => {
 		const validator = AGENT_TEMPLATES.find((t) => t.name === 'validator');

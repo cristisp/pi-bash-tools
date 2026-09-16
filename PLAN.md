@@ -16,7 +16,8 @@ Completed implementation history, review rounds, and superseded plans remain ava
 - The optional S9 consumption of `read_batch` evidence refs and structured producer lookup outcomes is implemented and committed on top of head `dec0dc08`.
 - The T-014 blocked-subagent notification flow is implemented and uncommitted on top of the S9 measurement-semantics fixes.
 - The S10 spawn-boundary item is implemented and review-clean (reviewer-47 remediation pass): subagent spawns whose cwd resolves outside the root session folder are refused before launch, including the reuse pane-recreation path; it shares the same uncommitted tree.
-- The next commit therefore carries three workstreams: S4 measurement-semantics fixes, T-014 blocked-subagent reporting, and the spawn boundary.
+- The current uncommitted tree carries four workstreams: S4 measurement-semantics fixes, T-014 blocked-subagent reporting, the spawn boundary, and S11 evidence-reacquisition and Tier 2 finalization hardening.
+- S11 implementation is present in the uncommitted tree. The current `@ztc/bash-tools` 1.1.7 source confirms the `{ ref }` lookup contract and flow publication schema; its fresh-process runtime completion gate remains open.
 
 ## S4: decide whether `warn` can become `enforce`
 
@@ -166,9 +167,95 @@ T-014 closes that gap with a child-side marker writer plus a parent-side tail de
 Implemented: `src/spawn-boundary.ts` canonicalizes the root session cwd and every requested cwd (single, parallel, chain) through `realpath`, tolerating not-yet-existing targets, and `executeSubagent` refuses with a clear "Spawn boundary refusal" result (resolved path, root folder, no child launched) before composition evaluation. Subfolders inside the root are allowed; `reuse` keeps the existing tab cwd, and `ensurePaneExists` refuses to recreate a vanished pane whose registry entry records a cwd outside the root. Documented in README limitations, `docs/development.md`, and the tool schema cwd descriptions.
 Review remediation (reviewer-47): added symlink-in-root and filesystem-root regression tests (`src/spawn-boundary.ts` now special-cases the `/` root), documented that relative cwd values resolve against the root session folder which the herdr CLI inherits, and closed the reuse pane-recreation bypass with a regression test in `run.test.ts`.
 
+## S11: harden evidence reacquisition and Tier 2 finalization
+
+The recent `indicatori` flow showed three distinct orchestration failures in `subagent-herdr`: planners spent their failure budget replaying unavailable `rr_...` refs, `worker-125` spent its repeated-read budget retrying the same seven paths after a tool-schema rejection, and `worker-126` exhausted its shared tool-call budget after the implementation but before final-state validation.
+
+This workstream keeps producer ownership in `@ztc/bash-tools` and changes only the orchestration contract, child guidance, manifest projection, and role-budget behavior in this repository.
+The current `src/manifest.ts` publication filter is an intended safety boundary and must not be weakened.
+If a published ref is still unresolvable from a fresh child after these changes, record a separate producer-contract or integration defect rather than advertising the ref more broadly.
+
+Current implementation status: the herdr-side focused and full package verification gates pass, including fresh-process manifest coverage. The current `@ztc/bash-tools` 1.1.7 source and tests confirm the minimal `{ ref }` lookup and flow publication contract; an independent fresh-process parent/child probe is still required before S11 can be marked complete.
+
+### S11 acceptance criteria
+
+- **S11-001:** A fresh child never receives an unpublished, process-scoped, provenance-ambiguous, or cross-flow `rr_...` ref as a reusable manifest hint.
+- **S11-002:** The default child guidance uses the smallest canonical `read_batch` lookup request and does not require optional `flowId` or `covers` fields that may be absent from an older producer runtime.
+- **S11-003:** A stale or rejected ref lookup leads to one bounded recovery path: mark the lookup `NOT_RUN`, reacquire the required repository files, and do not fan out repeated lookups for the same ref or path batch.
+- **S11-004:** Tier 2 workers retain a protected finalization path for the final edit, affected-test query, final validation, and report, or are explicitly stopped before validation when a remediation requires a fresh attempt.
+- **S11-005:** Planner report requirements fit the configured report-output budget, and report-budget breaches do not silently invalidate otherwise complete evidence.
+- **S11-006:** Regression tests cover the manifest, guidance, retry, phase-budget, and report-budget behavior without reading producer flow stores from this repository.
+
+### S11 scope and ownership
+
+In scope:
+
+- `src/manifest.ts` and `src/metrics.ts` for read-ref provenance and stale-ref projection.
+- `src/templates.ts` and `src/orchestration-guide.md` for bounded ref recovery and minimal lookup guidance.
+- `src/budget.ts`, `src/config.ts`, and `src/types.ts` for phase-aware worker budgets and report limits.
+- `src/report.ts` if the report contract must be shortened or made budget-aware.
+- Relevant tests under `test/`, plus `PLAN.md` and focused evidence documentation if the contract changes.
+
+Out of scope:
+
+- `@ztc/bash-tools` producer implementation, evidence stores, and tool schema implementation.
+- Direct reads of producer flow directories or producer-owned caches.
+- Changes to `indicatori` source code.
+- Removing budget enforcement or treating failed lookups as valid evidence.
+- Manually editing installed agent copies; change source templates and regenerate them through the normal setup path.
+
+### S11 implementation sequence
+
+1. Reproduce the observed boundary with current source and a fresh child process.
+   Confirm whether the stale refs are being admitted by `knownRefsFor`, incorrectly marked `published` by producer metadata, or coming from a manifest generated by an older build.
+2. Preserve and strengthen the manifest invariant.
+   Keep the `publication === "published"`, flow-provenance, and ambiguity checks for read refs.
+   Add an explicit test that a published-looking ref with no resolvable flow provenance is excluded.
+   Do not add a fallback that enumerates or reads producer stores.
+3. Change the child guidance to use a minimal lookup first.
+   A read ref should be confirmed with `{ ref }` in the current effective flow.
+   Optional `flowId` and `covers` fields may be used only when the runtime contract is known to support them.
+   After one `not-found`, stale, unauthorized, or unsupported-field response, stop lookup fan-out and reacquire source evidence with a fresh `read_batch` path request.
+4. Add a bounded stale-ref recovery marker to the role report and ledger contribution.
+   Distinguish `NOT_RUN` caused by an unavailable ref from a source read that was never attempted.
+   Preserve the existing rule that a failed lookup is not evidence.
+5. Design and implement a worker budget phase model.
+   Discovery and implementation must not consume the finalization reserve.
+   Once a worker begins final validation, later implementation writes must either be refused or require a fresh remediation attempt with a new budget.
+   The reserve must cover the final edit, `codegraph_affected`, affected tests, final lint/typecheck or project verification, and the report.
+   Keep the current failed-call and repeated-read protections, but make their limits and the finalization reserve visible in the role guidance and report.
+6. Reconcile planner report size with the budget.
+   Prefer a compact mandatory report contract with bounded sections and machine-readable fields.
+   If the required content cannot fit, raise the planner report-output allowance and add a regression test against the rendered contract rather than relying on approximate token estimates.
+7. Add telemetry for phase transitions and budget causes.
+   A report should state whether the stop was caused by discovery, repeated reads, failed calls, ordinary tool calls, report output, or finalization reserve.
+   Record whether validation evidence applies to the final post-edit state.
+8. Validate the implementation with focused tests, then run the repository verification suite.
+   If the current producer still reports a published ref that a fresh child cannot resolve, stop the herdr workstream at the boundary and open a linked `bash-tools` integration issue.
+
+### S11 test matrix
+
+- `test/scope.test.ts`: exclude unpublished, cross-flow, ambiguous, and process-scoped read refs from `knownRefs`; retain only genuinely published flow refs.
+- `test/metrics.test.ts`: preserve publication and flow-provenance distinctions for successful, failed, unauthorized, and missing read evidence.
+- `test/templates.test.ts`: require minimal ref lookup guidance, one bounded recovery attempt, and no instruction to fan out stale-ref confirmations.
+- `test/budget.test.ts`: cover repeated-read charging, multiple failed calls in one assistant turn, discovery-to-implementation gating, finalization reserve protection, post-validation write refusal or remediation reset, and explicit breach causes.
+- Report/config tests: verify that the planner report contract fits its configured output allowance and that worker reports identify validation as final-state or pre-final-edit evidence.
+- Fresh-process integration coverage: publish a read ref in one process, resolve it from a sibling child, and confirm that an unpublished process-local ref is omitted or treated as `NOT_RUN`.
+
+### S11 completion gate
+
+Do not mark this workstream complete until all of the following are true:
+
+1. Current-build parent and child sessions expose the same `read_batch` contract, or the child guidance works with the minimal `{ ref }` lookup.
+2. No fresh child spends its initial discovery budget on a batch of unavailable refs.
+3. A worker that edits after an initial validation cannot claim the earlier validation as final-state evidence.
+4. A Tier 2 worker has a deterministic path to final tests and reporting after implementation.
+5. Focused tests and the full repository verification suite pass.
+6. The final diff contains no changes to producer-owned stores, installed agent copies, or unrelated application repositories.
+
 ## Invariants
 
-- Treat `@ztc/bash-tools` 1.1.6 and `@ztc/codegraph-runner` 2.0.4 as the producer contracts.
+- Treat `@ztc/bash-tools` 1.1.7 and `@ztc/codegraph-runner` 2.0.4 as the producer contracts.
 - Treat the installed agent files and `~/.pi/agent/agents/subagent_orchestration.md` as generated artifacts of `/setup-subagents`; change only `src/templates.ts` and `src/orchestration-guide.md`, then regenerate - never edit installed copies by hand.
 - Keep producer ownership boundaries intact; this repository does not write the producer's policy or store files.
 - Treat evidence references as the only cross-extension transport; this repository never enumerates or reads producer flow stores.

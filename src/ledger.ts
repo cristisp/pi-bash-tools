@@ -7,7 +7,7 @@ import { withFileLock } from './registry-store.ts';
 import type { DelegationContext } from './types.ts';
 
 export const LEDGER_NAME = 'ledger.md';
-export const LEDGER_VERSION = 1;
+const LEDGER_VERSION = 1;
 
 /**
  * The ledger shape, stated once in code. `src/templates.ts` renders its instruction text from this
@@ -34,6 +34,7 @@ export const LEDGER_FIELDS = [
 	'changed_files',
 	'validation_refs',
 	'validation_omitted',
+	'evidence_recovery',
 	'findings',
 	'baseline_failures',
 	'environment_blockers',
@@ -56,6 +57,7 @@ export const LEDGER_FOLD_FIELDS = [
 	'changed_files',
 	'validation_refs',
 	'validation_omitted',
+	'evidence_recovery',
 	'findings',
 	'baseline_failures',
 	'environment_blockers',

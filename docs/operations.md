@@ -66,7 +66,7 @@ The most operationally important settings are:
 - `perTaskOutputCap` and `reportDigestTokens` for result transport.
 - `compositionPolicy` for standard preflight handling.
 - `ledgerPointers` and `ledgerMaxRevisions` for ledger handoff.
-- `roleBudgets` for tool, discovery, validation, failed-call, repeated-read, output, and wall-time limits.
+- `roleBudgets` for tool, discovery, worker pre-implementation discovery, finalization-reserve calls and validation passes, validation, failed-call, repeated-read, output, and wall-time limits.
 - `evidenceScopeDefault` and `evidenceScopeByRole` for reusable validation evidence.
 - `mutatingCommandRoles`, `validationExecutionRoles`, and `repositoryWriteLock` for safety boundaries.
 - `defaultAgentScope` and `confirmProjectAgents` for agent discovery and trust prompts.
@@ -74,6 +74,7 @@ The most operationally important settings are:
 
 A `steer` budget breach sends one automatic budget message and then permits only ledger or report reads.
 An `abort` breach stops the turn.
+Workers retain a protected finalization reserve after implementation for the affected-test query, final validation, and report; writes after final validation require a fresh remediation attempt.
 A breach first observed on the final report is recorded as `report_only` because there is no remaining work to stop.
 A declared scope grants additional tool and discovery calls per in-scope path up to the configured ceiling.
 

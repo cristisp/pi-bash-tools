@@ -273,6 +273,12 @@ function recordExecutionMetrics(
 		},
 		existing,
 	);
+	const finalValidationRef = metrics.validationExecutions?.at(-1)?.ref;
+	if (result.budget.finalStateValidation && finalValidationRef && metrics.validationRefs?.length) {
+		for (const reference of metrics.validationRefs) {
+			if (reference.ref === finalValidationRef) reference.finalState = true;
+		}
+	}
 	if (result.budget.outcome === 'aborted') result.exitCode = 1;
 }
 

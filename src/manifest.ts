@@ -86,8 +86,12 @@ function knownRefOf(reference: ValidationReference, flowId: string): KnownManife
  * verdict, so only refs whose minting call published into this flow are advertised; anything else
  * cannot resolve from a sibling lookup and would only waste a confirm attempt.
  */
-function knownReadRefOf(reference: ReadReference): KnownManifestRef | undefined {
+function knownReadRefOf(reference: ReadReference, flowId: string): KnownManifestRef | undefined {
 	if (reference.flowIdConflict) return undefined;
+	// Publication alone is not enough: a ref without producer flow provenance may be process-local
+	// or minted by an older runtime, so advertising it would spend a sibling's budget on a lookup
+	// that cannot be authorized or resolved.
+	if (reference.flowId !== flowId) return undefined;
 	if (reference.publication !== 'published') return undefined;
 	const ref = reference.ref.trim();
 	if (!ref || ref.length > MAX_REF_LENGTH) return undefined;
@@ -107,14 +111,22 @@ export function recordKnownRefs(input: {
 	at?: number;
 }): void {
 	if (!input.flowId) return;
-	const refs = [
-		...input.refs.map((reference) => knownRefOf(reference, input.flowId!)),
-		...(input.readRefs?.map((reference) => knownReadRefOf(reference)) ?? []),
-	]
+	const readRefs =
+		input.readRefs
+			?.map((reference) => knownReadRefOf(reference, input.flowId!))
+			.filter((entry): entry is KnownManifestRef => entry !== undefined) ?? [];
+	const refs = [...input.refs.map((reference) => knownRefOf(reference, input.flowId!)), ...readRefs]
 		.filter((entry) => entry !== undefined)
 		.slice(0, MAX_KNOWN_REFS);
 	if (refs.length === 0) return;
-	const record = { v: 1, flowId: input.flowId, at: input.at ?? Date.now(), refs };
+	const readFlows = Object.fromEntries(readRefs.map((reference) => [reference.ref, input.flowId]));
+	const record = {
+		v: 1,
+		flowId: input.flowId,
+		at: input.at ?? Date.now(),
+		refs,
+		...(Object.keys(readFlows).length > 0 ? { readFlows } : {}),
+	};
 	const target = knownRefsPath(input.flowId, input.delegationId);
 	const temporary = `${target}.${randomUUID()}.tmp`;
 	try {
@@ -180,8 +192,11 @@ function knownRefsFor(flowId: string): KnownManifestRef[] {
 				const parsed = JSON.parse(fs.readFileSync(path.join(knownRefsDir(flowId), name), 'utf8'));
 				const at = typeof parsed?.at === 'number' ? parsed.at : 0;
 				if (!Array.isArray(parsed?.refs)) continue;
+				const readFlows =
+					parsed.readFlows && typeof parsed.readFlows === 'object' ? parsed.readFlows : undefined;
 				for (const entry of parsed.refs) {
 					const known = parsedKnownRef(entry);
+					if (known?.kind === 'read' && readFlows?.[known.ref] !== flowId) continue;
 					if (known) dated.push({ ...known, at });
 				}
 			} catch {}
@@ -278,7 +293,9 @@ export function manifestGuidance(manifestPath: string): string {
 		'## Read manifest',
 		`Read the bounded manifest before reacquiring repository context: ${manifestPath}`,
 		'Use its artifact and prior-report references, and avoid reads listed under doNotReread unless required by a documented evidence gap.',
-		'Refs under knownRefs are resolution hints from prior turns: confirm each by looking it up with its minting tool instead of rereading prior reports for evidence, and treat a failed, stale, or not-found lookup as NOT_RUN.',
-		'Verify refs (vr_) resolve through a verify ref lookup; read refs (rr_) resolve through a read_batch ref lookup.',
+		'Refs under knownRefs are resolution hints from prior turns: confirm each by looking it up with its minting tool instead of rereading prior reports for evidence.',
+		'Verify refs (vr_) use the minimal verify lookup { ref }; read refs (rr_) use the minimal read_batch lookup { ref }.',
+		'Do not add optional flowId or covers fields unless the current producer schema is known to support them.',
+		'After one failed, stale, not-found, unauthorized, or unsupported-field lookup for a ref, record it as NOT_RUN, stop retries for that ref and path batch, and reacquire the required repository files once with a fresh bounded read request.',
 	].join('\n');
 }

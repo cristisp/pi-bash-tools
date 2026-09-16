@@ -1,9 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { roleBudgetFor } from '../src/config.ts';
 import { flowReportsDir } from '../src/flow.ts';
 import {
 	buildReportDigest,
+	normalizeS4Outcome,
 	estimateTokens,
 	parseFilesReviewed,
 	parseLedgerBlock,
@@ -11,7 +13,7 @@ import {
 	tokensFromChars,
 	writeRoleReport,
 } from '../src/report.ts';
-import type { DelegationContext } from '../src/types.ts';
+import type { BudgetSummary, DelegationContext } from '../src/types.ts';
 import { makeTempDir, stubEnv } from './helpers.ts';
 
 const LEGGED = `## Completed
@@ -50,6 +52,42 @@ function delegation(overrides: Partial<DelegationContext> = {}): DelegationConte
 		...overrides,
 	};
 }
+
+describe('budget/report interaction', () => {
+	it('does not turn a report-only output breach into a failed quality status', () => {
+		const budget = {
+			role: 'planner',
+			limits: roleBudgetFor('planner'),
+			usage: {
+				toolCalls: 3,
+				discoveryCalls: 2,
+				fullValidationPasses: 0,
+				failedToolCalls: 0,
+				repeatedReads: 0,
+				outputTokens: 900,
+				wallTimeMs: 10,
+			},
+			outcome: 'report_only' as const,
+			breaches: [{ metric: 'outputTokens' as const, limit: 800, observed: 900, at: 1 }],
+			steerIssued: false,
+			reportOnly: true,
+		} satisfies BudgetSummary;
+		const outcome = normalizeS4Outcome(
+			{
+				delegation_status: 'completed',
+				validation_verdict: 'PASS',
+				review_verdict: 'none',
+				unresolved_questions: 'none',
+			},
+			'planner',
+			{ tokens: 900, digestTokens: 100, truncated: false, ledgerParsed: true, contractIssues: [] },
+			budget,
+			'settled',
+		);
+		expect(outcome.budgetStatus).toBe('pass');
+		expect(outcome.quality).toBe('pass');
+	});
+});
 
 describe('parseFilesReviewed', () => {
 	it('extracts reviewer paths and folds them into changed_files', () => {

@@ -141,7 +141,7 @@ multi-worker fan-out, a remediation round, or any task the guide classifies abov
 worker. An unconditional system-prompt read costs the whole guide before the first delegation. When an older hand-maintained copy such as `~/.pi/agent/SUBAGENTS_GUIDE.md` still
 exists, the command reports it as superseded - delete it, because two copies of one contract drift.
 
-The installed `bash-tools` 1.1.6 producer grants one composite operator per project for flow-scoped child seats by default; `paths` are no longer part of that authorization identity.
+The installed `bash-tools` 1.1.7 producer grants one composite operator per project for flow-scoped child seats by default; `paths` are no longer part of that authorization identity.
 The extension consumes that policy but does not write the producer policy file.
 Workers publish reusable evidence with `publish: { flowId }`, consumers resolve with `{ ref, flowId?, covers? }`, and `fresh: true` is an execution request rather than a lookup.
 Single-flight coordination is process-local; flow publication shares completed evidence but does not coordinate active executions across child processes.
@@ -527,7 +527,7 @@ file is re-read on every use, so edits take effect without a restart. Running
   "roleBudgets": {
     "scout": { "toolCalls": 20, "discoveryCalls": 8, "fullValidationPasses": 2, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 800, "wallTimeMs": 600000, "budgetPolicy": "steer" },
     "planner": { "toolCalls": 20, "discoveryCalls": 6, "fullValidationPasses": 2, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 800, "wallTimeMs": 600000, "budgetPolicy": "steer" },
-    "worker": { "toolCalls": 24, "discoveryCalls": 24, "implementationDiscoveryCalls": 12, "fullValidationPasses": 2, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 1000, "wallTimeMs": 600000, "budgetPolicy": "steer" },
+    "worker": { "toolCalls": 24, "discoveryCalls": 24, "implementationDiscoveryCalls": 12, "finalizationReserveCalls": 6, "finalizationReserveValidationPasses": 1, "fullValidationPasses": 2, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 1000, "wallTimeMs": 600000, "budgetPolicy": "steer" },
     "validator": { "toolCalls": 20, "discoveryCalls": 12, "fullValidationPasses": 3, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 800, "wallTimeMs": 600000, "budgetPolicy": "steer" },
     "reviewer": { "toolCalls": 32, "discoveryCalls": 28, "fullValidationPasses": 2, "failedToolCalls": 3, "repeatedReads": 3, "outputTokens": 4000, "wallTimeMs": 600000, "budgetPolicy": "steer" }
   },
@@ -564,7 +564,7 @@ file is re-read on every use, so edits take effect without a restart. Running
 | `mutatingCommandRoles` | `["worker"]` | Roles whose children may run commands that write to the repository. Enforcement covers `project_command` ids that write, where a variant of a family that has a writing form is refused unless it names a `check`, `verify`, or `ci` form, and any `verify` call that overrides a phase through `scripts`, because each phase accepts an arbitrary package script and its defaults are the read-only checks. The rule is shaped by command names, so a write-capable script in a family with no known writing form is not recognised as a write |
 | `validationExecutionRoles` | `["worker","validator"]` | Roles permitted to execute validation. Every other role, the reviewer included, may call `verify` with `{ ref, flowId?, covers? }` for lookup; `publish` and `fresh` remain execution-capable and are refused, so evidence handoff is enforced rather than requested |
 | `repositoryWriteLock` | `true` | Serialize repository-writing `project_command` calls across child sessions and refuse a validation check that would run while a sibling holds a write in flight. The lock is keyed by repository root, so it also covers two flows sharing one checkout, and an abandoned hold is dropped after 5 minutes. Exclusion fails open: an unusable lock store allows the call rather than wedging every write in a flow |
-| `roleBudgets` | role defaults | Live limits for tool calls, discovery, worker pre-implementation discovery, validation, failed calls, repeated reads, output tokens, wall time, and enforcement policy |
+| `roleBudgets` | role defaults | Live limits for tool calls, discovery, worker pre-implementation discovery, worker finalization reserve calls and validation passes, validation, failed calls, repeated reads, output tokens, wall time, and enforcement policy |
 | `scopeCallAllowancePerPath` | 2 | Extra tool and discovery calls granted per path declared in a child's assigned scope |
 | `scopeCallAllowanceMax` | 32 | Ceiling on the extra calls the scope allowance can add to a role budget |
 | `modelPresets` | `{}` | Named subagent model presets (see [Model presets](#model-presets)); entries map agent names to `provider/model(:thinking_level)` |
@@ -590,8 +590,9 @@ so it is not charged against `fullValidationPasses` and stays available as the c
 rerun. Minted and resolved refs are recorded per delegation as `metrics.validationRefs` with the verdict
 and whether the call reused or executed, which is what makes reuse auditable. A ref minted by a child seat
 inside a flow resolves for every sibling in that flow, observed: a worker minted refs and a validator seat
-resolved both by bare `{ ref }` lookup without executing anything. A ref minted by a root session lives only
-in that process, so refs travel from child to parent and never the other way round. Two caveats stay true.
+resolved both by bare `{ ref }` lookup without executing anything. A root execution without `publish` remains
+process-scoped; a root execution published with `publish: { flowId }` can resolve from children in that flow.
+Two caveats stay true.
 Minting depends on the exact `verify` call shape being authorized without a prompt, because a child cannot
 answer an authorization prompt (the `F9` authorization boundary). A lookup reports the recorded and current repository
 state through `repositoryStateStatus`: `matches` can be cited, `mismatch` requires re-execution, and `unreadable`
@@ -599,6 +600,8 @@ must be reported as `NOT_RUN` (`F5`). A sibling ref you cannot resolve is still 
 evidence to trust.
 For workers, `implementationDiscoveryCalls` limits discovery before the first implementation tool call.
 After that allowance, the runtime blocks further non-report tools until the worker attempts an implementation tool call.
+After implementation, `finalizationReserveCalls` protects the final affected-test query, validation, and report path, while `finalizationReserveValidationPasses` protects the final-state validation pass.
+Once final validation starts, later implementation writes require a fresh remediation attempt.
 
 ### Parallel workers and the shared tree
 

@@ -98,6 +98,7 @@ The producers check that request against the flow id they resolve from the envir
 The extension exports `PI_ORCHESTRATION_FLOW` into delegation launch commands and sets it in the root session process itself, so the root and its children resolve the same flow id, and the installed producers read it: `@ztc/bash-tools` reads it directly, and `@ztc/codegraph-runner` reads `CODEGRAPH_RUNNER_FLOW` first and falls back to `PI_ORCHESTRATION_FLOW`.
 Each producer writes to its own store and issues its own reference shape: `rr_` for bash-tools read and validation evidence, `cg_` for codegraph-runner artifacts.
 Siblings resolve a producer reference with the producer's own lookup surface: the `verify` and `read_batch` lookup forms for bash-tools references, and `codegraph_artifact` for codegraph references.
+Use `{ ref }` as the default `read_batch` lookup shape; `flowId` and `covers` are optional lookup-only fields in the current bash-tools contract.
 Resolving a `cg_` reference needs only the opaque ref plus its flow scope, so a sibling of the same flow resolves it without herdr involvement.
 Published `rr_` read refs, like `vr_` validation refs, are projected into the flow's `knownRefs` for later turns: a read ref carries `kind: "read"` and no verdict, and only refs whose minting call published to the flow are advertised, because a `read_batch` ref is session-scoped otherwise.
 This extension never enumerates or reads the producer stores; the refs recorded in reports, ledger fields, telemetry, and manifest `knownRefs` are the only transport.

@@ -29,7 +29,7 @@ const LOOKUP_OUTCOMES = new Set<LookupOutcome>([
 	'corrupt',
 ]);
 
-export function normalizedPath(value: string): string {
+function normalizedPath(value: string): string {
 	return value.replaceAll('\\', '/').replace(/\/$/, '');
 }
 
@@ -514,6 +514,27 @@ function producerFieldsOfMessage(message: Message): ProducerFields {
 	};
 }
 
+function producerEvidenceFieldsOf(
+	producer: ProducerFields,
+	messageFlowIdConflict = false,
+): Pick<
+	ValidationReference,
+	'decision' | 'cacheDecision' | 'publication' | 'publicationReason' | 'flowId' | 'flowIdConflict'
+> {
+	return {
+		...(producer.decision === undefined ? {} : { decision: producer.decision }),
+		...(producer.cacheDecision === undefined ? {} : { cacheDecision: producer.cacheDecision }),
+		...(producer.publication === undefined ? {} : { publication: producer.publication }),
+		...(producer.publicationReason === undefined
+			? {}
+			: { publicationReason: producer.publicationReason }),
+		...(messageFlowIdConflict || producer.flowIdConflict ? { flowIdConflict: true } : {}),
+		...(messageFlowIdConflict || producer.flowIdConflict || producer.flowId === undefined
+			? {}
+			: { flowId: producer.flowId }),
+	};
+}
+
 function validationFieldsOf(
 	payload: Record<string, unknown>,
 	messageFlowIdConflict = false,
@@ -554,16 +575,7 @@ function validationFieldsOf(
 		...(concurrentExecutions === undefined ? {} : { concurrentExecutions }),
 		...(mutating === undefined ? {} : { mutating }),
 		...(forced === undefined ? {} : { forced }),
-		...(producer.decision === undefined ? {} : { decision: producer.decision }),
-		...(producer.cacheDecision === undefined ? {} : { cacheDecision: producer.cacheDecision }),
-		...(producer.publication === undefined ? {} : { publication: producer.publication }),
-		...(producer.publicationReason === undefined
-			? {}
-			: { publicationReason: producer.publicationReason }),
-		...(messageFlowIdConflict || producer.flowIdConflict ? { flowIdConflict: true } : {}),
-		...(messageFlowIdConflict || producer.flowIdConflict || producer.flowId === undefined
-			? {}
-			: { flowId: producer.flowId }),
+		...producerEvidenceFieldsOf(producer, messageFlowIdConflict),
 		...(omitted.length > 0 ? { omitted } : {}),
 	};
 }
@@ -572,7 +584,7 @@ function validationFieldsOf(
  * Extracts the tool-issued ref from a validation result, preferring structured details and falling back
  * to the JSON text payload. A passed run with omitted phases is represented as incomplete instead of passed.
  */
-export function verifyReferenceOf(
+function verifyReferenceOf(
 	message: Message,
 	lookup: boolean | undefined,
 	forcedHint?: boolean,
@@ -659,7 +671,7 @@ function errorMessageOf(message: Message): string | undefined {
 	return undefined;
 }
 
-export function verifyLookupFailureOf(message: Message, ref?: string): ValidationLookupFailure {
+function verifyLookupFailureOf(message: Message, ref?: string): ValidationLookupFailure {
 	const producer = producerFieldsOfMessage(message);
 	const lookupOutcome = lookupOutcomeOfMessage(message);
 	return {
@@ -686,9 +698,11 @@ function validationExecutionOf(
 	const payload = payloadCandidates(message)[0];
 	const fields = payload ? validationFieldsOf(payload) : {};
 	const producer = producerFieldsOfMessage(message);
+	const producedRef =
+		typeof payload?.ref === 'string' && payload.ref.length > 0 ? payload.ref : undefined;
 	return {
 		tool: call.tool as 'verify' | 'project_command',
-		...(call.ref ? { ref: call.ref } : {}),
+		...(call.ref || producedRef ? { ref: call.ref ?? producedRef } : {}),
 		...(call.commandId ? { commandId: call.commandId } : {}),
 		...(fields.stateDrift === undefined ? {} : { stateDrift: fields.stateDrift }),
 		...(fields.concurrentExecutions === undefined
@@ -698,14 +712,7 @@ function validationExecutionOf(
 		...(fields.forced === undefined && call.forced === undefined
 			? {}
 			: { forced: fields.forced ?? call.forced }),
-		...(producer.decision === undefined ? {} : { decision: producer.decision }),
-		...(producer.cacheDecision === undefined ? {} : { cacheDecision: producer.cacheDecision }),
-		...(producer.publication === undefined ? {} : { publication: producer.publication }),
-		...(producer.publicationReason === undefined
-			? {}
-			: { publicationReason: producer.publicationReason }),
-		...(producer.flowId === undefined ? {} : { flowId: producer.flowId }),
-		...(producer.flowIdConflict ? { flowIdConflict: true } : {}),
+		...producerEvidenceFieldsOf(producer),
 	};
 }
 

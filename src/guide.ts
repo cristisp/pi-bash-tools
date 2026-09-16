@@ -35,10 +35,11 @@ const GUIDE_ROLES: GuideRole[] = [
 		label: 'Worker',
 		artifact: 'completion report',
 		note: (budget) =>
-			`Make at most ${budget.implementationDiscoveryCalls} discovery reads before the first implementation change, run at most ` +
+			`Make at most ${budget.implementationDiscoveryCalls} discovery reads before the first implementation change, keep ` +
+			`${budget.finalizationReserveCalls ?? 0} tool calls and ${budget.finalizationReserveValidationPasses ?? 0} validation pass(es) protected for finalization, run at most ` +
 			`${budget.fullValidationPasses} full validation passes, and mint one \`verify\` ref for the final state. ` +
-			`That ref is the validation evidence unless the workflow carries a validator. Publish flow-owned evidence with \`publish: { flowId }\`, and report the ref plus its \`repositoryStateStatus\`. ` +
-			`When siblings implement in parallel, do not run the gate: the session that integrates the fan-in mints one ref for the combined state.`,
+			`That ref is the validation evidence unless the workflow carries a validator. Publish flow-owned evidence with \`publish: { flowId }\`, and report the ref plus its \`repositoryStateStatus\` and whether it covers the final post-edit state. ` +
+			`Once final validation starts, later implementation writes require a fresh remediation attempt. When siblings implement in parallel, do not run the gate: the session that integrates the fan-in mints one ref for the combined state.`,
 	},
 	{
 		role: 'validator',
@@ -46,7 +47,7 @@ const GUIDE_ROLES: GuideRole[] = [
 		artifact: 'report',
 		note: (budget) =>
 			`Resolve the refs in the ledger before executing anything, up to ${budget.fullValidationPasses} full validation passes; ` +
-			`use \`{ ref, flowId?, covers? }\`, execute only what no live ref covers, use \`fresh: true\` only for a new run, and cite the ref plus \`repositoryStateStatus\`.`,
+			`use the minimal \`{ ref }\` lookup by default and add \`flowId\` or \`covers\` only when the producer schema is confirmed; execute only what no live ref covers, use \`fresh: true\` only for a new run, and cite the ref plus \`repositoryStateStatus\`. After one rejected or stale lookup, mark it \`NOT_RUN\`, stop retrying, and reacquire only the required source evidence.`,
 	},
 	{
 		role: 'reviewer',

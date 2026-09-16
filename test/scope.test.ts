@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -140,11 +141,26 @@ describe('review surface and read manifests', () => {
 			at: 1000,
 			refs: [],
 			readRefs: [
-				{ ref: 'rr_published', reused: false, publication: 'published' },
+				{ ref: 'rr_published', reused: false, publication: 'published', flowId },
+				// Published-looking refs without producer flow provenance are process-scoped or ambiguous.
+				{ ref: 'rr_no_flow', reused: false, publication: 'published' },
+				{ ref: 'rr_other_flow', reused: false, publication: 'published', flowId: 'flow-other' },
 				// Unpublished or failed-publication reads cannot resolve from a sibling lookup.
-				{ ref: 'rr_unpublished', reused: false },
-				{ ref: 'rr_failed', reused: false, publication: 'failed', publicationReason: 'denied' },
-				{ ref: 'rr_conflict', reused: true, publication: 'published', flowIdConflict: true },
+				{ ref: 'rr_unpublished', reused: false, flowId },
+				{
+					ref: 'rr_failed',
+					reused: false,
+					publication: 'failed',
+					publicationReason: 'denied',
+					flowId,
+				},
+				{
+					ref: 'rr_conflict',
+					reused: true,
+					publication: 'published',
+					flowId,
+					flowIdConflict: true,
+				},
 			],
 		});
 
@@ -155,6 +171,67 @@ describe('review surface and read manifests', () => {
 			evidenceScope: 'flow',
 		});
 		expect(manifest.knownRefs).toEqual([{ ref: 'rr_published', kind: 'read', reused: false }]);
+	});
+
+	it('filters read refs across fresh producer and consumer processes', () => {
+		const agentDir = makeTempDir();
+		const scriptPath = path.join(agentDir, 'manifest-process-test.mjs');
+		const flowId = 'flow-fresh-process';
+		const manifestModule = path.resolve('src/manifest.ts');
+		fs.writeFileSync(
+			scriptPath,
+			`const { buildReadManifest, recordKnownRefs } = await import(${JSON.stringify(manifestModule)});
+const flowId = ${JSON.stringify(flowId)};
+if (process.argv[2] === 'write') {
+  recordKnownRefs({
+    flowId,
+    delegationId: 'producer-process',
+    refs: [],
+    readRefs: [
+      { ref: 'rr_published', reused: false, publication: 'published', flowId },
+      { ref: 'rr_no_flow', reused: false, publication: 'published' },
+      { ref: 'rr_other_flow', reused: false, publication: 'published', flowId: 'flow-other' },
+      { ref: 'rr_unpublished', reused: false, flowId },
+      { ref: 'rr_failed', reused: false, publication: 'failed', flowId },
+      { ref: 'rr_conflict', reused: false, publication: 'published', flowId, flowIdConflict: true },
+    ],
+  });
+} else {
+  const manifest = buildReadManifest({
+    delegationId: 'consumer-process',
+    flowId,
+    role: 'worker',
+    evidenceScope: 'flow',
+  });
+  process.stdout.write(JSON.stringify(manifest.knownRefs ?? []));
+}
+`,
+		);
+		const env = { ...process.env, PI_CODING_AGENT_DIR: agentDir };
+		const producer = spawnSync(
+			process.execPath,
+			['--experimental-strip-types', scriptPath, 'write'],
+			{
+				cwd: path.resolve('.'),
+				env,
+				encoding: 'utf8',
+			},
+		);
+		expect(producer.status).toBe(0);
+		const consumer = spawnSync(
+			process.execPath,
+			['--experimental-strip-types', scriptPath, 'read'],
+			{
+				cwd: path.resolve('.'),
+				env,
+				encoding: 'utf8',
+			},
+		);
+		expect(consumer.status).toBe(0);
+		expect(JSON.parse(consumer.stdout)).toEqual([
+			{ ref: 'rr_published', kind: 'read', reused: false },
+		]);
+		fs.rmSync(agentDir, { recursive: true, force: true });
 	});
 
 	it('keeps manifests working when persisted refs are malformed', () => {
@@ -173,6 +250,15 @@ describe('review surface and read manifests', () => {
 		fs.writeFileSync(
 			path.join(flowDirFor(flowId), 'predigest', 'refs', 'badshape.json'),
 			JSON.stringify({ v: 1, at: 1, refs: [{ ref: 'vr_bad', reused: 'yes' }, 'vr_worse'] }),
+		);
+		fs.writeFileSync(
+			path.join(flowDirFor(flowId), 'predigest', 'refs', 'legacy-read.json'),
+			JSON.stringify({
+				v: 1,
+				flowId,
+				at: 2,
+				refs: [{ ref: 'rr_legacy', kind: 'read', reused: false }],
+			}),
 		);
 
 		const manifest = buildReadManifest({

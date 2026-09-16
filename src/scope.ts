@@ -129,7 +129,7 @@ function snapshotMetadata(target: string): { fingerprint: string; revision: numb
 	return undefined;
 }
 
-export function reviewSurfacePath(flowId: string): string {
+function reviewSurfacePath(flowId: string): string {
 	return path.join(flowDirFor(flowId), PREDIGEST_SUBDIR, 'review-surface.md');
 }
 

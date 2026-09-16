@@ -222,7 +222,7 @@ export function appendCompositionTelemetry(input: CompositionTelemetryInput): vo
 }
 
 /** Builds one additive S4 preflight event; it never changes legacy composition events. */
-export function buildS4PreflightTelemetryRecord(
+function buildS4PreflightTelemetryRecord(
 	input: {
 		preflight: S4Preflight;
 		workspace: string;

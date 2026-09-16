@@ -785,6 +785,75 @@ describe('live budget enforcement', () => {
 		});
 		handlers.agent_end?.({}, ctx);
 	});
+
+	it('protects the worker finalization reserve and refuses writes after final validation starts', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				roleBudgets: {
+					worker: {
+						toolCalls: 6,
+						finalizationReserveCalls: 2,
+						fullValidationPasses: 2,
+						finalizationReserveValidationPasses: 1,
+					},
+				},
+			}),
+		);
+		vi.stubEnv('PI_ORCHESTRATION_ROLE', 'worker');
+		vi.stubEnv('PI_ORCHESTRATION_FLOW', 'f1');
+		vi.stubEnv('PI_SUBAGENT_LABEL', 'worker-finalization');
+		registerEntry(makeRegistryEntry({ label: 'worker-finalization' }));
+		const { pi, handlers } = fakePi();
+		registerBudgetEnforcement(pi);
+		const ctx = { abort: vi.fn() };
+
+		handlers.before_agent_start?.({ prompt: 'implement this' }, ctx);
+		handlers.tool_call?.({ toolName: 'edit', input: { path: 'src/a.ts' } }, ctx);
+		handlers.tool_call?.({ toolName: 'bash', input: { command: 'true' } }, ctx);
+		handlers.tool_call?.({ toolName: 'bash', input: { command: 'true' } }, ctx);
+		const reserveRefusal = handlers.tool_call?.(
+			{ toolName: 'edit', input: { path: 'src/b.ts' } },
+			ctx,
+		);
+		expect(reserveRefusal).toMatchObject({ block: true });
+		expect((reserveRefusal as { reason: string }).reason).toContain('finalization reserve');
+		const lateDiscovery = handlers.tool_call?.(
+			{ toolName: 'grep', input: { pattern: 'unnecessary' } },
+			ctx,
+		);
+		expect(lateDiscovery).toMatchObject({ block: true });
+		expect((lateDiscovery as { reason: string }).reason).toContain('finalization reserve');
+
+		const finalValidation = handlers.tool_call?.({ toolName: 'verify', input: {} }, ctx);
+		expect(finalValidation).toBeUndefined();
+		const postValidationEdit = handlers.tool_call?.(
+			{ toolName: 'edit', input: { path: 'src/c.ts' } },
+			ctx,
+		);
+		expect(postValidationEdit).toMatchObject({ block: true });
+		expect((postValidationEdit as { reason: string }).reason).toContain(
+			'final validation has started',
+		);
+		const postValidationFormat = handlers.tool_call?.(
+			{ toolName: 'project_command', input: { commandId: 'node_format' } },
+			ctx,
+		);
+		expect(postValidationFormat).toMatchObject({ block: true });
+		expect((postValidationFormat as { reason: string }).reason).toContain(
+			'final validation has started',
+		);
+		expect(findEntry('worker-finalization')?.budget).toMatchObject({
+			phase: 'finalization',
+			finalizationReady: true,
+			finalStateValidation: true,
+			cause: 'finalization_reserve',
+		});
+		handlers.agent_end?.({}, ctx);
+	});
 });
 
 describe('budget enforcement - repository contention between siblings', () => {

@@ -67,6 +67,9 @@ Plan validation as one composite `verify` ref plus one review owner.
 The session that modifies files, or the session integrating a parallel fan-in, owns the final gate; consumers resolve refs rather than rerunning covered checks.
 Use `evidenceScope: "session"` only when independent execution is required.
 A resolved ref is evidence only when its lookup succeeded, and a failed, stale, or not-found lookup is `NOT_RUN` or otherwise unverified.
+Verify refs (vr_) use the minimal `{ ref }` lookup; read refs (rr_) use the minimal `read_batch` lookup `{ ref }`.
+Do not add optional `flowId` or `covers` fields unless the current producer schema is known to support them.
+After one failed, stale, not-found, unauthorized, or unsupported-field lookup for a ref, record it as `NOT_RUN`, stop retries for that ref and path batch, and reacquire the required repository files once with a fresh bounded read request.
 Reviewers inspect refs and the required `## Files Reviewed` contract; they do not execute project validation.
 
 ## Escalation triggers
@@ -104,6 +107,7 @@ invariants:
 changed_files:
 validation_refs:
 validation_omitted:
+evidence_recovery:
 findings:
 baseline_failures:
 environment_blockers:
@@ -150,7 +154,9 @@ The limits below are the values the extension enforced when this file was genera
 
 {{role_budgets}}
 
-If a limit is insufficient, stop, record the reason and remaining evidence gap, and request escalation rather than silently exceeding it.
+Workers also have a protected finalization reserve for the final edit boundary, affected-test query, final validation, and report. Once final validation starts, later implementation writes require a fresh remediation attempt.
+If a limit is insufficient, stop, record the cause and remaining evidence gap, and request escalation rather than silently exceeding it.
+Keep planner reports compact: use one or two bullets per required section, avoid source excerpts and repeated context, and stay within the configured report-output budget.
 Rerun `/setup-subagents` after changing `roleBudgets` so this file keeps naming the enforced limits.
 
 On context pressure or a compaction request, stop broad work and emit the current ledger plus a compact role handoff, or stop if that cannot be done safely, preserving task, criterion, and finding IDs, validation references, and verdict states.
@@ -174,7 +180,7 @@ The worker must:
 
 - Preserve unrelated user changes, avoid unrelated cleanup and refactoring, and follow repository formatting, linting, and testing instructions.
 - Add or update directly related tests, and never edit tests merely to make them pass; follow the TDD or regression-first strategy in the plan.
-- Report the `AC-###` statuses, changed files, checks attempted, test evidence, and the owner’s `verify` ref. Leave the final approval decision to the reviewer.
+- Report the `AC-###` statuses, changed files, checks attempted, test evidence, the evidence-recovery marker when a lookup failed, and the owner’s `verify` ref. State whether the cited evidence covers the final post-edit state. Leave the final approval decision to the reviewer.
 - Under a parallel fan-out, report `validation_refs: none` and the composite check as `NOT_RUN` unless the worker integrates the fan-in and owns the gate.
 
 ### Validator
@@ -199,6 +205,7 @@ resolved
 
 Validation evidence is tool-issued and tied to a repository state and `covers` scope.
 Consumers resolve refs instead of rerunning covered checks; resolving a ref is not a validation pass.
+Use one minimal lookup attempt per ref; after a rejected or stale lookup, mark the check `NOT_RUN`, stop retrying, and reacquire only the required source evidence.
 Report freshness as `executed`, `reused`, or `resolved`.
 A resolved ref is evidence only when its lookup succeeded, and a failed, stale, or not-found lookup is `NOT_RUN` or otherwise unverified.
 Refs minted in a delegation flow resolve for its siblings and travel upward through `validation_refs`; the root session shares the flow id, so refs it mints resolve from children the same way.

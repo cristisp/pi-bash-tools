@@ -8,7 +8,7 @@ export const UI_PROMPT_MARKER_FORMAT_VERSION = 1;
 
 export const UI_PROMPT_MARKER_TITLE_MAX_CHARS = 200;
 
-export const UI_PROMPT_SUMMARY_MAX_CHARS = 80;
+const UI_PROMPT_SUMMARY_MAX_CHARS = 80;
 
 export type UiPromptMarkerEvent = 'start' | 'end';
 
@@ -39,7 +39,7 @@ function isMarkerKind(value: unknown): value is UiPromptMarkerKind {
 	return typeof value === 'string' && MARKER_KINDS.has(value);
 }
 
-export function boundedTitle(title: unknown): string | undefined {
+function boundedTitle(title: unknown): string | undefined {
 	if (typeof title !== 'string') return undefined;
 	const trimmed = title.trim();
 	if (!trimmed) return undefined;
@@ -93,7 +93,7 @@ export function registerUiPromptMarker(
 	});
 }
 
-export interface HerdrBlockedPayload {
+interface HerdrBlockedPayload {
 	active: boolean;
 	label?: string;
 }
