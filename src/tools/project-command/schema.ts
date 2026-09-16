@@ -1,6 +1,7 @@
 import { Type, type Static, type TObject, type TSchema } from "typebox";
 
 import { booleanInputSchema, type BooleanInput } from "../boolean.ts";
+import { FLOW_ID_PATTERN } from "../value-validation.ts";
 import {
   getProjectCommandDefinitions,
   type ProjectCommandDefinition,
@@ -63,15 +64,30 @@ function evidenceProperties() {
   return {
     publish: optionalNullable(
       Type.Object(
-        { flowId: Type.String({ pattern: "^[A-Za-z0-9_-]{1,64}$" }) },
-        { additionalProperties: false, description: "Publish evidence to an authorized flow." },
+        {
+          flowId: Type.String({
+            pattern: FLOW_ID_PATTERN.source,
+            description: "Flow ID that receives published evidence after successful execution.",
+          }),
+        },
+        {
+          additionalProperties: false,
+          description: "Execution-only publication target for authorized evidence.",
+        },
       ),
     ),
     covers: optionalNullable(
-      Type.Array(Type.String({ minLength: 1, maxLength: 512 }), {
-        maxItems: 64,
-        description: "Opaque acceptance-criteria identifiers to preserve in evidence.",
-      }),
+      Type.Array(
+        Type.String({
+          minLength: 1,
+          maxLength: 512,
+          description: "Acceptance-criteria identifier to attach to published evidence.",
+        }),
+        {
+          maxItems: 64,
+          description: "Optional acceptance-criteria identifiers to preserve in evidence.",
+        },
+      ),
     ),
   };
 }
@@ -178,7 +194,7 @@ export function createProjectCommandInputSchema(
       flowId: Type.Optional(
         Type.Union([
           Type.String({
-            pattern: "^[A-Za-z0-9_-]{1,64}$",
+            pattern: FLOW_ID_PATTERN.source,
             description: "Lookup-only evidence flow scope; requires ref.",
           }),
           Type.Null(),

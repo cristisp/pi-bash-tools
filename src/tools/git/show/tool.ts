@@ -14,15 +14,30 @@ import { resolvePath, resolveRepository } from "../repository.ts";
 import { defineGitTool, type GitToolDefinition } from "../tool.ts";
 import type { GitShowOutput } from "./output.ts";
 
-const gitShowParameters = Type.Object({
-  revision: Type.String({ description: "Git revision, not a REV:path expression" }),
-  path: Type.Optional(Type.String({ description: "Optional workspace-relative path filter" })),
-  maxBytes: Type.Integer({
-    minimum: 1,
-    maximum: MAX_CONTENT_BYTES,
-    description: "Maximum output bytes",
-  }),
-});
+const gitShowParameters = Type.Object(
+  {
+    revision: Type.String({
+      description:
+        "Safe Git revision or revision range to inspect; do not include a REV:path expression because path is a separate field. Empty compatibility values are treated as absent and then rejected.",
+    }),
+    path: Type.Optional(
+      Type.String({
+        description:
+          "Optional workspace-relative path filter within the revision; omit or pass an empty compatibility value to inspect the revision's complete bounded output.",
+      }),
+    ),
+    maxBytes: Type.Integer({
+      minimum: 1,
+      maximum: MAX_CONTENT_BYTES,
+      description: `Maximum UTF-8 response bytes; output beyond this limit is truncated (maximum ${MAX_CONTENT_BYTES}).`,
+    }),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Read bounded output from a safe Git revision, optionally filtered to a workspace-relative path. This tool does not mutate the repository.",
+  },
+);
 
 export function createGitShowTool(
   exec: GitExec,

@@ -19,6 +19,7 @@ const verifyPhaseSchema = Type.Union(VERIFY_PHASES.map((phase) => Type.Literal(p
 const packageScriptSchema = Type.String({
   pattern: packageScriptNamePattern,
   maxLength: PROJECT_COMMAND_MAX_SCRIPT_VARIANT_LENGTH,
+  description: "Exact package.json script name for the selected verification phase.",
 });
 
 export const verifyInputSchema = Type.Object(
@@ -81,7 +82,7 @@ export const verifyInputSchema = Type.Object(
     flowId: Type.Optional(
       Type.Union([
         Type.String({
-          pattern: "^[A-Za-z0-9_-]{1,64}$",
+          pattern: FLOW_ID_PATTERN.source,
           description: "Lookup-only evidence flow scope; requires ref.",
         }),
         Type.Null(),
@@ -96,7 +97,11 @@ export const verifyInputSchema = Type.Object(
     publish: optionalNullable(
       Type.Object(
         {
-          flowId: Type.String({ pattern: "^[A-Za-z0-9_-]{1,64}$" }),
+          flowId: Type.String({
+            pattern: FLOW_ID_PATTERN.source,
+            description:
+              "Flow ID that receives published validation evidence after successful execution.",
+          }),
         },
         {
           additionalProperties: false,
@@ -105,13 +110,25 @@ export const verifyInputSchema = Type.Object(
       ),
     ),
     covers: optionalNullable(
-      Type.Array(Type.String({ minLength: 1, maxLength: 512 }), {
-        maxItems: 64,
-        description: "Opaque acceptance-criteria identifiers to preserve in evidence.",
-      }),
+      Type.Array(
+        Type.String({
+          minLength: 1,
+          maxLength: 512,
+          description: "Acceptance-criteria identifier to attach to published validation evidence.",
+        }),
+        {
+          maxItems: 64,
+          description:
+            "Optional acceptance-criteria identifiers to preserve in validation evidence.",
+        },
+      ),
     ),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    description:
+      "Run the configured verification phases, or look up stored validation evidence with ref. Execution requests may select paths, scripts, omitted phases, and publication; lookup requests accept only ref with optional flowId and covers. Explicit null values are treated as omitted.",
+  },
 );
 
 export interface VerifyInput {

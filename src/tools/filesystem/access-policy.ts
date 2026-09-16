@@ -34,7 +34,11 @@ import {
   loadFilesystemPolicyForRequest,
   type FilesystemAuthorizationContext,
 } from "./authorization.ts";
-import { diagnoseFilesystemEdits, type FilesystemEditInput } from "./edit-diagnostics.ts";
+import {
+  diagnoseFilesystemEdits,
+  type EditDiagnostic,
+  type FilesystemEditInput,
+} from "./edit-diagnostics.ts";
 import {
   filesystemAuthorizationContract,
   filesystemCancellationError,
@@ -189,6 +193,29 @@ async function readEditPreflightContent(
   }
 }
 
+function editDiagnosticMessage(path: string, diagnostic: EditDiagnostic): string {
+  const target = `edits[${diagnostic.editIndex}].oldText`;
+  const candidates = diagnostic.nearestCandidates?.map(({ line }) => line).join(", ");
+  const candidateLabel = diagnostic.code === "edit-ambiguous" ? "Matching lines" : "Nearby lines";
+  const candidateSuffix =
+    candidates === undefined || candidates.length === 0 ? "" : ` ${candidateLabel}: ${candidates}.`;
+  const detail =
+    diagnostic.code === "edit-ambiguous"
+      ? `${target} matches ${diagnostic.matchCount ?? "multiple"} file regions.${candidateSuffix}`
+      : diagnostic.code === "edit-no-match"
+        ? `${target} does not match the current file content.${candidateSuffix}`
+        : diagnostic.code === "edit-stale-context"
+          ? `${target} was based on stale file content.${candidateSuffix}`
+          : diagnostic.code === "edit-no-op"
+            ? `${target} and newText are identical.`
+            : diagnostic.code === "edit-empty-old-text"
+              ? `${target} is empty.`
+              : diagnostic.code === "edit-overlap"
+                ? `${target} overlaps another edit.`
+                : diagnostic.hint;
+  return `Edit preflight failed for ${displayPath(path)}: ${detail} ${diagnostic.hint}`;
+}
+
 async function editPreflight(
   tool: FilesystemToolCall,
   path: string,
@@ -236,7 +263,7 @@ async function editPreflight(
   }
   const error = filesystemEditDiagnosticError(
     diagnostic.code,
-    `Edit preflight failed for ${displayPath(path)}: ${diagnostic.hint}`,
+    editDiagnosticMessage(path, diagnostic),
     { ...diagnostic },
   );
   return blockedResult(error.message, error.contract, error.details);

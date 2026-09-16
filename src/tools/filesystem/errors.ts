@@ -264,12 +264,26 @@ export function filesystemEditDiagnosticError(
   message: string,
   details: Record<string, unknown>,
 ): FilesystemToolError {
+  const explanation =
+    code === "edit-empty-old-text"
+      ? "The edit oldText must not be empty."
+      : code === "edit-no-op"
+        ? "The edit would not change the file."
+        : code === "edit-no-match"
+          ? "The edit oldText does not match the current file content."
+          : code === "edit-stale-context"
+            ? "The file changed after the edit context was observed."
+            : code === "edit-ambiguous"
+              ? "The edit oldText matches more than one file region."
+              : code === "edit-overlap"
+                ? "Multiple edits target overlapping file regions."
+                : "The identical edit already failed preflight in this session.";
   return filesystemError(
     message,
     filesystemContract({
       code,
       category: "INVALID_REQUEST",
-      explanation: "The edit could not identify one unique matching region.",
+      explanation,
       retryable: false,
       executed: false,
     }),

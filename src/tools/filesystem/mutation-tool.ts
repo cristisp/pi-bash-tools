@@ -52,17 +52,37 @@ import {
 
 const moveParameters = Type.Object(
   {
-    source: Type.String({ minLength: 1, description: "Existing file to move or rename" }),
-    destination: Type.String({ minLength: 1, description: "New file path" }),
+    source: Type.String({
+      minLength: 1,
+      description:
+        "Path to the existing regular file, resolved relative to the current workspace when not absolute; the source itself must not be a symbolic link or directory.",
+    }),
+    destination: Type.String({
+      minLength: 1,
+      description:
+        "New path, resolved relative to the current workspace when not absolute; it must not already exist, and unsafe symbolic-link paths are rejected during canonicalization.",
+    }),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    description:
+      "Move or rename one regular file. The source must exist, the destination must be absent, and both paths are checked against filesystem policy before mutation.",
+  },
 );
 
 const deleteParameters = Type.Object(
   {
-    path: Type.String({ minLength: 1, description: "Existing file to delete" }),
+    path: Type.String({
+      minLength: 1,
+      description:
+        "Path to the existing regular file, resolved relative to the current workspace when not absolute; symbolic links and directories are rejected.",
+    }),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    description:
+      "Delete one regular file after filesystem policy authorization. The target is rechecked immediately before deletion.",
+  },
 );
 
 type MoveInput = Static<typeof moveParameters>;

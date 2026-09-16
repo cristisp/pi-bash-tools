@@ -313,6 +313,8 @@ it("reports bounded edit match diagnostics before the host mutates", async () =>
   expect(missing?.reason).toContain('"code":"edit-no-match"');
   expect(missing?.reason).toContain('"matchCount":0');
   expect(missing?.reason).toContain('"line":2');
+  expect(missing?.reason).toContain("edits[0].oldText does not match the current file content");
+  expect(missing?.reason).toContain("Nearby lines: 1, 3, 2, 4.");
 
   const validEdit = await intercept(
     {
@@ -338,6 +340,8 @@ it("reports bounded edit match diagnostics before the host mutates", async () =>
   expect(duplicate?.reason).toContain('"matchCount":2');
   expect(duplicate?.reason).toContain('"line":1');
   expect(duplicate?.reason).toContain('"line":3');
+  expect(duplicate?.reason).toContain("edits[0].oldText matches 2 file regions");
+  expect(duplicate?.reason).toContain("Matching lines: 1, 3.");
 });
 
 it("bounds edit diagnostics before scanning large inputs", () => {

@@ -17,6 +17,7 @@ export const environmentInputSchema = Type.Object(
       Type.String({
         minLength: 1,
         pattern: ENVIRONMENT_VARIABLE_NAME_PATTERN.source,
+        description: "Environment-variable name to read; must be a valid unique variable name.",
       }),
       {
         minItems: 1,
@@ -25,7 +26,11 @@ export const environmentInputSchema = Type.Object(
       },
     ),
   },
-  { additionalProperties: false },
+  {
+    additionalProperties: false,
+    description:
+      "Read explicitly requested environment variables after user-owned policy authorization. Each requested key returns its string value or null when unset.",
+  },
 );
 
 export type EnvironmentInput = Static<typeof environmentInputSchema>;

@@ -155,9 +155,11 @@ The repeated-read cache is process-local, scoped by effective flow, and capped a
 }
 ```
 
-Both paths must identify regular files or a safe missing destination.
+`source` must identify an existing regular file and must not itself be a symbolic link or directory.
 
-The destination must not already exist and may not contain a symbolic link.
+`destination` must be absent before the operation and is resolved relative to the current workspace when it is not absolute.
+
+Unsafe symbolic-link paths are rejected during destination canonicalization.
 
 The operation authorizes both source and destination with the `move` capability.
 

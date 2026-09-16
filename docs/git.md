@@ -274,11 +274,17 @@ Structured Git output is capped at 50 KiB and 2,000 records.
 
 `revision` and `maxBytes` are required.
 
-`maxBytes` must be an integer from 1 through 1 MiB.
+`path` is optional and, when supplied, is a workspace-relative path filter.
+
+`maxBytes` must be an integer from 1 through 1 MiB, and output beyond that UTF-8 byte limit is truncated.
 
 `revision` must be a non-empty safe Git revision expression.
 
 An empty `revision` is treated as absent and then rejected because the field is required, with the existing `revision must not be empty` wording.
+
+An empty optional `path` is treated as absent for compatibility, so the complete bounded revision output is returned.
+
+Unknown fields are rejected.
 
 `git_show` implements `git show <revision> -- <path>` filtering and does not implement `REV:path` blob extraction.
 
