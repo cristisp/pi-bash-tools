@@ -417,6 +417,18 @@ describe('runReusedAgent - relaunch', () => {
 		expect(launchInPane).toHaveBeenCalledOnce();
 	});
 
+	it('refuses pane recreation when the recorded cwd is outside the root session folder', async () => {
+		vi.mocked(herdrCli).mockResolvedValue({ error: { code: 'pane_not_found' } });
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'no-agent' });
+		registerEntry(makeRegistryEntry({ status: 'running', cwd: '/usr' }));
+		const result = await reuseCall();
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toContain('Spawn boundary refusal: no pane was recreated');
+		expect(result.stderr).toContain("'worker-1'");
+		expect(result.stderr).toContain("'/usr'");
+		expect(createTaskTab).not.toHaveBeenCalled();
+	});
+
 	it('reports relaunch failures', async () => {
 		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'no-agent' });
 		vi.mocked(launchInPane).mockResolvedValue('relaunch exploded');

@@ -27,6 +27,7 @@ import {
 import { findEntry, listSubagents } from './registry.ts';
 import { runReusedAgent, runSingleAgent } from './run.ts';
 import { ensureReviewSurface } from './scope.ts';
+import { outsideRootCwds } from './spawn-boundary.ts';
 import { REUSE_WORKFLOW_GUIDANCE } from './templates.ts';
 import { appendCompositionTelemetry, appendS4PreflightTelemetry } from './telemetry.ts';
 import { makeEmptyUsage } from './types.ts';
@@ -68,14 +69,24 @@ const ReviewScope = Type.Object({
 const TaskItem = Type.Object({
 	agent: Type.String({ description: 'Name of the agent to invoke' }),
 	task: Type.String({ description: 'Task to delegate to the agent' }),
-	cwd: Type.Optional(Type.String({ description: 'Working directory for the agent process' })),
+	cwd: Type.Optional(
+		Type.String({
+			description:
+				'Working directory for the agent process (must be inside the root session folder)',
+		}),
+	),
 	scope: Type.Optional(ReviewScope),
 });
 
 const ChainItem = Type.Object({
 	agent: Type.String({ description: 'Name of the agent to invoke' }),
 	task: Type.String({ description: 'Task with optional {previous} placeholder for prior output' }),
-	cwd: Type.Optional(Type.String({ description: 'Working directory for the agent process' })),
+	cwd: Type.Optional(
+		Type.String({
+			description:
+				'Working directory for the agent process (must be inside the root session folder)',
+		}),
+	),
 	scope: Type.Optional(ReviewScope),
 });
 
@@ -110,7 +121,10 @@ const SUBAGENT_PARAMETER_PROPERTIES = {
 		}),
 	),
 	cwd: Type.Optional(
-		Type.String({ description: 'Working directory for the agent process (single mode)' }),
+		Type.String({
+			description:
+				'Working directory for the agent process (single mode; must be inside the root session folder)',
+		}),
 	),
 	listSubagents: Type.Optional(
 		Type.Boolean({
@@ -326,6 +340,28 @@ function invalidParamsResponse(
 		content: [{ type: 'text', text: text.replace('{available}', available) }],
 		details: makeDetails('single')([]),
 	};
+}
+
+function spawnBoundaryRefusalText(
+	rootCwd: string,
+	params: SubagentExecutionParams,
+): string | undefined {
+	const offenders = outsideRootCwds(rootCwd, [
+		params.cwd,
+		...(params.tasks ?? []).map((task) => task.cwd),
+		...(params.chain ?? []).map((step) => step.cwd),
+	]);
+	if (offenders.length === 0) return undefined;
+	const lines = offenders.map(
+		(o) =>
+			`cwd '${o.raw}' resolves to '${o.resolved}', which is outside this session's root folder '${rootCwd}'.`,
+	);
+	return [
+		'Spawn boundary refusal: no child was launched.',
+		...lines,
+		'Subagents may only be spawned inside the root session folder; subfolders of the root are allowed.',
+		'Remove the cwd parameter or pass a path inside the root folder, then re-run.',
+	].join('\n');
 }
 
 function appendReuseLabel(text: string, label: string | undefined): string {
@@ -1181,6 +1217,12 @@ export async function executeSubagent(
 	}
 	if (mode === 'agents') {
 		return agentsResponse(executeCtx, makeDetails);
+	}
+	if (mode === 'single' || mode === 'parallel' || mode === 'chain') {
+		const spawnRefusal = spawnBoundaryRefusalText(executeCtx.cwd, params);
+		if (spawnRefusal) {
+			return { content: [{ type: 'text', text: spawnRefusal }], details: makeDetails(mode)([]) };
+		}
 	}
 	if (mode === 'reuse' && !params.task) return reuseWithoutTaskResponse(makeDetails);
 	const reuseEntry =

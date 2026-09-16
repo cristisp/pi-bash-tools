@@ -8,6 +8,7 @@ It guards registration to herdr, reconciles the registry, prunes old flows, regi
 The main runtime is split into these concerns:
 
 - `src/execute.ts` validates parameters, discovers agents, evaluates composition, and dispatches single, parallel, chain, or reuse modes.
+- `src/spawn-boundary.ts` canonicalizes the root session folder and requested cwd values (through `realpath`, tolerating not-yet-existing targets) and reports the delegations whose cwd resolves outside the root; `executeSubagent` refuses those before any child is launched, and `ensurePaneExists` in `src/run.ts` refuses to recreate a vanished reuse pane outside the root.
 - `src/run.ts` creates tabs, launches or prompts Pi, polls settlement, records outcomes, writes reports, and emits telemetry.
 - `src/ui-prompt-marker.ts` writes and parses the session-tail UI prompt markers the poller uses to detect and settle-suppress approval waiting, and emits `herdr:blocked` events for the daemon.
 - `src/delegation.ts` derives flow and delegation identity, sanitizes scope, and exports child environment variables.

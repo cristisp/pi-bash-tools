@@ -13,6 +13,7 @@ import {
 	type EvidenceScopePolicy,
 } from './delegation.ts';
 import { ensureFlow, recordFlowParticipant } from './flow.ts';
+import { outsideRootCwds } from './spawn-boundary.ts';
 import { ensureReviewSurface, type ReviewSurfaceSnapshot } from './scope.ts';
 import { manifestGuidance, recordKnownRefs, writeReadManifest } from './manifest.ts';
 import {
@@ -500,6 +501,12 @@ async function ensurePaneExists(
 	const paneResp = await herdrCli(['pane', 'get', entry.paneId]);
 	if (herdrErrorCode(paneResp) !== 'pane_not_found')
 		return { paneId: entry.paneId, tabId: entry.tabId };
+	const offender = outsideRootCwds(defaultCwd, [entry.cwd])[0];
+	if (offender) {
+		currentResult.exitCode = 1;
+		currentResult.stderr = `Spawn boundary refusal: no pane was recreated. Registry entry '${label}' records cwd '${entry.cwd}', which resolves outside this session's root folder '${defaultCwd}'.`;
+		return null;
+	}
 	const workspaceId = await resolveOwnWorkspace();
 	if (!workspaceId) {
 		currentResult.exitCode = 1;

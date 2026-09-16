@@ -15,6 +15,8 @@ Completed implementation history, review rounds, and superseded plans remain ava
 - The S8 implementation is committed as `align producer evidence contract ...` (1.8.0).
 - The optional S9 consumption of `read_batch` evidence refs and structured producer lookup outcomes is implemented and committed on top of head `dec0dc08`.
 - The T-014 blocked-subagent notification flow is implemented and uncommitted on top of the S9 measurement-semantics fixes.
+- The S10 spawn-boundary item is implemented and review-clean (reviewer-47 remediation pass): subagent spawns whose cwd resolves outside the root session folder are refused before launch, including the reuse pane-recreation path; it shares the same uncommitted tree.
+- The next commit therefore carries three workstreams: S4 measurement-semantics fixes, T-014 blocked-subagent reporting, and the spawn boundary.
 
 ## S4: decide whether `warn` can become `enforce`
 
@@ -160,7 +162,9 @@ T-014 closes that gap with a child-side marker writer plus a parent-side tail de
 
 ### T-014 next steps
 
-- [ ] Restrict subagent spawning to the main session's root folder: configure the `subagent` tool so delegations whose cwd resolves outside the root session directory tree are refused before any child is launched, and document the boundary.
+- [x] Restrict subagent spawning to the main session's root folder: configure the `subagent` tool so delegations whose cwd resolves outside the root session directory tree are refused before any child is launched, and document the boundary.
+Implemented: `src/spawn-boundary.ts` canonicalizes the root session cwd and every requested cwd (single, parallel, chain) through `realpath`, tolerating not-yet-existing targets, and `executeSubagent` refuses with a clear "Spawn boundary refusal" result (resolved path, root folder, no child launched) before composition evaluation. Subfolders inside the root are allowed; `reuse` keeps the existing tab cwd, and `ensurePaneExists` refuses to recreate a vanished pane whose registry entry records a cwd outside the root. Documented in README limitations, `docs/development.md`, and the tool schema cwd descriptions.
+Review remediation (reviewer-47): added symlink-in-root and filesystem-root regression tests (`src/spawn-boundary.ts` now special-cases the `/` root), documented that relative cwd values resolve against the root session folder which the herdr CLI inherits, and closed the reuse pane-recreation bypass with a regression test in `run.test.ts`.
 
 ## Invariants
 

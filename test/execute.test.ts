@@ -289,7 +289,7 @@ describe('executeSubagent - reuse and single lookups', () => {
 			chain: [],
 			agentScope: 'user',
 			confirmProjectAgents: true,
-			cwd: '/tmp',
+			cwd: dir,
 			listSubagents: false,
 			listLabel: '',
 			listStatus: '',
@@ -882,12 +882,85 @@ describe('executeSubagent - nested guard', () => {
 
 type RunSpy = ReturnType<typeof vi.fn>;
 
+describe('executeSubagent - spawn boundary', () => {
+	beforeEach(() => {
+		writeUserAgents('worker');
+		mockSuccessfulRuns();
+	});
+
+	it('refuses a single-mode cwd outside the root session folder without launching', async () => {
+		const result = await execSubagent({ agent: 'worker', task: 'x', cwd: '/tmp' });
+		const runSingleAgent = await runSingleAgentSpy();
+		expect(runSingleAgent).not.toHaveBeenCalled();
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain('Spawn boundary refusal');
+		expect(text).toContain('no child was launched');
+		expect(text).toContain("cwd '/tmp'");
+		expect(text).toContain("outside this session's root folder");
+		expect(text).toContain(`'${dir}'`);
+		expect(text).toContain('subfolders of the root are allowed');
+	});
+
+	it('allows a single-mode cwd inside the root session folder', async () => {
+		const inside = path.join(dir, 'sub');
+		const result = await execSubagent({ agent: 'worker', task: 'x', cwd: inside });
+		const runSingleAgent = await runSingleAgentSpy();
+		expect(runSingleAgent).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(runSingleAgent).mock.calls[0][4]).toBe(inside);
+		expect((result.content[0] as { text: string }).text).not.toContain('Spawn boundary refusal');
+	});
+
+	it('allows a relative cwd inside the root session folder', async () => {
+		await execSubagent({ agent: 'worker', task: 'x', cwd: 'sub' });
+		const runSingleAgent = await runSingleAgentSpy();
+		expect(runSingleAgent).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(runSingleAgent).mock.calls[0][4]).toBe('sub');
+	});
+
+	it('refuses a relative cwd escaping the root session folder', async () => {
+		const result = await execSubagent({ agent: 'worker', task: 'x', cwd: '../outside' });
+		const runSingleAgent = await runSingleAgentSpy();
+		expect(runSingleAgent).not.toHaveBeenCalled();
+		expect((result.content[0] as { text: string }).text).toContain("cwd '../outside'");
+	});
+
+	it('refuses a parallel task cwd outside the root session folder', async () => {
+		const result = await execSubagent({
+			tasks: [
+				{ agent: 'worker', task: 'a', cwd: path.join(dir, 'inside') },
+				{ agent: 'worker', task: 'b', cwd: path.join(dir, '..', 'outside') },
+			],
+		});
+		const runSingleAgent = await runSingleAgentSpy();
+		expect(runSingleAgent).not.toHaveBeenCalled();
+		expect((result.content[0] as { text: string }).text).toContain(
+			"outside this session's root folder",
+		);
+	});
+
+	it('refuses a chain step cwd outside the root session folder', async () => {
+		const result = await execSubagent({
+			chain: [{ agent: 'worker', task: 'a', cwd: path.join(dir, '..', 'outside') }],
+		});
+		const runSingleAgent = await runSingleAgentSpy();
+		expect(runSingleAgent).not.toHaveBeenCalled();
+		expect((result.content[0] as { text: string }).text).toContain('Spawn boundary refusal');
+	});
+});
+
 function mockedRuns() {
 	mockSuccessfulRuns();
 	return import('../src/run.ts') as unknown as Promise<{
 		runSingleAgent: RunSpy;
 		runReusedAgent: RunSpy;
 	}>;
+}
+
+async function runSingleAgentSpy(): Promise<RunSpy> {
+	const mod = (await import('../src/run.ts')) as unknown as {
+		runSingleAgent: RunSpy;
+	};
+	return mod.runSingleAgent;
 }
 
 describe('executeSubagent - delegation context', () => {

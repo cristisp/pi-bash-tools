@@ -643,6 +643,17 @@ load and `session_start`), a reconciliation pass runs:
   removed; the herdr transport replaces it)
 - Nested subagents are disabled: a subagent cannot spawn its own subagents
   (`PI_SUBAGENT_NESTED=1`)
+- The `subagent` tool refuses delegations whose `cwd` resolves outside the root
+  session folder (checked through `realpath` on both sides, including `..`
+  traversal and symlinks). Subfolders of the root are allowed; refusals name the
+  resolved path and are reported back before any child is launched. Relative
+  cwd values resolve against the root session folder, which is also what the
+  herdr CLI inherits, so the validated base matches the spawn base. `reuse`
+  delegations keep the existing tab cwd and are not boundary-checked, but a
+  vanished pane whose registry entry records a cwd outside the root is not
+  recreated outside the root either (relaunch refuses with the same boundary
+  message); registry entries recorded before this boundary existed are
+  therefore stuck out-of-root and need a fresh delegation
 - herdr 0.7.5 has no native pane locking, so read-only is enforced at the pi
   level (input interception); slash commands still work in a locked tab
 - To un-archive a session manually, edit the registry and set its `status` back
