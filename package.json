@@ -4,7 +4,7 @@
     "email": "cristian.spissack@zitec.com",
     "name": "Cristian Spissack"
   },
-  "version": "1.8.0",
+  "version": "1.8.1",
   "description": "Pi extension that spawns subagents as live pi sessions in their own herdr tabs - parallel/chain modes, session reuse, steering, and approval-waiting detection.",
   "type": "module",
   "keywords": [
