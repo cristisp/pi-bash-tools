@@ -141,7 +141,7 @@ multi-worker fan-out, a remediation round, or any task the guide classifies abov
 worker. An unconditional system-prompt read costs the whole guide before the first delegation. When an older hand-maintained copy such as `~/.pi/agent/SUBAGENTS_GUIDE.md` still
 exists, the command reports it as superseded - delete it, because two copies of one contract drift.
 
-The installed `bash-tools` 1.1.4 producer grants one composite operator per project for flow-scoped child seats by default; `paths` are no longer part of that authorization identity.
+The installed `bash-tools` 1.1.6 producer grants one composite operator per project for flow-scoped child seats by default; `paths` are no longer part of that authorization identity.
 The extension consumes that policy but does not write the producer policy file.
 Workers publish reusable evidence with `publish: { flowId }`, consumers resolve with `{ ref, flowId?, covers? }`, and `fresh: true` is an execution request rather than a lookup.
 Single-flight coordination is process-local; flow publication shares completed evidence but does not coordinate active executions across child processes.
@@ -242,6 +242,33 @@ is waiting for:
   (approve/reject in tab <ws>:<label>)`.
 - **Needs input** - anything else (a steer not yet answered, another prompt).
   Shows `blocked - needs input ... (steer in tab <ws>:<label>)`.
+
+Approval-waiting is also detected directly from the session tail: child sessions
+record pi `ui_prompt_start`/`ui_prompt_end` extension-UI prompt markers in their
+session file, and the poller blocks on those markers independently of herdr's
+agent status. Children additionally emit the `herdr:blocked` pi event (same
+shape arx uses: `{ active: true, label }` on prompt open, `{ active: false }` on
+close), which the herdr daemon consumes to surface blocked state on the child's
+tab in real time without waiting for the parent poll. This covers any extension
+prompt, including bash-tools policy approval dialogs that never surface as herdr
+`blocked`. The daemon-blocked path described above remains supported, and both
+paths share the same
+`blockedSince`/`blockReason`/`blockedPreview` state and notifications, including the live
+status tag. While a prompt is open the subagent is never reported as settled. A child's end
+marker write is best-effort, so a lost end marker cannot wedge the poll: once the daemon has
+reported `idle`/`done` for longer than `uiPromptLostIdleMs` (a genuinely open dialog keeps the
+daemon at `working`), the marker is expired silently — the block fields clear and the run
+settles normally, without a resolved notification.
+
+Children also patch visual metadata on their own herdr pane while a dialog is
+open (`herdr pane report-metadata`, source `subagent-herdr`): a
+`working=awaiting input` state label, plus a `summary` token carrying the
+bounded prompt title, and both are cleared when the dialog closes. A 30 minute
+TTL backstops a lost end report so the pane cannot stay labeled forever. The
+metadata is visual-only: herdr's semantic state, waits, and notifications are
+unchanged (herdr would need to consume the markers for that upstream). For both to show, the sidebar needs them as tokens in
+`ui.sidebar.agents.rows`: `state_text` renders the label and `$summary` renders
+the summary token.
 
 While blocked, the subagent stays `running` in the registry with
 `blockedSince`/`blockReason`/`blockedPreview` recorded, so `listSubagents` and
@@ -477,6 +504,7 @@ file is re-read on every use, so edits take effect without a restart. Running
   "statusLossTimeoutMs": 60000,
   "abortGraceMs": 60000,
   "steerTimeoutMs": 60000,
+  "uiPromptLostIdleMs": 30000,
   "perTaskOutputCap": 51200,
   "reportDigestTokens": 250,
   "scopeCallAllowancePerPath": 2,
@@ -518,6 +546,7 @@ file is re-read on every use, so edits take effect without a restart. Running
 | `statusLossTimeoutMs` | 60000 | Give up if the herdr agent status vanishes for this long |
 | `abortGraceMs` | 60000 | Grace period after an abort before finishing |
 | `steerTimeoutMs` | 60000 | Wait for a steer while blocked before finishing |
+| `uiPromptLostIdleMs` | 30000 | Treat an open ui-prompt marker as lost (and allow settling again) once the daemon has reported `idle`/`done` for this long |
 | `perTaskOutputCap` | 51200 | Per-task byte cap in parallel summaries (bytes) |
 | `reportDigestTokens` | 250 | Token budget for the digest a child's report is reduced to |
 | `reportContractPolicy` | `"flag"` | `"flag"` or `"reject"` a report that omits its ledger block |

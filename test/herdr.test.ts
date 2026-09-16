@@ -11,6 +11,7 @@ import {
 	createTaskTab,
 	getAgentStatus,
 	herdrCli,
+	herdrCliReportMetadata,
 	herdrErrorCode,
 	herdrErrorText,
 	launchInPane,
@@ -92,6 +93,30 @@ describe('herdrCli', () => {
 	it('resolves empty object for empty output', async () => {
 		execFileMock.mockImplementationOnce((_bin, _args, _opts, cb) => cb(null, '', ''));
 		await expect(herdrCli(['pane', 'get', 'p'])).resolves.toEqual({});
+	});
+});
+
+describe('herdrCliReportMetadata', () => {
+	it('spawns herdr with the report args and a fixed timeout', async () => {
+		resolveWith({ result: {} });
+		await expect(
+			herdrCliReportMetadata(['pane', 'report-metadata', '--state-label', 'working=ok', 'ws1:p1']),
+		).resolves.toBeUndefined();
+		expect(execFileMock).toHaveBeenCalledWith(
+			'herdr',
+			['pane', 'report-metadata', '--state-label', 'working=ok', 'ws1:p1'],
+			expect.objectContaining({ timeout: 3000 }),
+			expect.anything(),
+		);
+	});
+
+	it('resolves when the call fails and when execFile throws', async () => {
+		rejectWith(new Error('boom'));
+		await expect(herdrCliReportMetadata(['pane', 'report-metadata'])).resolves.toBeUndefined();
+		execFileMock.mockImplementationOnce(() => {
+			throw new Error('exec exploded');
+		});
+		await expect(herdrCliReportMetadata(['pane', 'report-metadata'])).resolves.toBeUndefined();
 	});
 });
 

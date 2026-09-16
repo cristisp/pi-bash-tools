@@ -113,15 +113,24 @@ function normalizeS4IndependentReviewStatus(value: string | undefined): S4Indepe
 	return 'unknown';
 }
 
+function normalizeS4FieldValue(value: string): string {
+	return value
+		.trim()
+		.replace(/[.!,:;]+$/, '')
+		.toLowerCase();
+}
+
 function parseS4Boolean(value: string | undefined): boolean | null | undefined {
 	if (value === undefined) return undefined;
-	if (/^(true|yes|1|pass|passed)$/i.test(value.trim())) return true;
-	if (/^(false|no|0|none)$/i.test(value.trim())) return false;
+	const normalized = normalizeS4FieldValue(value);
+	if (/^(true|yes|1|pass|passed)\b/.test(normalized)) return true;
+	if (/^(false|no|0|none|nothing|n\/a|na)\b/.test(normalized)) return false;
 	return null;
 }
 
 function hasBlockingS4Field(value: string | undefined): boolean {
-	return Boolean(value && !/^(none|no|\[\]|\{\}|-|n\/a|na)?$/i.test(value.trim()));
+	const normalized = value === undefined ? '' : normalizeS4FieldValue(value);
+	return Boolean(normalized && !/^(none|no|nothing|n\/a|na|-|\[\]|\{\})(\s|$)/.test(normalized));
 }
 
 export interface NormalizedS4Outcome {
@@ -155,9 +164,9 @@ export function normalizeS4Outcome(
 				: 'incomplete'
 		: 'unknown';
 	const unresolvedSignal = parseS4Boolean(fields?.unresolved_questions);
+	// Findings and baseline failures are work product and evidence gaps that the verdict
+	// fields already carry; they are not abandonment or unresolved-work blockers.
 	const hasBlockingSignals =
-		hasBlockingS4Field(fields?.findings) ||
-		hasBlockingS4Field(fields?.baseline_failures) ||
 		hasBlockingS4Field(fields?.environment_blockers) ||
 		hasBlockingS4Field(fields?.unresolved_questions) ||
 		hasBlockingS4Field(fields?.validation_omitted);

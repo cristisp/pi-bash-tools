@@ -19,8 +19,11 @@ export interface SubagentHerdrConfig {
 	startupTimeoutMs: number;
 	settleStabilityMs: number;
 	statusLossTimeoutMs: number;
+	/** Grace period after an abort before finishing. */
 	abortGraceMs: number;
 	steerTimeoutMs: number;
+	/** Grace after which an open ui-prompt marker with an idle/done daemon is treated as a lost end marker. */
+	uiPromptLostIdleMs: number;
 	perTaskOutputCap: number;
 	/** Estimated-token budget for the report digest delivered to the parent. */
 	reportDigestTokens: number;
@@ -127,6 +130,7 @@ export const DEFAULT_CONFIG: SubagentHerdrConfig = {
 	statusLossTimeoutMs: 60_000,
 	abortGraceMs: 60_000,
 	steerTimeoutMs: 60_000,
+	uiPromptLostIdleMs: 30_000,
 	perTaskOutputCap: 50 * 1024,
 	reportDigestTokens: 250,
 	scopeCallAllowancePerPath: 2,
@@ -179,6 +183,7 @@ const NUMERIC_KEYS = [
 	'statusLossTimeoutMs',
 	'abortGraceMs',
 	'steerTimeoutMs',
+	'uiPromptLostIdleMs',
 	'perTaskOutputCap',
 	'registryLockTimeoutMs',
 	'registryLockStaleMs',

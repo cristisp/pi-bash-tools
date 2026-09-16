@@ -108,12 +108,14 @@ findings:
 baseline_failures:
 environment_blockers:
 unresolved_questions:
+tier1_discovery_failure:
 transition_reason:
 recommended_next_action:
 budget:
 ```
 
 Use explicit empty values such as `none`, `[]`, or `{}` instead of omitting fields.
+Tier 1 workers without a scout set `tier1_discovery_failure` to `true` when they could not locate the relevant entry points within their discovery budget, and to `none` otherwise.
 The main session assigns stable acceptance-criterion IDs such as `AC-001` and preserves them across every transition.
 Reviewers assign stable finding IDs such as `F-001` when findings are created and preserve them across remediation attempts.
 

@@ -9,6 +9,7 @@ The main runtime is split into these concerns:
 
 - `src/execute.ts` validates parameters, discovers agents, evaluates composition, and dispatches single, parallel, chain, or reuse modes.
 - `src/run.ts` creates tabs, launches or prompts Pi, polls settlement, records outcomes, writes reports, and emits telemetry.
+- `src/ui-prompt-marker.ts` writes and parses the session-tail UI prompt markers the poller uses to detect and settle-suppress approval waiting, and emits `herdr:blocked` events for the daemon.
 - `src/delegation.ts` derives flow and delegation identity, sanitizes scope, and exports child environment variables.
 - `src/flow.ts`, `src/ledger.ts`, `src/manifest.ts`, and `src/scope.ts` own durable flow artifacts.
 - `src/registry.ts` and `src/registry-store.ts` own workspace-scoped session state and locking.

@@ -16,6 +16,7 @@ import { roleBudgetFor } from '../src/config.ts';
 import { pollSubagent } from '../src/poll.ts';
 import { registerEntry } from '../src/registry.ts';
 import { readRegistry } from '../src/registry-store.ts';
+import { UI_PROMPT_MARKER_ENTRY_TYPE } from '../src/ui-prompt-marker.ts';
 import type {
 	BlockEventInfo,
 	OnUpdateCallback,
@@ -70,6 +71,12 @@ function blockedSessionFile(dir: string): string {
 	]);
 }
 
+function uiPromptMarkerLine(event: 'start' | 'end', title?: string): string {
+	const data: Record<string, unknown> = { formatVersion: 1, event, kind: 'select' };
+	if (title !== undefined) data.title = title;
+	return `${JSON.stringify({ type: 'custom', customType: UI_PROMPT_MARKER_ENTRY_TYPE, data })}\n`;
+}
+
 function startPoll(
 	sessionFile: string,
 	result: SingleResult,
@@ -87,6 +94,200 @@ function startPoll(
 		onBlocked,
 	);
 }
+
+describe('pollSubagent - ui prompt markers', () => {
+	it('blocks approval from a start marker while the daemon reports working', async () => {
+		vi.useFakeTimers();
+		const dir = makeTempDir();
+		const sessionFile = blockedSessionFile(dir);
+		fs.appendFileSync(sessionFile, uiPromptMarkerLine('start', 'Allow bash command?'));
+		registerBlockedEntry(sessionFile, dir);
+		vi.mocked(getAgentStatus)
+			.mockResolvedValueOnce({ status: 'working' })
+			.mockResolvedValue({ status: 'gone' });
+		const result = makeSingleResult({ label: 'worker-1', paneId: 'ws1:p1' });
+		const onBlocked = vi.fn();
+		const promise = startPoll(sessionFile, result, undefined, onBlocked);
+		await driveTimers(promise, 5);
+		await expect(promise).resolves.toBe('gone');
+		expect(result.blockReason).toBe('approval');
+		expect(result.blockedPreview).toBe('bash rm -rf /');
+		expect(result.blockedSince).toBeDefined();
+		expect(onBlocked).toHaveBeenCalledTimes(1);
+		expect(onBlocked).toHaveBeenCalledWith({
+			label: 'worker-1',
+			blockReason: 'approval',
+			preview: 'bash rm -rf /',
+		});
+		const reg = readRegistry();
+		expect(reg.tabs['ws1:worker-1']).toMatchObject({
+			status: 'running',
+			blockReason: 'approval',
+			blockedPreview: 'bash rm -rf /',
+		});
+	});
+
+	it('resolves a marker-driven block when the end marker arrives', async () => {
+		vi.useFakeTimers();
+		const dir = makeTempDir();
+		const sessionFile = blockedSessionFile(dir);
+		fs.appendFileSync(sessionFile, uiPromptMarkerLine('start'));
+		registerBlockedEntry(sessionFile, dir);
+		vi.mocked(getAgentStatus).mockImplementation(async () =>
+			fs.readFileSync(sessionFile, 'utf8').includes('"event":"end"')
+				? { status: 'gone' }
+				: { status: 'working' },
+		);
+		const result = makeSingleResult({ label: 'worker-1', paneId: 'ws1:p1' });
+		const onBlocked = vi.fn();
+		const promise = startPoll(sessionFile, result, undefined, onBlocked);
+		let appended = false;
+		for (let i = 0; i < 6; i++) {
+			await vi.advanceTimersByTimeAsync(INTERVAL_MS);
+			if (!appended) {
+				appended = true;
+				fs.appendFileSync(sessionFile, uiPromptMarkerLine('end'));
+			}
+			if (
+				(await Promise.race([promise.then(() => 'done'), Promise.resolve('pending')])) === 'done'
+			) {
+				break;
+			}
+		}
+		await expect(promise).resolves.toBe('gone');
+		expect(onBlocked).toHaveBeenCalledTimes(2);
+		expect(onBlocked).toHaveBeenNthCalledWith(1, {
+			label: 'worker-1',
+			blockReason: 'approval',
+			preview: 'bash rm -rf /',
+		});
+		expect(onBlocked).toHaveBeenNthCalledWith(2, {
+			label: 'worker-1',
+			blockReason: 'approval',
+			resolved: true,
+		});
+		expect(result.blockReason).toBeUndefined();
+		expect(result.blockedPreview).toBeUndefined();
+		const reg = readRegistry();
+		expect(reg.tabs['ws1:worker-1'].blockReason).toBeUndefined();
+		expect(reg.tabs['ws1:worker-1'].blockedPreview).toBeUndefined();
+	});
+
+	it('reports a steer block with the prompt title when no tool call is pending', async () => {
+		vi.useFakeTimers();
+		const dir = makeTempDir();
+		const sessionFile = writeSessionFile(dir, 'session.jsonl', [assistantMsg('thinking')]);
+		fs.appendFileSync(sessionFile, uiPromptMarkerLine('start', 'Confirm cleanup'));
+		registerBlockedEntry(sessionFile, dir);
+		vi.mocked(getAgentStatus)
+			.mockResolvedValueOnce({ status: 'working' })
+			.mockResolvedValue({ status: 'gone' });
+		const result = makeSingleResult({ label: 'worker-1', paneId: 'ws1:p1' });
+		const onBlocked = vi.fn();
+		const promise = startPoll(sessionFile, result, undefined, onBlocked);
+		await driveTimers(promise, 5);
+		await expect(promise).resolves.toBe('gone');
+		expect(result.blockReason).toBe('steer');
+		expect(result.blockedPreview).toBe('Confirm cleanup');
+		expect(onBlocked).not.toHaveBeenCalled();
+		const reg = readRegistry();
+		expect(reg.tabs['ws1:worker-1']).toMatchObject({
+			blockReason: 'steer',
+			blockedPreview: 'Confirm cleanup',
+		});
+	});
+
+	it('keeps daemon-only behavior when no markers exist', async () => {
+		vi.useFakeTimers();
+		const dir = makeTempDir();
+		const sessionFile = writeSessionFile(dir, 'session.jsonl', [assistantMsg('in progress')]);
+		vi.mocked(getAgentStatus)
+			.mockResolvedValueOnce({ status: 'working' })
+			.mockResolvedValue({ status: 'gone' });
+		const result = makeSingleResult();
+		const onBlocked = vi.fn();
+		const promise = startPoll(sessionFile, result, undefined, onBlocked);
+		await driveTimers(promise, 5);
+		await expect(promise).resolves.toBe('gone');
+		expect(result.blockReason).toBeUndefined();
+		expect(result.blockedSince).toBeUndefined();
+		expect(onBlocked).not.toHaveBeenCalled();
+	});
+
+	it('expires a lost end marker after the idle grace, settles, and stays silent', async () => {
+		vi.useFakeTimers();
+		const dir = makeTempDir();
+		const sessionFile = writeSessionFile(dir, 'session.jsonl', [assistantMsg('final answer')]);
+		fs.appendFileSync(sessionFile, uiPromptMarkerLine('start', 'Approve write?'));
+		fs.writeFileSync(
+			path.join(process.env.PI_CODING_AGENT_DIR!, 'subagent-herdr.config.json'),
+			JSON.stringify({ uiPromptLostIdleMs: 5000 }),
+		);
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'idle' });
+		const result = makeSingleResult();
+		const onBlocked = vi.fn();
+		const promise = startPoll(sessionFile, result, undefined, onBlocked);
+		await driveTimers(promise, 3);
+		expect(await Promise.race([promise.then(() => 'settled'), Promise.resolve('pending')])).toBe(
+			'pending',
+		);
+		expect(result.blockReason).toBe('steer');
+		expect(result.blockedPreview).toBe('Approve write?');
+		await driveTimers(promise, 10);
+		await expect(promise).resolves.toBe('settled');
+		expect(result.blockReason).toBeUndefined();
+		expect(result.blockedPreview).toBeUndefined();
+		expect(result.blockedSince).toBeUndefined();
+		expect(onBlocked).not.toHaveBeenCalled();
+	});
+
+	it('keeps a lost end marker blocked while the daemon reports working past the grace', async () => {
+		vi.useFakeTimers();
+		const dir = makeTempDir();
+		const sessionFile = blockedSessionFile(dir);
+		fs.appendFileSync(sessionFile, uiPromptMarkerLine('start', 'Allow bash command?'));
+		fs.writeFileSync(
+			path.join(process.env.PI_CODING_AGENT_DIR!, 'subagent-herdr.config.json'),
+			JSON.stringify({ uiPromptLostIdleMs: 1000 }),
+		);
+		registerBlockedEntry(sessionFile, dir);
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'working' });
+		const result = makeSingleResult({ label: 'worker-1', paneId: 'ws1:p1' });
+		const onBlocked = vi.fn();
+		const promise = startPoll(sessionFile, result, undefined, onBlocked);
+		await driveTimers(promise, 6);
+		expect(await Promise.race([promise.then(() => 'settled'), Promise.resolve('pending')])).toBe(
+			'pending',
+		);
+		expect(result.blockReason).toBe('approval');
+		expect(result.blockedSince).toBeDefined();
+		expect(onBlocked).toHaveBeenCalledTimes(1);
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'gone' });
+		await driveTimers(promise, 3);
+		await expect(promise).resolves.toBe('gone');
+		expect(result.blockReason).toBe('approval');
+	});
+
+	it('suppresses settling while a ui prompt marker is open', async () => {
+		vi.useFakeTimers();
+		const dir = makeTempDir();
+		const sessionFile = writeSessionFile(dir, 'session.jsonl', [assistantMsg('final answer')]);
+		fs.appendFileSync(sessionFile, uiPromptMarkerLine('start', 'Approve write?'));
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'idle' });
+		const result = makeSingleResult();
+		const promise = startPoll(sessionFile, result);
+		await driveTimers(promise, 10);
+		expect(await Promise.race([promise.then(() => 'settled'), Promise.resolve('pending')])).toBe(
+			'pending',
+		);
+		expect(result.blockReason).toBe('steer');
+		expect(result.blockedPreview).toBe('Approve write?');
+		fs.appendFileSync(sessionFile, uiPromptMarkerLine('end'));
+		await driveTimers(promise, 5);
+		await expect(promise).resolves.toBe('settled');
+		expect(result.blockReason).toBeUndefined();
+	});
+});
 
 afterEach(() => {
 	vi.unstubAllEnvs();

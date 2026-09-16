@@ -1410,7 +1410,8 @@ function validS4Preflight(
 	return record.compositionBoundaryId === preflight.compositionBoundaryId;
 }
 
-function validS4Outcome(record: TelemetryRecord): boolean {
+/** Classifies why one S4 outcome record is not valid decision evidence; null when valid. */
+function s4OutcomeDefect(record: TelemetryRecord): string | null {
 	const outcome = record.s4Outcome;
 	if (
 		!outcome ||
@@ -1422,7 +1423,7 @@ function validS4Outcome(record: TelemetryRecord): boolean {
 		!S4_QUALITY.has(outcome.reviewStatus) ||
 		!S4_QUALITY.has(outcome.budgetStatus)
 	)
-		return false;
+		return 'outcome payload fails the S4 schema';
 	const correlation = outcome.correlation;
 	if (
 		!correlation ||
@@ -1433,7 +1434,7 @@ function validS4Outcome(record: TelemetryRecord): boolean {
 		!Number.isSafeInteger(correlation.ledgerRevision) ||
 		correlation.ledgerRevision <= 0
 	)
-		return false;
+		return 'outcome correlation is incomplete';
 	if (
 		record.flowId !== correlation.flowId ||
 		record.taskId !== correlation.taskId ||
@@ -1441,18 +1442,19 @@ function validS4Outcome(record: TelemetryRecord): boolean {
 		record.ledgerRevision !== correlation.ledgerRevision ||
 		record.compositionBoundaryId !== correlation.compositionBoundaryId
 	)
-		return false;
-	if (correlation.tier !== undefined && record.tier !== correlation.tier) return false;
+		return 'record fields disagree with the outcome correlation';
+	if (correlation.tier !== undefined && record.tier !== correlation.tier)
+		return 'record tier disagrees with the outcome correlation';
 	if (
 		!outcome.qualitySignals ||
 		outcome.qualitySignals.componentStatusConsistent !== true ||
 		typeof outcome.qualitySignals.unresolvedOrAbandoned !== 'boolean'
 	)
-		return false;
+		return 'quality signals are missing or inconsistent';
 	if (record.role === 'reviewer' && typeof outcome.qualitySignals.reviewerPass !== 'boolean')
-		return false;
+		return 'reviewer pass signal is missing';
 	if (!['pass', 'fail', 'pending', 'unknown'].includes(outcome.independentReviewStatus))
-		return false;
+		return 'independent review status is outside the vocabulary';
 	if (
 		outcome.quality === 'pass' &&
 		(outcome.lifecycle !== 'settled' ||
@@ -1461,8 +1463,12 @@ function validS4Outcome(record: TelemetryRecord): boolean {
 			) ||
 			outcome.qualitySignals?.unresolvedOrAbandoned === true)
 	)
-		return false;
-	return true;
+		return 'quality pass contradicts the lifecycle or component statuses';
+	return null;
+}
+
+function validS4Outcome(record: TelemetryRecord): boolean {
+	return s4OutcomeDefect(record) === null;
 }
 
 function s4DecisionWindow(
@@ -1593,10 +1599,11 @@ export function analyzeS4(
 			record.s4Outcome?.correlation?.compositionBoundaryId ?? record.compositionBoundaryId ?? '';
 		const entry = boundaries.get(id) ?? { preflights: [], outcomes: [], invalid: false };
 		entry.outcomes.push(record);
-		if (!validS4Outcome(record)) {
+		const defect = s4OutcomeDefect(record);
+		if (defect) {
 			entry.invalid = true;
 			invalid++;
-			reasons.push(`invalid or mismatched S4 outcome correlation at boundary ${id || '(missing)'}`);
+			reasons.push(`S4 outcome at boundary ${id || '(missing)'} rejected: ${defect}`);
 		}
 		if (record.s4Outcome?.correlation?.compositionBoundaryId !== record.compositionBoundaryId) {
 			entry.invalid = true;
@@ -1719,19 +1726,14 @@ export function analyzeS4(
 			if (value === 'up') escalations++;
 		}
 	let tier1Failures = 0;
+	let tier1Unknown = 0;
 	let tier1Workers = 0;
 	for (const record of validOutcomes)
 		if (record.role === 'worker' && record.tier === 1) {
 			tier1Workers++;
 			const explicit = s4Bool(record, 'tier1DiscoveryFailure');
-			if (
-				explicit === true ||
-				(explicit !== false &&
-					!(byTask.get(`${record.flowId ?? ''}:${record.taskId ?? ''}`) ?? []).some(
-						(prior) => prior.at < record.at && prior.role === 'scout',
-					))
-			)
-				tier1Failures++;
+			if (explicit === true) tier1Failures++;
+			else if (explicit === null) tier1Unknown++;
 		}
 	for (const ruleId of S4_RULES) {
 		const rule = stats[ruleId];
@@ -1759,6 +1761,7 @@ export function analyzeS4(
 	const unknownNumerator =
 		invalid +
 		unresolvedUnknown +
+		tier1Unknown +
 		S4_RULES.reduce((sum, rule) => sum + stats[rule].unknown, 0) +
 		(qualityIncomplete ? 1 : 0);
 	const unknownRate = s4Rate(unknownNumerator, unknownDenominator, policy.maxUnknownRate);
@@ -1789,7 +1792,7 @@ export function analyzeS4(
 			tier1Failures,
 			tier1Workers,
 			policy.maxTier1DiscoveryFailureRate,
-			false,
+			tier1Unknown > 0,
 			true,
 		),
 	};

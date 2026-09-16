@@ -274,6 +274,43 @@ describe('S4 quality normalization', () => {
 		).toMatchObject({ independentReviewStatus: 'pass' });
 	});
 
+	it('does not treat reviewer findings or baseline failures as unresolved blockers', () => {
+		expect(
+			normalizeS4Outcome(
+				{
+					validation_verdict: 'PASS',
+					review_verdict: 'none',
+					findings: 'F-1: narrow scope',
+					baseline_failures: 'no baseline failures',
+					unresolved_questions: 'None.',
+					environment_blockers: 'No blockers.',
+					delegation_status: 'settled',
+				},
+				'reviewer',
+				{ ledgerParsed: true } as never,
+				{ outcome: 'within' } as never,
+			),
+		).toMatchObject({
+			quality: 'incomplete',
+			qualitySignals: { unresolvedOrAbandoned: false },
+		});
+		expect(
+			normalizeS4Outcome(
+				{
+					validation_verdict: 'PASS',
+					review_verdict: 'PASS',
+					findings: 'F-1',
+					unresolved_questions: 'none',
+					environment_blockers: 'registry entry missing for worker-2',
+					delegation_status: 'settled',
+				},
+				'reviewer',
+				{ ledgerParsed: true } as never,
+				{ outcome: 'within' } as never,
+			),
+		).toMatchObject({ quality: 'incomplete', qualitySignals: { unresolvedOrAbandoned: true } });
+	});
+
 	it('does not mark non-settled lifecycles as passing quality', () => {
 		const fields = {
 			validation_verdict: 'PASS',
@@ -336,6 +373,61 @@ describe('S4 analyzer', () => {
 		const observation = candidate!.s4Preflight!.observations.find((item) => item.ruleId === 'R4')!;
 		observation.compliant = false;
 		expect(analyzeS4(noncompliant, { independentReview: 'pass' }).status).toBe('RETAIN_WARN');
+	});
+
+	it('counts tier 1 discovery failures only from explicit signals', () => {
+		const records = representativeRecords();
+		const workerOutcomes = records.filter(
+			(record) => record.event === 's4_outcome' && record.role === 'worker',
+		);
+		for (const record of workerOutcomes) record.tier = 1;
+		const explicit = analyzeS4(records, { independentReview: 'pass' });
+		expect(explicit.guardrails.tier1DiscoveryFailure).toMatchObject({
+			numerator: 0,
+			denominator: workerOutcomes.length,
+			status: 'pass',
+		});
+
+		const failing = representativeRecords();
+		for (const worker of failing.filter(
+			(record) => record.event === 's4_outcome' && record.role === 'worker',
+		))
+			worker.tier = 1;
+		const failingOutcome = failing.find(
+			(record) => record.event === 's4_outcome' && record.role === 'worker',
+		)!;
+		failingOutcome.s4Outcome!.qualitySignals.tier1DiscoveryFailure = true;
+		expect(
+			analyzeS4(failing, { independentReview: 'pass' }).guardrails.tier1DiscoveryFailure,
+		).toMatchObject({ numerator: 1, denominator: 2, status: 'fail' });
+
+		const unreported = representativeRecords();
+		for (const worker of unreported.filter(
+			(record) => record.event === 's4_outcome' && record.role === 'worker',
+		)) {
+			worker.tier = 1;
+			worker.s4Outcome!.qualitySignals.tier1DiscoveryFailure = null;
+		}
+		expect(
+			analyzeS4(unreported, { independentReview: 'pass' }).guardrails.tier1DiscoveryFailure,
+		).toMatchObject({ numerator: 0, denominator: 2, status: 'unknown' });
+	});
+
+	it('names the defect for every rejected outcome', () => {
+		const malformed = representativeRecords();
+		const malformedOutcome = malformed.find((record) => record.event === 's4_outcome')!;
+		malformedOutcome.s4Outcome!.correlation.flowId = 'other-flow';
+		const decision = analyzeS4(malformed, { independentReview: 'pass' });
+		expect(decision.reasons.join('\n')).toContain(
+			'rejected: record fields disagree with the outcome correlation',
+		);
+
+		const unreported = representativeRecords();
+		const unreportedOutcome = unreported.find((record) => record.event === 's4_outcome')!;
+		unreportedOutcome.s4Outcome!.qualitySignals.unresolvedOrAbandoned = null;
+		expect(analyzeS4(unreported, { independentReview: 'pass' }).reasons.join('\n')).toContain(
+			'rejected: quality signals are missing or inconsistent',
+		);
 	});
 
 	it('fails closed for missing outcomes, unknown quality, and invalid windows', () => {

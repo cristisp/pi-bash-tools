@@ -1219,6 +1219,9 @@ export async function executeSubagent(
 		orchestration: {
 			...compositionCtx.orchestration,
 			...(composition.warnings.length > 0 ? { compositionVerdicts: composition.warnings } : {}),
+			...(compositionCtx.orchestration.compositionBoundaryId
+				? {}
+				: { compositionBoundaryId: composition.preflight.compositionBoundaryId }),
 		},
 	};
 	const s4FlowId =

@@ -173,6 +173,8 @@ export function resolveDelegation(options: {
 		delegation.acceptanceCriteria = sanitizeCriteria(orchestration.acceptanceCriteria);
 	const scope = sanitizeReviewScope(orchestration.scope);
 	if (scope) delegation.scope = scope;
+	if (isOpaqueId(orchestration.compositionBoundaryId))
+		delegation.compositionBoundaryId = orchestration.compositionBoundaryId;
 	if (validReviewSurfacePath(flowId, orchestration.reviewSurfacePath))
 		delegation.reviewSurfacePath = orchestration.reviewSurfacePath;
 	const reviewSurfaceRevision = orchestration.reviewSurfaceRevision;

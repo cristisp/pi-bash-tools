@@ -45,6 +45,23 @@ export function herdrCli(args: string[]): Promise<any> {
 	});
 }
 
+const HERDR_REPORT_METADATA_TIMEOUT_MS = 3000;
+
+export function herdrCliReportMetadata(args: string[]): Promise<void> {
+	return new Promise((resolve) => {
+		try {
+			execFile(
+				'herdr',
+				[...args],
+				{ timeout: HERDR_REPORT_METADATA_TIMEOUT_MS, maxBuffer: 1024 * 1024 },
+				() => resolve(),
+			);
+		} catch {
+			resolve();
+		}
+	});
+}
+
 export function herdrErrorCode(resp: any): string | undefined {
 	return resp?.error?.code;
 }

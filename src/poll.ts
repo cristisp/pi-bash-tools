@@ -5,6 +5,11 @@ import { BUDGET_STEER_MESSAGE } from './budget.ts';
 import { getConfig } from './config.ts';
 import { getAgentStatus, sleep } from './herdr.ts';
 import { findEntry, updateRegistryEntry } from './registry.ts';
+import {
+	parseUiPromptMarkerEntry,
+	UI_PROMPT_MARKER_ENTRY_TYPE,
+	type UiPromptMarker,
+} from './ui-prompt-marker.ts';
 import type { RegistryReadCache } from './registry-store.ts';
 import { measureExecutionMetrics } from './metrics.ts';
 import type { SubagentHerdrConfig } from './config.ts';
@@ -42,6 +47,10 @@ interface TailState {
 	lastMessageRole: string | undefined;
 	steerPendingSince: number | null;
 	abortedAt: number | null;
+	uiPromptOpen: boolean;
+	uiPromptTitle: string | undefined;
+	/** When the open marker's start entry was parsed; bounds a lost end marker. */
+	uiPromptOpenSince: number | null;
 }
 
 function trackToolCalls(
@@ -119,12 +128,13 @@ function processSessionMessage(
 function detectBlock(
 	currentResult: SingleResult,
 	pendingToolCalls: Map<string, { name: string; args: Record<string, any> }>,
+	uiPromptTitle: string | undefined,
 ): { reason: BlockReason; preview: string | undefined } {
 	const pending = findPendingToolCall(currentResult.messages, pendingToolCalls);
 	const blockReason: BlockReason = pending ? 'approval' : 'steer';
 	return {
 		reason: blockReason,
-		preview: pending ? formatBlockedPreview(pending.name, pending.args) : undefined,
+		preview: pending ? formatBlockedPreview(pending.name, pending.args) : uiPromptTitle,
 	};
 }
 
@@ -137,6 +147,7 @@ function evaluateIdleDone(
 	lastMessageRole: string | undefined,
 	steerPendingSince: number | null,
 	abortedAt: number | null,
+	uiPromptOpen: boolean,
 	cfg: SubagentHerdrConfig,
 ): { settle: boolean; candidate: number | null } {
 	const now = Date.now();
@@ -150,7 +161,7 @@ function evaluateIdleDone(
 			steerPendingSince !== null &&
 			now - steerPendingSince < cfg.steerTimeoutMs;
 		const inAbortGrace = abortedAt !== null && now - abortedAt < cfg.abortGraceMs;
-		if (hasPendingSteer || inAbortGrace) {
+		if (hasPendingSteer || inAbortGrace || uiPromptOpen) {
 			candidate = null;
 		} else if (
 			now - (candidate ?? 0) >= cfg.settleStabilityMs &&
@@ -167,12 +178,13 @@ function evaluateIdleDone(
 function handleBlockedState(
 	currentResult: SingleResult,
 	pendingToolCalls: Map<string, { name: string; args: Record<string, any> }>,
+	uiPromptTitle: string | undefined,
 	prevStatus: string | undefined,
 	prevReason: BlockReason | undefined,
 	onBlocked: ((info: BlockEventInfo) => void) | undefined,
 ): BlockReason | undefined {
-	const { reason, preview } = detectBlock(currentResult, pendingToolCalls);
-	const firstBlock = prevStatus !== 'blocked';
+	const { reason, preview } = detectBlock(currentResult, pendingToolCalls, uiPromptTitle);
+	const firstBlock = prevStatus !== 'blocked' && prevReason === undefined;
 	const reasonChanged = !firstBlock && prevReason !== reason;
 	currentResult.blockReason = reason;
 	currentResult.blockedPreview = preview;
@@ -227,6 +239,7 @@ function createSessionTailReader(
 	sessionFile: string,
 	initialOffset: number,
 	onMessage: (msg: Message) => void,
+	onUiPromptMarker: (marker: UiPromptMarker) => void,
 ): { read: () => void; close: () => void } {
 	let fd: number | null = null;
 	let offset = initialOffset;
@@ -259,6 +272,11 @@ function createSessionTailReader(
 			} catch {
 				continue;
 			}
+			if (entry.type === 'custom' && entry.customType === UI_PROMPT_MARKER_ENTRY_TYPE) {
+				const marker = parseUiPromptMarkerEntry(entry);
+				if (marker) onUiPromptMarker(marker);
+				continue;
+			}
 			if (entry.type !== 'message' || !entry.message) continue;
 			onMessage(entry.message as Message);
 		}
@@ -273,18 +291,52 @@ function createSessionTailReader(
 	return { read, close };
 }
 
+/**
+ * A genuinely open dialog keeps the daemon 'working', so idle/done with a long-open marker means
+ * the end marker was lost (the child's appendEntry is best-effort). Expire the marker silently: no
+ * resolved notification, just let normal settle logic proceed.
+ */
+function expireLostUiPrompt(
+	tailState: TailState,
+	status: string,
+	cfg: SubagentHerdrConfig,
+): boolean {
+	if (
+		tailState.uiPromptOpen &&
+		(status === 'idle' || status === 'done') &&
+		tailState.uiPromptOpenSince !== null &&
+		Date.now() - tailState.uiPromptOpenSince >= cfg.uiPromptLostIdleMs
+	) {
+		tailState.uiPromptOpen = false;
+		tailState.uiPromptTitle = undefined;
+		tailState.uiPromptOpenSince = null;
+		return true;
+	}
+	return false;
+}
+
 function handleBlockedTransition(
 	currentResult: SingleResult,
+	tailState: TailState,
 	prevStatus: string | undefined,
 	prevReason: BlockReason | undefined,
 	onBlocked: ((info: BlockEventInfo) => void) | undefined,
 	pendingToolCalls: Map<string, { name: string; args: Record<string, any> }>,
+	lostUiPrompt: boolean,
 ): BlockReason | undefined {
-	if (currentResult.herdrStatus === 'blocked') {
-		return handleBlockedState(currentResult, pendingToolCalls, prevStatus, prevReason, onBlocked);
+	if (currentResult.herdrStatus === 'blocked' || tailState.uiPromptOpen) {
+		return handleBlockedState(
+			currentResult,
+			pendingToolCalls,
+			tailState.uiPromptTitle,
+			prevStatus,
+			prevReason,
+			onBlocked,
+		);
 	}
-	if (prevStatus === 'blocked') {
-		if (prevReason === 'approval') {
+	if (prevStatus === 'blocked' || prevReason !== undefined) {
+		// A lost-marker expiry never resolved the dialog, so no resolved notification fires.
+		if (prevReason === 'approval' && !lostUiPrompt) {
 			onBlocked?.({
 				label: currentResult.label ?? '?',
 				blockReason: 'approval',
@@ -362,6 +414,7 @@ function evaluatePollStep(
 			tailState.lastMessageRole,
 			tailState.steerPendingSince,
 			tailState.abortedAt,
+			tailState.uiPromptOpen,
 			cfg,
 		);
 		return { outcome: settle ? 'settled' : null, sawWorking, candidate, lastKnownAt: Date.now() };
@@ -418,12 +471,15 @@ async function pollIteration(
 	if (liveEntry?.budget) currentResult.budget = liveEntry.budget;
 	if (currentResult.budget?.outcome === 'aborted') return 'aborted';
 	currentResult.steered = tailState.userMessages > 1;
+	const lostUiPrompt = expireLostUiPrompt(tailState, status, cfg);
 	state.prevReason = handleBlockedTransition(
 		currentResult,
+		tailState,
 		prevStatus,
 		state.prevReason,
 		onBlocked,
 		state.pendingToolCalls,
+		lostUiPrompt,
 	);
 	state.lastEmitKey = maybeEmit(state.lastEmitKey, status, currentResult, onUpdate, makeDetails);
 	const step = evaluatePollStep(
@@ -476,15 +532,32 @@ export async function pollSubagent(
 		lastMessageRole: undefined,
 		steerPendingSince: null,
 		abortedAt: null,
+		uiPromptOpen: false,
+		uiPromptTitle: undefined,
+		uiPromptOpenSince: null,
 	};
-	const tail = createSessionTailReader(sessionFile, initialOffset, (msg) =>
-		processSessionMessage(
-			msg,
-			currentResult,
-			state.pendingToolCalls,
-			tailState,
-			state.registryCache,
-		),
+	const tail = createSessionTailReader(
+		sessionFile,
+		initialOffset,
+		(msg) =>
+			processSessionMessage(
+				msg,
+				currentResult,
+				state.pendingToolCalls,
+				tailState,
+				state.registryCache,
+			),
+		(marker) => {
+			if (marker.event === 'start') {
+				tailState.uiPromptOpen = true;
+				tailState.uiPromptTitle = marker.title;
+				tailState.uiPromptOpenSince = Date.now();
+			} else {
+				tailState.uiPromptOpen = false;
+				tailState.uiPromptTitle = undefined;
+				tailState.uiPromptOpenSince = null;
+			}
+		},
 	);
 
 	try {

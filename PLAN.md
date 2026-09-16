@@ -13,7 +13,8 @@ Completed implementation history, review rounds, and superseded plans remain ava
 - S7 identity-path consolidation remains deferred.
 - The S8 producer artifact-alignment analysis is complete and all seven consumption items are implemented below.
 - The S8 implementation is committed as `align producer evidence contract ...` (1.8.0).
-- The optional S9 consumption of `read_batch` evidence refs and structured producer lookup outcomes is implemented below and uncommitted on top of head `dec0dc08`.
+- The optional S9 consumption of `read_batch` evidence refs and structured producer lookup outcomes is implemented and committed on top of head `dec0dc08`.
+- The T-014 blocked-subagent notification flow is implemented and uncommitted on top of the S9 measurement-semantics fixes.
 
 ## S4: decide whether `warn` can become `enforce`
 
@@ -32,13 +33,30 @@ R2 was not rerun because its overlapping-scope safety boundary is already confir
 This window closes the default-versus-override provenance gap, but it is too small and incomplete to authorize `enforce`.
 The independent rollout review recommends retaining `warn`.
 
+### First full gate run (2026-09)
+
+The first `s4:gate` run over the accumulated window returned `INSUFFICIENT_EVIDENCE` with 192 preflights, 251 outcomes, and 29 boundary rejections.
+Three measurement-semantics defects were found and fixed:
+
+1. `unresolvedOrAbandoned` read reviewer `findings` and `baseline_failures` as blocking signals, inflating the rate to 97.7%.
+   Blocking now covers only `environment_blockers`, `unresolved_questions`, and `validation_omitted`, with tolerant none/no parsing.
+2. Rejected outcomes were reported under one generic correlation message; the analyzer now names the specific defect for every rejection.
+   The delegation context also carries `compositionBoundaryId` so the outer record and the nested correlation always agree.
+3. Tier 1 discovery failure defaulted to failure whenever the ledger signal was absent; the guardrail now counts only explicit `true` values and reports unknown otherwise.
+   The orchestration-guide ledger adds `tier1_discovery_failure` so tier 1 workers report the signal.
+
+The run also produced real findings: R4 was violated by 32 of 35 eligible calls, and regression after review pass measured 9 of 58.
+Both argue for retaining `warn`.
+
 ### Remaining S4 work
 
+- [ ] Accumulate a fresh default-policy window of at least 7 days with the corrected signals and no deliberate overrides.
 - [ ] Measure unresolved or abandoned tasks in a representative default-policy window.
 - [ ] Measure regressions discovered after a reviewer reports `PASS`.
 - [ ] Measure escalation rate and direction by orchestration tier.
 - [ ] Measure Tier 1 worker discovery failures when no scout is present.
 - [ ] Record eligible-call denominators, compliant and violating paths, spawn outcomes, and completion outcomes for every decision-relevant rule.
+- [ ] Decide the R1 and R2 denominator policy: per-rule minimums or documented alternative evidence, since R2 rarely has a real eligible candidate in ordinary usage.
 - [ ] Reconsider `enforce` only after the quality guardrails and representative rule measurements support it.
 
 An unobserved guardrail is an evidence gap, not a zero rate.
@@ -127,9 +145,26 @@ Unchanged from S8: refs stay opaque, this repository never enumerates producer s
 The analyzer reads the same telemetry plus the producer invocation stream, and the producer lookup-outcome field on stream records is classification only.
 Codegraph index ids are observations of producer index state, not freshness verdicts; index identity alone does not validate evidence.
 
+## S10: report blocked-subagent status through bash-tools ui prompts
+
+Children blocked on a bash-tools approval dialog previously looked idle, so the parent never knew a dialog was open.
+T-014 closes that gap with a child-side marker writer plus a parent-side tail detection, implemented by delegated workers directly in this repository; bash-tools needed no changes.
+
+### T-014 work items
+
+- [x] Child-side marker writer (`src/ui-prompt-marker.ts`) and herdr metadata reporter (`src/ui-prompt-report.ts`), registered for children only in `index.ts`, with marker format version 1 and bounded title/summary fields.
+- [x] Parent-side detection in `src/poll.ts`: the session tail reader recognizes markers, the blocked machinery runs on daemon blocked state OR an open marker, a lost end marker is treated as lost after `uiPromptLostIdleMs` (new config key, default 30000), and settle is suppressed while a dialog is open.
+- [x] Status surface: `statusTag` in `src/format.ts` shows the blocked state from block fields.
+- [x] Tests for markers, reporting, poll detection, formatting, config, and registration.
+- [x] Child-side `herdr:blocked` event emission (`{ active: true, label }` on prompt open, `{ active: false }` on close), mirroring arx's transport so the herdr daemon can flip the child tab to blocked in real time; the parent-side poll chain stays as the notification and telemetry path.
+
+### T-014 next steps
+
+- [ ] Restrict subagent spawning to the main session's root folder: configure the `subagent` tool so delegations whose cwd resolves outside the root session directory tree are refused before any child is launched, and document the boundary.
+
 ## Invariants
 
-- Treat `@ztc/bash-tools` 1.1.4 and `@ztc/codegraph-runner` 2.0.4 as the producer contracts.
+- Treat `@ztc/bash-tools` 1.1.6 and `@ztc/codegraph-runner` 2.0.4 as the producer contracts.
 - Treat the installed agent files and `~/.pi/agent/agents/subagent_orchestration.md` as generated artifacts of `/setup-subagents`; change only `src/templates.ts` and `src/orchestration-guide.md`, then regenerate - never edit installed copies by hand.
 - Keep producer ownership boundaries intact; this repository does not write the producer's policy or store files.
 - Treat evidence references as the only cross-extension transport; this repository never enumerates or reads producer flow stores.

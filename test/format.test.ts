@@ -340,6 +340,28 @@ describe('statusTag', () => {
 		expect(statusTag(makeSingleResult({ herdrStatus: 'done' }))).toBe('settling');
 		expect(statusTag(makeSingleResult())).toBe('starting');
 	});
+
+	it('reports the blocked tag for marker-driven blocks regardless of herdrStatus', () => {
+		expect(
+			statusTag(
+				makeSingleResult({
+					herdrStatus: 'working',
+					blockReason: 'approval',
+					blockedPreview: 'x',
+					blockedSince: Date.UTC(2025, 0, 1),
+				}),
+			),
+		).toBe('blocked - awaiting approval: x');
+		expect(
+			statusTag(
+				makeSingleResult({
+					herdrStatus: 'working',
+					blockReason: 'steer',
+					blockedSince: Date.UTC(2025, 0, 1),
+				}),
+			),
+		).toBe('blocked - needs input');
+	});
 });
 
 describe('registryBlockedInfo', () => {

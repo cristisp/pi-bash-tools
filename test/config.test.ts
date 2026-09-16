@@ -53,6 +53,7 @@ describe('getConfig - overrides', () => {
 			statusLossTimeoutMs: 30_000,
 			abortGraceMs: 30_000,
 			steerTimeoutMs: 30_000,
+			uiPromptLostIdleMs: 45_000,
 			perTaskOutputCap: 1024,
 			reportDigestTokens: 400,
 			scopeCallAllowancePerPath: 3,

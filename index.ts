@@ -12,6 +12,8 @@ import { HERDR_ENV, HERDR_PANE_ID, HERDR_SOCKET_PATH, NESTED } from './src/herdr
 import { pruneFlows } from './src/flow.ts';
 import { registerInputHandler } from './src/input.ts';
 import { reconcileRegistry } from './src/registry.ts';
+import { registerUiPromptMarker } from './src/ui-prompt-marker.ts';
+import { registerUiPromptReporter } from './src/ui-prompt-report.ts';
 import {
 	registerSubagentCloseTool,
 	registerSubagentOverrideTool,
@@ -50,4 +52,6 @@ export default function (pi: ExtensionAPI) {
 	registerSubagentOverrideTool(pi);
 	registerSubagentStatsTool(pi);
 	registerInputHandler(pi);
+	registerUiPromptMarker(pi);
+	registerUiPromptReporter(pi);
 }

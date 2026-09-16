@@ -73,6 +73,9 @@ Each observation records the rule ID, whether the rule was eligible, compliance 
 Every child outcome in an S4 boundary may carry an additive `s4Outcome` object on its ordinary delegation telemetry record.
 Runtime records retain their ordinary event semantics, so consumers must not require `event: "s4_outcome"` when `s4Outcome` is present.
 The outcome contains lifecycle (`settled`, `failed`, `aborted`, `blocked`, `abandoned`, or `unknown`), normalized quality, validation, review, and budget statuses, independent-review status, structured quality signals, and a correlation object.
+The `unresolvedOrAbandoned` signal combines lifecycle, the `unresolved_questions` ledger boolean, and the blocking ledger fields `environment_blockers`, `unresolved_questions`, and `validation_omitted`.
+`findings` and `baseline_failures` are work product and evidence gaps that the verdict fields already carry, so they never count as unresolved blockers.
+`tier1DiscoveryFailure` is measured only from an explicit `tier1_discovery_failure` ledger value; when the signal is absent the guardrail reports unknown rather than assuming failure.
 
 A valid S4 correlation must match the outer record's `flowId`, `taskId`, `delegationId`, positive `ledgerRevision`, and `compositionBoundaryId`.
 The optional tier must also match when present.

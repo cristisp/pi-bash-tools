@@ -902,13 +902,14 @@ describe('executeSubagent - delegation context', () => {
 	it('passes the orchestration context to single runs', async () => {
 		const { runSingleAgent } = await mockedRuns();
 		await execSubagent({ agent: 'worker', task: 'x', ...context });
-		expect(runSingleAgent.mock.calls[0][12]).toEqual({
+		expect(runSingleAgent.mock.calls[0][12]).toMatchObject({
 			tier: 3,
 			workflowMode: 'remediation',
 			reviewMode: 'security',
 			acceptanceCriteria: ['F-001'],
 			evidenceScope: 'session',
 			compositionPolicy: 'warn',
+			compositionBoundaryId: expect.any(String),
 			compositionVerdicts: [
 				{
 					rule: 'R4',
@@ -932,7 +933,10 @@ describe('executeSubagent - delegation context', () => {
 	it('passes an empty context when nothing is declared', async () => {
 		const { runSingleAgent } = await mockedRuns();
 		await execSubagent({ agent: 'worker', task: 'x' });
-		expect(runSingleAgent.mock.calls[0][12]).toEqual({ compositionPolicy: 'warn' });
+		expect(runSingleAgent.mock.calls[0][12]).toEqual({
+			compositionPolicy: 'warn',
+			compositionBoundaryId: expect.any(String),
+		});
 	});
 
 	it('applies the context to every chain delegation', async () => {
@@ -945,8 +949,8 @@ describe('executeSubagent - delegation context', () => {
 			tier: 1,
 		});
 		expect(runSingleAgent.mock.calls.map((call) => call[12])).toEqual([
-			{ tier: 1, compositionPolicy: 'warn' },
-			{ tier: 1, compositionPolicy: 'warn' },
+			{ tier: 1, compositionPolicy: 'warn', compositionBoundaryId: expect.any(String) },
+			{ tier: 1, compositionPolicy: 'warn', compositionBoundaryId: expect.any(String) },
 		]);
 	});
 
@@ -961,8 +965,18 @@ describe('executeSubagent - delegation context', () => {
 			evidenceScope: 'session',
 		});
 		expect(runSingleAgent.mock.calls.map((call) => call[12])).toEqual([
-			{ tier: 2, evidenceScope: 'session', compositionPolicy: 'warn' },
-			{ tier: 2, evidenceScope: 'session', compositionPolicy: 'warn' },
+			{
+				tier: 2,
+				evidenceScope: 'session',
+				compositionPolicy: 'warn',
+				compositionBoundaryId: expect.any(String),
+			},
+			{
+				tier: 2,
+				evidenceScope: 'session',
+				compositionPolicy: 'warn',
+				compositionBoundaryId: expect.any(String),
+			},
 		]);
 	});
 
@@ -975,6 +989,7 @@ describe('executeSubagent - delegation context', () => {
 		expect(runReusedAgent.mock.calls[0][10]).toEqual({
 			workflowMode: 'remediation',
 			compositionPolicy: 'warn',
+			compositionBoundaryId: expect.any(String),
 		});
 		expect(runReusedAgent.mock.calls[0][11]).toEqual(expect.any(String));
 		expect(runReusedAgent.mock.calls[0][12]).toMatch(/^s4-/);

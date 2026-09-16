@@ -242,7 +242,10 @@ export function blockedSummaryLine(r: SingleResult): string {
 }
 
 export function statusTag(r: SingleResult): string {
-	if (r.herdrStatus === 'blocked') {
+	// Blocked fields win over herdrStatus: marker-driven blocks keep herdrStatus 'working' while the
+	// registry and notifications report blocked, and daemon-blocked results also set them, so this
+	// changes nothing for the daemon path.
+	if (r.blockedSince !== undefined || r.blockReason !== undefined || r.herdrStatus === 'blocked') {
 		return r.blockReason === 'approval'
 			? r.blockedPreview
 				? `blocked - awaiting approval: ${r.blockedPreview}`

@@ -157,6 +157,7 @@ describe('resolveDelegation', () => {
 				workflowMode: 'remediation',
 				reviewMode: 'security',
 				acceptanceCriteria: ['F-001'],
+				compositionBoundaryId: 'boundary-uuid',
 			},
 		});
 		expect(delegation).toMatchObject({
@@ -164,8 +165,15 @@ describe('resolveDelegation', () => {
 			workflowMode: 'remediation',
 			reviewMode: 'security',
 			acceptanceCriteria: ['F-001'],
+			compositionBoundaryId: 'boundary-uuid',
 			evidenceScope: 'flow',
 		});
+		expect(
+			resolveDelegation({
+				role: 'reviewer',
+				orchestration: { compositionBoundaryId: 'not opaque' },
+			}).compositionBoundaryId,
+		).toBeUndefined();
 	});
 
 	it('narrowing wins over the configured role scope', () => {

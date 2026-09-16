@@ -73,6 +73,7 @@ afterEach(() => {
 
 describe('extension registration', () => {
 	it('registers tools, commands, and handlers when herdr env is present', async () => {
+		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
 		const { default: register } = await loadIndex();
 		const pi = mockPi();
 		register(pi as never);
@@ -96,6 +97,8 @@ describe('extension registration', () => {
 		const events = pi.on.mock.calls.map((c) => c[0]);
 		expect(events).toContain('session_start');
 		expect(events).toContain('input');
+		expect(events).toContain('ui_prompt_start');
+		expect(events).toContain('ui_prompt_end');
 		expect(events.filter((e) => e === 'session_start')).toHaveLength(2);
 	});
 
