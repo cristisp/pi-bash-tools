@@ -50,7 +50,12 @@ import {
 } from '../src/telemetry.ts';
 import { flowReportsDir, flowsRoot } from '../src/flow.ts';
 import type { AgentConfig } from '../src/agents.ts';
-import type { S4Preflight, SingleResult, SubagentDetails } from '../src/types.ts';
+import type {
+	OrchestrationContext,
+	S4Preflight,
+	SingleResult,
+	SubagentDetails,
+} from '../src/types.ts';
 import { assistantMsg, makeRegistryEntry, toolResultMsg } from './helpers.ts';
 
 const agent: AgentConfig = {
@@ -138,6 +143,7 @@ function reuseCall(
 	task = 'next task',
 	parentSession?: string,
 	presetModels?: Record<string, string>,
+	orchestration?: OrchestrationContext,
 ) {
 	return runReusedAgent(
 		'/tmp',
@@ -150,6 +156,7 @@ function reuseCall(
 		undefined,
 		parentSession,
 		presetModels,
+		orchestration,
 	);
 }
 
@@ -183,6 +190,32 @@ afterEach(() => {
 });
 
 describe('runSingleAgent - launch', () => {
+	it('keeps the complete current handoff when manifest setup fails on a fresh launch', async () => {
+		vi.mocked(writeReadManifest).mockRejectedValueOnce(new Error('manifest unavailable'));
+		let launchedTask = '';
+		vi.mocked(launchInPane).mockImplementation(async (_paneId, command) => {
+			const taskPath = command.match(/cat '([^']+)'/)?.[1];
+			if (taskPath) launchedTask = fs.readFileSync(taskPath, 'utf8');
+			return null;
+		});
+		const result = await singleCall({
+			task: 'fresh remediation task',
+			parentSession: '/sess/parent.jsonl',
+			orchestration: {
+				tier: 2,
+				workflowMode: 'remediation',
+				scope: { paths: ['scope/a', 'scope/b'], outOfScope: ['outside/a', 'outside/b'] },
+			},
+		});
+		expect(result.exitCode).toBe(0);
+		expect(launchedTask).toContain('## Current orchestration context');
+		expect(launchedTask).toContain('Selected workflow tier: 2');
+		expect(launchedTask).toContain('In-scope paths: scope/a, scope/b');
+		expect(launchedTask).toContain('Out of scope: outside/a, outside/b');
+		expect(launchedTask).toContain('supersedes any frozen prior session system prompt');
+		expect(launchedTask).toContain('fresh remediation task');
+	});
+
 	it('launches, polls, and registers a completed session', async () => {
 		vi.mocked(pollSubagent).mockImplementation(async (...args) => {
 			args[4].messages.push(
@@ -451,8 +484,69 @@ describe('runReusedAgent - prompting', () => {
 		registerEntry(makeRegistryEntry({ status: 'running' }));
 		const result = await reuseCall();
 		expect(result.exitCode).toBe(0);
-		expect(herdrCli).toHaveBeenCalledWith(['agent', 'prompt', 'ws1:p10', 'next task']);
+		const prompt = vi
+			.mocked(herdrCli)
+			.mock.calls.map((call) => call[0])
+			.find((args) => args[0] === 'agent' && args[1] === 'prompt');
+		expect(prompt?.[2]).toBe('ws1:p10');
+		expect(prompt?.[3]).toContain('## Current orchestration context');
+		expect(prompt?.[3]).toContain('Context mode: compact (normal)');
+		expect(prompt?.[3]).toContain('Task:\nnext task');
+		expect(prompt?.[3]).toContain('supersedes any frozen prior session system prompt');
 		expect(createTaskTab).not.toHaveBeenCalled();
+	});
+
+	it('supersedes launch scope A with the complete current scope B on reuse', async () => {
+		await singleCall({
+			task: 'scope A task',
+			parentSession: '/sess/parent.jsonl',
+			orchestration: {
+				tier: 1,
+				scope: { paths: ['scope/a'], outOfScope: ['outside/a'] },
+			},
+		});
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'working' });
+		const result = await reuseCall('worker-1', 'scope B task', undefined, undefined, {
+			tier: 3,
+			workflowMode: 'remediation',
+			scope: {
+				paths: [
+					'scope/b1',
+					'scope/b2',
+					'scope/b3',
+					'scope/b4',
+					'scope/b5',
+					'scope/b6',
+					'scope/b7',
+					'scope/b8',
+					'scope/b9',
+				],
+				outOfScope: ['outside/b1', 'outside/b2'],
+			},
+		});
+		expect(result.exitCode).toBe(0);
+		const prompt = vi
+			.mocked(herdrCli)
+			.mock.calls.map((call) => call[0])
+			.find((args) => args[0] === 'agent' && args[1] === 'prompt');
+		expect(prompt?.[3]).toContain('Selected workflow tier: 3');
+		for (const value of [
+			'scope/b1',
+			'scope/b2',
+			'scope/b3',
+			'scope/b4',
+			'scope/b5',
+			'scope/b6',
+			'scope/b7',
+			'scope/b8',
+			'scope/b9',
+			'outside/b1',
+			'outside/b2',
+		])
+			expect(prompt?.[3]).toContain(value);
+		expect(prompt?.[3]).not.toContain('scope/a');
+		expect(prompt?.[3]).not.toContain('outside/a');
+		expect(prompt?.[3]).toContain('supersedes any frozen prior session system prompt');
 	});
 
 	it('cleans up the temporary directory when manifest setup fails', async () => {
@@ -479,8 +573,163 @@ describe('runReusedAgent - prompting', () => {
 			.mock.calls.map((call) => call[0])
 			.find((args) => args[0] === 'agent' && args[1] === 'prompt');
 		expect(prompt?.[3]).toContain('next task');
+		expect(prompt?.[3]).toContain('## Current orchestration context');
+		expect(prompt?.[3]).toContain('In-scope paths: src/run.ts');
+		expect(prompt?.[3]).toContain('supersedes any frozen prior session system prompt');
 		expect(prompt?.[3]).not.toContain('Read the bounded manifest');
 		expect(tempDirsSince(baseline)).toEqual([]);
+	});
+
+	it('keeps the complete current handoff when manifest setup fails during pane recreation', async () => {
+		vi.mocked(herdrCli).mockResolvedValueOnce({ error: { code: 'pane_not_found' } });
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'no-agent' });
+		vi.mocked(writeReadManifest).mockRejectedValueOnce(new Error('manifest unavailable'));
+		let launchedTask = '';
+		vi.mocked(launchInPane).mockImplementation(async (_paneId, command) => {
+			const taskPath = command.match(/cat '([^']+)'/)?.[1];
+			if (taskPath) launchedTask = fs.readFileSync(taskPath, 'utf8');
+			return null;
+		});
+		registerEntry(
+			makeRegistryEntry({
+				status: 'running',
+				scope: { paths: ['scope/a'], outOfScope: ['outside/a'] },
+			}),
+		);
+		const result = await reuseCall('worker-1', 'scope B pane task', undefined, undefined, {
+			tier: 3,
+			workflowMode: 'remediation',
+			scope: {
+				paths: [
+					'scope/b1',
+					'scope/b2',
+					'scope/b3',
+					'scope/b4',
+					'scope/b5',
+					'scope/b6',
+					'scope/b7',
+					'scope/b8',
+					'scope/b9',
+				],
+				outOfScope: ['outside/b1', 'outside/b2'],
+			},
+		});
+		expect(result.exitCode).toBe(0);
+		expect(launchedTask).toContain('Selected workflow tier: 3');
+		for (const value of [
+			'scope/b1',
+			'scope/b2',
+			'scope/b3',
+			'scope/b4',
+			'scope/b5',
+			'scope/b6',
+			'scope/b7',
+			'scope/b8',
+			'scope/b9',
+			'outside/b1',
+			'outside/b2',
+		])
+			expect(launchedTask).toContain(value);
+		expect(launchedTask).not.toContain('scope/a');
+		expect(launchedTask).toContain('supersedes any frozen prior session system prompt');
+	});
+
+	it('clears a seeded manifest and records the failed manifest attempt during pane recreation', async () => {
+		vi.mocked(herdrCli).mockResolvedValueOnce({ error: { code: 'pane_not_found' } });
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'no-agent' });
+		vi.mocked(writeReadManifest).mockRejectedValueOnce(new Error('manifest unavailable'));
+		let launchedTask = '';
+		vi.mocked(launchInPane).mockImplementation(async (_paneId, command) => {
+			const taskPath = command.match(/cat '([^']+)'/)?.[1];
+			if (taskPath) launchedTask = fs.readFileSync(taskPath, 'utf8');
+			return null;
+		});
+		const staleManifest = {
+			v: 1 as const,
+			persistedPath: '/old/predigest/manifests/stale.json',
+			artifactPaths: ['/old/review-surface.md'],
+			allowedPaths: ['old/file.ts'],
+			priorReports: ['/old/report.md'],
+			establishedEvidence: ['old evidence'],
+			doNotReread: ['old/file.ts'],
+		};
+		registerEntry(makeRegistryEntry({ status: 'running', readManifest: staleManifest }));
+		const result = await reuseCall(
+			'worker-1',
+			'current pane recreation task',
+			undefined,
+			undefined,
+			{
+				tier: 2,
+				scope: { paths: ['src/run.ts'] },
+			},
+		);
+		const entry = readRegistry().tabs['ws1:worker-1'];
+		expect(result.exitCode).toBe(0);
+		expect(result.readManifest).toBeUndefined();
+		expect(result.readManifestStatus).toBe('failed');
+		expect(entry?.readManifest).toBeUndefined();
+		expect(entry?.lastRun?.readManifest).toBeUndefined();
+		expect(entry?.readManifestStatus).toBe('failed');
+		expect(entry?.lastRun?.readManifestStatus).toBe('failed');
+		expect(launchedTask).toContain('current pane recreation task');
+		expect(launchedTask).not.toContain(staleManifest.persistedPath);
+		expect(launchedTask).not.toContain(staleManifest.artifactPaths[0]);
+		const telemetry = readTelemetryRecords().at(-1);
+		expect(telemetry?.readManifest).toBeUndefined();
+		expect(telemetry?.readManifestStatus).toBe('failed');
+	});
+
+	it('clears a seeded manifest and records the failed manifest attempt for an existing pane', async () => {
+		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'working' });
+		vi.mocked(writeReadManifest).mockRejectedValueOnce(new Error('manifest unavailable'));
+		const staleManifest = {
+			v: 1 as const,
+			persistedPath: '/old/predigest/manifests/stale.json',
+			artifactPaths: ['/old/review-surface.md'],
+			allowedPaths: ['old/file.ts'],
+			priorReports: ['/old/report.md'],
+			establishedEvidence: ['old evidence'],
+			doNotReread: ['old/file.ts'],
+		};
+		registerEntry(
+			makeRegistryEntry({
+				status: 'running',
+				parentSession: '/sess/parent.jsonl',
+				readManifest: staleManifest,
+			}),
+		);
+		const result = await runReusedAgent(
+			'/tmp',
+			[agent],
+			'worker-1',
+			'current existing-pane task',
+			undefined,
+			undefined,
+			makeDetails,
+			undefined,
+			'/sess/parent.jsonl',
+			undefined,
+			{ scope: { paths: ['src/run.ts'] } },
+		);
+		const prompt = vi
+			.mocked(herdrCli)
+			.mock.calls.map((call) => call[0])
+			.find((args) => args[0] === 'agent' && args[1] === 'prompt');
+		const entry = readRegistry().tabs['ws1:worker-1'];
+		expect(result.exitCode).toBe(0);
+		expect(result.readManifest).toBeUndefined();
+		expect(result.readManifestStatus).toBe('failed');
+		expect(entry?.readManifest).toBeUndefined();
+		expect(entry?.lastRun?.readManifest).toBeUndefined();
+		expect(entry?.readManifestStatus).toBe('failed');
+		expect(entry?.lastRun?.readManifestStatus).toBe('failed');
+		expect(prompt?.[3]).toContain('current existing-pane task');
+		expect(prompt?.[3]).not.toContain(staleManifest.persistedPath);
+		expect(prompt?.[3]).not.toContain(staleManifest.artifactPaths[0]);
+		const telemetry = readTelemetryRecords().at(-1);
+		expect(telemetry?.readManifest).toBeUndefined();
+		expect(telemetry?.readManifestStatus).toBe('failed');
 	});
 
 	it('retains manifest metadata and cleans up after a scoped reused prompt', async () => {
@@ -943,6 +1192,8 @@ describe('role report digest', () => {
 		const written = fs.readFileSync(reportPath, 'utf-8');
 		expect(written).toContain('# Role report: worker-1 (worker)');
 		expect(written).toContain('delegation:');
+		expect(written).toContain('- contextMode: compact');
+		expect(written).toContain('- contextReason: normal');
 		expect(written).toContain('x'.repeat(200));
 		expect(fs.readdirSync(flowReportsDir(result.flowId ?? 'missing'))).toHaveLength(1);
 		const [record] = readTelemetryRecords();
@@ -953,6 +1204,7 @@ describe('role report digest', () => {
 			path: reportPath,
 		});
 		expect(readRegistry().tabs['ws1:worker-1']?.lastRun?.reportTokens).toBe(report?.tokens);
+		expect(readRegistry().tabs['ws1:worker-1']?.lastRun?.contextMode).toBe('compact');
 	});
 
 	it('flags a report that carries no ledger block', async () => {

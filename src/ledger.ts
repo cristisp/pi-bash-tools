@@ -293,13 +293,15 @@ export function ledgerPrefixBlock(pointer: LedgerPointer): string {
 		`Revision: ${pointer.revision}`,
 		'',
 		'The current task, acceptance criteria, tier, evidence scope and prior verdicts for this flow',
-		'live in that file, newest revision last. Read it with the read tool before your first',
-		'substantive action and rely on it over your own recollection after compaction. Never write to',
-		'it: emit your own ledger block in your reply and the delegating session folds it in.',
+		'live in that file, newest revision last. Normal handoffs carry a compact current context below;',
+		'do not preload the historical ledger before discovery. Use the read tool only for the bounded paths needed for a',
+		'named stale, rejected, ambiguous, or otherwise required evidence gap (or an explicit audit,',
+		'integration, or recovery request). Never write to it: emit your own ledger block in your reply',
+		'and the delegating session folds it in.',
 	].join('\n');
 }
 
 /** Prompt text for a reuse turn, whose system prompt was frozen at launch. */
 export function ledgerTurnLine(pointer: LedgerPointer): string {
-	return `ledger: ${pointer.path}@${pointer.revision} (advanced since your session started; read it with the read tool before continuing)`;
+	return `ledger: ${pointer.path}@${pointer.revision} (refreshed turn pointer; use bounded recovery only for a named stale, rejected, ambiguous, or required evidence gap)`;
 }

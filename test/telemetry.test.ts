@@ -144,6 +144,8 @@ describe('buildTelemetryRecord', () => {
 				evidenceScope: 'flow',
 				rootSession: '/tmp/root.jsonl',
 				parentPaneId: 'ws1:p0',
+				contextMode: 'compact',
+				contextReason: 'normal',
 				tier: 2,
 			},
 			workspace: 'ws1',
@@ -156,6 +158,7 @@ describe('buildTelemetryRecord', () => {
 			result: {
 				...result,
 				metrics: makeMetrics(),
+				readManifestStatus: 'available',
 				readManifest: {
 					v: 1,
 					persistedPath: '/tmp/read-manifest.json',
@@ -172,6 +175,9 @@ describe('buildTelemetryRecord', () => {
 		expect(record.parentPaneId).toBe('ws1:p0');
 		expect(record.budget?.outcome).toBe('steered');
 		expect(record.reused).toBe(true);
+		expect(record.contextMode).toBe('compact');
+		expect(record.contextReason).toBe('normal');
 		expect(record.readManifest?.persistedPath).toBe('/tmp/read-manifest.json');
+		expect(record.readManifestStatus).toBe('available');
 	});
 });

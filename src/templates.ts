@@ -1,6 +1,8 @@
 import { getConfig, roleBudgetFor } from './config.ts';
 import { ledgerShapeBlock } from './ledger.ts';
+import type { LedgerPointer } from './ledger.ts';
 import { compositionToolSummary } from './types.ts';
+import type { ContextPolicy, DelegationContext, ReadManifest, RunSummary } from './types.ts';
 
 export const REUSE_WORKFLOW_GUIDANCE =
 	'For safe reuse, first call subagent with listSubagents: true, select an exact active-session entry, copy its bare reuseLabel, call subagent_stats with that label, and reuse only when the stats and task history show it is appropriate. Reuse is for same-role worker continuation and narrowly scoped remediation; prefer fresh sessions for planning, scouting, review, validation, security, audit, changed scope, or independent reasoning. Start fresh for high context, many turns, repeated reuse, mismatched task history, changed evidence, or when independence is required. Never infer or increment labels, use labels from another workspace, or pass workspace:label to reuseLabel or subagent_stats.';
@@ -83,6 +85,126 @@ export interface AgentTemplate {
 	body: string;
 }
 
+/** Shared static policy installed in every role prompt; the launch adds the selected mode. */
+export const CONTEXT_POLICY_GUIDANCE = `## Context policy
+
+Normal planner, worker, reviewer, validator, and scout handoffs use compact current context. Do not preload the full historical ledger, prior reports, or a reused session's old prompt before discovery. The handoff preserves the current task, stable AC-### and F-### identities, scope, evidence state, ledger/read-manifest pointers, and final-state validation requirements.
+
+Bounded recovery is allowed only for a named stale, rejected, ambiguous, or otherwise required evidence gap. Make at most one bounded ledger/manifest reacquisition for that gap; failed or stale evidence remains NOT_RUN. Full history is never implicit: use it only when the handoff explicitly selects full context for audit, integration, or recovery. This policy is refreshed for every fresh launch, reuse turn, remediation turn, validator handoff, and pane recreation.`;
+
+function contextFindingIds(task: string, criteria: string[] | undefined): string[] {
+	const text = [task, ...(criteria ?? [])].join(' ');
+	return [...new Set(text.match(/\bF-\d+\b/g) ?? [])];
+}
+
+function compactItems(items: string[] | undefined, empty = 'none'): string {
+	if (!items?.length) return empty;
+	// Every caller supplies data bounded by its input contract (scope/manifest limits). Do not
+	// summarize these values: paths and evidence pointers are safety boundaries, not decoration.
+	return items.join(', ');
+}
+
+function knownRefItem(ref: NonNullable<ReadManifest['knownRefs']>[number]): string {
+	const label = `${ref.ref}${ref.verdict ? ` (${ref.verdict})` : ''}`;
+	// Keep the readable prefix for operators while retaining every structured field losslessly.
+	return `${label} ${JSON.stringify(ref)}`;
+}
+
+function validationHandoffLines(
+	delegation: DelegationContext,
+	priorRun: RunSummary | undefined,
+): string[] {
+	const budget = roleBudgetFor(delegation.role);
+	const refs = priorRun?.validationRefs?.length
+		? priorRun.validationRefs
+				.map(
+					(ref) =>
+						`${ref.ref}:${ref.lookup ? 'resolved' : 'executed'}:${ref.verdict ?? 'unknown'}${ref.finalState ? ':final-state' : ''}`,
+				)
+				.join(', ')
+		: 'none';
+	const executions = priorRun?.validationExecutions?.length
+		? priorRun.validationExecutions
+				.map(
+					(execution) =>
+						`${execution.tool}:${execution.ref ?? execution.commandId ?? 'unknown'}:${execution.decision ?? 'unknown'}${execution.stateDrift ? ':state-drift' : ''}`,
+				)
+				.join(', ')
+		: 'none';
+	const lookupFailures = priorRun?.lookupFailures?.length ?? 0;
+	const priorBudget = priorRun?.budget;
+	return [
+		`Validation policy: full validation passes=${budget.fullValidationPasses}; final-state evidence is required after the last accepted implementation change; stale, failed, rejected, or missing evidence remains NOT_RUN.`,
+		`Finalization policy: reserved tool calls=${budget.finalizationReserveCalls ?? 0}; reserved validation passes=${budget.finalizationReserveValidationPasses ?? 0}; later implementation writes after final validation require a fresh remediation attempt.`,
+		`Validation summary (last turn): ${priorRun ? `passes=${priorRun.fullValidationPasses ?? 0}; refs=${refs}; executions=${executions}; lookupFailures=${lookupFailures}` : 'no prior turn executed for this fresh handoff.'}`,
+		`Finalization summary (last turn): ${priorBudget ? `phase=${priorBudget.phase ?? 'unknown'}; ready=${priorBudget.finalizationReady === true}; finalStateValidation=${priorBudget.finalStateValidation === true}; outcome=${priorBudget.outcome}; cause=${priorBudget.cause ?? 'none'}; toolCalls=${priorBudget.usage.toolCalls}/${priorBudget.limits.toolCalls}; validationPasses=${priorBudget.usage.fullValidationPasses}/${priorBudget.limits.fullValidationPasses}` : 'no prior turn executed for this fresh handoff.'}`,
+	];
+}
+
+/** Compact handoff metadata shared by fresh prompts, reuse turns, and recreated panes. */
+export function contextHandoffBlock(values: {
+	policy: ContextPolicy;
+	task: string;
+	delegation: DelegationContext;
+	ledger?: LedgerPointer;
+	manifest?: ReadManifest;
+	priorRun?: RunSummary;
+}): string {
+	const { delegation, manifest, policy } = values;
+	const criteria = delegation.acceptanceCriteria;
+	const findings = contextFindingIds(values.task, criteria);
+	const scope = delegation.scope;
+	const knownRefs = manifest?.knownRefs?.map(knownRefItem) ?? [];
+	const reports = manifest?.priorReports ?? [];
+	const lines = [
+		'## Current orchestration context',
+		'## Authoritative current handoff',
+		'This current handoff supersedes any frozen prior session system prompt, scope, context, task, evidence pointers, and policy. Use the complete current scope and policy below for this turn; prior session context is historical only.',
+		`Context mode: ${policy.mode} (${policy.reason}); refreshed for this handoff.`,
+		`Role: ${delegation.role}`,
+		`Selected workflow tier: ${delegation.tier ?? 'none supplied'}`,
+		`Task ID: ${delegation.taskId ?? 'none supplied'}`,
+		`Workflow mode: ${delegation.workflowMode ?? 'initial'}`,
+		`Review mode: ${delegation.reviewMode ?? 'primary'}`,
+		`Acceptance criteria: ${compactItems(criteria)}`,
+		`Finding IDs: ${compactItems(findings, 'preserve supplied IDs from the task/ledger; none explicitly listed')}`,
+		`Shared review surface snapshot: ${delegation.reviewSurfacePath ?? 'none'}`,
+		`Review surface revision: ${delegation.reviewSurfaceRevision ?? 'none'}${delegation.reviewSurfaceRefreshed ? ' (refreshed)' : ''}`,
+		`Dirty paths at snapshot: ${compactItems(delegation.dirtyPaths)}`,
+		`In-scope paths: ${compactItems(scope?.paths)}`,
+		`Assigned hunks: ${compactItems(scope?.hunks)}`,
+		`Out of scope: ${compactItems(scope?.outOfScope)}`,
+		`Evidence scope: ${delegation.evidenceScope}`,
+		`Ledger pointer: ${values.ledger ? `${values.ledger.path}@${values.ledger.revision}` : 'none supplied'}`,
+		`Read-manifest pointer: ${manifest?.manifestPath ?? 'none supplied'}`,
+		`Persisted read-manifest pointer: ${manifest?.persistedPath ?? 'none supplied'}`,
+		`Manifest artifacts: ${compactItems(manifest?.artifactPaths)}`,
+		`Manifest dirty paths: ${compactItems(manifest?.dirtyPaths)}`,
+		`Allowed path boundary: ${compactItems(manifest?.allowedPaths)}`,
+		`Prior role reports: ${reports.length ? `${reports.length} available (${compactItems(reports)})` : 'none recorded'}`,
+		`Established evidence: ${compactItems(manifest?.establishedEvidence)}`,
+		`Do not reread: ${compactItems(manifest?.doNotReread)}`,
+		`Known evidence refs: ${compactItems(knownRefs)}`,
+		'Final-state validation: the edit-owning worker mints one composite verify ref after the last implementation change; consumers resolve same-state evidence, and stale, failed, rejected, or missing evidence is NOT_RUN.',
+		...validationHandoffLines(delegation, values.priorRun),
+		'Current task follows below. Preserve all supplied AC-###, F-###, scope, evidence, and final-validation identities; do not invent or renumber them.',
+	];
+	if (policy.mode === 'compact') {
+		lines.push(
+			'Use bounded ledger/manifest recovery only if a named evidence gap requires it; otherwise continue discovery without historical preload.',
+		);
+	} else if (policy.mode === 'bounded-recovery') {
+		lines.push(
+			'Start compact. For a named stale, rejected, ambiguous, or required evidence gap, make one bounded ledger/manifest reacquisition and record one NOT_RUN marker on failure.',
+		);
+	} else {
+		lines.push(
+			'Full context is explicitly authorized for this audit, integration, or recovery handoff; keep reads bounded to the supplied ledger/manifest paths.',
+		);
+	}
+	return lines.join('\n');
+}
+
 const WORKFLOW_CLASSIFICATION_GUIDANCE = `## Workflow classification
 
 The main session supplies the workflow classification. Preserve these fields in your report:
@@ -98,15 +220,17 @@ The main session supplies the workflow classification. Preserve these fields in 
 Do not lower the selected tier. Report an escalation request if the discovered risk,
 uncertainty, impact, or validation requirements exceed it.
 
+${CONTEXT_POLICY_GUIDANCE}
+
 ## Orchestration ledger
 
-The delegating session supplies the current flow ledger through the pointer in the appended system prompt on a fresh launch or in the task prefix on a reuse turn. Read the ledger at the pointer you were given with the \`read\` tool before your first substantive action. It is the source of truth for the current task, acceptance criteria, scope, evidence, and prior verdicts. Do not expect the task text to contain the full ledger or reconstruct its state from memory. If no pointer is supplied, report that the ledger context is unavailable rather than inventing prior state.
+The delegating session supplies a refreshed ledger pointer and compact current context on fresh launches and reuse turns. The compact context is authoritative for normal discovery; do not preload the historical ledger or prior reports. Use the bounded ledger path only for a named stale, rejected, ambiguous, or otherwise required evidence gap, or when the handoff explicitly selects full audit, integration, or recovery context. If no pointer is supplied, report that the ledger context is unavailable rather than inventing prior state.
 
-The ledger is append-only and parent-owned. Never write to it. Preserve the current task and criterion identities from the ledger, and record any unresolved evidence gap or transition in your own response.
+The ledger is append-only and parent-owned. Never write to it. Preserve the current task and criterion identities from the compact context and ledger, and record any unresolved evidence gap or transition in your own response.
 
 ## Read manifest
 
-When the child receives a read-manifest path, read that bounded manifest before reacquiring repository context. Use its artifact paths, prior reports, and established evidence instead of rebuilding shared context. Treat its do-not-reread list as already established evidence; make an additional read only for a named evidence gap and state that gap in the report. If no manifest is supplied, report that the manifest context is unavailable rather than inventing its contents.
+When the child receives a read-manifest path, treat it as a bounded pointer rather than a mandatory preload. Use its artifact paths, allowed-path boundary, prior reports, known refs, and established evidence only for the named recovery or explicit full-context purpose. Treat its do-not-reread list as established evidence; make one bounded reacquisition for a rejected or stale ref/path batch, then record NOT_RUN on failure. If no manifest is supplied, report that the manifest context is unavailable rather than inventing its contents.
 
 Your response must include one fenced machine-readable ledger block using this shape. This block is your contribution to the parent, which folds it into a new flow-ledger revision; it does not replace reading the flow ledger. Do not omit fields; use none, [], or {} when a field has no applicable value.
 
@@ -688,7 +812,7 @@ In initial mode:
 
 Use remediation after a reviewer returns FAIL.
 
-Read the structured finding ledger from the pointer supplied by the delegating session. Preserve its stable finding IDs during remediation.
+If (and only if) the current handoff names a stale, rejected, ambiguous, or otherwise required evidence gap, make one bounded read of the structured finding ledger at the supplied pointer; on rejection or failure, record one explicit \`NOT_RUN\` marker naming that gap and reacquire only the required source paths once. Otherwise do not read the historical finding ledger before discovery. Preserve its stable finding IDs during remediation.
 
 In remediation mode:
 

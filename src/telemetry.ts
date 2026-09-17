@@ -97,11 +97,16 @@ export function buildTelemetryRecord(input: TelemetryInput, now = Date.now()): T
 		record.reviewSurfaceRefreshed = delegation.reviewSurfaceRefreshed;
 	if (delegation.dirtyPaths?.length) record.dirtyPaths = delegation.dirtyPaths;
 	if (result.readManifest) record.readManifest = result.readManifest;
+	if (result.readManifestStatus) record.readManifestStatus = result.readManifestStatus;
 	if (result.model) record.childModel = result.model;
 	if (result.stopReason) record.stopReason = result.stopReason;
 	if (input.sessionFile) record.sessionFile = input.sessionFile;
 	if (input.ledger?.revision !== undefined) record.ledgerRevision = input.ledger.revision;
 	if (input.ledger?.injection) record.ledgerInjection = input.ledger.injection;
+	if (input.ledger?.contextMode ?? delegation.contextMode)
+		record.contextMode = input.ledger?.contextMode ?? delegation.contextMode;
+	if (input.ledger?.contextReason ?? delegation.contextReason)
+		record.contextReason = input.ledger?.contextReason ?? delegation.contextReason;
 	if (result.budget) record.budget = result.budget;
 	if (input.s4Outcome) {
 		// Keep ordinary child event semantics additive: S4 quality is nested on the
@@ -112,6 +117,8 @@ export function buildTelemetryRecord(input: TelemetryInput, now = Date.now()): T
 	const report = input.report;
 	if (report) {
 		const summary: ReportSummary = {
+			...(delegation.contextMode ? { contextMode: delegation.contextMode } : {}),
+			...(delegation.contextReason ? { contextReason: delegation.contextReason } : {}),
 			tokens: report.tokens,
 			digestTokens: report.digestTokens,
 			truncated: report.truncated,
@@ -119,6 +126,7 @@ export function buildTelemetryRecord(input: TelemetryInput, now = Date.now()): T
 			filesReviewedPresent: report.filesReviewedPresent,
 			filesReviewed: report.filesReviewed,
 			contractIssues: report.contractIssues,
+			readManifestStatus: report.readManifestStatus,
 		};
 		if (report.path) summary.path = report.path;
 		record.report = summary;

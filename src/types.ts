@@ -273,6 +273,58 @@ export type WorkflowMode = 'initial' | 'remediation';
 
 export type ReviewMode = 'primary' | 'security' | 'validation' | 'remediation';
 
+/** Normal handoffs carry identifiers and pointers; history is reacquired only when required. */
+export type ContextMode = 'compact' | 'bounded-recovery' | 'full';
+
+/** Full context is an explicit exception reserved for these bounded purposes. */
+export type ContextReason =
+	| 'normal'
+	| 'remediation'
+	| 'stale-evidence'
+	| 'rejected-evidence'
+	| 'ambiguous-evidence'
+	| 'required-evidence'
+	| 'audit'
+	| 'integration'
+	| 'recovery';
+
+export interface ContextPolicy {
+	mode: ContextMode;
+	reason: ContextReason;
+	/** Normal discovery must not preload the historical ledger or prior reports. */
+	preloadHistory: boolean;
+	/** Ledger/manifest reads are permitted only for a named evidence or audit need. */
+	allowBoundedRecovery: boolean;
+}
+
+/**
+ * Resolves one policy for both fresh launches and reuse turns. Invalid requests for full context
+ * fail closed to the normal or remediation policy; full history is never an implicit role behavior.
+ */
+export function contextPolicyFor(input: {
+	role?: string;
+	workflowMode?: WorkflowMode;
+	reviewMode?: ReviewMode;
+	contextMode?: ContextMode;
+	contextReason?: ContextReason;
+}): ContextPolicy {
+	const remediation = input.workflowMode === 'remediation' || input.reviewMode === 'remediation';
+	const fallbackMode: ContextMode = remediation ? 'bounded-recovery' : 'compact';
+	const fallbackReason: ContextReason = remediation ? 'remediation' : 'normal';
+	const requestedReason = input.contextReason ?? fallbackReason;
+	const fullReason = ['audit', 'integration', 'recovery'].includes(requestedReason);
+	const requestedMode = input.contextMode;
+	const mode =
+		requestedMode === 'full' && !fullReason ? fallbackMode : (requestedMode ?? fallbackMode);
+	const effectiveMode = mode === 'full' && fullReason ? 'full' : mode;
+	return {
+		mode: effectiveMode,
+		reason: requestedMode === 'full' && !fullReason ? fallbackReason : requestedReason,
+		preloadHistory: effectiveMode === 'full',
+		allowBoundedRecovery: true,
+	};
+}
+
 /**
  * How a ledger pointer reached a child: in the launch-time system prompt, in the task text of a
  * reuse turn, or not at all (no flow, or pointers disabled).
@@ -283,6 +335,8 @@ export type LedgerInjection = 'prefix' | 'turn' | 'none';
 export interface LedgerRunInfo {
 	revision?: number;
 	injection?: LedgerInjection;
+	contextMode?: ContextMode;
+	contextReason?: ContextReason;
 }
 
 export interface ReviewScope {
@@ -306,6 +360,9 @@ export interface ReadManifest {
 	/** Structured refs minted or resolved by prior turns in this flow. Resolution hints, not verdicts: each must still be confirmed by a lookup. */
 	knownRefs?: KnownManifestRef[];
 }
+
+/** Bounded outcome of the per-turn read-manifest handoff. */
+export type ReadManifestStatus = 'available' | 'failed' | 'not_run';
 
 /** Vocabulary of refs observed in a flow's predigest namespace. */
 export type ManifestRefKind = 'verify' | 'read';
@@ -354,6 +411,9 @@ export interface OrchestrationContext {
 	compositionVerdicts?: CompositionVerdict[];
 	/** Files and hunks assigned to this delegation for focused review. */
 	scope?: ReviewScope;
+	/** Refreshed prompt context policy shared by fresh launches and reuse turns. */
+	contextMode?: ContextMode;
+	contextReason?: ContextReason;
 	/** Flow-owned snapshot of the review surface. */
 	reviewSurfacePath?: string;
 	/** Monotonic revision of the flow-owned review surface snapshot. */
@@ -395,6 +455,9 @@ export interface RunSummary {
 	report?: ReportSummary;
 	/** Ledger revision written for this turn, and how the pointer reached the child. */
 	ledgerRevision?: number;
+	/** Prompt context policy used for this turn. */
+	contextMode?: ContextMode;
+	contextReason?: ContextReason;
 	/** Validation refs minted or resolved during this turn. */
 	validationRefs?: ValidationReference[];
 	/** Failed validation-evidence lookups during this turn. */
@@ -409,11 +472,15 @@ export interface RunSummary {
 	reviewSurfaceHead?: string;
 	dirtyPaths?: string[];
 	readManifest?: ReadManifest;
+	readManifestStatus?: ReadManifestStatus;
 	budget?: BudgetSummary;
 }
 
 /** Measured size and provenance of a child report handed back to the parent. */
 export interface ReportSummary {
+	/** Prompt context policy used to produce this report. */
+	contextMode?: ContextMode;
+	contextReason?: ContextReason;
 	/** Estimated tokens of the full child report. */
 	tokens: number;
 	/** Estimated tokens of the digest actually delivered to the parent. */
@@ -426,6 +493,8 @@ export interface ReportSummary {
 	filesReviewed?: string[];
 	/** Report-contract violations detected while compressing the report. */
 	contractIssues?: string[];
+	/** Outcome of the read-manifest handoff for the reported turn. */
+	readManifestStatus?: ReadManifestStatus;
 	path?: string;
 }
 
@@ -467,6 +536,9 @@ export interface RegistryEntry {
 	reviewMode?: ReviewMode;
 	acceptanceCriteria?: string[];
 	taskId?: string;
+	/** Refreshed context policy persisted with the session so reuse cannot inherit stale guidance. */
+	contextMode?: ContextMode;
+	contextReason?: ContextReason;
 	evidenceScope?: EvidenceScope;
 	scope?: ReviewScope;
 	reviewSurfacePath?: string;
@@ -475,6 +547,7 @@ export interface RegistryEntry {
 	reviewSurfaceHead?: string;
 	dirtyPaths?: string[];
 	readManifest?: ReadManifest;
+	readManifestStatus?: ReadManifestStatus;
 	/**
 	 * Ledger revision this session was launched against. A reuse turn whose ledger head has advanced
 	 * past it gets a fresh pointer in its task text, because the appended system prompt is frozen.
@@ -713,6 +786,9 @@ export interface TelemetryRecord {
 	report?: ReportSummary;
 	ledgerRevision?: number;
 	ledgerInjection?: LedgerInjection;
+	/** Prompt context policy recorded for audit and bounded recovery. */
+	contextMode?: ContextMode;
+	contextReason?: ContextReason;
 	scope?: ReviewScope;
 	reviewSurfacePath?: string;
 	reviewSurfaceRevision?: number;
@@ -720,6 +796,7 @@ export interface TelemetryRecord {
 	reviewSurfaceHead?: string;
 	dirtyPaths?: string[];
 	readManifest?: ReadManifest;
+	readManifestStatus?: ReadManifestStatus;
 	budget?: BudgetSummary;
 }
 
@@ -753,6 +830,7 @@ export interface SingleResult {
 	reviewSurfaceHead?: string;
 	dirtyPaths?: string[];
 	readManifest?: ReadManifest;
+	readManifestStatus?: ReadManifestStatus;
 	flowId?: string;
 	tier?: number;
 	workflowMode?: WorkflowMode;
@@ -767,6 +845,9 @@ export interface SingleResult {
 	/** Flow ledger revision written for this turn, and how its pointer reached the child. */
 	ledgerRevision?: number;
 	ledgerInjection?: LedgerInjection;
+	/** Prompt context policy used for this turn. */
+	contextMode?: ContextMode;
+	contextReason?: ContextReason;
 	budget?: BudgetSummary;
 }
 

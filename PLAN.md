@@ -16,8 +16,9 @@ Completed implementation history, review rounds, and superseded plans remain ava
 - The optional S9 consumption of `read_batch` evidence refs and structured producer lookup outcomes is implemented and committed on top of head `dec0dc08`.
 - The T-014 blocked-subagent notification flow is implemented and uncommitted on top of the S9 measurement-semantics fixes.
 - The S10 spawn-boundary item is implemented and review-clean (reviewer-47 remediation pass): subagent spawns whose cwd resolves outside the root session folder are refused before launch, including the reuse pane-recreation path; it shares the same uncommitted tree.
-- The current uncommitted tree carries four workstreams: S4 measurement-semantics fixes, T-014 blocked-subagent reporting, the spawn boundary, and S11 evidence-reacquisition and Tier 2 finalization hardening.
+- The current uncommitted tree carries five workstreams: S4 measurement-semantics fixes, T-014 blocked-subagent reporting, the spawn boundary, S11 evidence-reacquisition and Tier 2 finalization hardening, and S12 compact child-context handoffs.
 - S11 implementation is present in the uncommitted tree. The current `@ztc/bash-tools` 1.1.7 source confirms the `{ ref }` lookup contract and flow publication schema; its fresh-process runtime completion gate remains open.
+- S12 compact child-context handoffs are implemented and review-clean. They reduce unnecessary historical ledger and manifest discovery without changing role budgets, scope enforcement, or producer ownership. The final repository verification passed after the last remediation.
 
 ## S4: decide whether `warn` can become `enforce`
 
@@ -252,6 +253,82 @@ Do not mark this workstream complete until all of the following are true:
 4. A Tier 2 worker has a deterministic path to final tests and reporting after implementation.
 5. Focused tests and the full repository verification suite pass.
 6. The final diff contains no changes to producer-owned stores, installed agent copies, or unrelated application repositories.
+
+## S12: bound initial child context and use compact handoffs
+
+The recent preload investigation found that fresh workers, planners, reviewers, and validators commonly began by reading the full append-only orchestration ledger or its manifest guidance before reading task-specific source.
+The opening task prompts were narrow, but the first repository actions were often broad historical reads.
+The ledger and manifest provide valuable provenance and scope safety, so this workstream must reduce unnecessary preload rather than remove those artifacts.
+This workstream belongs in `subagent-herdr`; it does not require changes to `@ztc/bash-tools`.
+
+### S12 acceptance criteria
+
+- **S12-001:** Normal worker, planner, reviewer, validator, and scout handoffs provide a compact current context and do not instruct the child to read the full historical ledger before task-specific discovery.
+- **S12-002:** The append-only ledger, read manifest, allowed-path boundary, report paths, known evidence refs, and workflow mode remain available for audit or bounded recovery.
+- **S12-003:** Validator and remediation guidance permits bounded ledger or manifest reacquisition only when evidence is stale, rejected, ambiguous, or otherwise required by the task.
+- **S12-004:** Fresh and reused sessions receive the same context policy, without inheriting stale prompt instructions from an earlier task.
+- **S12-005:** Compact handoffs preserve the current task, acceptance criteria, finding IDs, scope, out-of-scope paths, evidence state, and final-state validation requirements.
+- **S12-006:** Tests verify the prompt policy and preserve scope, manifest, ledger, evidence, and finalization behavior.
+- **S12-007:** Telemetry or reports identify whether a delegation used compact, bounded-recovery, or full-context guidance, without changing call or validation budgets.
+
+### S12 scope and ownership
+
+In scope:
+
+- `src/run.ts` for fresh and reused child prompt assembly and launch handoffs.
+- `src/ledger.ts` for bounded ledger guidance and current-revision handoff data.
+- `src/manifest.ts` for compact manifest summaries and recovery-only manifest guidance.
+- `src/templates.ts` and `src/orchestration-guide.md` for role-specific context policy and generated child instructions.
+- `src/types.ts` or related internal types if the context policy needs an explicit typed representation.
+- Relevant tests under `test/`, plus focused documentation describing the handoff policy.
+
+Out of scope:
+
+- `@ztc/bash-tools` producer behavior, schemas, evidence stores, and lookup contracts.
+- Removing the append-only ledger or the read manifest.
+- Weakening filesystem policy, scope enforcement, manifest publication safety, or finalization protection.
+- Increasing worker, planner, reviewer, scout, or validator budgets.
+- Changes to `indicatori` or any other application repository.
+- Manual edits to installed agent copies or generated files under `~/.pi/agent/agents/`.
+
+### S12 implementation sequence
+
+1. Record the current prompt assembly for fresh and reused sessions.
+   Identify which role and workflow fields are already present in the compact task handoff and which are supplied only through ledger or manifest guidance.
+2. Define an internal context policy with at least `compact`, `bounded-recovery`, and `full` modes.
+   Use `compact` for ordinary role dispatch, `bounded-recovery` for stale or ambiguous evidence recovery, and `full` only for an explicitly justified audit or integration task.
+3. Update `writeAgentTempFiles`, `ledgerPrefixBlock`, `manifestGuidance`, and the related prompt assembly so ordinary children receive current dispatch data without a full-ledger preload instruction.
+   Keep report paths, known refs, scope paths, out-of-scope paths, workflow mode, and finalization requirements explicit.
+4. Update `src/orchestration-guide.md` and the source templates so the generic guidance agrees with the context policy.
+   State that a failed evidence lookup is `NOT_RUN` and that source reacquisition is bounded, without requiring a historical ledger reread first.
+5. Apply the same policy to `launchFreshAgent`, `runReusedAgent`, and any pane-recreation or remediation handoff path.
+   A reused session must receive a fresh task handoff and must not rely on instructions from its previous task.
+6. Add bounded current-revision or current-tail recovery guidance for validators and remediation workers.
+   Do not expose a producer-store fallback or require children to enumerate flow directories.
+7. Add compact context telemetry to the delegation record or report.
+   Record the selected context mode and, where the existing session tail supports it, whether the first discovery action was in scope.
+8. Run focused prompt, ledger, manifest, scope, and launch-path tests, then run the repository verification suite.
+   Compare post-change useful-work telemetry before considering any future budget adjustment.
+
+### S12 test matrix
+
+- `test/templates.test.ts`: ordinary roles receive compact handoff guidance, stale evidence gets one bounded recovery path, and no normal role is told to read the full historical ledger first.
+- `test/ledger.test.ts`: current-revision and bounded-tail guidance preserves ledger provenance and does not alter append-only serialization.
+- Manifest and scope tests: compact summaries retain allowed paths, out-of-scope paths, known refs, publication provenance, and ambiguity checks.
+- Launch and reuse tests: fresh, reused, remediation, validator, and pane-recreation paths select the intended context mode and refresh the task handoff.
+- Report or telemetry tests: context mode and any available first-discovery classification are bounded, stable, and separate from tool-call and validation budgets.
+- Regression coverage: failed, stale, unauthorized, and cross-flow evidence lookups remain `NOT_RUN`, and final-state validation requirements remain unchanged.
+
+### S12 completion gate
+
+Do not mark this workstream complete until all of the following are true:
+
+1. Ordinary child handoffs no longer require a full historical ledger read before task-specific discovery.
+2. Scope, manifest, report, evidence, and finalization safety boundaries remain intact.
+3. Fresh and reused sessions use the same compact-context policy and do not inherit stale instructions.
+4. Bounded recovery remains available for stale, rejected, ambiguous, or cross-flow evidence.
+5. Focused tests and the full repository verification suite pass.
+6. Post-change telemetry shows the context policy without justifying a budget increase from this sample alone.
 
 ## Invariants
 

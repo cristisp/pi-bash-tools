@@ -81,11 +81,13 @@ A fresh delegation receives a persistent label such as `worker-1` and a session 
 The label counter is persistent per herdr workspace and agent name.
 The extension creates a herdr tab, starts Pi with the child task and agent system prompt, and polls the child until it settles.
 
-The task carries the assigned paths, hunks, out-of-scope areas, review-surface pointer, read-manifest pointer, and the ledger pointer when those artifacts exist.
+The task carries the assigned paths, hunks, out-of-scope areas, review-surface pointer, read-manifest pointer, ledger pointer, current context mode, evidence state, and final-state validation requirements when those artifacts exist.
 The child also receives orchestration environment variables for its delegation id, flow, role, tier, mode, task id, review mode, criteria, evidence scope, root session, parent pane, and scope size.
 
-A fresh child reads the ledger and manifest before substantive work.
-A reused child receives a one-line ledger pointer in the new task when the ledger advanced after launch because its system prompt is frozen.
+A fresh child receives a compact current handoff and treats the ledger and manifest as bounded recovery pointers rather than mandatory historical preloads.
+A reused child receives the same refreshed current handoff, including an authoritative scope and policy that supersede the frozen launch prompt.
+Bounded recovery is limited to one named stale, rejected, ambiguous, or otherwise required evidence gap; failed or stale evidence remains `NOT_RUN`.
+Full context is explicit and reserved for audit, integration, or recovery handoffs.
 The child emits one compact fenced ledger block in its final response.
 The extension owns the flow ledger and folds selected child fields into the result revision.
 

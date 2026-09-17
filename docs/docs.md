@@ -20,9 +20,10 @@ It covers setup, delegation, handoffs, persistent artifacts, validation evidence
 4. Discover an exact agent name with `subagent({"agents": true})` when needed.
 5. Delegate with `subagent` using exactly one mode: single, parallel, chain, reuse, list, or agents.
 6. Let the extension preflight composition rules, create the flow artifacts, and launch a child Pi session in a herdr tab.
-7. The child reads its ledger pointer and read manifest, performs only its assigned work, and returns a structured report.
+7. The child receives a compact current handoff with ledger and read-manifest pointers, performs only its assigned work, and returns a structured report.
+   Ordinary discovery does not preload the historical ledger or manifest; a named stale, rejected, ambiguous, or otherwise required evidence gap permits one bounded recovery attempt.
 8. The parent receives a bounded digest and paths to durable artifacts, while the full report remains in the flow store and metrics remain in the registry and telemetry log.
-9. The next role consumes the ledger, reports, review surface, and validation references instead of rebuilding context or repeating covered checks.
+9. The next role consumes the refreshed handoff together with the ledger, reports, review surface, and validation references instead of rebuilding context or repeating covered checks.
 10. Reuse or remediate only when the workflow calls for it, then close the linked tabs when the user asks.
 
 A documentation-only task is Tier 0 and does not require a subagent.

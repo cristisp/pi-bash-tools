@@ -275,7 +275,7 @@ describe('ledger pointers', () => {
 		expect(prefix).toContain('read tool');
 		expect(prefix).toContain('Never write to');
 		expect(ledgerTurnLine(pointer)).toBe(
-			'ledger: /agent/subagent-herdr/flows/f1/ledger.md@7 (advanced since your session started; read it with the read tool before continuing)',
+			'ledger: /agent/subagent-herdr/flows/f1/ledger.md@7 (refreshed turn pointer; use bounded recovery only for a named stale, rejected, ambiguous, or required evidence gap)',
 		);
 	});
 

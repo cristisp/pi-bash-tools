@@ -18,6 +18,12 @@ Use its artifacts for evidence only: `ENFORCE_CANDIDATE` never changes `composit
 
 Classify the task before delegating, using the smallest workflow that preserves independence and safety. A multi-file task alone does not require a scout. Before the first delegation, record the tier and reason, behavior risk, architecture uncertainty, validation complexity, package/persistence/trust-boundary/public-API crossings, and whether current repository evidence is sufficient. Use **Low** for deterministic local work, known architecture, or one focused check; **Medium** for coordinated files/dependencies/checks; and **High** for release-sensitive behavior, unfamiliar architecture, shared APIs, or integration/security validation.
 
+## Context policy
+
+Normal planner, worker, reviewer, validator, and scout handoffs receive compact current context rather than a mandatory full historical-ledger preload. The refreshed context preserves the current task, stable AC-### and F-### identities, scope and out-of-scope boundaries, evidence state, ledger/read-manifest pointers, allowed paths, report paths, known refs, workflow mode, and final-state validation requirements.
+
+Use bounded ledger/manifest reacquisition only for a named stale, rejected, ambiguous, or otherwise required evidence gap, with one bounded attempt; failed evidence remains `NOT_RUN`. Full history is explicit only for audit, integration, or recovery. Apply the same policy to fresh, reused, remediation, validator, and pane-recreation sessions, and identify the selected context mode in telemetry and reports.
+
 ## Workflow tiers
 
 ### Tier 0 - Direct main-session work
@@ -255,7 +261,7 @@ Call `subagent` with `listSubagents: true`. Copy the bare label from the active 
 
 ## What each task must carry
 
-The main session passes compact structured context between agents, never a full conversation transcript. Every task carries the original task, the acceptance criteria with stable `AC-###` IDs, the existing user-change constraints, the current orchestration ledger, and its mode: `Workflow mode: initial` or `Workflow mode: remediation` for a worker, and `Review mode: primary`, `security`, or `validation` for a reviewer.
+The main session passes compact structured context between agents, never a full conversation transcript. Every task carries the original task, the acceptance criteria with stable `AC-###` IDs, the existing user-change constraints, refreshed ledger/read-manifest pointers and bounded evidence metadata, and its mode: `Workflow mode: initial` or `Workflow mode: remediation` for a worker, and `Review mode: primary`, `security`, or `validation` for a reviewer. It does not preload the full historical ledger or prior reports unless full context is explicitly selected for audit, integration, or recovery.
 
 In addition:
 

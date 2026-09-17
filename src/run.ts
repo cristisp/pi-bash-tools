@@ -47,6 +47,7 @@ import {
 import { pollSubagent } from './poll.ts';
 import { buildReportDigest, estimateTokens, writeRoleReport } from './report.ts';
 import { budgetSummaryFromMetrics, scopedRoleBudget } from './budget.ts';
+import { contextHandoffBlock } from './templates.ts';
 import { measureExecutionMetrics } from './metrics.ts';
 import {
 	allocateLabel,
@@ -57,15 +58,17 @@ import {
 } from './registry.ts';
 import { sanitizeSegment } from './registry-store.ts';
 import { appendTelemetryRecord, buildTelemetryRecord } from './telemetry.ts';
-import { ABORT_ERROR, makeEmptyUsage } from './types.ts';
+import { ABORT_ERROR, contextPolicyFor, makeEmptyUsage } from './types.ts';
 import type {
 	BlockEventInfo,
 	DelegationContext,
 	OnUpdateCallback,
 	OrchestrationContext,
 	ReadManifest,
+	ReadManifestStatus,
 	RegistryEntry,
 	RoleReport,
+	RunSummary,
 	SingleResult,
 	SubagentDetails,
 } from './types.ts';
@@ -136,13 +139,21 @@ function applyReviewSurface(
 function scopedTask(
 	task: string,
 	delegation: DelegationContext,
+	ledger?: LedgerPointer,
 	readManifest?: ReadManifest,
+	priorRun?: RunSummary,
 ): string {
-	const sections = [
-		delegation.scope || delegation.reviewSurfacePath ? scopeGuidance(delegation) : '',
-		readManifest?.persistedPath ? manifestGuidance(readManifest.persistedPath) : '',
-	].filter(Boolean);
-	return sections.length > 0 ? `${sections.join('\n\n')}\n\n${task}` : task;
+	const policy = contextPolicyFor(delegation);
+	const context = contextHandoffBlock({
+		policy,
+		task,
+		delegation,
+		ledger,
+		manifest: readManifest,
+		priorRun,
+	});
+	const pointerLine = ledger ? `${ledgerTurnLine(ledger)}\n\n` : '';
+	return `${context}\n\nTask:\n${pointerLine}${task}`;
 }
 
 const PRODUCER_ENVIRONMENT_KEYS = [
@@ -316,11 +327,16 @@ function attachRoleReport(
 		requireFilesReviewed: delegation.role === 'reviewer',
 	});
 	const report: RoleReport = {
+		...(delegation.contextMode ? { contextMode: delegation.contextMode } : {}),
+		...(delegation.contextReason ? { contextReason: delegation.contextReason } : {}),
 		digest: built.digest,
 		tokens: estimateTokens(output),
 		digestTokens: built.tokens,
 		truncated: built.truncated,
 		ledgerParsed: built.ledgerParsed,
+		...(currentResult.readManifestStatus
+			? { readManifestStatus: currentResult.readManifestStatus }
+			: {}),
 		...(delegation.role === 'reviewer'
 			? {
 					filesReviewedPresent: built.filesReviewedPresent,
@@ -334,6 +350,7 @@ function attachRoleReport(
 		label: label || delegation.role,
 		delegation,
 		readManifest: currentResult.readManifest,
+		readManifestStatus: currentResult.readManifestStatus,
 		output,
 	});
 	if (reportPath) report.path = reportPath;
@@ -448,6 +465,8 @@ function emitDelegationTelemetry(
 			ledger: {
 				revision: currentResult.ledgerRevision,
 				injection: currentResult.ledgerInjection,
+				contextMode: delegation.contextMode,
+				contextReason: delegation.contextReason,
 			},
 			s4Outcome,
 		}),
@@ -462,19 +481,25 @@ function emitDelegationTelemetry(
 			{
 				revision: currentResult.ledgerRevision,
 				injection: currentResult.ledgerInjection,
+				contextMode: delegation.contextMode,
+				contextReason: delegation.contextReason,
 			},
 			Date.now(),
 			currentResult.budget,
 		);
 		lastRun.scope = currentResult.scope;
+		lastRun.contextMode = delegation.contextMode;
+		lastRun.contextReason = delegation.contextReason;
 		lastRun.reviewSurfacePath = currentResult.reviewSurfacePath;
 		lastRun.reviewSurfaceRevision = delegation.reviewSurfaceRevision;
 		lastRun.reviewSurfaceRefreshed = delegation.reviewSurfaceRefreshed;
 		lastRun.dirtyPaths = delegation.dirtyPaths;
 		lastRun.readManifest = currentResult.readManifest;
+		lastRun.readManifestStatus = currentResult.readManifestStatus;
 		updateRegistryEntry(context.label, {
 			lastRun,
-			...(currentResult.readManifest ? { readManifest: currentResult.readManifest } : {}),
+			readManifest: currentResult.readManifest,
+			readManifestStatus: currentResult.readManifestStatus,
 		});
 	}
 }
@@ -531,28 +556,36 @@ async function relaunchOrPrompt(
 	task: string,
 	paneId: string,
 	delegation?: DelegationContext,
+	ledger?: LedgerPointer,
+	priorRun?: RunSummary,
 ): Promise<{
 	kind: 'relaunch' | 'prompt';
 	error: string;
+	manifestStatus: ReadManifestStatus;
 	tmp: AgentTempFiles | null;
 } | null> {
 	const { status } = await getAgentStatus(paneId);
 	if (status === 'no-agent') {
-		if (!agent) return { kind: 'relaunch', error: 'no agent', tmp: null };
+		if (!agent)
+			return { kind: 'relaunch', error: 'no agent', manifestStatus: 'not_run', tmp: null };
 		const taskTmp = await writePromptToTempFile(entry.agent, `Task: ${task}`);
 		let manifestPath: string | null = null;
 		let readManifest: ReadManifest | undefined;
+		let manifestStatus: ReadManifestStatus = delegation ? 'failed' : 'not_run';
 		if (delegation) {
 			try {
 				const manifest = await writeReadManifest(taskTmp.dir, delegation);
 				manifestPath = manifest.path;
 				readManifest = manifest.manifest;
-				await fs.promises.writeFile(
-					taskTmp.filePath,
-					`Task: ${task}\n\n${manifestGuidance(manifest.path)}`,
-					'utf8',
-				);
-			} catch {}
+				manifestStatus = 'available';
+			} catch {
+				manifestStatus = 'failed';
+			}
+			await fs.promises.writeFile(
+				taskTmp.filePath,
+				scopedTask(task, delegation, ledger, readManifest, priorRun),
+				'utf8',
+			);
 		}
 		const command = buildLaunchCommand(
 			agent,
@@ -571,16 +604,19 @@ async function relaunchOrPrompt(
 			taskPath: taskTmp.filePath,
 			manifestPath,
 			readManifest,
+			readManifestStatus: manifestStatus,
 		};
-		return { kind: 'relaunch', error: launchError ?? '', tmp };
+		return { kind: 'relaunch', error: launchError ?? '', manifestStatus, tmp };
 	}
 	let promptError = '';
+	let manifestStatus: ReadManifestStatus = delegation ? 'failed' : 'not_run';
 	let manifestTmp: AgentTempFiles | null = null;
-	if (delegation?.scope) {
+	if (delegation) {
 		let tmp: { dir: string; filePath: string } | null = null;
 		try {
 			tmp = await writePromptToTempFile(entry.agent, 'read manifest follows');
 			const manifest = await writeReadManifest(tmp.dir, delegation);
+			manifestStatus = 'available';
 			manifestTmp = {
 				promptDir: null,
 				promptPath: null,
@@ -588,26 +624,28 @@ async function relaunchOrPrompt(
 				taskPath: tmp.filePath,
 				manifestPath: manifest.path,
 				readManifest: manifest.manifest,
+				readManifestStatus: manifestStatus,
 			};
 		} catch {
+			manifestStatus = 'failed';
 			if (tmp) removeTempFiles(tmp.dir, tmp.filePath);
 		}
 	}
-	const promptTask = manifestTmp?.manifestPath
-		? `${task}\n\n${manifestGuidance(manifestTmp.manifestPath)}`
+	const promptTask = delegation
+		? scopedTask(task, delegation, ledger, manifestTmp?.readManifest, priorRun)
 		: task;
 	for (let attempt = 0; attempt < 3; attempt++) {
 		try {
 			const resp = await herdrCli(['agent', 'prompt', paneId, promptTask]);
 			const code = herdrErrorCode(resp);
-			if (!code) return { kind: 'prompt', error: '', tmp: manifestTmp };
+			if (!code) return { kind: 'prompt', error: '', manifestStatus, tmp: manifestTmp };
 			promptError = herdrErrorText(resp) || code;
 		} catch (err) {
 			promptError = (err as Error).message;
 		}
 		if (attempt < 2) await sleep(1000);
 	}
-	return { kind: 'prompt', error: promptError, tmp: manifestTmp };
+	return { kind: 'prompt', error: promptError, manifestStatus, tmp: manifestTmp };
 }
 
 // fallow-ignore-next-line complexity
@@ -618,6 +656,7 @@ interface AgentTempFiles {
 	taskPath: string;
 	manifestPath: string | null;
 	readManifest?: ReadManifest;
+	readManifestStatus?: ReadManifestStatus;
 }
 
 async function writeAgentTempFiles(
@@ -631,12 +670,21 @@ async function writeAgentTempFiles(
 	const taskTmp = await writePromptToTempFile(agent.name, `Task: ${task}`);
 	let manifestPath: string | null = null;
 	let readManifest: ReadManifest | undefined;
+	let manifestStatus: ReadManifestStatus = delegation ? 'failed' : 'not_run';
 	if (delegation) {
 		try {
 			const manifest = await writeReadManifest(taskTmp.dir, delegation);
 			manifestPath = manifest.path;
 			readManifest = manifest.manifest;
-		} catch {}
+			manifestStatus = 'available';
+		} catch {
+			manifestStatus = 'failed';
+		}
+		await fs.promises.writeFile(
+			taskTmp.filePath,
+			scopedTask(task, delegation, ledger, readManifest),
+			'utf8',
+		);
 	}
 	const systemPrompt = [
 		agent.systemPrompt.trim(),
@@ -658,6 +706,7 @@ async function writeAgentTempFiles(
 		taskPath: taskTmp.filePath,
 		manifestPath,
 		readManifest,
+		readManifestStatus: manifestStatus,
 	};
 }
 
@@ -723,6 +772,8 @@ async function createFreshSubagentTab(
 		...(typeof delegation.tier === 'number' ? { tier: delegation.tier } : {}),
 		...(delegation.workflowMode ? { workflowMode: delegation.workflowMode } : {}),
 		...(delegation.reviewMode ? { reviewMode: delegation.reviewMode } : {}),
+		...(delegation.contextMode ? { contextMode: delegation.contextMode } : {}),
+		...(delegation.contextReason ? { contextReason: delegation.contextReason } : {}),
 		...(delegation.acceptanceCriteria?.length
 			? { acceptanceCriteria: delegation.acceptanceCriteria }
 			: {}),
@@ -731,6 +782,7 @@ async function createFreshSubagentTab(
 		scope: delegation.scope,
 		reviewSurfacePath: delegation.reviewSurfacePath,
 		...(currentResult.readManifest ? { readManifest: currentResult.readManifest } : {}),
+		readManifestStatus: currentResult.readManifestStatus,
 		...(ledgerRevisionAtLaunch === undefined ? {} : { ledgerRevisionAtLaunch }),
 	});
 	ensureFlow({ flowId: delegation.flowId, rootSession: delegation.rootSession ?? parentSession });
@@ -799,6 +851,7 @@ async function launchFreshAgent(
 		delegation,
 	);
 	currentResult.readManifest = tmp.readManifest;
+	currentResult.readManifestStatus = tmp.readManifestStatus;
 	const cleanupTmp = (): void => {
 		removeTempFiles(tmp.promptDir, tmp.promptPath);
 		removeTempFiles(tmp.taskDir, tmp.taskPath, tmp.manifestPath);
@@ -887,6 +940,8 @@ function initReusedSession(
 			tier: entry.tier,
 			workflowMode: entry.workflowMode,
 			reviewMode: entry.reviewMode,
+			contextMode: entry.contextMode,
+			contextReason: entry.contextReason,
 			taskId: entry.taskId,
 		},
 	};
@@ -1012,6 +1067,9 @@ export async function runSingleAgent(
 		flowId: process.env[ENV_FLOW],
 		orchestration: childOrchestration,
 	});
+	const contextPolicy = contextPolicyFor({ role: agentName, ...childOrchestration });
+	delegation.contextMode = contextPolicy.mode;
+	delegation.contextReason = contextPolicy.reason;
 	const model =
 		presetModels && Object.hasOwn(presetModels, agentName) ? presetModels[agentName] : undefined;
 
@@ -1028,6 +1086,8 @@ export async function runSingleAgent(
 		...(orchestration?.tier !== undefined ? { tier: orchestration.tier } : {}),
 		...(orchestration?.workflowMode ? { workflowMode: orchestration.workflowMode } : {}),
 		...(orchestration?.reviewMode ? { reviewMode: orchestration.reviewMode } : {}),
+		...(orchestration?.contextMode ? { contextMode: orchestration.contextMode } : {}),
+		...(orchestration?.contextReason ? { contextReason: orchestration.contextReason } : {}),
 		...(orchestration?.taskId ? { taskId: orchestration.taskId } : {}),
 	};
 	currentResult.delegationId = delegation.delegationId;
@@ -1039,6 +1099,8 @@ export async function runSingleAgent(
 	currentResult.tier = delegation.tier;
 	currentResult.workflowMode = delegation.workflowMode;
 	currentResult.reviewMode = delegation.reviewMode;
+	currentResult.contextMode = delegation.contextMode;
+	currentResult.contextReason = delegation.contextReason;
 	currentResult.taskId = delegation.taskId;
 
 	let tabId: string | null = null;
@@ -1069,6 +1131,7 @@ export async function runSingleAgent(
 			taskPath: tab.taskPath,
 			manifestPath: tab.manifestPath,
 			readManifest: tab.readManifest,
+			readManifestStatus: tab.readManifestStatus,
 		};
 
 		await pollAndApply(
@@ -1151,6 +1214,20 @@ export async function runReusedAgent(
 		rootSession: entry.rootSession ?? parentSession,
 		parentPaneId: HERDR_PANE_ID,
 	});
+	const hasNewWorkflow =
+		childOrchestration?.workflowMode !== undefined || childOrchestration?.reviewMode !== undefined;
+	const contextPolicy = contextPolicyFor({
+		role: entry.agent,
+		...childOrchestration,
+		...(!hasNewWorkflow && childOrchestration?.contextMode === undefined && entry.contextMode
+			? { contextMode: entry.contextMode }
+			: {}),
+		...(!hasNewWorkflow && childOrchestration?.contextReason === undefined && entry.contextReason
+			? { contextReason: entry.contextReason }
+			: {}),
+	});
+	delegation.contextMode = contextPolicy.mode;
+	delegation.contextReason = contextPolicy.reason;
 	const surface =
 		orchestration?.reviewSurfaceRevision !== undefined
 			? undefined
@@ -1164,23 +1241,24 @@ export async function runReusedAgent(
 	currentResult.tier = delegation.tier;
 	currentResult.workflowMode = delegation.workflowMode;
 	currentResult.reviewMode = delegation.reviewMode;
+	currentResult.contextMode = delegation.contextMode;
+	currentResult.contextReason = delegation.contextReason;
 	currentResult.taskId = delegation.taskId;
 	const model =
 		presetModels && Object.hasOwn(presetModels, entry.agent)
 			? presetModels[entry.agent]
 			: undefined;
 	currentResult.model = model;
+	// A reuse turn must never carry the prior turn's pointer into its prompt or result.
+	currentResult.readManifest = undefined;
+	currentResult.readManifestStatus = 'not_run';
 
 	let relaunchTmp: AgentTempFiles | null = null;
 	let abortedRun = false;
 
 	try {
 		const dispatch = recordLedgerDispatch(delegation, { reused: true, label });
-		const advanced =
-			!entry.ledgerRevisionAtLaunch || (dispatch?.revision ?? 0) > entry.ledgerRevisionAtLaunch;
-		if (dispatch && advanced) currentResult.ledgerInjection = 'turn';
-		const turnTask = dispatch && advanced ? `${ledgerTurnLine(dispatch)}\n\n${task}` : task;
-		const scopedTurnTask = scopedTask(turnTask, delegation, currentResult.readManifest);
+		if (dispatch) currentResult.ledgerInjection = 'turn';
 		updateRegistryEntry(label, {
 			status: 'running',
 			updatedAt: Date.now(),
@@ -1202,6 +1280,8 @@ export async function runReusedAgent(
 			...(typeof delegation.tier === 'number' ? { tier: delegation.tier } : {}),
 			...(delegation.workflowMode ? { workflowMode: delegation.workflowMode } : {}),
 			...(delegation.reviewMode ? { reviewMode: delegation.reviewMode } : {}),
+			...(delegation.contextMode ? { contextMode: delegation.contextMode } : {}),
+			...(delegation.contextReason ? { contextReason: delegation.contextReason } : {}),
 			...(delegation.acceptanceCriteria?.length
 				? { acceptanceCriteria: delegation.acceptanceCriteria }
 				: {}),
@@ -1209,6 +1289,8 @@ export async function runReusedAgent(
 			evidenceScope: delegation.evidenceScope,
 			scope: delegation.scope,
 			reviewSurfacePath: delegation.reviewSurfacePath,
+			readManifest: undefined,
+			readManifestStatus: currentResult.readManifestStatus,
 			...(delegation.reviewSurfaceRevision !== undefined
 				? { reviewSurfaceRevision: delegation.reviewSurfaceRevision }
 				: {}),
@@ -1237,18 +1319,21 @@ export async function runReusedAgent(
 			model,
 			entry,
 			label,
-			scopedTurnTask,
+			task,
 			paneId,
 			delegation,
+			dispatch,
+			entry.lastRun,
 		);
 		if (!relaunch) throw new Error('relaunchOrPrompt returned no outcome');
 		relaunchTmp = relaunch.tmp;
-		if (relaunch.tmp?.readManifest) currentResult.readManifest = relaunch.tmp.readManifest;
-		if (currentResult.readManifest)
-			updateRegistryEntry(label, {
-				readManifest: currentResult.readManifest,
-				updatedAt: Date.now(),
-			});
+		currentResult.readManifest = relaunch.tmp?.readManifest;
+		currentResult.readManifestStatus = relaunch.manifestStatus;
+		updateRegistryEntry(label, {
+			readManifest: currentResult.readManifest,
+			readManifestStatus: currentResult.readManifestStatus,
+			updatedAt: Date.now(),
+		});
 		if (relaunch.error) {
 			currentResult.exitCode = 1;
 			currentResult.stderr = `Could not ${relaunch.kind} subagent ${label} in pane ${paneId} (${relaunch.error}).`;

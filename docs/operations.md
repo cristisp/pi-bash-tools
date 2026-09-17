@@ -9,7 +9,7 @@ Use the stats and task history to judge context size, turns, reuse count, cost, 
 Prefer a fresh session for planning, scouting, review, validation, security, audit, changed scope, or independent reasoning.
 Start fresh when context is above 100k tokens, the session is above eight turns, reuse is repeated, the task history no longer fits, evidence changed materially, or independence is required.
 Reusing a review or validation session can anchor it on earlier findings.
-A live reused process keeps its launch-time environment and system prompt, although the new turn receives a current ledger pointer when needed.
+A live reused process keeps its launch-time environment and system prompt, so every new turn receives a refreshed authoritative current handoff that supersedes stale task, scope, evidence, and context instructions.
 
 ## Status, steering, and blocking
 

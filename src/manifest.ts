@@ -291,8 +291,9 @@ export async function writeReadManifest(
 export function manifestGuidance(manifestPath: string): string {
 	return [
 		'## Read manifest',
-		`Read the bounded manifest before reacquiring repository context: ${manifestPath}`,
-		'Use its artifact and prior-report references, and avoid reads listed under doNotReread unless required by a documented evidence gap.',
+		`Bounded manifest pointer for this refreshed handoff: ${manifestPath}`,
+		'Normal compact context does not require reading this file before discovery. Read it only when a named stale, rejected, ambiguous, or otherwise required evidence gap needs recovery, or when the policy explicitly requests audit, integration, or recovery context.',
+		'Use its artifact, prior-report, allowed-path, and established-evidence references, and avoid reads listed under doNotReread unless required by that documented gap.',
 		'Refs under knownRefs are resolution hints from prior turns: confirm each by looking it up with its minting tool instead of rereading prior reports for evidence.',
 		'Verify refs (vr_) use the minimal verify lookup { ref }; read refs (rr_) use the minimal read_batch lookup { ref }.',
 		'Do not add optional flowId or covers fields unless the current producer schema is known to support them.',

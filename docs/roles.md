@@ -69,9 +69,10 @@ Every role should pass the smallest complete context to the next role:
 
 - The original task and stable acceptance criteria.
 - The workflow tier, mode, review mode, scope, and out-of-scope areas.
-- The current ledger pointer and any transition reason.
+- The current ledger and read-manifest pointers, selected context mode, and any transition reason.
 - Changed files and relevant tests.
-- Validation references with their covered criteria and freshness.
+- Validation references with their covered criteria and freshness, plus the read-manifest handoff status when it is unavailable.
+- The final-state validation requirement and whether the cited evidence covers the post-edit state.
 - Baseline failures, environment blockers, unresolved questions, and remaining evidence gaps.
 
 The planner receives scout findings when a scout was used.

@@ -47,13 +47,18 @@ Each launch uses temporary task and system-prompt files with restrictive permiss
 A scoped launch also writes a temporary `read-manifest.json`.
 These files are removed after the run, while the flow copy of the manifest and the child session file remain.
 
-A read manifest tells the child:
+A read manifest gives the child bounded recovery and audit context:
 
 - Which flow artifacts are available.
 - Which repository paths are allowed by the delegation scope.
 - Which prior reports and established evidence exist.
+- Which known evidence refs can be confirmed through their minting tools.
 - Which review-surface paths should not be reread unless a named evidence gap requires it.
 - Which dirty paths were present in the review-surface snapshot.
+
+Normal handoffs carry the manifest pointer and a compact summary without requiring the child to preload this file.
+A named stale, rejected, ambiguous, or otherwise required evidence gap permits one bounded manifest or ledger reacquisition.
+Failed or stale evidence remains `NOT_RUN`, and runtime scope and tool permissions remain authoritative.
 
 The manifest is guidance and audit context.
 Runtime scope and tool permissions remain authoritative.
@@ -65,7 +70,8 @@ Runtime scope and tool permissions remain authoritative.
 3. It appends a ledger `dispatch` revision.
 4. It writes the child task, system prompt, and read manifest.
 5. It allocates the label, session file, herdr tab, and registry entry.
-6. The child reads the ledger and manifest, then works in the shared checkout.
+6. The child receives the compact current handoff and works in the shared checkout.
+   It reads the ledger or manifest only for a named bounded recovery, explicit full-context handoff, or required audit task.
 7. On settlement, the extension writes the full role report and computes the bounded digest.
 8. It appends a ledger `result` revision, updates the registry, and writes telemetry.
 9. The parent consumes the digest for immediate routing and reads the report or ledger path for details.
@@ -78,7 +84,7 @@ Reviewer reports also require a `## Files Reviewed` section.
 ## Telemetry
 
 The append-only telemetry file is `~/.pi/agent/subagent-herdr.telemetry.jsonl`.
-It records delegation identity, flow, role, tier, mode, scope, reuse, outcome, usage, budgets, reports, validation references, and wait time.
+It records delegation identity, flow, role, tier, mode, scope, reuse, outcome, usage, budgets, reports, validation references, context mode and reason, read-manifest status, and wait time.
 Separate typed events record composition warnings or refusals, S4 preflights, and correlated child outcomes.
 
 `npm run test:analyze` reads live telemetry and flow stores to generate the measurement report in `analysis/MEASUREMENT.md`.

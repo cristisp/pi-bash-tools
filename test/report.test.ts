@@ -221,6 +221,7 @@ describe('writeRoleReport', () => {
 				establishedEvidence: [],
 				doNotReread: [],
 			},
+			readManifestStatus: 'available',
 			output: LEGGED,
 			now: 1700000000000,
 		});
@@ -232,6 +233,7 @@ describe('writeRoleReport', () => {
 		expect(written).toContain('- scope: {"paths":["src/run.ts"]}');
 		expect(written).toContain('- reviewSurface: /tmp/review-surface.md');
 		expect(written).toContain('- readManifest: /tmp/read-manifest.json');
+		expect(written).toContain('- readManifestStatus: available');
 		expect(written).toContain('workflow_version: 1');
 	});
 

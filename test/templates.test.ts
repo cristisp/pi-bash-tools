@@ -5,12 +5,16 @@ import { registerBudgetEnforcement } from '../src/budget.ts';
 import { registerEntry } from '../src/registry.ts';
 import {
 	AGENT_TEMPLATES,
+	CONTEXT_POLICY_GUIDANCE,
+	contextHandoffBlock,
 	REF_RECOVERY_RULE,
 	renderAgentFile,
 	STALE_REF_RULE,
 } from '../src/templates.ts';
 import { makeRegistryEntry, makeTempDir, stubEnv } from './helpers.ts';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { contextPolicyFor } from '../src/types.ts';
+import type { DelegationContext } from '../src/types.ts';
 
 function section(body: string, heading: string): string {
 	const start = body.indexOf(`${heading}\n\n`);
@@ -19,6 +23,129 @@ function section(body: string, heading: string): string {
 	const next = rest.search(/\n## /);
 	return next === -1 ? rest : rest.slice(0, next);
 }
+
+function boundedItems(prefix: string): string[] {
+	return Array.from({ length: 12 }, (_, index) => `${prefix}-${index}`);
+}
+
+describe('context policy', () => {
+	const delegation: DelegationContext = {
+		delegationId: 'delegation-1',
+		role: 'worker',
+		evidenceScope: 'flow',
+		taskId: 'T-001',
+		workflowMode: 'remediation',
+		acceptanceCriteria: ['AC-001', 'F-001'],
+		scope: { paths: ['src/run.ts'], outOfScope: ['PLAN.md'] },
+	};
+
+	it('defaults normal handoffs to compact and remediation to bounded recovery', () => {
+		expect(contextPolicyFor({ role: 'worker', workflowMode: 'initial' })).toMatchObject({
+			mode: 'compact',
+			reason: 'normal',
+			preloadHistory: false,
+			allowBoundedRecovery: true,
+		});
+		expect(contextPolicyFor({ role: 'validator', workflowMode: 'remediation' }).mode).toBe(
+			'bounded-recovery',
+		);
+	});
+
+	it('fails closed when full context is requested without an explicit purpose', () => {
+		expect(contextPolicyFor({ role: 'reviewer', contextMode: 'full' }).mode).toBe('compact');
+		expect(
+			contextPolicyFor({ role: 'reviewer', contextMode: 'full', contextReason: 'audit' }),
+		).toMatchObject({ mode: 'full', preloadHistory: true });
+	});
+
+	it('renders bounded current context and preserves evidence identifiers', () => {
+		const handoff = contextHandoffBlock({
+			policy: contextPolicyFor(delegation),
+			delegation,
+			task: 'Fix F-001 while satisfying AC-001',
+			ledger: { path: '/flow/ledger.md', revision: 4 },
+			manifest: {
+				v: 1,
+				persistedPath: '/flow/manifest.json',
+				artifactPaths: ['src/run.ts'],
+				allowedPaths: ['src/run.ts'],
+				priorReports: ['/flow/reports/worker.md'],
+				establishedEvidence: ['AC-001'],
+				doNotReread: ['src/types.ts'],
+				knownRefs: [{ ref: 'vr_12345678', reused: false, verdict: 'passed' }],
+			},
+		});
+		expect(handoff).toContain('Context mode: bounded-recovery (remediation)');
+		expect(handoff).toContain('Finding IDs: F-001');
+		expect(handoff).toContain('Allowed path boundary: src/run.ts');
+		expect(handoff).toContain('Known evidence refs: vr_12345678 (passed)');
+		expect(handoff).toContain('one bounded ledger/manifest reacquisition');
+		expect(handoff).toContain('Final-state validation:');
+	});
+
+	it('preserves every bounded scope and evidence item and includes handoff metadata', () => {
+		const paths = boundedItems('scope/path');
+		const hunks = boundedItems('hunk');
+		const outOfScope = boundedItems('out/path');
+		const artifacts = boundedItems('artifact');
+		const allowed = boundedItems('allowed');
+		const reports = boundedItems('report');
+		const evidence = boundedItems('evidence');
+		const manifestDirty = boundedItems('manifest-dirty');
+		const doNotReread = boundedItems('do-not-reread');
+		const refs = boundedItems('vr').map((ref) => ({
+			ref,
+			reused: false,
+			verdict: 'passed' as const,
+		}));
+		const handoff = contextHandoffBlock({
+			policy: contextPolicyFor({ role: 'worker', workflowMode: 'remediation' }),
+			delegation: {
+				...delegation,
+				tier: 2,
+				scope: { paths, hunks, outOfScope },
+			},
+			task: 'Fix F-001',
+			manifest: {
+				v: 1,
+				artifactPaths: artifacts,
+				dirtyPaths: manifestDirty,
+				allowedPaths: allowed,
+				priorReports: reports,
+				establishedEvidence: evidence,
+				doNotReread,
+				knownRefs: refs,
+			},
+		});
+
+		for (const value of [
+			...paths,
+			...hunks,
+			...outOfScope,
+			...artifacts,
+			...manifestDirty,
+			...allowed,
+			...reports,
+			...evidence,
+			...doNotReread,
+		])
+			expect(handoff, `handoff must preserve ${value}`).toContain(value);
+		for (const ref of refs) expect(handoff).toContain(ref.ref);
+		expect(handoff).toContain('Selected workflow tier: 2');
+		expect(handoff).toContain('Validation policy: full validation passes=');
+		expect(handoff).toContain('Finalization policy: reserved tool calls=');
+		expect(handoff).toContain('Validation summary (last turn): no prior turn executed');
+		expect(handoff).toContain('Finalization summary (last turn): no prior turn executed');
+		expect(handoff).toContain('## Authoritative current handoff');
+		expect(handoff).toContain('supersedes any frozen prior session system prompt');
+	});
+
+	it('installs the policy in role prompts', () => {
+		expect(CONTEXT_POLICY_GUIDANCE).toContain('compact current context');
+		expect(CONTEXT_POLICY_GUIDANCE).toContain('failed or stale evidence remains NOT_RUN');
+		expect(CONTEXT_POLICY_GUIDANCE).toContain('pane recreation');
+	});
+});
 
 describe('renderAgentFile', () => {
 	afterEach(() => {
@@ -110,8 +237,11 @@ describe('renderAgentFile', () => {
 			expect(t.body, `${t.name} must carry workflow classification guidance`).toContain(
 				'## Workflow classification',
 			);
-			expect(t.body, `${t.name} must read the supplied ledger pointer`).toContain(
-				'Read the ledger at the pointer you were given',
+			expect(t.body, `${t.name} must explain compact ledger-pointer use`).toContain(
+				'do not preload the historical ledger or prior reports',
+			);
+			expect(t.body, `${t.name} must explain bounded recovery`).toContain(
+				'Use the bounded ledger path only for a named stale, rejected, ambiguous, or otherwise required evidence gap',
 			);
 			expect(t.body, `${t.name} must describe the child ledger contribution`).toContain(
 				'Your response must include one fenced machine-readable ledger block',
@@ -227,9 +357,14 @@ describe('renderAgentFile', () => {
 		expect(worker?.body).toContain(
 			'Increment attempt and record what changed since the previous attempt',
 		);
-		expect(worker?.body).toContain(
+		expect(worker?.body).not.toContain(
 			'Read the structured finding ledger from the pointer supplied by the delegating session',
 		);
+		expect(worker?.body).toContain(
+			'If (and only if) the current handoff names a stale, rejected, ambiguous, or otherwise required evidence gap',
+		);
+		expect(worker?.body).toContain('make one bounded read of the structured finding ledger');
+		expect(worker?.body).toContain('record one explicit `NOT_RUN` marker naming that gap');
 		expect(worker?.body).toContain('Use up to 24 implementation tool calls');
 		expect(worker?.body).toContain(
 			'Mint one `verify` ref for the final repository state after the last implementation change',

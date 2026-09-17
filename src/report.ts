@@ -5,6 +5,7 @@ import type {
 	BudgetSummary,
 	DelegationContext,
 	ReadManifest,
+	ReadManifestStatus,
 	ReportSummary,
 	S4EscalationDirection,
 	S4Lifecycle,
@@ -346,6 +347,7 @@ export interface RoleReportWrite {
 	label: string;
 	delegation: DelegationContext;
 	readManifest?: ReadManifest;
+	readManifestStatus?: ReadManifestStatus;
 	output: string;
 	now?: number;
 }
@@ -366,6 +368,8 @@ export function writeRoleReport(write: RoleReportWrite): string | undefined {
 	if (typeof delegation.tier === 'number') meta.push(`- tier: ${delegation.tier}`);
 	if (delegation.workflowMode) meta.push(`- mode: ${delegation.workflowMode}`);
 	if (delegation.reviewMode) meta.push(`- reviewMode: ${delegation.reviewMode}`);
+	if (delegation.contextMode) meta.push(`- contextMode: ${delegation.contextMode}`);
+	if (delegation.contextReason) meta.push(`- contextReason: ${delegation.contextReason}`);
 	if (delegation.acceptanceCriteria?.length)
 		meta.push(`- criteria: ${delegation.acceptanceCriteria.join(', ')}`);
 	if (delegation.scope) meta.push(`- scope: ${JSON.stringify(delegation.scope)}`);
@@ -374,6 +378,7 @@ export function writeRoleReport(write: RoleReportWrite): string | undefined {
 		meta.push(`- reviewSurfaceHead: ${delegation.reviewSurfaceHead}`);
 	const manifestPath = write.readManifest?.persistedPath ?? write.readManifest?.manifestPath;
 	if (manifestPath) meta.push(`- readManifest: ${manifestPath}`);
+	if (write.readManifestStatus) meta.push(`- readManifestStatus: ${write.readManifestStatus}`);
 	const doc = `# Role report: ${write.label} (${delegation.role})\n\n${meta.join('\n')}\n- completedAt: ${new Date(now).toISOString()}\n- reportTokens: ~${estimateTokens(write.output)}\n\n---\n\n${write.output}\n`;
 	try {
 		fs.mkdirSync(dir, { recursive: true });
