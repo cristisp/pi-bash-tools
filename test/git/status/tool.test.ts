@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { Theme } from "@earendil-works/pi-coding-agent";
 import { expect, it } from "vitest";
 
 import type { GitExec } from "../../../src/tools/git/execution.ts";
@@ -14,7 +15,6 @@ import type { GitToolContext } from "../../../src/tools/git/tool.ts";
 
 const cwd = process.cwd();
 const context: GitToolContext = { cwd, signal: undefined };
-
 function changed(details: GitStatusOutput): GitStatusChangedOutput {
   if (details.unchanged) throw new Error("expected a rendered status");
   return details;
@@ -80,6 +80,92 @@ it("uses array arguments and returns structured renamed entries", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+it("renders empty optional paths without an invalid argument marker", () => {
+  const tool = createGitStatusTool(async () => result());
+  const renderCall = tool.renderCall;
+  if (renderCall === undefined) throw new Error("expected a Git status call renderer");
+  const foregroundColors = {
+    accent: "#000000",
+    border: "#000000",
+    borderAccent: "#000000",
+    borderMuted: "#000000",
+    success: "#000000",
+    error: "#000000",
+    warning: "#000000",
+    muted: "#000000",
+    dim: "#000000",
+    text: "#000000",
+    thinkingText: "#000000",
+    userMessageText: "#000000",
+    customMessageText: "#000000",
+    customMessageLabel: "#000000",
+    toolTitle: "#000000",
+    toolOutput: "#000000",
+    mdHeading: "#000000",
+    mdLink: "#000000",
+    mdLinkUrl: "#000000",
+    mdCode: "#000000",
+    mdCodeBlock: "#000000",
+    mdCodeBlockBorder: "#000000",
+    mdQuote: "#000000",
+    mdQuoteBorder: "#000000",
+    mdHr: "#000000",
+    mdListBullet: "#000000",
+    toolDiffAdded: "#000000",
+    toolDiffRemoved: "#000000",
+    toolDiffContext: "#000000",
+    syntaxComment: "#000000",
+    syntaxKeyword: "#000000",
+    syntaxFunction: "#000000",
+    syntaxVariable: "#000000",
+    syntaxString: "#000000",
+    syntaxNumber: "#000000",
+    syntaxType: "#000000",
+    syntaxOperator: "#000000",
+    syntaxPunctuation: "#000000",
+    thinkingOff: "#000000",
+    thinkingMinimal: "#000000",
+    thinkingLow: "#000000",
+    thinkingMedium: "#000000",
+    thinkingHigh: "#000000",
+    thinkingXhigh: "#000000",
+    bashMode: "#000000",
+  };
+  const backgroundColors = {
+    selectedBg: "#000000",
+    userMessageBg: "#000000",
+    customMessageBg: "#000000",
+    toolPendingBg: "#000000",
+    toolSuccessBg: "#000000",
+    toolErrorBg: "#000000",
+  };
+  const renderTheme = new Theme(foregroundColors, backgroundColors, "truecolor");
+  const renderContext = {
+    args: {},
+    toolCallId: "render-test",
+    invalidate: () => undefined,
+    lastComponent: undefined,
+    state: {},
+    cwd,
+    executionStarted: false,
+    argsComplete: true,
+    isPartial: false,
+    expanded: false,
+    showImages: false,
+    isError: false,
+  } satisfies Parameters<typeof renderCall>[2];
+
+  const wholeRepository = renderCall({}, renderTheme, renderContext).render(80)[0] ?? "";
+  const emptyPath = renderCall({ path: "" }, renderTheme, renderContext).render(80)[0] ?? "";
+  const refreshed =
+    renderCall({ path: "", refresh: true }, renderTheme, renderContext).render(80)[0] ?? "";
+
+  expect(wholeRepository).not.toContain("[invalid arg]");
+  expect(emptyPath).not.toContain("[invalid arg]");
+  expect(refreshed).not.toContain("[invalid arg]");
+  expect(refreshed).toContain("refresh");
 });
 
 it("returns a compact unchanged response and supports the refresh escape hatch", async () => {

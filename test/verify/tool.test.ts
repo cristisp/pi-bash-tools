@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 
 import type { AuthorizationOutcomeRecord } from "../../src/observability/authorization-outcome.ts";
+import type { ProjectCommandInvocationRecord } from "../../src/observability/project-command-invocation.ts";
 import type { PolicyDecisionRequest, PolicyStore } from "../../src/tools/policy/types.ts";
 import { createProjectCommandExecutor } from "../../src/tools/project-command/execution.ts";
 import type { ProjectCommandExecutionOutcome } from "../../src/tools/project-command/execution.ts";
@@ -504,6 +505,150 @@ it("reports a missing typecheck script as a resolution failure unless omitted", 
     tool.execute("verify-missing-typecheck", {}, undefined, undefined, context(cwd)),
   ).rejects.toMatchObject({ code: "resolution-failure" });
   expect(executor).not.toHaveBeenCalled();
+});
+
+it("rejects an unavailable phase during preflight without evidence and allows a corrected retry", async () => {
+  const cwd = await projectFixture();
+  await writeFile(
+    join(cwd, "package.json"),
+    JSON.stringify({ scripts: { "format:check": "format", lint: "lint", test: "test" } }),
+  );
+  const deps = dependencies();
+  const records: ProjectCommandInvocationRecord[] = [];
+  const resolver: ProjectCommandResolver = (definition, projectPath, _signal, parameters) =>
+    resolveNodeProjectCommand(definition, projectPath, parameters, {
+      approvedPackageManagerDirectories: [dirname(process.execPath)],
+    });
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver,
+    executor: deps.executor,
+    repositoryStateReader: deps.repositoryStateReader,
+    invocationRecorder: (record) => records.push(record),
+  });
+
+  const preflightError = await tool
+    .execute("verify-preflight-missing", {}, undefined, undefined, context(cwd))
+    .catch((error: unknown) => error);
+  expect(preflightError).toMatchObject({
+    code: "resolution-failure",
+    resultCategory: "RESOLUTION_FAILURE",
+    retryable: true,
+    executed: false,
+    missingPhase: "typecheck",
+    missingScript: "typecheck",
+    details: {
+      resultCategory: "RESOLUTION_FAILURE",
+      retryable: true,
+      executed: false,
+      missingPhase: "typecheck",
+      missingScript: "typecheck",
+    },
+  });
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({
+    resultCategory: "RESOLUTION_FAILURE",
+    executed: false,
+    retryable: true,
+    missingPhase: "typecheck",
+    missingScript: "typecheck",
+  });
+  expect(records[0]).not.toHaveProperty("ref");
+  expect(deps.executor).not.toHaveBeenCalled();
+
+  const corrected = await tool.execute(
+    "verify-preflight-corrected",
+    { omit: ["typecheck"] },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  expect(corrected.details.verdict).toBe("incomplete");
+  expect(deps.executor).toHaveBeenCalledTimes(3);
+  expect(records).toHaveLength(2);
+  expect(records[1]).toMatchObject({
+    resultCategory: "PASS",
+    executed: true,
+    verdict: "incomplete",
+  });
+});
+
+it("keeps phase-only resolvers compatible with verify preflight", async () => {
+  const cwd = await projectFixture();
+  const deps = dependencies();
+  const records: ProjectCommandInvocationRecord[] = [];
+  const resolver: ProjectCommandResolver = async (definition, projectPath, signal, parameters) => {
+    if (definition.commandId === "node_project_info") {
+      throw new Error("unsupported project-info command");
+    }
+    return deps.resolver(definition, projectPath, signal, parameters);
+  };
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver,
+    executor: deps.executor,
+    repositoryStateReader: deps.repositoryStateReader,
+    invocationRecorder: (record) => records.push(record),
+  });
+
+  const result = await tool.execute(
+    "verify-custom-resolver",
+    { omit: ["typecheck"] },
+    undefined,
+    undefined,
+    context(cwd),
+  );
+  expect(result.details).toMatchObject({ status: "completed", verdict: "incomplete" });
+  expect(deps.order).toEqual(["format:check", "lint", "test"]);
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({
+    resultCategory: "PASS",
+    executed: true,
+    verdict: "incomplete",
+  });
+});
+
+it("prefers cancellation after preflight resolution", async () => {
+  const cwd = await projectFixture();
+  const controller = new AbortController();
+  const deps = dependencies();
+  const records: ProjectCommandInvocationRecord[] = [];
+  const resolver: ProjectCommandResolver = async (definition, projectPath, signal, parameters) => {
+    if (definition.commandId === "node_project_info") {
+      controller.abort();
+      return {
+        definition,
+        executable: "in-process",
+        args: [],
+        structuredDetails: { scripts: [] },
+      };
+    }
+    return deps.resolver(definition, projectPath, signal, parameters);
+  };
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver,
+    executor: deps.executor,
+    repositoryStateReader: deps.repositoryStateReader,
+    invocationRecorder: (record) => records.push(record),
+  });
+
+  await expect(
+    tool.execute(
+      "verify-cancel-after-preflight",
+      { omit: ["typecheck"] },
+      controller.signal,
+      undefined,
+      context(cwd),
+    ),
+  ).rejects.toMatchObject({ code: "cancelled" });
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({
+    resultCategory: "CANCELLED",
+    reason: "cancelled",
+    executed: false,
+  });
+  expect(deps.executor).not.toHaveBeenCalled();
 });
 
 it("preserves cancellation during command resolution", async () => {

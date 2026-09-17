@@ -4,6 +4,12 @@ The `verify` tool runs the format, lint, typecheck, and test phases in that fixe
 
 Each phase resolves an exact package script from the project and uses the same bounded project-command execution rules described in [Project commands](project-command.md).
 
+Before authorization or execution, `verify` performs an internal package-script preflight equivalent to `node_project_info` without issuing a separate model-facing tool call.
+
+If a non-omitted phase's selected script is unavailable, the request is rejected with a retryable resolution failure and no validation evidence reference is created.
+
+The failure identifies `missingPhase` and `missingScript` so the caller can retry with that phase in `omit` or select an available script explicitly.
+
 ## Input
 
 ```json

@@ -39,6 +39,13 @@ export function renderStringArgument(value: unknown, theme: RenderTheme): string
   return theme.fg("accent", truncateRenderText(trimmed));
 }
 
+export function renderOptionalStringArgument(
+  value: unknown,
+  theme: RenderTheme,
+): string | undefined {
+  return value === undefined || value === "" ? undefined : renderStringArgument(value, theme);
+}
+
 export function renderCallLine(
   theme: RenderTheme,
   toolName: string,

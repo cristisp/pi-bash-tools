@@ -72,7 +72,13 @@ import {
   type NormalizedVerifyInput,
   type VerifyInput,
 } from "./schema.ts";
-import { SCRIPT_BY_PHASE, stepDefinition, type PreparedStep, resolveSteps } from "./steps.ts";
+import {
+  preflightVerifyScripts,
+  SCRIPT_BY_PHASE,
+  stepDefinition,
+  type PreparedStep,
+  resolveSteps,
+} from "./steps.ts";
 import {
   VERIFY_CACHE_FORMAT_VERSION,
   VERIFY_PHASES,
@@ -532,7 +538,7 @@ function verifyInvocationSuccess(
             ? "executed-after-cache-invalidation"
             : "executed-cache-ineligible";
   return {
-    resultCategory: record.verdict === "passed" ? "PASS" : "IMPLEMENTATION_FAILURE",
+    resultCategory: record.verdict === "failed" ? "IMPLEMENTATION_FAILURE" : "PASS",
     status: record.verdict === "failed" ? "nonzero" : "success",
     executed: !reused,
     reason,
@@ -663,6 +669,19 @@ function failureReason(
   return executionStarted ? "execution-failure" : "preparation-failure";
 }
 
+function verifyFailureMetadata(error: unknown): {
+  readonly retryable?: boolean;
+  readonly missingPhase?: string;
+  readonly missingScript?: string;
+} {
+  if (!(error instanceof VerifyToolError)) return {};
+  return {
+    ...(error.retryable === undefined ? {} : { retryable: error.retryable }),
+    ...(error.missingPhase === undefined ? {} : { missingPhase: error.missingPhase }),
+    ...(error.missingScript === undefined ? {} : { missingScript: error.missingScript }),
+  };
+}
+
 function rawVerifyParameter(rawParams: VerifyInput, key: keyof VerifyInput): unknown {
   if (typeof rawParams !== "object" || rawParams === null) return undefined;
   return rawParams[key];
@@ -732,6 +751,7 @@ function verifyFailureInvocationDetails(
           }
         : undefined,
     ),
+    ...verifyFailureMetadata(error),
     mutating: verifyInvocationMutating(prepared),
     aggregate: true,
   };
@@ -1420,8 +1440,14 @@ async function prepareVerifyExecution(
     });
     throw new VerifyToolError("policy-load-failure", "verify policy could not be loaded");
   }
-  const prepared = await resolveSteps(
+  const effectiveInput = await preflightVerifyScripts(
     input,
+    loadedPolicy.projectPath,
+    dependencies.resolver,
+    requestSignal,
+  );
+  const prepared = await resolveSteps(
+    effectiveInput,
     loadedPolicy.projectPath,
     dependencies.resolver,
     requestSignal,
@@ -1440,7 +1466,7 @@ async function prepareVerifyExecution(
     ({ phase, resolved }) =>
       `${phase}: ${displayCommand(resolved)} [script-sha256:${scriptFingerprint(resolved)}]`,
   );
-  const identity = verificationIdentity(prepared, input);
+  const identity = verificationIdentity(prepared, effectiveInput);
   await authorizeVerify(
     dependencies.policy,
     ctx,
@@ -1467,13 +1493,13 @@ async function prepareVerifyExecution(
       repositoryStateReliable = false;
     }
   }
-  let key = cacheKey(loadedPolicy.projectPath, state, prepared, input);
+  let key = cacheKey(loadedPolicy.projectPath, state, prepared, effectiveInput);
   const cacheLookup = await stableVerifyCacheLookup({
     cache: dependencies.cache,
     repositoryStateReader: dependencies.repositoryStateReader,
     projectPath: loadedPolicy.projectPath,
     prepared,
-    input,
+    input: effectiveInput,
     signal: requestSignal,
     state,
     key,
@@ -1488,7 +1514,7 @@ async function prepareVerifyExecution(
         ctx,
         toolCallId,
         invocationStartedAt,
-        input,
+        effectiveInput,
         prepared,
         cacheLookup.cached,
         true,
@@ -1497,7 +1523,9 @@ async function prepareVerifyExecution(
         null,
       );
       return {
-        cached: result(withCoercions(compactOutput(cacheLookup.cached, cacheLookup.state), input)),
+        cached: result(
+          withCoercions(compactOutput(cacheLookup.cached, cacheLookup.state), effectiveInput),
+        ),
       };
     }
   }
@@ -1722,7 +1750,7 @@ function createVerifyToolWithDependencies(
     name: "verify",
     label: "Verify",
     description:
-      "Run package-script format, lint, typecheck, and test phases in fixed order with bounded validation evidence and stable lookup references. Use fresh: true to rerun without changing the evidence key, and use ref with optional flowId only for lookup without execution. Executing requests may include covers and publish: { flowId }. Root-session refs are process-scoped; flow refs are durable only within an authorized flow.",
+      "Run package-script format, lint, typecheck, and test phases in fixed order with bounded validation evidence and stable lookup references. Execution preflights package scripts and rejects any non-omitted phase whose selected script is unavailable; retry with that phase in omit. Use fresh: true to rerun without changing the evidence key, and use ref with optional flowId only for lookup without execution. Executing requests may include covers and publish: { flowId }. Root-session refs are process-scoped; flow refs are durable only within an authorized flow.",
     promptSnippet: "Run fixed-order project verification",
     parameters: verifyInputSchema,
     executionMode: "sequential",

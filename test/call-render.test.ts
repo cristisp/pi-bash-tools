@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   renderCallLine,
+  renderOptionalStringArgument,
   renderStringArgument,
   truncateRenderText,
   type RenderTheme,
@@ -59,6 +60,22 @@ describe("renderStringArgument", () => {
     const { theme } = createTheme();
     const rendered = renderStringArgument("y".repeat(300), theme);
     expect(rendered).toBe(`[accent]${"y".repeat(120)}...`);
+  });
+});
+
+describe("renderOptionalStringArgument", () => {
+  it("omits undefined and empty optional values", () => {
+    const { theme } = createTheme();
+
+    expect(renderOptionalStringArgument(undefined, theme)).toBeUndefined();
+    expect(renderOptionalStringArgument("", theme)).toBeUndefined();
+    expect(renderOptionalStringArgument("src", theme)).toBe("[accent]src");
+  });
+
+  it("keeps non-empty invalid values visible", () => {
+    const { theme } = createTheme();
+
+    expect(renderOptionalStringArgument(null, theme)).toBe("[error][invalid arg]");
   });
 });
 

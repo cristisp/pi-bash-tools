@@ -117,6 +117,13 @@ export function buildProjectCommandInvocationRecord(
     ...(input.stateDrift === undefined ? {} : { stateDrift: input.stateDrift }),
     ...(input.sharedExecution === undefined ? {} : { sharedExecution: input.sharedExecution }),
     ...(input.aggregate === undefined ? {} : { aggregate: input.aggregate }),
+    ...(input.retryable === undefined ? {} : { retryable: input.retryable }),
+    ...(boundedOptionalIdentifier(input.missingPhase) === undefined
+      ? {}
+      : { missingPhase: boundedOptionalIdentifier(input.missingPhase) }),
+    ...(boundedOptionalIdentifier(input.missingScript) === undefined
+      ? {}
+      : { missingScript: boundedOptionalIdentifier(input.missingScript) }),
   };
   return boundedRecord(record);
 }

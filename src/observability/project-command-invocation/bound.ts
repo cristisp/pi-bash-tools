@@ -284,5 +284,8 @@ export function boundedRecord(
     ...(record.stateDrift === undefined ? {} : { stateDrift: record.stateDrift }),
     ...(record.sharedExecution === undefined ? {} : { sharedExecution: record.sharedExecution }),
     ...(record.aggregate === undefined ? {} : { aggregate: record.aggregate }),
+    ...(record.retryable === undefined ? {} : { retryable: record.retryable }),
+    ...(record.missingPhase === undefined ? {} : { missingPhase: record.missingPhase }),
+    ...(record.missingScript === undefined ? {} : { missingScript: record.missingScript }),
   });
 }

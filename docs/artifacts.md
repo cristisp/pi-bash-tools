@@ -268,6 +268,10 @@ Each record is capped at 8 KiB, and a missing or unwritable path produces a proc
 
 Invocation records may include `flowId`, `delegationId`, `role`, `ref`, `verdict`, `mutating`, `publication`, `lookup` (with the additive clamped `outcome` field), `coercions`, `concurrentExecutions`, `stateDrift`, `sharedExecution`, and aggregate metadata.
 
+A `verify` preflight rejection carries `executed: false`, `resultCategory: RESOLUTION_FAILURE`, `retryable: true`, and bounded `missingPhase` and `missingScript` fields, and does not create a validation evidence reference.
+
+A completed verification with intentionally omitted phases records the tool outcome as `PASS` while retaining `verdict: incomplete` to distinguish a successful tool call from a complete validation run.
+
 A `project-command` invocation record may also carry the additive optional phase durations `preparationDurationMs`, `authorizationDurationMs`, and `queueDurationMs`, each clamped like every other metadata number and omitted when it was never measured.
 
 `preparationDurationMs` spans tool entry to the authorization mark, which is the start of the authorization call, or tool entry to invocation end when the invocation failed during preparation.

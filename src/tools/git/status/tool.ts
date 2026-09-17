@@ -4,7 +4,7 @@ import { Type } from "typebox";
 
 import { hashToolParameters } from "../../../observability/canonical-json.ts";
 import { booleanInputSchema } from "../../boolean.ts";
-import { renderCallLine, renderStringArgument } from "../../call-render.ts";
+import { renderCallLine, renderOptionalStringArgument } from "../../call-render.ts";
 import { contentDigest } from "../../project-command/repository-state/dirty-files.ts";
 import { normalizeGitBoolean, runGit, validateGitRequestKeys, type GitExec } from "../execution.ts";
 import { observeGitInvocation, type GitInvocationObservationOptions } from "../invocation.ts";
@@ -62,7 +62,8 @@ export function createGitStatusTool(
     promptSnippet: "Inspect Git working tree status",
     parameters: gitStatusParameters,
     renderCall(args, theme) {
-      const parts = args?.path === undefined ? [] : [renderStringArgument(args.path, theme)];
+      const path = renderOptionalStringArgument(args?.path, theme);
+      const parts = path === undefined ? [] : [path];
       if (args?.refresh === true || args?.refresh === "true") {
         parts.push(theme.fg("muted", "refresh"));
       }

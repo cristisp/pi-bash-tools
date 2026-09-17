@@ -133,6 +133,9 @@ export interface ProjectCommandInvocationRecordInput {
   readonly stateDrift?: boolean;
   readonly sharedExecution?: boolean;
   readonly aggregate?: boolean;
+  readonly retryable?: boolean;
+  readonly missingPhase?: string;
+  readonly missingScript?: string;
 }
 
 export interface ProjectCommandInvocationRecord {
@@ -171,6 +174,9 @@ export interface ProjectCommandInvocationRecord {
   readonly stateDrift?: boolean;
   readonly sharedExecution?: boolean;
   readonly aggregate?: boolean;
+  readonly retryable?: boolean;
+  readonly missingPhase?: string;
+  readonly missingScript?: string;
 }
 
 export type ProjectCommandInvocationRecorder = (record: ProjectCommandInvocationRecord) => void;

@@ -127,7 +127,7 @@ export const verifyInputSchema = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Run the configured verification phases, or look up stored validation evidence with ref. Execution requests may select paths, scripts, omitted phases, and publication; lookup requests accept only ref with optional flowId and covers. Explicit null values are treated as omitted.",
+      "Run the configured verification phases, or look up stored validation evidence with ref. Execution requests preflight package scripts and reject any non-omitted phase whose selected script is unavailable; retry with that phase in omit. Execution requests may select paths, scripts, omitted phases, and publication; lookup requests accept only ref with optional flowId and covers. Explicit null values are treated as omitted.",
   },
 );
 
@@ -158,11 +158,40 @@ export interface NormalizedVerifyInput {
 
 export class VerifyToolError extends Error {
   readonly code: string;
+  readonly details: Readonly<Record<string, unknown>>;
+  readonly resultCategory?: string;
+  readonly retryable?: boolean;
+  readonly executed?: boolean;
+  readonly missingPhase?: VerifyPhase;
+  readonly missingScript?: string;
 
-  constructor(code: string, message: string) {
+  constructor(
+    code: string,
+    message: string,
+    details: {
+      readonly resultCategory?: string;
+      readonly retryable?: boolean;
+      readonly executed?: boolean;
+      readonly missingPhase?: VerifyPhase;
+      readonly missingScript?: string;
+    } = {},
+  ) {
     super(message);
     this.name = "VerifyToolError";
     this.code = code;
+    this.resultCategory = details.resultCategory;
+    this.retryable = details.retryable;
+    this.executed = details.executed;
+    this.missingPhase = details.missingPhase;
+    this.missingScript = details.missingScript;
+    this.details = Object.freeze({
+      code,
+      ...(details.resultCategory === undefined ? {} : { resultCategory: details.resultCategory }),
+      ...(details.retryable === undefined ? {} : { retryable: details.retryable }),
+      ...(details.executed === undefined ? {} : { executed: details.executed }),
+      ...(details.missingPhase === undefined ? {} : { missingPhase: details.missingPhase }),
+      ...(details.missingScript === undefined ? {} : { missingScript: details.missingScript }),
+    });
   }
 }
 
