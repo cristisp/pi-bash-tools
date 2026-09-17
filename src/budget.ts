@@ -910,11 +910,9 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		const reportRead = isReportRead(event.toolName, event.input, flowId);
 		const finalizationCall =
 			reportRead || event.toolName === 'codegraph_affected' || category === 'validation';
+		const reserveReady = state.finalizationReady || state.usage.toolCalls >= reserveThreshold;
 		const startsFinalization =
-			role === 'worker' &&
-			reserve > 0 &&
-			executingValidation &&
-			(state.finalizationReady || finalValidation);
+			role === 'worker' && reserve > 0 && executingValidation && (reserveReady || finalValidation);
 		if (role === 'worker' && hasImplementation && reserve > 0) {
 			if (state.usage.toolCalls >= reserveThreshold) state.finalizationReady = true;
 			if (state.finalizationStarted && protectedWriteCall) {

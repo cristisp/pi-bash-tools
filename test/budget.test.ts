@@ -479,6 +479,57 @@ describe('live budget enforcement', () => {
 		handlers.agent_end?.({}, ctx);
 	});
 
+	it('enters finalization when a project command reaches the reserve threshold', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				roleBudgets: {
+					worker: { toolCalls: 4, fullValidationPasses: 1, finalizationReserveCalls: 1 },
+				},
+			}),
+		);
+		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
+		vi.stubEnv('PI_ORCHESTRATION_ROLE', 'worker');
+		vi.stubEnv('PI_SUBAGENT_LABEL', 'worker-project-threshold');
+		registerEntry(makeRegistryEntry({ label: 'worker-project-threshold' }));
+		const { pi, handlers } = fakePi();
+		registerBudgetEnforcement(pi);
+		const ctx = { abort: vi.fn() };
+
+		handlers.before_agent_start?.({ prompt: 'implement this' }, ctx);
+		handlers.tool_call?.({ toolName: 'edit', input: { path: 'src/a.ts' } }, ctx);
+		handlers.tool_call?.({ toolName: 'bash', input: { command: 'true' } }, ctx);
+		const finalValidation = handlers.tool_call?.(
+			{
+				toolName: 'project_command',
+				toolCallId: 'project-threshold-1',
+				input: { commandId: 'node_test' },
+			},
+			ctx,
+		);
+		expect(finalValidation).toBeUndefined();
+		handlers.tool_result?.(
+			{
+				toolName: 'project_command',
+				toolCallId: 'project-threshold-1',
+				input: { commandId: 'node_test' },
+				content: [],
+				isError: false,
+			},
+			ctx,
+		);
+
+		expect(findEntry('worker-project-threshold')?.budget).toMatchObject({
+			phase: 'finalization',
+			finalizationReady: true,
+			finalStateValidation: true,
+			usage: { toolCalls: 3, fullValidationPasses: 1 },
+		});
+		handlers.agent_end?.({}, ctx);
+	});
+
 	it('defers validation breaches until all provisional validation results settle', () => {
 		const dir = makeTempDir();
 		stubEnv(dir);

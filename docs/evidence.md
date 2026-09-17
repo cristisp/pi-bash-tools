@@ -51,7 +51,8 @@ Herdr charges the attempted `toolCalls` entry and, when the result is marked as 
 It does not accept validation references, validation executions, or lookup failures from that result.
 Only structured producer details are authoritative; matching marker fields in ordinary tool output are ignored.
 Live settlement requires both the original `toolCallId` and tool name, and duplicate or mismatched results cannot settle a call twice.
-A final-state validation enters finalization only after its matching executed result, so a preflight rejection leaves implementation unlocked.
+A final-state validation enters finalization only after its matching executed result, so a preflight rejection neither enters finalization nor marks final-state evidence.
+If the reserve threshold has already been reached, the reserve can still block ordinary implementation writes while the worker waits for a valid final validation.
 A validation call without an identity remains charged as a validation attempt but cannot settle preflight state or enter finalization.
 
 The external producer's flow publication and single-flight behavior are separate concerns.
