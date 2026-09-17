@@ -50,6 +50,8 @@ Script names use the bounded package-script grammar described in [Project comman
 
 A lookup request uses `ref` and may include `flowId` and `covers`, but it cannot include execution fields such as `fresh`, `publish`, `paths`, `omit`, or `scripts`.
 
+A stale or missing lookup reference returns an error result that preserves the existing human-readable error content and includes `details` with `resultCategory: "RESOLUTION_FAILURE"`, `executed: false`, and `retryable: false`.
+
 Every optional field also accepts explicit `null`, treated as omitted (strict-decoder compatibility).
 
 ## Result

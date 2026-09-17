@@ -56,6 +56,7 @@ import {
 } from "../project-command/resolution.ts";
 import type { ProjectCommandExecutor } from "../project-command/runner.ts";
 import { createVerifyEvidenceCache, type VerifyEvidenceCache } from "./cache.ts";
+import { type VerifyErrorDetailsRecorder, verifyToolErrorDetails } from "./error-details.ts";
 import {
   compactOutput,
   completedOutput,
@@ -118,6 +119,7 @@ export interface VerifyToolOptions {
   readonly configPath?: string;
   readonly fs?: Partial<PolicyFileSystem>;
   readonly invocationRecorder?: ProjectCommandInvocationRecorder;
+  readonly errorDetailsRecorder?: VerifyErrorDetailsRecorder;
 }
 
 export type VerifyToolDefinition = Omit<
@@ -1287,7 +1289,11 @@ function verifyLookupNotFoundError(
       : bucket === "the process-local root-session cache"
         ? "Root-session refs are process-scoped and are not durable across processes."
         : "Only refs from the current effective flow are searchable.";
-  return new VerifyToolError("not-found", `validation ref not found in ${bucket}. ${guidance}`);
+  return new VerifyToolError("not-found", `validation ref not found in ${bucket}. ${guidance}`, {
+    resultCategory: "RESOLUTION_FAILURE",
+    executed: false,
+    retryable: false,
+  });
 }
 
 interface VerifyToolDependencies {
@@ -1301,6 +1307,7 @@ interface VerifyToolDependencies {
   readonly aggregateTimeoutMs: number;
   readonly stepTimeoutMs: number;
   readonly invocationRecorder?: ProjectCommandInvocationRecorder;
+  readonly errorDetailsRecorder?: VerifyErrorDetailsRecorder;
 }
 
 interface VerifyRequest {
@@ -1360,6 +1367,11 @@ async function lookupVerifyEvidence(options: {
     throw new VerifyToolError(
       "not-found",
       `validation ref not found in the effective flow scope ${input.flowId}. A flow lookup requires the same effective flow scope; environment variables alone do not authorize a lookup.`,
+      {
+        resultCategory: "RESOLUTION_FAILURE",
+        executed: false,
+        retryable: false,
+      },
     );
   }
   const record = dependencies.cache.getByRef(input.ref, input.flowId);
@@ -1730,6 +1742,13 @@ async function executeVerifyRequest(
         executionStarted,
       );
     }
+    if (error instanceof VerifyToolError) {
+      try {
+        dependencies.errorDetailsRecorder?.(toolCallId, verifyToolErrorDetails(error));
+      } catch {
+        // Error reporting must not change the verify failure.
+      }
+    }
     throw error;
   }
 }
@@ -1745,6 +1764,7 @@ function createVerifyToolWithDependencies(
   invocationRecorder?: ProjectCommandInvocationRecorder,
   authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder,
   authorizationRetryTracker?: AuthorizationRetryTracker,
+  errorDetailsRecorder?: VerifyErrorDetailsRecorder,
 ): VerifyToolDefinition {
   return {
     name: "verify",
@@ -1776,6 +1796,7 @@ function createVerifyToolWithDependencies(
           invocationRecorder,
           authorizationOutcomeRecorder,
           authorizationRetryTracker,
+          errorDetailsRecorder,
         },
         { toolCallId, rawParams, signal, ctx },
       );
@@ -1798,6 +1819,7 @@ export function createVerifyTool(
     options.invocationRecorder,
     options.authorizationOutcomeRecorder,
     options.authorizationRetryTracker,
+    options.errorDetailsRecorder,
   );
 }
 
@@ -1823,5 +1845,6 @@ export function createVerifyToolForTesting(options: VerifyToolOptions): VerifyTo
     options.invocationRecorder,
     options.authorizationOutcomeRecorder,
     options.authorizationRetryTracker,
+    options.errorDetailsRecorder,
   );
 }

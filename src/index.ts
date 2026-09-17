@@ -25,6 +25,10 @@ import {
 } from "./tools/project-command/error-details.ts";
 import { createProjectCommandRepositoryStateReader } from "./tools/project-command/repository-state.ts";
 import { createProjectCommandTool } from "./tools/project-command/tool.ts";
+import {
+  createVerifyErrorDetailsStore,
+  createVerifyToolResultHandler,
+} from "./tools/verify/error-details.ts";
 import { createVerifyTool } from "./tools/verify/tool.ts";
 
 export default function (pi: ExtensionAPI): void {
@@ -41,6 +45,8 @@ export default function (pi: ExtensionAPI): void {
   const gitInvalidRequestTracker = createInvalidRequestTracker();
   const gitRepositoryStateReader = createProjectCommandRepositoryStateReader(exec);
   const projectCommandErrorDetails = createProjectCommandErrorDetailsStore();
+  const verifyErrorDetails = createVerifyErrorDetailsStore();
+  const verifyToolResultHandler = createVerifyToolResultHandler(verifyErrorDetails);
   pi.on("session_start", (event, context) => {
     invocationSessionRecorder.onSessionStart(
       event,
@@ -57,7 +63,14 @@ export default function (pi: ExtensionAPI): void {
       authorizationRetryTracker,
     ),
   );
-  pi.on("tool_result", createProjectCommandToolResultHandler(projectCommandErrorDetails));
+  const projectCommandToolResultHandler = createProjectCommandToolResultHandler(
+    projectCommandErrorDetails,
+  );
+  pi.on("tool_result", (event) => {
+    const projectCommandResult = projectCommandToolResultHandler(event);
+    if (projectCommandResult !== undefined) return projectCommandResult;
+    return verifyToolResultHandler(event);
+  });
   pi.registerTool(
     createGitStatusTool(exec, {
       invocationRecorder: gitInvocationRecorder,
@@ -108,6 +121,7 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool(
     createVerifyTool(exec, {
       invocationRecorder: invocationSessionRecorder.invocationRecorder,
+      errorDetailsRecorder: verifyErrorDetails.record,
       authorizationOutcomeRecorder,
       authorizationRetryTracker,
     }),

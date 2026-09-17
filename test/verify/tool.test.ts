@@ -231,6 +231,14 @@ it("runs fixed phases in order, exposes omissions, and reuses unchanged evidence
   ).rejects.toMatchObject({
     code: "not-found",
     message: expect.stringContaining("process-local root-session cache"),
+    resultCategory: "RESOLUTION_FAILURE",
+    executed: false,
+    retryable: false,
+    details: {
+      resultCategory: "RESOLUTION_FAILURE",
+      executed: false,
+      retryable: false,
+    },
   });
 });
 

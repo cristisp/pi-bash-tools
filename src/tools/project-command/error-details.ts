@@ -1,36 +1,16 @@
 import type { ToolResultEvent } from "@earendil-works/pi-coding-agent";
 
+import { createToolErrorDetailsStore, type ToolErrorDetailsStore } from "../error-details-store.ts";
 import { isRecord } from "../value-validation.ts";
 import { getProjectCommandDefinitions } from "./definitions.ts";
 import { ProjectCommandToolError, validateProjectCommandInput } from "./schema/validation.ts";
 
 export type ProjectCommandErrorDetails = Readonly<Record<string, unknown>>;
 
-export interface ProjectCommandErrorDetailsStore {
-  readonly record: (toolCallId: string, details: unknown) => void;
-  readonly take: (toolCallId: string) => unknown;
-}
-
-const MAX_PENDING_ERROR_DETAILS = 128;
+export type ProjectCommandErrorDetailsStore = ToolErrorDetailsStore;
 
 export function createProjectCommandErrorDetailsStore(): ProjectCommandErrorDetailsStore {
-  const pending = new Map<string, unknown>();
-
-  return {
-    record(toolCallId, details) {
-      if (toolCallId.length === 0) return;
-      if (!pending.has(toolCallId) && pending.size >= MAX_PENDING_ERROR_DETAILS) {
-        const oldest = pending.keys().next().value;
-        if (typeof oldest === "string") pending.delete(oldest);
-      }
-      pending.set(toolCallId, details);
-    },
-    take(toolCallId) {
-      const details = pending.get(toolCallId);
-      pending.delete(toolCallId);
-      return details;
-    },
-  };
+  return createToolErrorDetailsStore();
 }
 
 function detailsFromProjectCommandError(

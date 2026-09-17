@@ -111,6 +111,20 @@ describe("bash tools extension", () => {
       error: { code: "invalid-request" },
     });
 
+    const unrecordedVerifyResult: unknown = Reflect.apply(toolResultHandler, undefined, [
+      {
+        type: "tool_result",
+        toolName: "verify",
+        toolCallId: "unrecorded-verify-error",
+        input: { ref: "vr_stale" },
+        content: [{ type: "text", text: "existing verify error" }],
+        isError: true,
+        details: {},
+      },
+      context,
+    ]);
+    expect(unrecordedVerifyResult).toBeUndefined();
+
     emit("session_start", { type: "session_start", reason: "startup" });
     emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
     emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
