@@ -55,7 +55,7 @@ it("keeps resolution failures outside authorization and execution failure mappin
       executionDurationMs: 0,
       suggestedAction: "Review the project metadata and dependencies, then retry the command.",
       error: {
-        code: "resolution-failure",
+        code: "missing-binary",
         category: "RESOLUTION_FAILURE",
         suggestedAction: "Review the project metadata and dependencies, then retry the command.",
         retryable: true,

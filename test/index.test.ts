@@ -61,7 +61,7 @@ describe("bash tools extension", () => {
       },
     } satisfies Parameters<typeof extension>[0];
     extension(pi);
-    expect(events).toEqual(["session_start", "session_shutdown", "tool_call"]);
+    expect(events).toEqual(["session_start", "session_shutdown", "tool_call", "tool_result"]);
     expect(names).toEqual([
       "git_status",
       "git_diff",
@@ -88,6 +88,29 @@ describe("bash tools extension", () => {
       if (typeof handler !== "function") throw new Error(`missing ${name} handler`);
       Reflect.apply(handler, undefined, [event, context]);
     };
+    const toolResultHandler = handlers.get("tool_result");
+    if (typeof toolResultHandler !== "function") throw new Error("missing tool_result handler");
+    const rejected: unknown = Reflect.apply(toolResultHandler, undefined, [
+      {
+        type: "tool_result",
+        toolName: "project_command",
+        toolCallId: "invalid-variant",
+        input: { commandId: "node_lint", variant: "-unsafe" },
+        content: [{ type: "text", text: "invalid request" }],
+        isError: true,
+      },
+      context,
+    ]);
+    if (typeof rejected !== "object" || rejected === null || !("details" in rejected)) {
+      throw new Error("expected structured project command rejection details");
+    }
+    expect(rejected.details).toMatchObject({
+      resultCategory: "INVALID_REQUEST",
+      executed: false,
+      retryable: false,
+      error: { code: "invalid-request" },
+    });
+
     emit("session_start", { type: "session_start", reason: "startup" });
     emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
     emit("session_shutdown", { type: "session_shutdown", reason: "quit" });

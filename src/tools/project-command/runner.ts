@@ -120,8 +120,11 @@ export type ProjectCommandExecutor = (
   signal: AbortSignal | undefined,
 ) => Promise<ProjectCommandExecutionOutcome>;
 
+export type ProjectCommandErrorDetailsRecorder = (toolCallId: string, details: unknown) => void;
+
 export interface ProjectCommandInvocationOptions {
   readonly recorder?: ProjectCommandInvocationRecorder;
+  readonly errorDetailsRecorder?: ProjectCommandErrorDetailsRecorder;
   readonly schemaHash?: string;
   readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
   readonly evidence?: ProjectCommandEvidenceStore;
@@ -1129,6 +1132,7 @@ interface ProjectCommandInvocationState {
   redactedParameters: Readonly<Record<string, unknown>> | undefined;
   resultCategory: ResultCategory | undefined;
   status: ProjectCommandExecutionOutcome["status"] | undefined;
+  retryable: boolean | undefined;
   executed: boolean;
   output: ProjectCommandInvocationOutputMetadata | undefined;
   lookup: ProjectCommandInvocationLookupMetadata | undefined;
@@ -1178,6 +1182,7 @@ function createInvocationState(
     redactedParameters: undefined,
     resultCategory: undefined,
     status: undefined,
+    retryable: undefined,
     executed: false,
     output: undefined,
     lookup: undefined,
@@ -1430,6 +1435,7 @@ function recordInvocation(
       concurrentExecutions: state.concurrentExecutions,
       stateDrift: state.stateDrift,
       sharedExecution: state.sharedExecution,
+      retryable: state.retryable,
     });
   } catch {
     // Session lookup and record construction are also observational best effort.
@@ -2023,10 +2029,17 @@ export function createProjectCommandExecute<
     } catch (error) {
       if (error instanceof ProjectCommandToolError) {
         state.resultCategory = error.contract.category;
+        state.retryable = error.contract.retryable;
         state.executed = error.contract.executed;
         if (error.contract.code === "cancelled") state.status = "cancelled";
         if (error.contract.code === "executor-failure") state.cacheDecision = "ineligible";
-        throw enrichToolError(error, invocationMetadataForState(toolCallId, state));
+        const enriched = enrichToolError(error, invocationMetadataForState(toolCallId, state));
+        try {
+          invocationOptions.errorDetailsRecorder?.(toolCallId, enriched.details);
+        } catch {
+          // Error reporting must not change the tool failure or invocation accounting.
+        }
+        throw enriched;
       }
       throw error;
     } finally {

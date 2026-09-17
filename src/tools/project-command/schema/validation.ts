@@ -43,12 +43,16 @@ export class ProjectCommandToolError extends Error {
     super(message);
     this.name = "ProjectCommandToolError";
     this.contract = contract ?? defaultErrorContract(message);
-    this.details =
-      details === undefined
-        ? withToolErrorContract({}, this.contract)
-        : isRecord(details)
-          ? withToolErrorContract(details, this.contract)
-          : details;
+    const contractDetails = isRecord(details) ? details : {};
+    this.details = Object.freeze({
+      ...withToolErrorContract(contractDetails, this.contract),
+      resultCategory: this.contract.category,
+      retryable: this.contract.retryable,
+      ...(isRecord(details) && typeof details.diagnostic === "string"
+        ? {}
+        : { diagnostic: this.contract.explanation }),
+      ...(details !== undefined && !isRecord(details) ? { detail: details } : {}),
+    });
   }
 }
 

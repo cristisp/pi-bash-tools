@@ -39,9 +39,11 @@ function hasEscapeOrC1Control(text: string): boolean {
 it("adds invocation metadata to an invalid request without resolved scope or output", async () => {
   const fixtureData = await fixture();
   const records: ProjectCommandInvocationRecord[] = [];
+  const errorDetails: unknown[] = [];
   const tool = createProjectCommandToolForTesting({
     configPath: fixtureData.configPath,
     invocationRecorder: (record) => records.push(record),
+    errorDetailsRecorder: (_toolCallId, details) => errorDetails.push(details),
   });
   const error = await tool
     .execute(
@@ -60,6 +62,7 @@ it("adds invocation metadata to an invalid request without resolved scope or out
       toolCallId: "invalid-request",
       resultCategory: "INVALID_REQUEST",
       executed: false,
+      retryable: false,
       cacheDecision: "ineligible",
       reason: "invalid-request",
       output: {
@@ -74,7 +77,9 @@ it("adds invocation metadata to an invalid request without resolved scope or out
   }
   expect(error.details).toMatchObject({
     category: "INVALID_REQUEST",
+    resultCategory: "INVALID_REQUEST",
     executed: false,
+    retryable: false,
     toolCallId: "invalid-request",
     reused: false,
     durationMs: expect.any(Number),
@@ -91,6 +96,13 @@ it("adds invocation metadata to an invalid request without resolved scope or out
   expect(error.details).not.toHaveProperty("scope");
   expect(error.details).not.toHaveProperty("output");
   expectInvocationMetadata(error.details, "invalid-request");
+  expect(errorDetails).toHaveLength(1);
+  expect(errorDetails[0]).toMatchObject({
+    resultCategory: "INVALID_REQUEST",
+    executed: false,
+    retryable: false,
+    error: { code: "invalid-request" },
+  });
 });
 
 it("shares one non-mutating evidence execution across overlapping identical requests", async () => {

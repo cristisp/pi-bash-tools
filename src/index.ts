@@ -19,6 +19,10 @@ import { createInvalidRequestTracker } from "./tools/git/invalid-request-tracker
 import { createGitLogTool } from "./tools/git/log/tool.ts";
 import { createGitShowTool } from "./tools/git/show/tool.ts";
 import { createGitStatusTool } from "./tools/git/status/tool.ts";
+import {
+  createProjectCommandErrorDetailsStore,
+  createProjectCommandToolResultHandler,
+} from "./tools/project-command/error-details.ts";
 import { createProjectCommandRepositoryStateReader } from "./tools/project-command/repository-state.ts";
 import { createProjectCommandTool } from "./tools/project-command/tool.ts";
 import { createVerifyTool } from "./tools/verify/tool.ts";
@@ -36,6 +40,7 @@ export default function (pi: ExtensionAPI): void {
   const authorizationRetryTracker = createAuthorizationRetryTracker();
   const gitInvalidRequestTracker = createInvalidRequestTracker();
   const gitRepositoryStateReader = createProjectCommandRepositoryStateReader(exec);
+  const projectCommandErrorDetails = createProjectCommandErrorDetailsStore();
   pi.on("session_start", (event, context) => {
     invocationSessionRecorder.onSessionStart(
       event,
@@ -52,6 +57,7 @@ export default function (pi: ExtensionAPI): void {
       authorizationRetryTracker,
     ),
   );
+  pi.on("tool_result", createProjectCommandToolResultHandler(projectCommandErrorDetails));
   pi.registerTool(
     createGitStatusTool(exec, {
       invocationRecorder: gitInvocationRecorder,
@@ -93,6 +99,7 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool(
     createProjectCommandTool({
       invocationRecorder: invocationSessionRecorder.invocationRecorder,
+      errorDetailsRecorder: projectCommandErrorDetails.record,
       repositoryStateReader: createProjectCommandRepositoryStateReader(exec),
       authorizationOutcomeRecorder,
       authorizationRetryTracker,

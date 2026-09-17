@@ -266,7 +266,13 @@ Each record is capped at 8 KiB, and a missing or unwritable path produces a proc
 
 ## Useful observability fields
 
-Invocation records may include `flowId`, `delegationId`, `role`, `ref`, `verdict`, `mutating`, `publication`, `lookup` (with the additive clamped `outcome` field), `coercions`, `concurrentExecutions`, `stateDrift`, `sharedExecution`, and aggregate metadata.
+Invocation records may include `flowId`, `delegationId`, `role`, `ref`, `verdict`, `mutating`, `publication`, `lookup` (with the additive clamped `outcome` field), `coercions`, `concurrentExecutions`, `stateDrift`, `sharedExecution`, `retryable`, and aggregate metadata.
+
+Project-command rejection records preserve the same `resultCategory`, `executed`, and `retryable` values exposed in `tool_result.details`.
+
+An executed failure such as `FORMAT_FAILURE` is recorded with `executed: true`, while invalid, policy, and resolution failures are recorded with `executed: false`.
+
+Repeated identical executed-failure records can be recognized as orchestration churn by their stable command identity, category, and execution state rather than treated as additional preflight failures.
 
 A `verify` preflight rejection carries `executed: false`, `resultCategory: RESOLUTION_FAILURE`, `retryable: true`, and bounded `missingPhase` and `missingScript` fields, and does not create a validation evidence reference.
 

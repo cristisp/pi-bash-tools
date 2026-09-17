@@ -359,8 +359,11 @@ export function createResolutionFailure(
   error: ProjectCommandResolutionError,
   definitions: readonly ProjectCommandDefinition[] = getProjectCommandDefinitions(),
 ): ProjectCommandToolError {
+  const contractCode = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u.test(error.code)
+    ? error.code
+    : "resolution-failure";
   const contract = createToolErrorContract({
-    code: "resolution-failure",
+    code: contractCode,
     category: "RESOLUTION_FAILURE",
     explanation: "The project command could not be resolved for execution.",
     suggestedAction: suggestedActionForCategory("RESOLUTION_FAILURE"),

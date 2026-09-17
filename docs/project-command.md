@@ -96,6 +96,26 @@ Execution statuses are `success`, `nonzero`, `timeout`, `spawn-failure`, and `ca
 
 Result categories include `PASS`, `INVALID_REQUEST`, `IMPLEMENTATION_FAILURE`, `TEST_FAILURE`, `FORMAT_FAILURE`, `LINT_FAILURE`, `TYPE_CHECK_FAILURE`, `RESOLUTION_FAILURE`, `POLICY_FAILURE`, `ENVIRONMENT_FAILURE`, `TIMEOUT`, `SPAWN_FAILURE`, `CANCELLED`, and `BLOCKED`.
 
+## Rejected requests and retry classification
+
+Rejected and preflight requests preserve structured metadata in `tool_result.details`, even when the host had to synthesize the error result after the tool threw.
+
+The metadata includes `resultCategory`, `executed`, `retryable`, the stable `error.code`, and bounded diagnostics.
+
+Invalid requests use `INVALID_REQUEST` with `executed: false` and `retryable: false`.
+
+Policy denials use `BLOCKED` or `POLICY_FAILURE` with `executed: false` and a stable policy code.
+
+Resolution failures, including a test path outside the canonical workspace, use `RESOLUTION_FAILURE`, `executed: false`, and a stable resolution code such as `test-path-outside-workspace`.
+
+A command that actually ran and returned a failing status remains an executed failure.
+
+For example, a formatting failure uses `FORMAT_FAILURE`, `executed: true`, and its command diagnostics rather than a preflight classification.
+
+Repeated records with the same command identity, `resultCategory`, and `executed` value can therefore be recognized as orchestration churn instead of being counted as a new producer defect.
+
+`retryable` indicates whether a retry may help after the agent addresses the reported cause; it does not mean that the command did not execute.
+
 ## Result shape
 
 A successful or failed execution returns a details object with the following principal fields.

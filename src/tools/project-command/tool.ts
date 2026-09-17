@@ -21,6 +21,7 @@ import type { ProjectCommandRepositoryStateReader } from "./repository-state.ts"
 import { resolveProjectCommand, type ProjectCommandResolver } from "./resolution.ts";
 import {
   createProjectCommandExecute,
+  type ProjectCommandErrorDetailsRecorder,
   type ProjectCommandExecute,
   type ProjectCommandExecutor,
 } from "./runner.ts";
@@ -66,11 +67,13 @@ export interface ProjectCommandToolTestOptions<
   readonly evidence?: ProjectCommandEvidenceStore;
   readonly definitions?: Definitions;
   readonly invocationRecorder?: ProjectCommandInvocationRecorder;
+  readonly errorDetailsRecorder?: ProjectCommandErrorDetailsRecorder;
   readonly schemaHash?: string;
 }
 
 export interface ProjectCommandToolOptions {
   readonly invocationRecorder?: ProjectCommandInvocationRecorder;
+  readonly errorDetailsRecorder?: ProjectCommandErrorDetailsRecorder;
   readonly schemaHash?: string;
   readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
   readonly cache?: ProjectCommandResultCache;
@@ -156,6 +159,7 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
       cache,
       {
         recorder: invocationOptions.invocationRecorder,
+        errorDetailsRecorder: invocationOptions.errorDetailsRecorder,
         schemaHash,
         repositoryStateReader: invocationOptions.repositoryStateReader,
         evidence,
@@ -219,6 +223,7 @@ export function createProjectCommandToolForTesting<
     options.evidence,
     {
       invocationRecorder: options.invocationRecorder,
+      errorDetailsRecorder: options.errorDetailsRecorder,
       schemaHash: options.schemaHash,
       repositoryStateReader: options.repositoryStateReader,
     },
