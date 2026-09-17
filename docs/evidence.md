@@ -43,6 +43,17 @@ A child with `evidenceScope: "session"` cannot resolve sibling references and mu
 A child with the default `flow` scope may resolve completed sibling evidence.
 A request can narrow scope from `flow` to `session`, but cannot widen the configured policy.
 
+### Producer preflight results
+
+A validation tool call can be rejected before the producer executes a package script.
+The producer marks this case in structured tool-result details with `resultCategory: "RESOLUTION_FAILURE"` and `executed: false`.
+Herdr charges the attempted `toolCalls` entry and, when the result is marked as an error, the `failedToolCalls` entry, but refunds the provisional `fullValidationPasses` entry.
+It does not accept validation references, validation executions, or lookup failures from that result.
+Only structured producer details are authoritative; matching marker fields in ordinary tool output are ignored.
+Live settlement requires both the original `toolCallId` and tool name, and duplicate or mismatched results cannot settle a call twice.
+A final-state validation enters finalization only after its matching executed result, so a preflight rejection leaves implementation unlocked.
+A validation call without an identity remains charged as a validation attempt but cannot settle preflight state or enter finalization.
+
 The external producer's flow publication and single-flight behavior are separate concerns.
 Publication shares completed evidence, while single-flight coordination is process-local and does not serialize active executions in separate child processes.
 This extension therefore keeps its repository write lock enabled by default.

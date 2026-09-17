@@ -229,6 +229,317 @@ describe('live budget enforcement', () => {
 		handlers.agent_end?.({}, { abort: vi.fn() });
 	});
 
+	it('does not charge a preflight-rejected verify as an executed validation pass', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				roleBudgets: {
+					validator: { fullValidationPasses: 1, failedToolCalls: 1 },
+				},
+			}),
+		);
+		vi.stubEnv('PI_ORCHESTRATION_ROLE', 'validator');
+		vi.stubEnv('PI_SUBAGENT_LABEL', 'validator-preflight');
+		registerEntry(makeRegistryEntry({ label: 'validator-preflight' }));
+		const { pi, handlers, sendUserMessage } = fakePi();
+		registerBudgetEnforcement(pi);
+		const ctx = { abort: vi.fn() };
+
+		handlers.before_agent_start?.({ prompt: 'validate this' }, ctx);
+		expect(
+			handlers.tool_call?.({ toolName: 'verify', toolCallId: 'verify-invalid', input: {} }, ctx),
+		).toBeUndefined();
+		handlers.tool_result?.(
+			{
+				toolName: 'verify',
+				toolCallId: 'verify-invalid',
+				input: {},
+				content: [{ type: 'text', text: 'missing typecheck script' }],
+				details: {
+					resultCategory: 'RESOLUTION_FAILURE',
+					retryable: true,
+					executed: false,
+					missingPhase: 'typecheck',
+				},
+				isError: true,
+			},
+			ctx,
+		);
+		expect(
+			handlers.tool_call?.(
+				{ toolName: 'verify', toolCallId: 'verify-corrected', input: { omit: ['typecheck'] } },
+				ctx,
+			),
+		).toBeUndefined();
+		settleBudget(handlers, ctx);
+
+		expect(findEntry('validator-preflight')?.budget).toMatchObject({
+			usage: { toolCalls: 2, fullValidationPasses: 1, failedToolCalls: 1 },
+			breaches: [],
+		});
+		expect(sendUserMessage).not.toHaveBeenCalled();
+		handlers.agent_end?.({}, ctx);
+	});
+
+	it('settles validation results only once and only for the originating tool', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
+		vi.stubEnv('PI_ORCHESTRATION_ROLE', 'validator');
+		vi.stubEnv('PI_SUBAGENT_LABEL', 'validator-idempotent');
+		registerEntry(makeRegistryEntry({ label: 'validator-idempotent' }));
+		const { pi, handlers } = fakePi();
+		registerBudgetEnforcement(pi);
+		const ctx = { abort: vi.fn() };
+		const preflight = { resultCategory: 'RESOLUTION_FAILURE', executed: false };
+
+		handlers.before_agent_start?.({ prompt: 'validate this' }, ctx);
+		handlers.tool_call?.({ toolName: 'verify', toolCallId: 'validation-1', input: {} }, ctx);
+		// The id is right but the originating tool is not, so this cannot settle the verify call.
+		handlers.tool_result?.(
+			{
+				toolName: 'project_command',
+				toolCallId: 'validation-1',
+				input: {},
+				content: [],
+				details: preflight,
+				isError: true,
+			},
+			ctx,
+		);
+		const result = {
+			toolName: 'verify',
+			toolCallId: 'validation-1',
+			input: {},
+			content: [],
+			details: preflight,
+			isError: true,
+		};
+		handlers.tool_result?.(result, ctx);
+		handlers.tool_result?.(result, ctx);
+		settleBudget(handlers, ctx);
+		expect(findEntry('validator-idempotent')?.budget?.usage).toMatchObject({
+			toolCalls: 1,
+			fullValidationPasses: 0,
+			failedToolCalls: 3,
+		});
+		handlers.agent_end?.({}, ctx);
+	});
+
+	it('waits for the matching real tool result before entering finalization', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				roleBudgets: {
+					worker: { toolCalls: 3, fullValidationPasses: 2, finalizationReserveCalls: 1 },
+				},
+			}),
+		);
+		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
+		vi.stubEnv('PI_ORCHESTRATION_ROLE', 'worker');
+		vi.stubEnv('PI_SUBAGENT_LABEL', 'worker-finalization-id');
+		registerEntry(makeRegistryEntry({ label: 'worker-finalization-id' }));
+		const { pi, handlers } = fakePi();
+		registerBudgetEnforcement(pi);
+		const ctx = { abort: vi.fn() };
+		const preflight = { resultCategory: 'RESOLUTION_FAILURE', executed: false };
+
+		handlers.before_agent_start?.({ prompt: 'implement this' }, ctx);
+		handlers.tool_call?.(
+			{ toolName: 'edit', toolCallId: 'edit-1', input: { path: 'src/a.ts' } },
+			ctx,
+		);
+		handlers.tool_call?.({ toolName: 'verify', toolCallId: 'final-1', input: {} }, ctx);
+
+		// A same-id result from another tool must not refund the pass or start finalization.
+		handlers.tool_result?.(
+			{
+				toolName: 'project_command',
+				toolCallId: 'final-1',
+				input: {},
+				content: [],
+				details: preflight,
+				isError: true,
+			},
+			ctx,
+		);
+		handlers.tool_result?.(
+			{
+				toolName: 'verify',
+				toolCallId: 'final-1',
+				input: {},
+				content: [],
+				isError: false,
+			},
+			ctx,
+		);
+		// A duplicate matching result is ignored after the first settlement.
+		handlers.tool_result?.(
+			{
+				toolName: 'verify',
+				toolCallId: 'final-1',
+				input: {},
+				content: [],
+				isError: false,
+			},
+			ctx,
+		);
+		expect(findEntry('worker-finalization-id')?.budget).toMatchObject({
+			phase: 'finalization',
+			finalStateValidation: true,
+			usage: { fullValidationPasses: 1 },
+		});
+		handlers.agent_end?.({}, ctx);
+	});
+
+	it('keeps validation calls without a tool-call id out of finalization', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				roleBudgets: {
+					worker: { toolCalls: 4, fullValidationPasses: 2, finalizationReserveCalls: 1 },
+				},
+			}),
+		);
+		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
+		vi.stubEnv('PI_ORCHESTRATION_ROLE', 'worker');
+		vi.stubEnv('PI_SUBAGENT_LABEL', 'worker-no-validation-id');
+		registerEntry(makeRegistryEntry({ label: 'worker-no-validation-id' }));
+		const { pi, handlers } = fakePi();
+		registerBudgetEnforcement(pi);
+		const ctx = { abort: vi.fn() };
+
+		handlers.before_agent_start?.({ prompt: 'implement this' }, ctx);
+		handlers.tool_call?.({ toolName: 'edit', input: { path: 'src/a.ts' } }, ctx);
+		const untrackable = handlers.tool_call?.({ toolName: 'verify', input: {} }, ctx);
+
+		expect(untrackable).toBeUndefined();
+		settleBudget(handlers, ctx);
+		expect(findEntry('worker-no-validation-id')?.budget).toMatchObject({
+			phase: 'implementation',
+			finalStateValidation: false,
+			usage: { toolCalls: 2, fullValidationPasses: 1 },
+			breaches: [],
+		});
+		handlers.agent_end?.({}, ctx);
+	});
+
+	it('refunds a project command preflight once without minting finalization state', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				roleBudgets: {
+					worker: { toolCalls: 4, fullValidationPasses: 1, finalizationReserveCalls: 1 },
+				},
+			}),
+		);
+		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
+		vi.stubEnv('PI_ORCHESTRATION_ROLE', 'worker');
+		vi.stubEnv('PI_SUBAGENT_LABEL', 'worker-project-preflight');
+		registerEntry(makeRegistryEntry({ label: 'worker-project-preflight' }));
+		const { pi, handlers } = fakePi();
+		registerBudgetEnforcement(pi);
+		const ctx = { abort: vi.fn() };
+		const result = {
+			toolName: 'project_command',
+			toolCallId: 'project-preflight-1',
+			input: { commandId: 'node_test' },
+			content: [{ type: 'text', text: '{"ref":"vr_not-executed"}' }],
+			details: { resultCategory: 'RESOLUTION_FAILURE', executed: false },
+			isError: false,
+		};
+
+		handlers.before_agent_start?.({ prompt: 'validate this' }, ctx);
+		handlers.tool_call?.(
+			{
+				toolName: 'project_command',
+				toolCallId: 'project-preflight-1',
+				input: { commandId: 'node_test' },
+			},
+			ctx,
+		);
+		handlers.tool_result?.(result, ctx);
+		handlers.tool_result?.(result, ctx);
+		settleBudget(handlers, ctx);
+
+		expect(findEntry('worker-project-preflight')?.budget).toMatchObject({
+			finalStateValidation: false,
+			usage: { toolCalls: 1, fullValidationPasses: 0, failedToolCalls: 0 },
+			breaches: [],
+		});
+		handlers.agent_end?.({}, ctx);
+	});
+
+	it('defers validation breaches until all provisional validation results settle', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				roleBudgets: {
+					worker: {
+						toolCalls: 8,
+						fullValidationPasses: 1,
+						finalizationReserveCalls: 1,
+						finalizationReserveValidationPasses: 1,
+					},
+				},
+			}),
+		);
+		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
+		vi.stubEnv('PI_ORCHESTRATION_ROLE', 'worker');
+		vi.stubEnv('PI_SUBAGENT_LABEL', 'worker-provisional-validation');
+		registerEntry(makeRegistryEntry({ label: 'worker-provisional-validation' }));
+		const { pi, handlers, sendUserMessage } = fakePi();
+		registerBudgetEnforcement(pi);
+		const ctx = { abort: vi.fn() };
+		const preflight = { resultCategory: 'RESOLUTION_FAILURE', executed: false };
+
+		handlers.before_agent_start?.({ prompt: 'implement this' }, ctx);
+		handlers.tool_call?.({ toolName: 'edit', input: { path: 'src/a.ts' } }, ctx);
+		handlers.tool_call?.({ toolName: 'verify', toolCallId: 'preflight-1', input: {} }, ctx);
+		handlers.tool_call?.({ toolName: 'verify', toolCallId: 'executed-1', input: {} }, ctx);
+		handlers.tool_result?.(
+			{
+				toolName: 'verify',
+				toolCallId: 'preflight-1',
+				input: {},
+				content: [],
+				details: preflight,
+				isError: true,
+			},
+			ctx,
+		);
+		handlers.tool_result?.(
+			{
+				toolName: 'verify',
+				toolCallId: 'executed-1',
+				input: {},
+				content: [],
+				isError: false,
+			},
+			ctx,
+		);
+
+		expect(sendUserMessage).not.toHaveBeenCalled();
+		expect(findEntry('worker-provisional-validation')?.budget).toMatchObject({
+			phase: 'finalization',
+			finalStateValidation: true,
+			usage: { fullValidationPasses: 1, failedToolCalls: 1 },
+			breaches: [],
+		});
+		handlers.agent_end?.({}, ctx);
+	});
+
 	it('charges an executing verify to the validation budget and spares ref lookups', () => {
 		const dir = makeTempDir();
 		stubEnv(dir);
@@ -247,13 +558,39 @@ describe('live budget enforcement', () => {
 		const ctx = { abort: vi.fn() };
 
 		handlers.before_agent_start?.({ prompt: 'validate this' }, ctx);
-		const executed = handlers.tool_call?.({ toolName: 'verify', input: {} }, ctx);
+		const executed = handlers.tool_call?.(
+			{ toolName: 'verify', toolCallId: 'executed-1', input: {} },
+			ctx,
+		);
 		const lookup = handlers.tool_call?.({ toolName: 'verify', input: { ref: 'vr_aaa' } }, ctx);
-		const rerun = handlers.tool_call?.({ toolName: 'verify', input: {} }, ctx);
+		handlers.tool_result?.(
+			{
+				toolName: 'verify',
+				toolCallId: 'executed-1',
+				input: {},
+				content: [],
+				isError: false,
+			},
+			ctx,
+		);
+		const rerun = handlers.tool_call?.(
+			{ toolName: 'verify', toolCallId: 'rerun-1', input: {} },
+			ctx,
+		);
+		handlers.tool_result?.(
+			{
+				toolName: 'verify',
+				toolCallId: 'rerun-1',
+				input: {},
+				content: [],
+				isError: false,
+			},
+			ctx,
+		);
 
 		expect(executed).toBeUndefined();
 		expect(lookup).toBeUndefined();
-		expect(rerun).toMatchObject({ block: true });
+		expect(rerun).toBeUndefined();
 		expect(sendUserMessage).toHaveBeenCalledTimes(1);
 		expect(findEntry('validator-1')?.budget).toMatchObject({
 			usage: { toolCalls: 3, fullValidationPasses: 2 },
@@ -284,7 +621,11 @@ describe('live budget enforcement', () => {
 			ctx,
 		);
 		const formatCheck = handlers.tool_call?.(
-			{ toolName: 'project_command', input: { commandId: 'node_format:check' } },
+			{
+				toolName: 'project_command',
+				toolCallId: 'format-check-1',
+				input: { commandId: 'node_format:check' },
+			},
 			ctx,
 		);
 
@@ -318,7 +659,11 @@ describe('live budget enforcement', () => {
 
 		handlers.before_agent_start?.({ prompt: 'implement this' }, ctx);
 		const mutate = handlers.tool_call?.(
-			{ toolName: 'project_command', input: { commandId: 'node_format' } },
+			{
+				toolName: 'project_command',
+				toolCallId: 'mutate-1',
+				input: { commandId: 'node_format' },
+			},
 			ctx,
 		);
 
@@ -416,7 +761,11 @@ describe('live budget enforcement', () => {
 		const asArray = handlers.tool_call?.({ toolName: 'verify', input: arrayOverride }, ctx);
 		const asString = handlers.tool_call?.({ toolName: 'verify', input: stringOverride }, ctx);
 		const remainder = handlers.tool_call?.(
-			{ toolName: 'verify', input: { paths: ['src/budget.ts'] } },
+			{
+				toolName: 'verify',
+				toolCallId: 'remainder-1',
+				input: { paths: ['src/budget.ts'] },
+			},
 			ctx,
 		);
 		const resolved = handlers.tool_call?.({ toolName: 'verify', input: { ref: 'vr_x' } }, ctx);
@@ -454,7 +803,11 @@ describe('live budget enforcement', () => {
 
 		handlers.before_agent_start?.({ prompt: 'implement this' }, ctx);
 		const override = handlers.tool_call?.(
-			{ toolName: 'verify', input: { scripts: { lint: 'lint:fix' } } },
+			{
+				toolName: 'verify',
+				toolCallId: 'override-1',
+				input: { scripts: { lint: 'lint:fix' } },
+			},
 			ctx,
 		);
 
@@ -828,8 +1181,21 @@ describe('live budget enforcement', () => {
 		expect(lateDiscovery).toMatchObject({ block: true });
 		expect((lateDiscovery as { reason: string }).reason).toContain('finalization reserve');
 
-		const finalValidation = handlers.tool_call?.({ toolName: 'verify', input: {} }, ctx);
+		const finalValidation = handlers.tool_call?.(
+			{ toolName: 'verify', toolCallId: 'final-validation', input: {} },
+			ctx,
+		);
 		expect(finalValidation).toBeUndefined();
+		handlers.tool_result?.(
+			{
+				toolName: 'verify',
+				toolCallId: 'final-validation',
+				input: {},
+				content: [],
+				isError: false,
+			},
+			ctx,
+		);
 		const postValidationEdit = handlers.tool_call?.(
 			{ toolName: 'edit', input: { path: 'src/c.ts' } },
 			ctx,
@@ -839,7 +1205,11 @@ describe('live budget enforcement', () => {
 			'final validation has started',
 		);
 		const postValidationFormat = handlers.tool_call?.(
-			{ toolName: 'project_command', input: { commandId: 'node_format' } },
+			{
+				toolName: 'project_command',
+				toolCallId: 'post-validation-format',
+				input: { commandId: 'node_format' },
+			},
 			ctx,
 		);
 		expect(postValidationFormat).toMatchObject({ block: true });

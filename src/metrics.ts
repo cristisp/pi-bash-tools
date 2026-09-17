@@ -2,6 +2,7 @@ import type { Message } from '@earendil-works/pi-ai';
 import { getFinalOutput } from './format.ts';
 import {
 	classifyToolCall,
+	isUnexecutedResolutionFailure,
 	readPathOf,
 	readRequestKey,
 	splitReportOutput,
@@ -82,7 +83,7 @@ export function measureExecutionMetrics(result: SingleResult, startedAt: number)
 				const category = classifyToolCall(part.name, part.arguments);
 				if (category === 'discovery') discoveryCalls++;
 				if (category === 'validation') fullValidationPasses++;
-				if (part.name === 'verify') {
+				if (part.name === 'verify' && part.id) {
 					const lookup = verifyIsRefLookupOnly(part.arguments);
 					validationCalls.set(part.id, {
 						tool: 'verify',
@@ -91,7 +92,7 @@ export function measureExecutionMetrics(result: SingleResult, startedAt: number)
 						...(part.arguments?.fresh === true ? { forced: true } : {}),
 					});
 				}
-				if (part.name === 'project_command' && category === 'validation') {
+				if (part.name === 'project_command' && category === 'validation' && part.id) {
 					validationCalls.set(part.id, {
 						tool: 'project_command',
 						lookup: false,
@@ -101,7 +102,7 @@ export function measureExecutionMetrics(result: SingleResult, startedAt: number)
 							: {}),
 					});
 				}
-				if (part.name === 'read_batch') {
+				if (part.name === 'read_batch' && part.id) {
 					validationCalls.set(part.id, {
 						tool: 'read_batch',
 						lookup: typeof part.arguments?.ref === 'string',
@@ -131,17 +132,39 @@ export function measureExecutionMetrics(result: SingleResult, startedAt: number)
 			maxContextTokens = Math.max(maxContextTokens, message.usage?.totalTokens || 0);
 		} else if (message.role === 'toolResult') {
 			if (message.isError) failedToolCalls++;
-			const call = validationCalls.get(message.toolCallId);
-			if (call?.tool === 'verify') {
+			const pendingCall = validationCalls.get(message.toolCallId);
+			// A result settles only the call with both the same id and originating tool name. Removing
+			// it before extracting evidence makes duplicate results inert without changing tool failure
+			// accounting above.
+			const call = pendingCall?.tool === message.toolName ? pendingCall : undefined;
+			if (call) validationCalls.delete(message.toolCallId);
+			// Classify the producer result before touching refs or execution evidence. This is independent
+			// of isError: malformed producer envelopes must not mint evidence when isError is false.
+			const unexecutedResolutionFailure =
+				call !== undefined && isUnexecutedResolutionFailure(message.details, message.content);
+			if (call?.tool === 'verify' && !unexecutedResolutionFailure) {
 				const reference = verifyReferenceOf(message, call.lookup, call.forced);
 				if (reference) validationRefs.push(reference);
 				if (message.isError && call.lookup)
 					lookupFailures.push(verifyLookupFailureOf(message, call.ref));
 			}
-			if (call?.tool === 'read_batch' && message.isError && call.lookup) {
+			if (
+				call?.tool === 'read_batch' &&
+				!unexecutedResolutionFailure &&
+				message.isError &&
+				call.lookup
+			) {
 				lookupFailures.push(verifyLookupFailureOf(message, call.ref));
 			}
-			if (call?.tool === 'read_batch' && !message.isError) {
+			if (
+				call &&
+				(call.tool === 'verify' || call.tool === 'project_command') &&
+				!call.lookup &&
+				unexecutedResolutionFailure
+			) {
+				fullValidationPasses = Math.max(0, fullValidationPasses - 1);
+			}
+			if (call?.tool === 'read_batch' && !unexecutedResolutionFailure && !message.isError) {
 				const observed = readRefsOf(message);
 				for (const entry of observed) {
 					if (readRefs.length >= MAX_READ_REFS) break;
@@ -149,7 +172,7 @@ export function measureExecutionMetrics(result: SingleResult, startedAt: number)
 				}
 			}
 			const indexId = codegraphIndexIdOf(message);
-			if (indexId !== undefined) {
+			if (indexId !== undefined && !unexecutedResolutionFailure) {
 				codegraphIndexResults++;
 				if (
 					!codegraphIndexIds.includes(indexId) &&
@@ -157,7 +180,12 @@ export function measureExecutionMetrics(result: SingleResult, startedAt: number)
 				)
 					codegraphIndexIds.push(indexId);
 			}
-			if (call && (call.tool === 'verify' || call.tool === 'project_command') && !call.lookup) {
+			if (
+				call &&
+				(call.tool === 'verify' || call.tool === 'project_command') &&
+				!call.lookup &&
+				!unexecutedResolutionFailure
+			) {
 				validationExecutions.push(validationExecutionOf(message, call));
 			}
 		}

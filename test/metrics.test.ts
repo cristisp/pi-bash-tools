@@ -27,6 +27,230 @@ describe('measureExecutionMetrics', () => {
 		expect(outputTokensOf(messages)).toBe(42);
 	});
 
+	it('does not count a preflight resolution failure as an executed validation', () => {
+		const messages = [
+			assistantMsg('validating', {
+				toolCalls: [{ id: 'v1', name: 'verify', args: {} }],
+			}),
+			{
+				...toolResultMsg('v1', 'verify could not resolve the typecheck script', 'verify'),
+				isError: true,
+				details: {
+					resultCategory: 'RESOLUTION_FAILURE',
+					retryable: true,
+					executed: false,
+					missingPhase: 'typecheck',
+				},
+			},
+			assistantMsg('retrying', {
+				toolCalls: [{ id: 'v2', name: 'verify', args: { omit: ['typecheck'] } }],
+			}),
+			toolResultMsg(
+				'v2',
+				JSON.stringify({
+					status: 'completed',
+					verdict: 'passed',
+					ref: 'vr_corrected',
+					reused: false,
+				}),
+				'verify',
+			),
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+		expect(metrics.toolCalls).toBe(2);
+		expect(metrics.fullValidationPasses).toBe(1);
+		expect(metrics.failedToolCalls).toBe(1);
+		expect(metrics.validationRefs?.map(({ ref }) => ref)).toEqual(['vr_corrected']);
+		expect(metrics.validationExecutions).toHaveLength(1);
+	});
+
+	it('settles validation evidence once and only for the originating tool', () => {
+		const preflight = {
+			resultCategory: 'RESOLUTION_FAILURE',
+			executed: false,
+		};
+		const messages = [
+			assistantMsg('validating', {
+				toolCalls: [
+					{ id: 'v-preflight', name: 'verify', args: {} },
+					{ id: 'v-executed', name: 'verify', args: {} },
+				],
+			}),
+			{
+				...toolResultMsg('v-preflight', JSON.stringify(preflight), 'project_command'),
+				isError: true,
+			},
+			{
+				...toolResultMsg('v-preflight', 'preflight rejected', 'verify'),
+				isError: true,
+				details: preflight,
+			},
+			{
+				...toolResultMsg('v-preflight', 'duplicate preflight', 'verify'),
+				isError: true,
+				details: preflight,
+			},
+			toolResultMsg(
+				'v-executed',
+				JSON.stringify({ ref: 'vr_executed', verdict: 'passed', reused: false }),
+				'verify',
+			),
+			toolResultMsg(
+				'v-executed',
+				JSON.stringify({ ref: 'vr_duplicate', verdict: 'passed', reused: false }),
+				'verify',
+			),
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+		expect(metrics.toolCalls).toBe(2);
+		expect(metrics.fullValidationPasses).toBe(1);
+		expect(metrics.failedToolCalls).toBe(3);
+		expect(metrics.validationRefs?.map(({ ref }) => ref)).toEqual(['vr_executed']);
+		expect(metrics.validationExecutions).toHaveLength(1);
+	});
+
+	it('suppresses project command preflight evidence and duplicate settlement', () => {
+		const messages = [
+			assistantMsg('validating', {
+				toolCalls: [
+					{ id: 'pc-preflight', name: 'project_command', args: { commandId: 'node_test' } },
+				],
+			}),
+			{
+				...toolResultMsg(
+					'pc-preflight',
+					JSON.stringify({ ref: 'vr_project_not-executed', verdict: 'passed' }),
+					'project_command',
+				),
+				isError: false,
+				details: {
+					resultCategory: 'RESOLUTION_FAILURE',
+					executed: false,
+				},
+			},
+			{
+				...toolResultMsg(
+					'pc-preflight',
+					JSON.stringify({ ref: 'vr_project_duplicate' }),
+					'project_command',
+				),
+				isError: false,
+			},
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+		expect(metrics.fullValidationPasses).toBe(0);
+		expect(metrics.validationRefs).toBeUndefined();
+		expect(metrics.validationExecutions).toBeUndefined();
+	});
+
+	it('suppresses refs and executions for an isError-false preflight envelope', () => {
+		const messages = [
+			assistantMsg('validating', {
+				toolCalls: [{ id: 'v-preflight', name: 'verify', args: {} }],
+			}),
+			{
+				...toolResultMsg(
+					'v-preflight',
+					JSON.stringify({ ref: 'vr_should_not_exist', verdict: 'passed' }),
+					'verify',
+				),
+				isError: false,
+				details: {
+					resultCategory: 'RESOLUTION_FAILURE',
+					executed: false,
+					ref: 'vr_should_not_exist',
+				},
+			},
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+		expect(metrics.fullValidationPasses).toBe(0);
+		expect(metrics.validationRefs).toBeUndefined();
+		expect(metrics.validationExecutions).toBeUndefined();
+		expect(metrics.failedToolCalls).toBe(0);
+	});
+
+	it('does not classify marker fields in ordinary validation output as producer metadata', () => {
+		const messages = [
+			assistantMsg('validating', {
+				toolCalls: [{ id: 'v-output', name: 'verify', args: {} }],
+			}),
+			{
+				...toolResultMsg(
+					'v-output',
+					JSON.stringify({
+						resultCategory: 'RESOLUTION_FAILURE',
+						executed: false,
+						message: 'ordinary command output',
+					}),
+					'verify',
+				),
+				isError: true,
+			},
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+		expect(metrics.fullValidationPasses).toBe(1);
+		expect(metrics.failedToolCalls).toBe(1);
+		expect(metrics.validationExecutions).toHaveLength(1);
+	});
+
+	it('recognizes a bounded structured producer envelope in details', () => {
+		const messages = [
+			assistantMsg('validating', {
+				toolCalls: [{ id: 'v-envelope', name: 'verify', args: {} }],
+			}),
+			{
+				...toolResultMsg('v-envelope', 'preflight rejected', 'verify'),
+				isError: false,
+				details: {
+					producerResult: {
+						resultCategory: 'RESOLUTION_FAILURE',
+						executed: false,
+					},
+				},
+			},
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+		expect(metrics.fullValidationPasses).toBe(0);
+		expect(metrics.validationExecutions).toBeUndefined();
+	});
+
+	it('keeps deeply nested and oversized producer-looking details bounded', () => {
+		const deeplyNested = {
+			result: { result: { result: { resultCategory: 'RESOLUTION_FAILURE', executed: false } } },
+		};
+		const oversized =
+			JSON.stringify({ resultCategory: 'RESOLUTION_FAILURE', executed: false }) +
+			'x'.repeat(16_384);
+		const messages = [
+			assistantMsg('validating', {
+				toolCalls: [
+					{ id: 'v-deep', name: 'verify', args: {} },
+					{ id: 'v-large', name: 'verify', args: {} },
+				],
+			}),
+			{
+				...toolResultMsg('v-deep', 'ordinary output', 'verify'),
+				isError: false,
+				details: deeplyNested,
+			},
+			{
+				...toolResultMsg('v-large', 'ordinary output', 'verify'),
+				isError: false,
+				details: oversized,
+			},
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+		expect(metrics.fullValidationPasses).toBe(2);
+		expect(metrics.validationExecutions).toHaveLength(2);
+	});
+
 	it('records tool-issued verify refs, which call executed, and the minted state', () => {
 		const minted = {
 			status: 'completed',

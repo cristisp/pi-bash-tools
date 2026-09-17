@@ -257,6 +257,51 @@ export function verifySetsScriptOverrides(input: Record<string, unknown> | undef
 	return input?.scripts !== undefined;
 }
 
+const MAX_PRODUCER_RESULT_DEPTH = 2;
+const MAX_PRODUCER_RESULT_LENGTH = 16_384;
+const PRODUCER_RESULT_ENVELOPE_KEYS = [
+	'producerResult',
+	'producer_result',
+	'producerEnvelope',
+	'producer_envelope',
+	'result',
+	'envelope',
+] as const;
+
+function producerResultRecords(value: unknown, depth = 0): Record<string, unknown>[] {
+	if (depth > MAX_PRODUCER_RESULT_DEPTH) return [];
+	if (typeof value === 'string') {
+		if (value.length > MAX_PRODUCER_RESULT_LENGTH) return [];
+		try {
+			return producerResultRecords(JSON.parse(value), depth + 1);
+		} catch {
+			return [];
+		}
+	}
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) return [];
+	const record = value as Record<string, unknown>;
+	const records: Record<string, unknown>[] = [];
+	if (record.resultCategory === 'RESOLUTION_FAILURE' && record.executed === false)
+		records.push(record);
+	for (const key of PRODUCER_RESULT_ENVELOPE_KEYS) {
+		if (key in record) records.push(...producerResultRecords(record[key], depth + 1));
+	}
+	return records;
+}
+
+/**
+ * Whether a validation request was rejected during producer preflight rather than executing a check.
+ * Only the structured producer result in tool-result details is authoritative. Tool output is
+ * untrusted prose, even when it happens to contain the same marker fields, so `content` is ignored.
+ * The explicit envelope and depth/size bounds keep malformed producer details fail-closed.
+ */
+export function isUnexecutedResolutionFailure(
+	details: unknown,
+	_content: readonly unknown[] = [],
+): boolean {
+	return producerResultRecords(details).length > 0;
+}
+
 export function classifyToolCall(
 	name: string,
 	input: Record<string, unknown> | undefined,
@@ -441,8 +486,12 @@ interface MutableBudgetState {
 	finalStateValidation: boolean;
 }
 
-function currentBreach(state: MutableBudgetState): BudgetBreach | undefined {
+function currentBreach(
+	state: MutableBudgetState,
+	skipMetric?: BudgetMetric,
+): BudgetBreach | undefined {
 	for (const [metric, usageKey] of USAGE_TO_LIMIT) {
+		if (metric === skipMetric) continue;
 		const observed = state.usage[usageKey];
 		const limit = state.limits[metric];
 		if (observed > limit && !state.breaches.some((breach) => breach.metric === metric)) {
@@ -479,8 +528,11 @@ function persist(label: string | undefined, state: MutableBudgetState): void {
 	updateRegistryEntry(label, { budget: summaryOf(state), updatedAt: Date.now() });
 }
 
-function addCurrentBreach(state: MutableBudgetState): BudgetBreach | undefined {
-	const breach = currentBreach(state);
+function addCurrentBreach(
+	state: MutableBudgetState,
+	skipMetric?: BudgetMetric,
+): BudgetBreach | undefined {
+	const breach = currentBreach(state, skipMetric);
 	if (!breach) return undefined;
 	state.breaches.push(breach);
 	return breach;
@@ -550,8 +602,9 @@ function enforceNewBreach(
 	ctx: { abort(): void },
 	state: MutableBudgetState,
 	beforeSteer?: () => void,
+	skipMetric?: BudgetMetric,
 ): boolean {
-	const breach = addCurrentBreach(state);
+	const breach = addCurrentBreach(state, skipMetric);
 	if (!breach) return false;
 	state.cause ??= causeForMetric(breach.metric);
 	if (state.limits.budgetPolicy === 'abort') {
@@ -570,8 +623,8 @@ function enforceNewBreach(
  * the child run, so there is no work left to stop: steering there cannot help and only buys a second,
  * shorter report that replaces the one already written. The breach is kept for telemetry.
  */
-function noteReportBreach(state: MutableBudgetState): boolean {
-	const breach = addCurrentBreach(state);
+function noteReportBreach(state: MutableBudgetState, skipMetric?: BudgetMetric): boolean {
+	const breach = addCurrentBreach(state, skipMetric);
 	if (!breach) return false;
 	state.cause ??= causeForMetric(breach.metric);
 	state.phase = 'report';
@@ -643,6 +696,10 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 	const lockLabel = label ?? 'unlabeled-session';
 	/** Write holds keyed by tool call id, released by the matching tool_result. */
 	const heldWrites = new Map<string, RepositoryWriteLockHandle>();
+	/** Accepted validation calls whose execution status is resolved by the matching tool result. */
+	const pendingValidationCalls = new Map<string, { toolName: string }>();
+	/** Final-validation calls wait for their result so a producer preflight failure cannot lock the worker. */
+	const pendingFinalizationCalls = new Map<string, { toolName: string }>();
 	const state: MutableBudgetState = {
 		role,
 		limits,
@@ -806,6 +863,8 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		const previousOutcome = state.outcome;
 		resetTurn(state);
 		readKeys.clear();
+		pendingValidationCalls.clear();
+		pendingFinalizationCalls.clear();
 		if (previousOutcome !== state.outcome) persist(label, state);
 		preserveTurnDeadline = false;
 		turnStartedAt = Date.now();
@@ -911,7 +970,13 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 				readKeys.set(key, prior + 1);
 			}
 		}
-		const breached = enforceNewBreach(pi, ctx, state, () => persist(label, state));
+		const breached = enforceNewBreach(
+			pi,
+			ctx,
+			state,
+			() => persist(label, state),
+			pendingValidationCalls.size > 0 || executingValidation ? 'fullValidationPasses' : undefined,
+		);
 		if (state.outcome === 'aborted')
 			return {
 				block: true,
@@ -957,12 +1022,12 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 			state.phase = 'implementation';
 			persist(label, state);
 		}
-		if (startsFinalization) {
-			state.finalizationStarted = true;
-			state.phase = 'finalization';
-			state.finalStateValidation = true;
-			persist(label, state);
-		}
+		const executesValidation = category === 'validation' && !verifyIsRefLookupOnly(event.input);
+		// Calls without an identity remain charged, but cannot settle preflight status or finalization.
+		if (executesValidation && event.toolCallId)
+			pendingValidationCalls.set(event.toolCallId, { toolName: event.toolName });
+		if (startsFinalization && event.toolCallId)
+			pendingFinalizationCalls.set(event.toolCallId, { toolName: event.toolName });
 		return undefined;
 	});
 
@@ -970,7 +1035,36 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		abortCurrent = ctx.abort;
 		if (writeLockEnabled) releaseWriteHold(event.toolCallId);
 		if (event.isError) state.usage.failedToolCalls++;
-		enforceNewBreach(pi, ctx, state, () => persist(label, state));
+		const pendingValidation = pendingValidationCalls.get(event.toolCallId);
+		const pendingFinalization = pendingFinalizationCalls.get(event.toolCallId);
+		const validationWasPending = pendingValidation?.toolName === event.toolName;
+		const finalizationWasPending = pendingFinalization?.toolName === event.toolName;
+		if (validationWasPending) pendingValidationCalls.delete(event.toolCallId);
+		if (finalizationWasPending) pendingFinalizationCalls.delete(event.toolCallId);
+		const preflightFailure =
+			(validationWasPending || finalizationWasPending) &&
+			isUnexecutedResolutionFailure(event.details, event.content);
+		let stateChanged = false;
+		if (validationWasPending && preflightFailure) {
+			// The call itself remains charged, as does the producer error, but no package-script
+			// validation pass was executed.
+			state.usage.fullValidationPasses = Math.max(0, state.usage.fullValidationPasses - 1);
+			stateChanged = true;
+		}
+		if (finalizationWasPending && !preflightFailure) {
+			state.finalizationStarted = true;
+			state.phase = 'finalization';
+			state.finalStateValidation = true;
+			stateChanged = true;
+		}
+		const breached = enforceNewBreach(
+			pi,
+			ctx,
+			state,
+			() => persist(label, state),
+			pendingValidationCalls.size > 0 ? 'fullValidationPasses' : undefined,
+		);
+		if (stateChanged && !breached) persist(label, state);
 	});
 
 	pi.on('turn_end', (event: TurnEndEvent, ctx) => {
@@ -994,11 +1088,17 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		state.usage.wallTimeMs = Math.max(state.usage.wallTimeMs, Date.now() - turnStartedAt);
 		if (deliveredReport) {
 			state.phase = 'report';
-			noteReportBreach(state);
+			noteReportBreach(state, pendingValidationCalls.size > 0 ? 'fullValidationPasses' : undefined);
 			persist(label, state);
 			return;
 		}
-		enforceNewBreach(pi, ctx, state, () => persist(label, state));
+		enforceNewBreach(
+			pi,
+			ctx,
+			state,
+			() => persist(label, state),
+			pendingValidationCalls.size > 0 ? 'fullValidationPasses' : undefined,
+		);
 		persist(label, state);
 	});
 
