@@ -49,6 +49,7 @@ export function createGitShowTool(
     description:
       "Read bounded output from a Git revision, optionally filtered to a workspace-relative path.",
     promptSnippet: "Inspect a bounded Git revision",
+    annotations: { readOnlyHint: true },
     parameters: gitShowParameters,
     renderCall(args, theme) {
       const parts = [

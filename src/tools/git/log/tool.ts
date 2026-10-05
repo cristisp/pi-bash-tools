@@ -45,6 +45,7 @@ export function createGitLogTool(
     description:
       "Read bounded Git commit history with safe revision and workspace-relative path filters.",
     promptSnippet: "Inspect bounded Git history",
+    annotations: { readOnlyHint: true },
     parameters: gitLogParameters,
     renderCall(args, theme) {
       const parts: string[] = [];

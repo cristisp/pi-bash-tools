@@ -6,6 +6,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { EXTENSION_VERSION } from "../version.ts";
+import { boundedIdentifier } from "./bounded.ts";
 import { hashToolParameters, serializeCanonicalJson } from "./canonical-json.ts";
 import {
   INVENTORY_FORMAT_VERSION,
@@ -19,6 +20,12 @@ import {
 export type ToolInventoryAPI = Pick<ExtensionAPI, "appendEntry" | "getActiveTools" | "getAllTools">;
 export type ToolInventoryContext = {
   readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">;
+};
+
+type ToolInfoWithOptionalMetadata = ToolInfo & {
+  readonly annotations?: unknown;
+  readonly exposure?: unknown;
+  readonly namespace?: unknown;
 };
 
 function compareStrings(left: string, right: string): number {
@@ -44,12 +51,58 @@ function sourceInfo(info: ToolInfo["sourceInfo"]): ToolInventorySourceInfo {
   return minimized;
 }
 
-function inventoryEntry(tool: ToolInfo, activeTools: ReadonlySet<string>): ToolInventoryEntry {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toolExposure(value: unknown): ToolInventoryEntry["exposure"] {
+  switch (value) {
+    case "direct":
+    case "model-only":
+    case "codemode":
+    case "deferred":
+    case "hidden":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function toolNamespace(value: unknown): ToolInventoryEntry["namespace"] {
+  if (!isRecord(value) || typeof value.name !== "string" || value.name.length === 0) {
+    return undefined;
+  }
+  return { name: boundedIdentifier(value.name) };
+}
+
+function toolAnnotations(value: unknown): ToolInventoryEntry["annotations"] {
+  if (!isRecord(value)) return undefined;
+  const annotations = {
+    ...(typeof value.readOnlyHint === "boolean" ? { readOnlyHint: value.readOnlyHint } : {}),
+    ...(typeof value.destructiveHint === "boolean"
+      ? { destructiveHint: value.destructiveHint }
+      : {}),
+    ...(typeof value.idempotentHint === "boolean" ? { idempotentHint: value.idempotentHint } : {}),
+    ...(typeof value.openWorldHint === "boolean" ? { openWorldHint: value.openWorldHint } : {}),
+  };
+  return Object.keys(annotations).length === 0 ? undefined : annotations;
+}
+
+function inventoryEntry(
+  tool: ToolInfoWithOptionalMetadata,
+  activeTools: ReadonlySet<string>,
+): ToolInventoryEntry {
+  const exposure = toolExposure(tool.exposure);
+  const namespace = toolNamespace(tool.namespace);
+  const annotations = toolAnnotations(tool.annotations);
   return {
     name: tool.name,
     active: activeTools.has(tool.name),
     sourceInfo: sourceInfo(tool.sourceInfo),
     schemaHash: hashToolParameters(tool.parameters),
+    ...(exposure === undefined ? {} : { exposure }),
+    ...(namespace === undefined ? {} : { namespace }),
+    ...(annotations === undefined ? {} : { annotations }),
   };
 }
 

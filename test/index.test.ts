@@ -10,6 +10,7 @@ describe("bash tools extension", () => {
 
   it("registers ten distinct tools without overriding pi built-ins", () => {
     const names: string[] = [];
+    const annotations = new Map<string, unknown>();
     const events: string[] = [];
     const entries: unknown[] = [];
     const handlers = new Map<string, unknown>();
@@ -18,6 +19,7 @@ describe("bash tools extension", () => {
     };
     const registerTool: ExtensionAPI["registerTool"] = (tool) => {
       names.push(tool.name);
+      if ("annotations" in tool) annotations.set(tool.name, tool.annotations);
     };
     const pi = {
       on(event: string, _handler: unknown) {
@@ -81,6 +83,15 @@ describe("bash tools extension", () => {
     expect(names).not.toContain("find");
     expect(names).not.toContain("ls");
     expect(names).not.toContain("bash");
+    expect(annotations.get("git_status")).toEqual({ readOnlyHint: true });
+    expect(annotations.get("git_diff")).toEqual({ readOnlyHint: true });
+    expect(annotations.get("git_log")).toEqual({ readOnlyHint: true });
+    expect(annotations.get("git_show")).toEqual({ readOnlyHint: true });
+    expect(annotations.get("read_batch")).toEqual({ readOnlyHint: true });
+    expect(annotations.get("move")).toEqual({ destructiveHint: true });
+    expect(annotations.get("delete")).toEqual({ destructiveHint: true });
+    expect(annotations.has("project_command")).toBe(false);
+    expect(annotations.has("verify")).toBe(false);
 
     const context = { sessionManager: { getSessionId: () => "index-session" } };
     const emit = (name: string, event: unknown): void => {

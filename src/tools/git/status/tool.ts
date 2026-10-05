@@ -60,6 +60,7 @@ export function createGitStatusTool(
     label: "Git status",
     description: "Read Git working tree status for the current workspace without changing files.",
     promptSnippet: "Inspect Git working tree status",
+    annotations: { readOnlyHint: true },
     parameters: gitStatusParameters,
     renderCall(args, theme) {
       const path = renderOptionalStringArgument(args?.path, theme);

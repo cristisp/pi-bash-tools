@@ -38,6 +38,7 @@ import {
   type ReadBatchInvocationReason,
   type ReadBatchInvocationRecorder,
 } from "../../observability/read-batch-invocation.ts";
+import type { BashToolAnnotations } from "../annotations.ts";
 import type { AuthorizationRetryTracker } from "../authorization-retry.ts";
 import { type AuthorizationErrorKind } from "../authorization.ts";
 import { renderCallLine, renderStringArgument } from "../call-render.ts";
@@ -328,7 +329,7 @@ type ReadBatchExecute = (
 export type ReadBatchToolDefinition = Omit<
   ToolDefinition<typeof readBatchParameters, ReadBatchDetails>,
   "execute"
-> & { execute: ReadBatchExecute };
+> & { annotations?: BashToolAnnotations; execute: ReadBatchExecute };
 
 interface NormalizedReadBatchPath {
   readonly path: string;
@@ -1341,6 +1342,7 @@ function createReadBatchToolWithDependencies(
     description:
       "Read bounded repository-relative file ranges, or resolve previously published read evidence. Use paths for execution, ref for lookup, publish.flowId for authorized flow publication, and covers for lookup attribution.",
     promptSnippet: "Read files or resolve published evidence",
+    annotations: { readOnlyHint: true },
     parameters: readBatchParameters,
     executionMode: "sequential",
     renderCall(args, theme) {

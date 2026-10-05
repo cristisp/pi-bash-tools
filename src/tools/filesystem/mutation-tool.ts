@@ -12,6 +12,7 @@ import type {
   AuthorizationOutcomeRecorder,
 } from "../../observability/authorization-outcome.ts";
 import { createAuthorizationOutcomeObserver } from "../../observability/authorization-outcome.ts";
+import type { BashToolAnnotations } from "../annotations.ts";
 import type { AuthorizationRetryTracker } from "../authorization-retry.ts";
 import { type AuthorizationErrorKind } from "../authorization.ts";
 import { renderCallLine, renderStringArgument } from "../call-render.ts";
@@ -134,12 +135,12 @@ type FilesystemDeleteExecute = (
 export type FilesystemMoveToolDefinition = Omit<
   ToolDefinition<typeof moveParameters, FilesystemMoveDetails>,
   "execute"
-> & { execute: FilesystemMoveExecute };
+> & { annotations?: BashToolAnnotations; execute: FilesystemMoveExecute };
 
 export type FilesystemDeleteToolDefinition = Omit<
   ToolDefinition<typeof deleteParameters, FilesystemDeleteDetails>,
   "execute"
-> & { execute: FilesystemDeleteExecute };
+> & { annotations?: BashToolAnnotations; execute: FilesystemDeleteExecute };
 
 const DENIED_POLICY_SCOPES: Record<PolicyAuthorization, string> = {
   "deny-global": "the global",
@@ -408,6 +409,7 @@ function createMoveToolWithDependencies(
     description:
       "Move or rename one regular file after separate move authorization for the source and destination.",
     promptSnippet: "Move or rename an authorized file",
+    annotations: { destructiveHint: true },
     parameters: moveParameters,
     executionMode: "sequential",
     renderCall(args, theme) {
@@ -484,6 +486,7 @@ function createDeleteToolWithDependencies(
     label: "Delete file",
     description: "Delete one regular file after separate delete authorization.",
     promptSnippet: "Delete an authorized file",
+    annotations: { destructiveHint: true },
     parameters: deleteParameters,
     executionMode: "sequential",
     renderCall(args, theme) {

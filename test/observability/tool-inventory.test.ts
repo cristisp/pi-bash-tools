@@ -14,16 +14,24 @@ import {
 } from "../../src/observability/tool-inventory.ts";
 import { TOOL_INVENTORY_ENTRY_TYPE } from "../../src/observability/types.ts";
 
+type ToolMetadata = {
+  readonly annotations?: unknown;
+  readonly exposure?: unknown;
+  readonly namespace?: unknown;
+};
+
 function tool(
   name: string,
   parameters: ToolInfo["parameters"],
   sourceInfo: ToolInfo["sourceInfo"],
-): ToolInfo {
+  metadata: ToolMetadata = {},
+): ToolInfo & ToolMetadata {
   return {
     name,
     description: `${name} description should not be persisted`,
     parameters,
     sourceInfo,
+    ...metadata,
   };
 }
 
@@ -85,7 +93,7 @@ describe("tool inventory", () => {
     const inventory = createToolInventory(api, startup, context("session-1"));
 
     expect(inventory).toMatchObject({
-      inventoryFormatVersion: 1,
+      inventoryFormatVersion: 2,
       sessionId: "session-1",
       sessionStartReason: "startup",
       hashAlgorithm: "sha256",
@@ -117,6 +125,58 @@ describe("tool inventory", () => {
       },
     ]);
     expect(inventory).not.toHaveProperty("description");
+  });
+
+  it("records bounded, allowlisted Pi tool metadata", () => {
+    const parameters = Type.Object({ path: Type.String() });
+    const sourceInfo = {
+      path: "/extensions/read.ts",
+      source: "bash-tools",
+      scope: "project" as const,
+      origin: "package" as const,
+    };
+    const metadata = tool("read", parameters, sourceInfo, {
+      exposure: "deferred",
+      namespace: {
+        name: "n".repeat(300),
+        description: "description is not part of the inventory",
+        instructions: "instructions are not part of the inventory",
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: "invalid",
+        futureHint: true,
+      },
+    });
+    const invalidMetadata = tool("write", parameters, sourceInfo, {
+      exposure: "unknown",
+      namespace: { name: "", instructions: "not copied" },
+      annotations: { readOnlyHint: "true", unknownHint: true },
+    });
+    const api: ToolInventoryAPI = {
+      appendEntry: vi.fn(),
+      getActiveTools: () => [],
+      getAllTools: () => [metadata, invalidMetadata],
+    };
+
+    const inventory = createToolInventory(api, startup, context("session-1"));
+    const readTool = inventory.tools[0];
+    const writeTool = inventory.tools[1];
+
+    expect(readTool).toMatchObject({
+      name: "read",
+      exposure: "deferred",
+      namespace: { name: `${"n".repeat(255)}…` },
+      annotations: { readOnlyHint: true, destructiveHint: false },
+    });
+    expect(readTool?.namespace?.name).toHaveLength(256);
+    expect(readTool).not.toHaveProperty("namespace.description");
+    expect(readTool).not.toHaveProperty("namespace.instructions");
+    expect(readTool?.annotations).not.toHaveProperty("idempotentHint");
+    expect(writeTool).not.toHaveProperty("exposure");
+    expect(writeTool).not.toHaveProperty("namespace");
+    expect(writeTool).not.toHaveProperty("annotations");
   });
 
   it("deduplicates identical snapshots only within the recorder runtime", () => {

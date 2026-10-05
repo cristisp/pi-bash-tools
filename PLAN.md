@@ -11,7 +11,7 @@ The active plan focuses on reducing token and tool-call waste identified in [`re
 The `1.0.3` cohort (103 unambiguous sessions, 4,963 calls, 4.84% error rate) is the stable pre-`1.1.0` baseline.
 Version `1.1.2` is released and loaded from folder, so the next report can separate the released `1.0.3` baseline from current behavior for the first time.
 
-The remaining P0 work is the analyzer and importer handoff plus per-cohort comparison breakdowns from the first `1.1.2` cohort.
+The remaining highest-priority work is to evaluate the Pi SDK result-schema and deferred-exposure opportunities listed first below, then complete the analyzer and importer handoff plus per-cohort comparison breakdowns from the first `1.1.2` cohort.
 
 Orchestration policy and Codegraph implementation remain owned by their respective extensions.
 Codegraph Runner 2.0.2 implements the producer-side evidence contract for `cg_` artifacts; Bash Tools carries the shared envelope additively on `pc_`, `vr_`, and `rr_` records, and the remaining shared-contract work is cross-producer lookup-outcome alignment.
@@ -38,6 +38,14 @@ Evidence references must not grant permissions, bypass producer authorization, o
 Bash Tools will not add arbitrary shell execution, orchestration roles, fan-out policy, provider retry policy, model fallback, or child-session lifecycle behavior.
 
 ## Active work
+
+### P0: Evaluate selected Pi SDK integrations
+
+Tool inventory format 2 now records bounded SDK exposure, namespace names, and allowlisted annotations, and static read-only/destructive hints are assigned to the relevant tools.
+The remaining SDK evaluations are prioritized here before the existing efficiency-analysis work.
+
+- [ ] Evaluate `outputSchema` and `structuredContent` on a bounded result such as `git_status` or `git_log`. Confirm that structured results materially help codemode or other programmatic consumers, remain within output bounds, and do not expose data beyond current authorization or model-facing results.
+- [ ] Evaluate deferred exposure for infrequently used tools such as `git_log` and `git_show`. Measure prompt-token savings against discovery success with `tool_search` enabled, and keep tools directly exposed unless the benefit and discoverability are demonstrated.
 
 ### P0: Build a current-version efficiency baseline
 

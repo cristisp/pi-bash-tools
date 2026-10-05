@@ -152,6 +152,9 @@ The inventory format contains `inventoryFormatVersion`, `extensionVersion`, `ses
 
 Each tool entry contains its name, active state, source information, and a SHA-256 schema hash.
 
+Format 2 entries additively record bounded SDK metadata per tool when the runtime provides it: the allowlisted `exposure` value, the bounded `namespace` name, and allowlisted boolean `annotations` hints.
+The fields are omitted when absent or invalid, so entries emitted against older pi versions remain identical to format 1 entries apart from `inventoryFormatVersion`.
+
 The inventory describes the complete active tool snapshot visible to the extension, not only tools owned by Bash Tools.
 
 Consumers must use each tool's source information when attributing ownership and must not treat the custom-entry producer as the owner of every listed tool.

@@ -629,6 +629,7 @@ export function createGitDiffTool(
     description:
       'Read a bounded Git diff. The default mode is a summary containing status, per-file diff stat, and hunk headers without bodies. Use mode: "patch" with explicit paths: ["file"] for patch content; whole-repository reads use the default summary.',
     promptSnippet: "Inspect a bounded Git diff",
+    annotations: { readOnlyHint: true },
     parameters: gitDiffParameters,
     renderCall(args, theme) {
       return renderGitDiffCall(args, theme);

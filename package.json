@@ -28,9 +28,7 @@
     "fallow:list:entry-points": "fallow list --entry-points --format json --quiet",
     "fallow:list:boundaries": "fallow list --boundaries --format json --quiet"
   },
-  "dependencies": {
-    "typebox": "1.3.29"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@vitest/coverage-v8": "^5.0.0",
@@ -42,7 +40,8 @@
     "vitest": "^5.0.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
   },
   "engines": {
     "node": ">=24"
