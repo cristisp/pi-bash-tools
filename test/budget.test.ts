@@ -12,6 +12,7 @@ import {
 	isReportRead,
 	readRequestKey,
 	readRequestKeysOf,
+	budgetSummaryFromMetrics,
 	registerBudgetEnforcement,
 	scopeCallAllowance,
 	scopedRoleBudget,
@@ -1056,6 +1057,177 @@ describe('live budget enforcement', () => {
 		expect(sendUserMessage).not.toHaveBeenCalled();
 		expect(findEntry('worker-1')?.budget).toMatchObject({ outcome: 'aborted' });
 		handlers.agent_end?.({}, ctx);
+	});
+
+	it('charges nested ctx.executeTool calls to the same budget and counts them separately', () => {
+		// S13-003: nested calls run through the same hooks with a parentToolCallId, so they consume
+		// the same role budgets as model-issued calls; the extra counter makes their share visible.
+		const dir = makeTempDir();
+		stubEnv(dir);
+		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({ roleBudgets: { worker: { toolCalls: 3, budgetPolicy: 'abort' } } }),
+		);
+		vi.stubEnv('PI_ORCHESTRATION_ROLE', 'worker');
+		vi.stubEnv('PI_ORCHESTRATION_FLOW', 'f1');
+		vi.stubEnv('PI_SUBAGENT_LABEL', 'worker-nested');
+		registerEntry(makeRegistryEntry({ label: 'worker-nested' }));
+		const { pi, handlers } = fakePi();
+		registerBudgetEnforcement(pi);
+		const ctx = { abort: vi.fn() };
+
+		handlers.before_agent_start?.({ prompt: 'scripted work' }, ctx);
+		const modelIssued = handlers.tool_call?.(
+			{ toolName: 'bash', toolCallId: 'c1', input: {} },
+			ctx,
+		);
+		const nestedOne = handlers.tool_call?.(
+			{ toolName: 'read', toolCallId: 'c1/1', parentToolCallId: 'c1', input: { path: 'src/a.ts' } },
+			ctx,
+		);
+		const nestedTwo = handlers.tool_call?.(
+			{ toolName: 'read', toolCallId: 'c1/2', parentToolCallId: 'c1', input: { path: 'src/b.ts' } },
+			ctx,
+		);
+		const nestedBreach = handlers.tool_call?.(
+			{ toolName: 'read', toolCallId: 'c1/3', parentToolCallId: 'c1', input: { path: 'src/c.ts' } },
+			ctx,
+		);
+
+		expect(modelIssued).toBeUndefined();
+		expect(nestedOne).toBeUndefined();
+		expect(nestedTwo).toBeUndefined();
+		// A nested call over the limit is refused exactly like a model-issued call: the shared
+		// hook is the enforcement surface, so a codemode loop cannot bypass the budget.
+		expect(nestedBreach).toMatchObject({ block: true });
+		expect(ctx.abort).toHaveBeenCalledOnce();
+		handlers.agent_settled?.({}, ctx);
+		expect(findEntry('worker-nested')?.budget).toMatchObject({
+			outcome: 'aborted',
+			usage: { toolCalls: 4, nestedToolCalls: 3 },
+			breaches: [expect.objectContaining({ metric: 'toolCalls', observed: 4 })],
+		});
+		handlers.agent_end?.({}, ctx);
+	});
+
+	it('counts a failed nested call as a tool failure', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
+		vi.stubEnv('PI_ORCHESTRATION_ROLE', 'worker');
+		vi.stubEnv('PI_SUBAGENT_LABEL', 'worker-nested-failure');
+		registerEntry(makeRegistryEntry({ label: 'worker-nested-failure' }));
+		const { pi, handlers } = fakePi();
+		registerBudgetEnforcement(pi);
+		const ctx = { abort: vi.fn() };
+
+		handlers.before_agent_start?.({ prompt: 'scripted work' }, ctx);
+		handlers.tool_call?.({ toolName: 'bash', toolCallId: 'c9', input: {} }, ctx);
+		// A nested call always passes the tool_call hook before its result settles.
+		handlers.tool_call?.(
+			{ toolName: 'read', toolCallId: 'c9/1', parentToolCallId: 'c9', input: { path: 'src/a.ts' } },
+			ctx,
+		);
+		handlers.tool_result?.(
+			{
+				toolName: 'bash',
+				toolCallId: 'c9/1',
+				parentToolCallId: 'c9',
+				input: {},
+				content: [{ type: 'text', text: 'unknown tool' }],
+				isError: true,
+			},
+			ctx,
+		);
+		handlers.agent_settled?.({}, ctx);
+		expect(findEntry('worker-nested-failure')?.budget).toMatchObject({
+			usage: { toolCalls: 2, nestedToolCalls: 1, failedToolCalls: 1 },
+		});
+		handlers.agent_end?.({}, ctx);
+	});
+
+	it('reports the same nestedToolCalls in the transcript-derived summary the hooks observed', () => {
+		// F-001 pin: for a single finished run the report-side budget summary (rebuilt from
+		// transcript metrics) agrees with the hook-side enforcement count; the registry ledger
+		// stays the enforcement authority either way.
+		const dir = makeTempDir();
+		stubEnv(dir);
+		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
+		vi.stubEnv('PI_ORCHESTRATION_ROLE', 'worker');
+		vi.stubEnv('PI_SUBAGENT_LABEL', 'worker-nested-summary');
+		registerEntry(makeRegistryEntry({ label: 'worker-nested-summary' }));
+		const { pi, handlers } = fakePi();
+		registerBudgetEnforcement(pi);
+		const ctx = { abort: vi.fn() };
+
+		handlers.before_agent_start?.({ prompt: 'scripted work' }, ctx);
+		handlers.tool_call?.({ toolName: 'bash', toolCallId: 'c1', input: {} }, ctx);
+		for (let i = 1; i <= 3; i++) {
+			handlers.tool_call?.(
+				{
+					toolName: 'read',
+					toolCallId: `c1/${i}`,
+					parentToolCallId: 'c1',
+					input: { path: `src/${i}.ts` },
+				},
+				ctx,
+			);
+		}
+		handlers.agent_settled?.({}, ctx);
+		const enforced = findEntry('worker-nested-summary')?.budget;
+		expect(enforced?.usage).toMatchObject({ toolCalls: 4, nestedToolCalls: 3 });
+		if (!enforced) throw new Error('registry entry lost');
+
+		const summary = budgetSummaryFromMetrics('worker', enforced.limits, {
+			toolCalls: 4,
+			nestedToolCalls: 3,
+			discoveryCalls: 3,
+			fullValidationPasses: 0,
+			failedToolCalls: 0,
+			repeatedReads: 0,
+			outputTokens: 0,
+			wallTimeMs: 0,
+		});
+		expect(summary.usage.nestedToolCalls).toBe(enforced.usage.nestedToolCalls);
+		expect(summary.usage.toolCalls).toBe(enforced.usage.toolCalls);
+		handlers.agent_end?.({}, ctx);
+	});
+
+	it('records a wall-time breach without acting on it once the report turn has ended', () => {
+		// S13-004: the report turn already ended the run's work, so a wall-time breach there must
+		// not steer (which would buy a second, shorter report) or abort; it is kept for telemetry.
+		vi.useFakeTimers();
+		try {
+			const dir = makeTempDir();
+			stubEnv(dir);
+			vi.stubEnv('PI_SUBAGENT_NESTED', '1');
+			fs.writeFileSync(
+				configPath(),
+				JSON.stringify({ roleBudgets: { worker: { wallTimeMs: 5, budgetPolicy: 'abort' } } }),
+			);
+			vi.stubEnv('PI_ORCHESTRATION_ROLE', 'worker');
+			vi.stubEnv('PI_ORCHESTRATION_FLOW', 'f1');
+			vi.stubEnv('PI_SUBAGENT_LABEL', 'worker-final');
+			registerEntry(makeRegistryEntry({ label: 'worker-final' }));
+			const { pi, handlers, sendUserMessage } = fakePi();
+			registerBudgetEnforcement(pi);
+			const ctx = { abort: vi.fn() };
+
+			handlers.before_agent_start?.({ prompt: 'finalizing' }, ctx);
+			handlers.turn_end?.({ message: assistantMsg('the final report') }, ctx);
+			vi.advanceTimersByTime(10);
+
+			expect(ctx.abort).not.toHaveBeenCalled();
+			expect(sendUserMessage).not.toHaveBeenCalled();
+			expect(findEntry('worker-final')?.budget).toMatchObject({
+				outcome: 'within',
+				breaches: [{ metric: 'wallTimeMs' }],
+			});
+			handlers.agent_end?.({}, ctx);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('scales the live call budget by the scope declared at delegation', () => {

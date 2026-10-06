@@ -40,6 +40,7 @@ describe('composition telemetry events', () => {
 		expect(record.metrics).toEqual({
 			durationMs: 0,
 			toolCalls: 0,
+			nestedToolCalls: 0,
 			failedToolCalls: 0,
 			repeatedReads: 0,
 			messageCount: 0,
@@ -80,6 +81,7 @@ describe('composition telemetry events', () => {
 		expect(record.metrics).toEqual({
 			durationMs: 0,
 			toolCalls: 0,
+			nestedToolCalls: 0,
 			failedToolCalls: 0,
 			repeatedReads: 0,
 			messageCount: 0,
@@ -124,6 +126,7 @@ describe('buildTelemetryRecord', () => {
 				},
 				usage: {
 					toolCalls: 3,
+					nestedToolCalls: 0,
 					discoveryCalls: 0,
 					fullValidationPasses: 0,
 					failedToolCalls: 0,

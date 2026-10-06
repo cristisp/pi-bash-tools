@@ -415,6 +415,7 @@ describe('pollSubagent - settling', () => {
 					limits: roleBudgetFor('worker'),
 					usage: {
 						toolCalls: 0,
+						nestedToolCalls: 0,
 						discoveryCalls: 0,
 						fullValidationPasses: 0,
 						failedToolCalls: 0,

@@ -87,6 +87,7 @@ export function makeMetrics(overrides: Partial<ExecutionMetrics> = {}): Executio
 	return {
 		durationMs: 0,
 		toolCalls: 0,
+		nestedToolCalls: 0,
 		failedToolCalls: 0,
 		repeatedReads: 0,
 		messageCount: 0,

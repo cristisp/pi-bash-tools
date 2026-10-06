@@ -59,6 +59,8 @@ export interface RoleBudget {
 
 export interface BudgetUsage {
 	toolCalls: number;
+	/** Calls this session made through `ctx.executeTool()` while another tool was running. */
+	nestedToolCalls: number;
 	discoveryCalls: number;
 	fullValidationPasses: number;
 	failedToolCalls: number;
@@ -439,6 +441,7 @@ export interface RunSummary {
 	at: number;
 	durationMs: number;
 	toolCalls: number;
+	nestedToolCalls?: number;
 	failedToolCalls: number;
 	repeatedReads: number;
 	manifestRereads?: number;
@@ -595,6 +598,8 @@ export interface UsageStats {
 export interface ExecutionMetrics {
 	durationMs: number;
 	toolCalls: number;
+	/** Calls recorded in the `nestedCalls` bounded record of tool results; transcript-derived. */
+	nestedToolCalls: number;
 	failedToolCalls: number;
 	repeatedReads: number;
 	manifestRereads?: number;

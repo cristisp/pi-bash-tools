@@ -146,6 +146,7 @@ function noopAbort(): void {}
 function emptyBudgetUsage(): BudgetUsage {
 	return {
 		toolCalls: 0,
+		nestedToolCalls: 0,
 		discoveryCalls: 0,
 		fullValidationPasses: 0,
 		failedToolCalls: 0,
@@ -733,6 +734,8 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 	let turnStartedAt = Date.now();
 	let wallTimer: ReturnType<typeof setTimeout> | undefined;
 	let preserveTurnDeadline = false;
+	/** Set when a turn ends without tool calls: the run is finalizing, so wall-time breaches only record. */
+	let reportDelivered = false;
 	let abortCurrent = noopAbort;
 	const readKeys = new Map<string, number>();
 
@@ -752,6 +755,14 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 			wallTimer = undefined;
 			if (startedAt !== turnStartedAt) return;
 			state.usage.wallTimeMs = Math.max(state.usage.wallTimeMs, Date.now() - startedAt);
+			if (reportDelivered) {
+				// The report turn already ended, so steering here cannot stop work - it queues a
+				// steer that buys a second, shorter report or relaunches a settled session. The
+				// breach is kept for telemetry, mirroring the report-turn breach handling.
+				addCurrentBreach(state);
+				persist(label, state);
+				return;
+			}
 			const breached = enforceNewBreach(pi, { abort: abortCurrent }, state, () =>
 				persist(label, state),
 			);
@@ -865,6 +876,7 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		readKeys.clear();
 		pendingValidationCalls.clear();
 		pendingFinalizationCalls.clear();
+		reportDelivered = false;
 		if (previousOutcome !== state.outcome) persist(label, state);
 		preserveTurnDeadline = false;
 		turnStartedAt = Date.now();
@@ -875,6 +887,11 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		abortCurrent = ctx.abort;
 		state.usage.wallTimeMs = Math.max(state.usage.wallTimeMs, Date.now() - turnStartedAt);
 		state.usage.toolCalls++;
+		// Nested calls (ctx.executeTool from a running tool, ids like `<parent>/<n>`) run through the
+		// same hooks, so they are charged against the same limits like every other call; the extra
+		// counter only makes their share visible. A transcript never contains them, so the
+		// transcript-derived metrics cannot double count them either.
+		if (event.parentToolCallId) state.usage.nestedToolCalls++;
 		const commandId = event.toolName === 'project_command' ? commandIdOf(event.input) : '';
 		if (commandId && isMutatingCommandId(commandId) && !mutatingRoles.has(role)) {
 			return {
@@ -1070,6 +1087,7 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		let deliveredReport = false;
 		if (event.message.role === 'assistant') {
 			deliveredReport = !event.message.content.some((part) => part.type === 'toolCall');
+			if (deliveredReport) reportDelivered = true;
 			if (deliveredReport) {
 				// This turn is the report itself, so only its prose is charged against the output budget.
 				const share = splitReportOutput(event.message.usage);

@@ -98,6 +98,29 @@ describe('sessionStatsText', () => {
 		);
 	});
 
+	it('reports the nested ctx.executeTool call count of the last run', async () => {
+		const sessionFile = writeSessionFile(dir, 'sessions/subagent-ws1-worker-2.jsonl', []);
+		registerEntry(
+			makeRegistryEntry({
+				sessionFile,
+				parentSession: '/sess/current.jsonl',
+				lastRun: {
+					at: Date.now(),
+					durationMs: 1000,
+					toolCalls: 2,
+					nestedToolCalls: 7,
+					failedToolCalls: 0,
+					repeatedReads: 0,
+					turns: 1,
+					cost: 0,
+					contextTokens: 0,
+				},
+			}),
+		);
+		const out = await sessionStatsText('worker-1', '/sess/current.jsonl');
+		expect(out).toContain('tools:2 nested:7');
+	});
+
 	it('defaults the evidence scope to unknown for legacy entries', async () => {
 		const sessionFile = writeSessionFile(dir, 'sessions/subagent-ws1-worker-1.jsonl', []);
 		registerEntry(makeRegistryEntry({ sessionFile, parentSession: '/sess/current.jsonl' }));

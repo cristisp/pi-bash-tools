@@ -438,6 +438,28 @@ describe('renderAgentFile', () => {
 			);
 		}
 	});
+
+	it('gives codemode to the worker only and reserves tool_search for nobody', () => {
+		for (const template of AGENT_TEMPLATES) {
+			const tools = (template.tools ?? '').split(',').map((tool) => tool.trim());
+			expect(tools, `${template.name} must not self-activate undeclared tools`).not.toContain(
+				'tool_search',
+			);
+		}
+		for (const name of ['planner', 'reviewer', 'scout', 'validator']) {
+			const tools = (AGENT_TEMPLATES.find((t) => t.name === name)?.tools ?? '')
+				.split(',')
+				.map((tool) => tool.trim());
+			expect(tools, `${name} keeps every evidence call visible in the transcript`).not.toContain(
+				'codemode',
+			);
+		}
+		const worker = AGENT_TEMPLATES.find((t) => t.name === 'worker');
+		expect((worker?.tools ?? '').split(',').map((tool) => tool.trim())).toContain('codemode');
+		expect(worker?.body).toContain('## Codemode discipline');
+		expect(worker?.body).toContain('Promise.allSettled');
+		expect(worker?.body).toContain('nested:N');
+	});
 	it('gives the verify gate to the roles that execute validation', () => {
 		for (const role of ['worker', 'validator']) {
 			const tools = (AGENT_TEMPLATES.find((t) => t.name === role)?.tools ?? '')

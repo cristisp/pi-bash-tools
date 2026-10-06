@@ -60,6 +60,7 @@ describe('budget/report interaction', () => {
 			limits: roleBudgetFor('planner'),
 			usage: {
 				toolCalls: 3,
+				nestedToolCalls: 0,
 				discoveryCalls: 2,
 				fullValidationPasses: 0,
 				failedToolCalls: 0,

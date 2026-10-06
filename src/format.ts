@@ -30,6 +30,7 @@ export function formatExecutionMetrics(metrics: ExecutionMetrics): string {
 		`io:${metrics.taskChars}/${metrics.outputChars}`,
 	];
 	if (metrics.failedToolCalls) parts.push(`tool-errors:${metrics.failedToolCalls}`);
+	if (metrics.nestedToolCalls) parts.push(`nested:${metrics.nestedToolCalls}`);
 	if (metrics.repeatedReads) parts.push(`rereads:${metrics.repeatedReads}`);
 	if (metrics.manifestRereads) parts.push(`manifest-rereads:${metrics.manifestRereads}`);
 	if (metrics.discoveryCalls !== undefined) parts.push(`discovery:${metrics.discoveryCalls}`);
@@ -324,6 +325,7 @@ export function buildRunSummary(
 		cost: usage.cost,
 		contextTokens: usage.contextTokens || metrics.maxContextTokens,
 	};
+	if (metrics.nestedToolCalls) summary.nestedToolCalls = metrics.nestedToolCalls;
 	if (metrics.blockEvents) summary.blockEvents = metrics.blockEvents;
 	if (metrics.discoveryCalls !== undefined) summary.discoveryCalls = metrics.discoveryCalls;
 	if (metrics.fullValidationPasses !== undefined)

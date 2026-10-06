@@ -47,6 +47,7 @@ describe('formatExecutionMetrics', () => {
 			formatExecutionMetrics({
 				durationMs: 1500,
 				toolCalls: 3,
+				nestedToolCalls: 0,
 				failedToolCalls: 1,
 				repeatedReads: 2,
 				messageCount: 7,
@@ -66,6 +67,7 @@ describe('formatExecutionMetrics', () => {
 			formatExecutionMetrics({
 				durationMs: 900,
 				toolCalls: 4,
+				nestedToolCalls: 0,
 				failedToolCalls: 0,
 				repeatedReads: 0,
 				messageCount: 5,
@@ -247,6 +249,28 @@ describe('buildRunSummary', () => {
 				path: '/tmp/report.md',
 			},
 		});
+	});
+
+	it('shows nested ctx.executeTool calls alongside the model-issued counters', () => {
+		// S13-003: the transcript never lists nested calls, so their share is surfaced as a separate
+		// count next to the model-issued tools line instead of being folded into it.
+		const summary = buildRunSummary(
+			makeMetrics({ toolCalls: 2, nestedToolCalls: 5, failedToolCalls: 1 }),
+			usage,
+			undefined,
+			undefined,
+			1234,
+		);
+		expect(summary.nestedToolCalls).toBe(5);
+		expect(summary.toolCalls).toBe(2);
+		const compact = buildRunSummary(
+			makeMetrics({ toolCalls: 2 }),
+			usage,
+			undefined,
+			undefined,
+			1234,
+		);
+		expect(compact.nestedToolCalls).toBeUndefined();
 	});
 
 	it('omits the report block when no report was built', () => {

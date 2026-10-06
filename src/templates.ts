@@ -736,7 +736,7 @@ Give a concise plan-oriented handoff without repeating large source excerpts.
 		name: 'worker',
 		description: 'General-purpose subagent with full capabilities, isolated context',
 		tools:
-			'read, read_batch, write, edit, grep, find, ls, environment, git_status, git_diff, git_log, git_show, project_command, verify, move, delete, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, codegraph_sync, codegraph_artifact, resolve-library-id, query-docs, playwright',
+			'read, read_batch, write, edit, grep, find, ls, environment, git_status, git_diff, git_log, git_show, project_command, verify, move, delete, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_affected, codegraph_sync, codegraph_artifact, resolve-library-id, query-docs, playwright, codemode',
 		body: `
 You are a worker agent with full capabilities operating in an isolated context window.
 
@@ -751,6 +751,12 @@ Do not invoke the subagent tool to create additional workers, planners, validato
 Call \`codegraph_sync\` only immediately before a codegraph query that must include changes you already made in this task, such as \`codegraph_affected\` over your edits, and at most once per change batch. The index auto-syncs when the run settles, so never call \`codegraph_sync\` at task completion or between unrelated queries.
 
 Prefer \`read_batch\` when you need several files, and keep its item ranges bounded.
+
+## Codemode discipline
+
+Use \`codemode\` scripts when several independent tool calls or one large output would otherwise cost turns: batch parallel checks with \`Promise.allSettled\`, and filter or summarize large output before it reaches the model.
+Every call made from inside a script consumes the same role budgets as a model-issued call and is refused at the limit exactly like one; the run summary shows their share as \`nested:N\`.
+Do not use codemode to route around a budget, the validation gate, or the assigned toolset; \`tool_search\` is deliberately not part of any role toolset, so undeclared tools stay undeclared.
 
 ${WORKFLOW_CLASSIFICATION_GUIDANCE}
 

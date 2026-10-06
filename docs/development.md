@@ -44,6 +44,39 @@ S13-002 decisions (tool metadata, no runtime behavior change):
   No code path in this extension reads annotations.
 - No tool declares a `namespace`, and `defaultActive` stays at its default: the four tools stay ungrouped and keep the current model-facing toolset.
 
+S13-003 decisions (nested tool-call accounting):
+
+- Calls a tool makes while it runs through `ctx.executeTool()` (ids shaped `<parent id>/<n>`, carrying `parentToolCallId`) consume the same per-role budgets as model-issued calls.
+  Pi 1.0.3 routes them through the same `tool_call` and `tool_result` hooks, so enforcement stays in one surface and a codemode loop cannot bypass a budget; a refused nested call returns to the caller as an `isError: true` outcome and never spawns anything.
+- `BudgetUsage.nestedToolCalls` records their share on the enforcement surface (they are still charged to `toolCalls`, `discoveryCalls`, validation, repeated-read, and wall-time accounting like every other call).
+- Transcript-derived metrics (`ExecutionMetrics.nestedToolCalls`, shown as `nested:N` in run summaries and `subagent_stats`) count the bounded `nestedCalls` record each parent tool result carries.
+  Each nested call is flattened into exactly one record (its top-level caller's), so the count never double counts, and a record with `complete: false` is treated as the lower bound it attests to.
+  Nested usage needs no separate accounting: pi already folds it into the parent result message's `usage`.
+- Transcript parsing never double counts nested calls as model-issued `toolCalls`, because nested calls produce no transcript tool-call entries.
+- `nestedToolCalls` follows the same two-surface split as every other usage counter: the registry ledger counts hook-side calls per agent run and is never derived from transcript evidence, while `result.budget` is a report view rebuilt from transcript metrics and takes the count from the bounded `nestedCalls` records.
+  For a single finished run the two agree (pinned by test); across several agent runs, or with enforcement inactive, they can differ, and the ledger remains the enforcement authority regardless of what the report view shows.
+
+S13-004 decisions (agent finalization boundaries):
+
+- Adopted on `turn_end`: once a run's turn ends without tool calls (the report turn), later wall-time breaches are recorded for telemetry but no longer steer or abort.
+  Before this, a wall-time breach firing during or after the report turn queued a steer that bought a second, shorter report or relaunched a settled session; the report-turn handling in `turn_end` already knew this, but the wall timer did not.
+  The gate is a per-run flag reset in `before_agent_start`, so it is bounded and cannot loop.
+- `agent_before_settle` is deferred, verified against the pi 1.0.3 runtime: the settle boundary never runs after an abort (`_agentRunAbortRequested` breaks the loop before it), so it cannot improve the abort finalization path; completed runs always end on the report turn, so there is nothing to salvage; and error outcomes are already bounded by pi's auto-retry, so a continuation there would mostly buy a duplicate failure while delaying settlement.
+
+## Codemode and tool_search policy (pi built-in extensions)
+
+Pi 1.0.x ships two inactive-by-default built-in extensions: `codemode` (run JavaScript calling other tools in a QuickJS sandbox) and `tool_search` (rank undeclared tools and declare the matches for the next call).
+Neither is part of any role's default allowlist unless the template names it.
+
+- The worker template names `codemode`.
+  A worker can use it to batch independent calls with `Promise.allSettled` and filter large output before it costs model context.
+  S13-003 removed the old observability objection: calls a script makes route through the same tool hooks, consume the same role budgets, are refused at the limit like model-issued calls, and surface as `nested:N`.
+  The body guidance in the template pins that discipline (`## Codemode discipline`).
+- `codemode` stays out of the read-only roles (planner, scout, reviewer, validator): their evidence trail should stay individually visible and attributable in the transcript, not aggregated inside a script's return value.
+- `tool_search` is deliberately excluded from every role allowlist.
+  Each role's `tools:` frontmatter is an allowlist handed to the child through `--tools` (`buildLaunchCommand`), and self-activating undeclared tools would undermine exactly that; child sessions also have no deferred/codemode-exposure servers by default, so there is no payoff.
+  If a future use case appears, adopt it deliberately for the minimal role set, not by default.
+
 ## Tests and checks
 
 Install dependencies with `npm install`.

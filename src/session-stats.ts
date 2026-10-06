@@ -192,6 +192,7 @@ function lastRunLine(entry: RegistryEntry): string | null {
 	const run = entry.lastRun;
 	if (!run) return null;
 	const parts = [`tools:${run.toolCalls}`];
+	if (run.nestedToolCalls) parts.push(`nested:${run.nestedToolCalls}`);
 	if (run.failedToolCalls) parts.push(`tool-errors:${run.failedToolCalls}`);
 	if (run.repeatedReads) parts.push(`rereads:${run.repeatedReads}`);
 	if (run.manifestRereads) parts.push(`manifest-rereads:${run.manifestRereads}`);

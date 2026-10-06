@@ -263,6 +263,19 @@ describe('ledger write protection (D1)', () => {
 			expect(tools.filter((tool) => HERDR_TOOLS.has(tool))).toEqual([]);
 		}
 	});
+
+	it('keeps tool_search and codemode out of the read-only role allowlists', () => {
+		for (const role of ['scout', 'planner', 'reviewer', 'validator']) {
+			const tools = allowlist(role);
+			expect(tools, `${role} must not activate undeclared tools`).not.toContain('tool_search');
+			expect(tools, `${role} keeps every evidence call in the transcript`).not.toContain(
+				'codemode',
+			);
+		}
+		// codemode deliberately lands on the worker only; the budget hooks meter the calls its
+		// scripts make, so the extra observability surface is the worker's alone to spend.
+		expect(allowlist('worker')).toContain('codemode');
+	});
 });
 
 describe('ledger pointers', () => {

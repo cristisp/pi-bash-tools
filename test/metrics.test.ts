@@ -4,6 +4,50 @@ import { measureExecutionMetrics, outputTokensOf } from '../src/metrics.ts';
 import { assistantMsg, makeSingleResult, toolResultMsg } from './helpers.ts';
 
 describe('measureExecutionMetrics', () => {
+	it('counts nested calls once from the bounded nestedCalls record', () => {
+		// S13-003: nested ctx.executeTool calls never enter the transcript, so the model-issued
+		// counters cannot see them; the parent result's bounded record is the only transcript
+		// surface and each nested call is flattened into exactly one record.
+		const messages = [
+			assistantMsg('scripted', {
+				usage: { output: 30, totalTokens: 40 },
+				toolCalls: [{ id: 'c1', name: 'bash', args: {} }],
+			}),
+			{
+				...toolResultMsg('c1'),
+				nestedCalls: {
+					calls: [
+						{ id: 'c1/1', name: 'read', status: 'ok' as const },
+						{ id: 'c1/2', name: 'read', status: 'error' as const },
+					],
+					complete: true,
+				},
+			},
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+		expect(metrics.toolCalls).toBe(1);
+		expect(metrics.nestedToolCalls).toBe(2);
+		expect(metrics.failedToolCalls).toBe(0);
+		expect(metrics.repeatedReads).toBe(0);
+	});
+
+	it('counts an incomplete nestedCalls record as the lower bound it attests to', () => {
+		const messages = [
+			assistantMsg('scripted', { toolCalls: [{ id: 'c1', name: 'bash', args: {} }] }),
+			{
+				...toolResultMsg('c1'),
+				nestedCalls: {
+					calls: [{ id: 'c1/1', name: 'read', status: 'unfinished' as const }],
+					complete: false,
+				},
+			},
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+		expect(metrics.nestedToolCalls).toBe(1);
+	});
+
 	it('counts classified calls, failed calls, repeated reads, and output tokens', () => {
 		const messages = [
 			assistantMsg('work', {

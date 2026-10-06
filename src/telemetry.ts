@@ -41,6 +41,7 @@ function metricsFallback(result: SingleResult): ExecutionMetrics {
 	return {
 		durationMs: 0,
 		toolCalls: 0,
+		nestedToolCalls: 0,
 		failedToolCalls: 0,
 		repeatedReads: 0,
 		messageCount: result.messages.length,
@@ -174,6 +175,7 @@ export function buildCompositionTelemetryRecord(
 		metrics: {
 			durationMs: 0,
 			toolCalls: 0,
+			nestedToolCalls: 0,
 			failedToolCalls: 0,
 			repeatedReads: 0,
 			messageCount: 0,

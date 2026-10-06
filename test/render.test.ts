@@ -222,6 +222,7 @@ describe('renderSubagentResult - single collapsed', () => {
 			metrics: {
 				durationMs: 1500,
 				toolCalls: 2,
+				nestedToolCalls: 0,
 				failedToolCalls: 0,
 				repeatedReads: 0,
 				messageCount: 3,

@@ -273,6 +273,7 @@ function recordExecutionMetrics(
 		limits,
 		{
 			toolCalls: metrics.toolCalls,
+			nestedToolCalls: metrics.nestedToolCalls,
 			discoveryCalls: metrics.discoveryCalls ?? 0,
 			fullValidationPasses: metrics.fullValidationPasses ?? 0,
 			failedToolCalls: metrics.failedToolCalls,

@@ -36,6 +36,7 @@ function normalizedPath(value: string): string {
 
 export function measureExecutionMetrics(result: SingleResult, startedAt: number): ExecutionMetrics {
 	let toolCalls = 0;
+	let nestedToolCalls = 0;
 	let failedToolCalls = 0;
 	let repeatedReads = 0;
 	let manifestRereads = 0;
@@ -132,6 +133,10 @@ export function measureExecutionMetrics(result: SingleResult, startedAt: number)
 			maxContextTokens = Math.max(maxContextTokens, message.usage?.totalTokens || 0);
 		} else if (message.role === 'toolResult') {
 			if (message.isError) failedToolCalls++;
+			// Nested calls (ctx.executeTool) never enter the transcript; their bounded record is kept
+			// on the calling tool's result message, flattened per parent, so each nested call is
+			// counted exactly once here. An incomplete record (`complete: false`) is a lower bound.
+			nestedToolCalls += message.nestedCalls?.calls.length ?? 0;
 			const pendingCall = validationCalls.get(message.toolCallId);
 			// A result settles only the call with both the same id and originating tool name. Removing
 			// it before extracting evidence makes duplicate results inert without changing tool failure
@@ -193,6 +198,7 @@ export function measureExecutionMetrics(result: SingleResult, startedAt: number)
 	return {
 		durationMs: Math.max(0, Date.now() - startedAt),
 		toolCalls,
+		nestedToolCalls,
 		failedToolCalls,
 		repeatedReads,
 		manifestRereads,

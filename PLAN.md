@@ -23,10 +23,19 @@ The extension already uses UI-prompt events and per-tool `renderCall`/`renderRes
   Implemented as metadata only, with no runtime behavior change: all four tools declare `exposure: "direct"` explicitly, so they stay model-declared and callable through `ctx.executeTool()` and codemode scripts while they are active, and a session that excludes a tool through `--tools` or settings excludes it from programmatic callers too.
   `subagent` and `subagent_override` declare `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: false`; `subagent_stats` declares `readOnlyHint: true`, `idempotentHint: true`; `subagent_close` declares `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: true`; `openWorldHint` stays unset.
   No tool declares a `namespace` and `defaultActive` stays at its default, so the tools stay ungrouped and the model-facing toolset is unchanged; `test/tools.test.ts` pins the exposure, the annotations, the absence of a `defaultActive` override, and the absence of a namespace, and no code path reads annotations.
-- [ ] **S13-003: Nested tool-call accounting.** Pi 0.99 routes `ctx.executeTool()` calls through normal tool hooks and marks them with `parentToolCallId`, but does not add separate transcript entries for them.
+- [x] **S13-003: Nested tool-call accounting.** Pi 0.99 routes `ctx.executeTool()` calls through normal tool hooks and marks them with `parentToolCallId`, but does not add separate transcript entries for them.
   Decide whether nested calls should consume role budgets and how session statistics represent them, then test that the chosen policy neither double-counts nor bypasses enforcement.
-- [ ] **S13-004: Agent finalization boundaries.** Evaluate whether `agent_before_settle` or actionable `turn_end` can improve budget or review finalization compared with the current abort/steer path.
+  Implemented: nested calls consume the same per-role budgets.
+  Pi 1.0.3 routes them through the same `tool_call`/`tool_result` hooks, so enforcement already applied to them and a codemode loop cannot bypass a budget; tests pin that a nested call over the limit is refused exactly like a model-issued call and that a nested failure is charged as a tool failure.
+  `BudgetUsage.nestedToolCalls` records their share on the enforcement surface; transcript-derived metrics (`ExecutionMetrics.nestedToolCalls`, shown as `nested:N` in run summaries and `subagent_stats`) count each call exactly once from the bounded `nestedCalls` record the parent tool result carries, treating `complete: false` records as lower bounds.
+  Double counting is structurally excluded: nested calls produce no transcript tool-call entries, and pi folds nested usage into the parent result message's `usage`, which the transcript accounting already reads.
+  The added counter follows the same two-surface split as every other usage counter: the registry ledger counts hook-side calls per agent run and is never derived from transcript evidence, while `result.budget` is a report view rebuilt from transcript metrics and takes the count from the bounded `nestedCalls` records.
+  For a single finished run the two agree (pinned by test); across several agent runs, or with enforcement inactive, they can differ, and the ledger remains the enforcement authority regardless of what the report view shows.
+- [x] **S13-004: Agent finalization boundaries.** Evaluate whether `agent_before_settle` or actionable `turn_end` can improve budget or review finalization compared with the current abort/steer path.
   Adopt these boundaries only if they provide a bounded, loop-safe behavior with clearer validation evidence.
+  Adopted one `turn_end`-derived boundary: once a run's report turn ends (no tool calls), later wall-time breaches are recorded for telemetry but no longer steer or abort.
+  Previously such a breach queued a steer that bought a second, shorter report or relaunched a settled session; the gate is a per-run flag reset in `before_agent_start`, so it is bounded and cannot loop, and a test pins that the breach is kept while the session is neither steered nor aborted.
+  `agent_before_settle` is deferred with runtime-verified rationale: it never fires after an abort, so it cannot improve the abort path; completed runs always end on the report turn, so there is nothing to salvage; and error outcomes are already bounded by pi's auto-retry, so continuing there would mostly buy a duplicate failure while delaying settlement.
 - [x] **S13-005: Built-in tool and provider compatibility.** Audit whether Windows `powershell` calls receive the same budget and write-guard treatment as other implementation tools.
   Check configuration and preset guidance for Pi 1.0.3's `azure-openai-responses` to `azure` provider rename without adding an Azure-specific dependency to the extension.
   Audit result: no code change needed.
@@ -39,7 +48,8 @@ In scope: `src/tools.ts`, `src/budget.ts`, `src/session-stats.ts`, `src/config.t
 Out of scope: replacing separate child Pi sessions with `ctx.executeTool()`, adding custom providers or MCP servers, blanket migration to `registerToolRenderer()`, and pinning peer dependencies as part of this feature review.
 Complete this workstream only after each candidate is either implemented with focused regression tests or explicitly deferred with its rationale.
 
-Implementation status: S13-001, S13-002, and S13-005 are implemented with focused regression tests; S13-003 and S13-004 remain open.
+Implementation status: S13-001 through S13-005 are implemented with focused regression tests.
+A follow-up adoption decision landed after the review: the worker template now names pi's `codemode` built-in extension (the read-only roles do not, and `tool_search` is excluded from every role) because S13-003's shared-hook accounting removed the observability objection; the policy is documented in `docs/development.md` and pinned by template tests.
 
 ## S14: review-surface delta evidence
 
@@ -89,7 +99,7 @@ Implementation status: S14 is implemented with focused regression tests; primary
 - The current uncommitted tree carries five workstreams: S4 measurement-semantics fixes, T-014 blocked-subagent reporting, the spawn boundary, S11 evidence-reacquisition and Tier 2 finalization hardening, and S12 compact child-context handoffs.
 - S11 implementation is present in the uncommitted tree. The current `@ztc/bash-tools` 1.1.7 source confirms the `{ ref }` lookup contract and flow publication schema; its fresh-process runtime completion gate remains open.
 - S12 compact child-context handoffs are implemented and review-clean. They reduce unnecessary historical ledger and manifest discovery without changing role budgets, scope enforcement, or producer ownership. The final repository verification passed after the last remediation.
-- S13-001 structured subagent results, the S13-002 tool metadata decisions, and the S13-005 audit are implemented on top of head `2b34be7`; S13-003 and S13-004 remain open.
+- S13-001 structured subagent results, the S13-002 tool metadata decisions, S13-003 nested tool-call accounting, S13-004 report-turn finalization, and the S13-005 audit are implemented on top of head `75dc5085`; the codemode/tool_search toolset policy landed as an S13-003 follow-up.
 - S14 review-surface delta evidence is implemented on top of head `2b34be7`, passed primary review (reviewer-63), and its F-001 to F-006 findings are remediated; re-review is pending.
 
 ## S4: decide whether `warn` can become `enforce`

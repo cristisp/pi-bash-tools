@@ -366,6 +366,7 @@ describe('runSingleAgent - failures', () => {
 				limits: roleBudgetFor('worker'),
 				usage: {
 					toolCalls: 25,
+					nestedToolCalls: 0,
 					discoveryCalls: 0,
 					fullValidationPasses: 0,
 					failedToolCalls: 0,
