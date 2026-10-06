@@ -4,6 +4,7 @@ import { mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { Check } from "typebox/value";
 import { afterEach, expect, it, vi } from "vitest";
 
 import type { AuthorizationOutcomeRecord } from "../../src/observability/authorization-outcome.ts";
@@ -29,7 +30,11 @@ import {
 import { validateVerifyInput } from "../../src/tools/verify/schema.ts";
 import { createVerifyToolForTesting } from "../../src/tools/verify/tool.ts";
 import type { VerifyToolContext } from "../../src/tools/verify/tool.ts";
-import type { VerifyEvidenceRecord, VerifyPhase } from "../../src/tools/verify/types.ts";
+import {
+  verifyOutputSchema,
+  type VerifyEvidenceRecord,
+  type VerifyPhase,
+} from "../../src/tools/verify/types.ts";
 import {
   createGitIntegrationFixtures,
   gitIntegration,
@@ -206,6 +211,17 @@ it("runs fixed phases in order, exposes omissions, and reuses unchanged evidence
   expect(lookup.details.perStep[0]).toHaveProperty("resolvedCommand");
   expect(lookup.details.perStep[0]).toHaveProperty("executable");
   expect(lookup.details.perStep[0]).toHaveProperty("args");
+  expect(tool.outputSchema).toBe(verifyOutputSchema);
+  for (const verifyResult of [first, second, lookup]) {
+    expect(
+      Check(verifyOutputSchema, verifyResult.structuredContent),
+      JSON.stringify(verifyResult.structuredContent),
+    ).toBe(true);
+    expect(verifyResult.structuredContent).toEqual(verifyResult.details);
+    const textEntry = verifyResult.content[0];
+    if (textEntry?.type !== "text") throw new Error("expected text content");
+    expect(JSON.parse(textEntry.text ?? "")).toEqual(verifyResult.structuredContent);
+  }
   const aborted = new AbortController();
   aborted.abort();
   await expect(

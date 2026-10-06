@@ -159,6 +159,16 @@ Only the reference enters the message; the realized publication outcome stays in
 
 `node_project_info` also exposes `nodeVersion`, `manifestPresent`, `packageManager`, `scripts`, and `applicableCommands` when available.
 
+## Structured content contract
+
+The tool declares `outputSchema` (the `projectCommandModelContentSchema` projection) and mirrors the model-facing JSON text exactly in `structuredContent`, for executions, cached reuse, and evidence lookups.
+
+The schema describes the compact, sanitized projection, not the full `details`: internal metadata such as fingerprints, policy and reuse policy ids, invocation and tool-call ids, durations, relevant inputs, scope, and repository state stays only in `details` and never enters `structuredContent`.
+
+This keeps the payload bounded and honors the rule that structured content never adds data beyond what the model-facing text already exposes.
+
+If scripts later need full raw streams or internal metadata, the projection is the wrong shape and this contract should be revisited rather than widened piecemeal.
+
 ## Caching and evidence
 
 Static observations can use static reuse, while project metadata can use metadata-sensitive reuse.

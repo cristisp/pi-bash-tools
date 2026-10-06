@@ -1,4 +1,7 @@
+import { Type } from "typebox";
+
 import type { ResultCategory } from "../errors.ts";
+import { RESULT_CATEGORIES } from "../errors.ts";
 import type { ProjectCommandCacheDecision } from "./cache.ts";
 import { definedObjectProperties } from "./defined-properties.ts";
 import { sanitizeProjectCommandText } from "./diagnostics.ts";
@@ -113,6 +116,133 @@ export interface ProjectCommandModelContent {
   readonly publication?: ProjectCommandEvidencePublication;
   readonly coercions?: readonly string[];
 }
+
+const projectCommandOutputSchema = Type.Object(
+  {
+    text: Type.String({ description: "Sanitized stream text, compacted when bounded." }),
+    truncated: Type.Boolean({ description: "Whether the original stream text was bounded." }),
+    totalBytes: Type.Integer({ description: "Inspected UTF-8 byte count.", minimum: 0 }),
+    totalLines: Type.Integer({ description: "Full stream line count.", minimum: 0 }),
+  },
+  { additionalProperties: false },
+);
+
+const projectCommandErrorContractSchema = Type.Object(
+  {
+    code: Type.String({ description: "Stable machine-readable failure code." }),
+    category: Type.Union(
+      RESULT_CATEGORIES.filter((category) => category !== "PASS").map((category) =>
+        Type.Literal(category),
+      ),
+      { description: "Failure category." },
+    ),
+    explanation: Type.String({ description: "Bounded human-readable failure explanation." }),
+    invalidField: Type.Optional(
+      Type.String({ description: "Request field that made the request invalid." }),
+    ),
+    correctedExample: Type.Optional(
+      Type.Unknown({ description: "Example request shape that would satisfy validation." }),
+    ),
+    suggestedAction: Type.Optional(Type.String({ description: "Suggested next action." })),
+    retryable: Type.Boolean({ description: "Whether a retry can succeed." }),
+    executed: Type.Boolean({ description: "Whether the command was attempted." }),
+    shapeDeterministic: Type.Optional(
+      Type.Boolean({ description: "Whether the failure depends only on the request shape." }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const projectCommandPublicationSchema = Type.Object(
+  {
+    scope: Type.Union([Type.Literal("root"), Type.Literal("flow")], {
+      description: "Publication scope.",
+    }),
+    flowId: Type.Optional(Type.String({ description: "Target flow identifier." })),
+    published: Type.Boolean({ description: "Whether the evidence was published." }),
+    error: Type.Optional(Type.String({ description: "Bounded publication failure reason." })),
+  },
+  { additionalProperties: false },
+);
+
+export const projectCommandModelContentSchema = Type.Object(
+  {
+    commandId: Type.String({ description: "Executed fixed command identifier." }),
+    projectPath: Type.String({ description: "Canonical project directory." }),
+    status: Type.Union(
+      ["success", "nonzero", "timeout", "spawn-failure", "cancelled"].map((value) =>
+        Type.Literal(value),
+      ),
+      { description: "Execution outcome status." },
+    ),
+    category: Type.Union(
+      RESULT_CATEGORIES.map((category) => Type.Literal(category)),
+      { description: "Result category." },
+    ),
+    executed: Type.Boolean({ description: "Whether the command was attempted." }),
+    exit: Type.Object(
+      {
+        code: Type.Union([Type.Integer(), Type.Null()], {
+          description: "Process exit code, or null.",
+        }),
+        signal: Type.Union([Type.String(), Type.Null()], {
+          description: "Termination signal, or null.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    timedOut: Type.Boolean({ description: "Whether the process timed out." }),
+    cancelled: Type.Boolean({ description: "Whether the execution was cancelled." }),
+    resolvedCommand: Type.String({ description: "Human-readable resolved command." }),
+    parameters: Type.Record(Type.String(), Type.Unknown(), {
+      description: "Effective parameters for the command.",
+    }),
+    stdout: projectCommandOutputSchema,
+    stderr: projectCommandOutputSchema,
+    error: Type.Optional(projectCommandErrorContractSchema),
+    diagnostic: Type.Optional(Type.String({ description: "Bounded diagnostic detail." })),
+    suggestedAction: Type.Optional(Type.String({ description: "Suggested next action." })),
+    projectInfo: Type.Optional(
+      Type.Unknown({
+        description: "Structured project info; NodeProjectInfo for node_project_info.",
+      }),
+    ),
+    nodeVersion: Type.Optional(Type.String({ description: "Node.js runtime version." })),
+    manifestPresent: Type.Optional(
+      Type.Boolean({ description: "Whether a package.json manifest was found." }),
+    ),
+    packageManager: Type.Optional(
+      Type.Unknown({ description: "Detected package manager info, when available." }),
+    ),
+    scripts: Type.Optional(
+      Type.Array(Type.String(), { description: "Top-level package.json scripts." }),
+    ),
+    applicableCommands: Type.Optional(
+      Type.Array(Type.String(), { description: "Fixed command ids available in the project." }),
+    ),
+    reused: Type.Boolean({ description: "Whether the result came from the evidence cache." }),
+    forced: Type.Boolean({ description: "Whether the cached evidence was forced to rerun." }),
+    cacheDecision: Type.Union(
+      ["miss", "hit", "forced", "ineligible", "invalidated"].map((value) => Type.Literal(value)),
+      { description: "Evidence cache decision." },
+    ),
+    producerScope: Type.Optional(
+      Type.Union([Type.Literal("session"), Type.Literal("flow")], {
+        description: "Evidence scope of the producing run.",
+      }),
+    ),
+    ref: Type.Optional(Type.String({ description: "Stable pc_ evidence reference." })),
+    publication: Type.Optional(projectCommandPublicationSchema),
+    coercions: Type.Optional(
+      Type.Array(Type.String(), { description: "Request fields normalized or rejected up front." }),
+    ),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Compact sanitized projection of the project_command result, identical to the model-facing JSON text. Internal metadata such as fingerprints, policy ids, durations, and repository state is omitted; see projectCommandModelContent.",
+  },
+);
 
 function modelProjectInfo(details: ProjectCommandOutputDetails): Readonly<Record<string, unknown>> {
   const projectInfo = details.projectInfo;

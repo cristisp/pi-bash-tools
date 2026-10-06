@@ -15,6 +15,7 @@ import {
 } from "./definitions.ts";
 import { createProjectCommandEvidenceStore, type ProjectCommandEvidenceStore } from "./evidence.ts";
 import { createProjectCommandExecutor } from "./execution.ts";
+import { projectCommandModelContentSchema } from "./model-content.ts";
 import type { ProjectCommandOutputDetails } from "./output.ts";
 import type { ProjectCommandRelevantInputDiscovery } from "./relevant-inputs.ts";
 import type { ProjectCommandRepositoryStateReader } from "./repository-state.ts";
@@ -138,6 +139,7 @@ function createToolWithDependencies<const Definitions extends readonly ProjectCo
       "Inspect Node project state, list top-level dependencies, run one exact Node package script or validated variant including lint fixes and formatting, or run one fixed Fallow analysis",
     promptGuidelines: [...PROJECT_COMMAND_PROMPT_GUIDELINES],
     parameters,
+    outputSchema: projectCommandModelContentSchema,
     executionMode: "sequential",
     renderCall(args, theme) {
       const options: Record<string, unknown> = Object.assign({}, args);

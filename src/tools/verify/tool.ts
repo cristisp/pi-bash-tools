@@ -55,6 +55,7 @@ import {
   type ResolvedProjectCommand,
 } from "../project-command/resolution.ts";
 import type { ProjectCommandExecutor } from "../project-command/runner.ts";
+import { toJsonValue } from "../value-validation.ts";
 import { createVerifyEvidenceCache, type VerifyEvidenceCache } from "./cache.ts";
 import { type VerifyErrorDetailsRecorder, verifyToolErrorDetails } from "./error-details.ts";
 import {
@@ -83,6 +84,7 @@ import {
 import {
   VERIFY_CACHE_FORMAT_VERSION,
   VERIFY_PHASES,
+  verifyOutputSchema,
   type VerifyEvidenceRecord,
   type VerifyOutput,
   type VerifyPhase,
@@ -143,6 +145,7 @@ function result(details: VerifyOutput): AgentToolResult<VerifyOutput> {
   return {
     content: [{ type: "text", text: JSON.stringify(details) }],
     details,
+    structuredContent: toJsonValue(details),
   };
 }
 
@@ -1773,6 +1776,7 @@ function createVerifyToolWithDependencies(
       "Run package-script format, lint, typecheck, and test phases in fixed order with bounded validation evidence and stable lookup references. Execution preflights package scripts and rejects any non-omitted phase whose selected script is unavailable; retry with that phase in omit. Use fresh: true to rerun without changing the evidence key, and use ref with optional flowId only for lookup without execution. Executing requests may include covers and publish: { flowId }. Root-session refs are process-scoped; flow refs are durable only within an authorized flow.",
     promptSnippet: "Run fixed-order project verification",
     parameters: verifyInputSchema,
+    outputSchema: verifyOutputSchema,
     executionMode: "sequential",
     renderCall(_args, theme) {
       return renderCallLine(theme, "verify", []);

@@ -110,6 +110,14 @@ The default per-step verification guard is 2 minutes, and the default aggregate 
 
 These guards are separate from the 30-second project-command process timeout.
 
+## Structured content contract
+
+The tool declares `outputSchema` (the `verifyOutputSchema` mirror of `VerifyOutput`) and returns `structuredContent` that is exactly the model-facing JSON text, for executions, unchanged reuse, and lookups.
+
+Unlike `project_command`, the model-facing text is already the full `details`, so the mirror is exact and nothing is projected away.
+
+Failures throw and carry no structured content.
+
 ## Evidence and freshness
 
 A successful execution can return a `vr_` evidence reference when repository state is readable and stable.

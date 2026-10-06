@@ -1,5 +1,6 @@
 import { writeFile, realpath } from "node:fs/promises";
 
+import { Check } from "typebox/value";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -13,6 +14,7 @@ import type {
 import {
   PROJECT_COMMAND_MODEL_OUTPUT_MAX_CHARS,
   projectCommandModelContent,
+  projectCommandModelContentSchema,
 } from "../../src/tools/project-command/model-content.ts";
 import type { ProjectCommandOutputDetails } from "../../src/tools/project-command/output.ts";
 import { resolveFixedProjectCommand } from "../../src/tools/project-command/resolution.ts";
@@ -368,6 +370,12 @@ describe("projectCommandModelContent", () => {
     for (const key of OMITTED_INTERNAL_KEYS) {
       expect(content, `serialized content must not expose ${key}`).not.toHaveProperty(key);
     }
+    expect(tool.outputSchema).toBe(projectCommandModelContentSchema);
+    expect(
+      Check(projectCommandModelContentSchema, response.structuredContent),
+      JSON.stringify(response.structuredContent),
+    ).toBe(true);
+    expect(response.structuredContent).toEqual(content);
     const ref = content.ref;
     expect(typeof ref === "string" && ref.startsWith("pc_")).toBe(true);
     expect("publication" in content).toBe(false);
@@ -426,5 +434,13 @@ describe("projectCommandModelContent", () => {
     const lookedUpContent = parsedTextContent(lookedUp);
     expect(lookedUpContent.ref).toBe(ref);
     expect("publication" in lookedUpContent).toBe(false);
+    expect(tool.outputSchema).toBe(projectCommandModelContentSchema);
+    for (const response of [executed, lookedUp]) {
+      expect(
+        Check(projectCommandModelContentSchema, response.structuredContent),
+        JSON.stringify(response.structuredContent),
+      ).toBe(true);
+      expect(response.structuredContent).toEqual(parsedTextContent(response));
+    }
   });
 });

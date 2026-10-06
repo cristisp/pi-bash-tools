@@ -45,3 +45,5 @@ Tools that declare an `outputSchema` also return `structuredContent`, the same m
 The host does not validate `structuredContent` against the declared schema, so package tests enforce conformance for every result mode.
 
 Project commands and verification also expose status, category or verdict, execution state, cache state, repository state, and evidence metadata as described in their dedicated pages.
+
+`project_command` is the one exception to the full-details mirror: its `structuredContent` is the compact, sanitized projection that is also the model-facing JSON text, not the full `details`, because the full details add unbounded streams and internal metadata that must not widen the programmatic payload.

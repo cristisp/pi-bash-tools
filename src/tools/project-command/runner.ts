@@ -33,6 +33,7 @@ import {
 } from "../errors.ts";
 import { findProjectCommandPolicyDecision } from "../policy/decisions.ts";
 import type { CommandIdentity, PolicyStore } from "../policy/types.ts";
+import { toJsonValue } from "../value-validation.ts";
 import {
   createProjectCommandDiskResultCache,
   createProjectCommandResultCache,
@@ -140,12 +141,22 @@ export type ProjectCommandExecute<Definitions extends readonly ProjectCommandDef
   ctx: ProjectCommandToolContext,
 ) => Promise<AgentToolResult<ProjectCommandOutputDetails>>;
 
+/**
+ * Deliberate exception to the full-details mirror used by the other tools: the
+ * model-facing text is already the compact, sanitized projection, so
+ * `structuredContent` mirrors that projection instead of the full details.
+ * Full details would add up to 48 KB per stream plus internal metadata
+ * (fingerprints, policy ids, durations, repository state) that must not widen
+ * the programmatic payload. Revisit in PLAN.md if scripts need full streams.
+ */
 function result(
   details: ProjectCommandOutputDetails,
 ): AgentToolResult<ProjectCommandOutputDetails> {
+  const modelContent = projectCommandModelContent(details);
   return {
-    content: [{ type: "text", text: JSON.stringify(projectCommandModelContent(details)) }],
+    content: [{ type: "text", text: JSON.stringify(modelContent) }],
     details,
+    structuredContent: toJsonValue(modelContent),
   };
 }
 
