@@ -40,6 +40,9 @@ The `ref` form rejects `paths`, `publish`, `range`, execution options, and any o
 
 A published-evidence lookup returns `{ "results": [], "lookup": { ... } }` and never executes a file read or a command.
 
+`read_batch` declares an `outputSchema` covering the execution result, the unchanged repeat items, the aggregate-limit continuation, the publication block, and the lookup payload, and returns the same payload as `structuredContent` for successful results.
+Failures throw as before and carry no structured content.
+
 ### Publication
 
 An execution request may opt into flow publication with `"publish": { "flowId": "flow-1" }` alongside `paths`.

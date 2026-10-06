@@ -17,15 +17,21 @@ import {
   type ToolInventorySourceInfo,
 } from "./types.ts";
 
-export type ToolInventoryAPI = Pick<ExtensionAPI, "appendEntry" | "getActiveTools" | "getAllTools">;
-export type ToolInventoryContext = {
-  readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">;
-};
-
-type ToolInfoWithOptionalMetadata = ToolInfo & {
+/** Tool metadata is untrusted runtime data and may carry values outside this SDK version's types. */
+export type ToolInfoWithOptionalMetadata = Omit<
+  ToolInfo,
+  "annotations" | "exposure" | "namespace"
+> & {
   readonly annotations?: unknown;
   readonly exposure?: unknown;
   readonly namespace?: unknown;
+};
+
+export type ToolInventoryAPI = Pick<ExtensionAPI, "appendEntry" | "getActiveTools"> & {
+  readonly getAllTools: () => readonly ToolInfoWithOptionalMetadata[];
+};
+export type ToolInventoryContext = {
+  readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionId">;
 };
 
 function compareStrings(left: string, right: string): number {

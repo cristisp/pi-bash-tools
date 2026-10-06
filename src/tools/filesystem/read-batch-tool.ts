@@ -62,7 +62,7 @@ import type { ProjectCommandRepositoryStateReader } from "../project-command/rep
 import { createProjectCommandRepositoryStateReader } from "../project-command/repository-state.ts";
 import { stripNullProperties } from "../project-command/schema/validation.ts";
 import { decodeUtf8Prefix } from "../truncation.ts";
-import { FLOW_ID_PATTERN } from "../value-validation.ts";
+import { FLOW_ID_PATTERN, toJsonValue } from "../value-validation.ts";
 import {
   authorizeAndPersistFilesystemAccesses,
   loadFilesystemPolicyForRequest,
@@ -284,6 +284,169 @@ export interface ReadBatchDetails {
   readonly lookup?: ReadEvidenceLookupResult;
   readonly coercions?: readonly string[];
 }
+
+const readBatchOutputBlockSchema = Type.Object(
+  {
+    truncated: Type.Boolean({ description: "Whether text was bounded." }),
+    totalBytes: Type.Integer({ description: "Inspected UTF-8 byte count.", minimum: 0 }),
+    totalLines: Type.Integer({ description: "Full-file line count.", minimum: 0 }),
+  },
+  { additionalProperties: false },
+);
+
+const readBatchRangeSchema = Type.Object(
+  {
+    offset: Type.Optional(Type.Integer({ description: "1-indexed first line.", minimum: 1 })),
+    limit: Type.Optional(Type.Integer({ description: "Line count.", minimum: 1 })),
+  },
+  { additionalProperties: false },
+);
+
+const readBatchPathErrorSchema = Type.Object(
+  {
+    code: Type.String({ description: "Stable error code." }),
+    message: Type.String({ description: "Bounded model-facing error text." }),
+    category: Type.Optional(Type.String({ description: "Error category." })),
+    retryable: Type.Optional(Type.Boolean({ description: "Whether a retry may succeed." })),
+    executed: Type.Optional(Type.Boolean({ description: "Whether work executed before failing." })),
+    ruleKind: Type.Optional(Type.String({ description: "Policy rule classification." })),
+    authorizedRoots: Type.Optional(
+      Type.Array(Type.String(), {
+        description: "Authorized root paths supporting the denial, bounded.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const readBatchPathResultSchema = Type.Object(
+  {
+    path: Type.String({ description: "Workspace-relative path of the read file." }),
+    range: Type.Optional(readBatchRangeSchema),
+    unchanged: Type.Optional(
+      Type.Boolean({ description: "True when the item served an unchanged prior read." }),
+    ),
+    ref: Type.Optional(
+      Type.String({ description: "Process-local rr_ read evidence reference for this item." }),
+    ),
+    contentHash: Type.Optional(
+      Type.String({ description: "Lowercase SHA-256 digest of the full file bytes." }),
+    ),
+    content: Type.Optional(Type.String({ description: "Bounded file text." })),
+    output: Type.Optional(readBatchOutputBlockSchema),
+    error: Type.Optional(readBatchPathErrorSchema),
+  },
+  { additionalProperties: false },
+);
+
+const readEvidenceLookupEntrySchema = Type.Object(
+  {
+    path: Type.String({ description: "Workspace-relative path of the recorded entry." }),
+    range: Type.Optional(readBatchRangeSchema),
+    contentHash: Type.Optional(
+      Type.String({ description: "Lowercase SHA-256 digest of the recorded file bytes." }),
+    ),
+    status: Type.Union(
+      [
+        Type.Literal("unchanged"),
+        Type.Literal("changed"),
+        Type.Literal("unreadable"),
+        Type.Literal("unauthorized"),
+      ],
+      { description: "Reauthorization and re-derivation status of the recorded entry." },
+    ),
+    content: Type.Optional(
+      Type.String({ description: "Bounded stored text, present only when unchanged." }),
+    ),
+    output: Type.Optional(readBatchOutputBlockSchema),
+  },
+  { additionalProperties: false },
+);
+
+const sharedEvidenceWorkspaceBlockSchema = Type.Object(
+  {
+    repositoryId: Type.String({ description: "SHA-256 hex digest of the repository identity." }),
+    head: Type.Union([Type.String(), Type.Null()], {
+      description: "Repository HEAD commit, or null when unavailable.",
+    }),
+    dirtyDigest: Type.Union([Type.String(), Type.Null()], {
+      description: "SHA-256 hex digest of the dirty-file identities, or null when unavailable.",
+    }),
+    status: Type.Union([Type.Literal("readable"), Type.Literal("degraded")], {
+      description: "Observation health.",
+    }),
+  },
+  { additionalProperties: false },
+);
+
+const readBatchLookupSchema = Type.Object(
+  {
+    ref: Type.String({ description: "Resolved rr_ read evidence reference." }),
+    covers: Type.Optional(
+      Type.Array(Type.String(), { description: "Attribution identifiers requested with the ref." }),
+    ),
+    executed: Type.Literal(false),
+    repositoryStateStatus: Type.Union(
+      [Type.Literal("matches"), Type.Literal("mismatch"), Type.Literal("unreadable")],
+      {
+        description: "Workspace comparison status between the stored and the current observation.",
+      },
+    ),
+    entries: Type.Array(readEvidenceLookupEntrySchema, {
+      description: "Per-path reauthorization and content re-derivation results.",
+    }),
+    workspace: Type.Optional(sharedEvidenceWorkspaceBlockSchema),
+    currentWorkspace: Type.Optional(sharedEvidenceWorkspaceBlockSchema),
+  },
+  { additionalProperties: false },
+);
+
+const readBatchPublicationSchema = Type.Object(
+  {
+    scope: Type.Literal("flow"),
+    flowId: Type.String({ description: "Target orchestration flow identifier." }),
+    published: Type.Boolean({ description: "Whether the evidence was published." }),
+    ref: Type.Optional(Type.String({ description: "Published rr_ reference on success." })),
+    error: Type.Optional(Type.String({ description: "Bounded publication error." })),
+  },
+  { additionalProperties: false },
+);
+
+export const readBatchDetailsSchema = Type.Object(
+  {
+    results: Type.Array(readBatchPathResultSchema, {
+      description: "Per-path results in request order.",
+    }),
+    continuation: Type.Optional(
+      Type.Object(
+        {
+          nextIndex: Type.Integer({
+            description: "Request index of the first skipped path.",
+            minimum: 0,
+          }),
+          totalPaths: Type.Integer({
+            description: "Total requested path count.",
+            minimum: 1,
+            maximum: 32,
+          }),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+    publish: Type.Optional(readBatchPublicationSchema),
+    lookup: Type.Optional(readBatchLookupSchema),
+    coercions: Type.Optional(
+      Type.Array(Type.String(), {
+        description: "Descriptions of request fields normalized or rejected up front.",
+      }),
+    ),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Bounded batch read or evidence lookup payload, also returned as the model-facing JSON text.",
+  },
+);
 
 export type ReadBatchToolContext = FilesystemAuthorizationContext & {
   readonly sessionManager?: Pick<ExtensionContext["sessionManager"], "getSessionId">;
@@ -1139,6 +1302,7 @@ function result(details: ReadBatchDetails): AgentToolResult<ReadBatchDetails> {
   return {
     content: [{ type: "text", text: JSON.stringify(details) }],
     details,
+    structuredContent: toJsonValue(details),
   };
 }
 
@@ -1344,6 +1508,7 @@ function createReadBatchToolWithDependencies(
     promptSnippet: "Read files or resolve published evidence",
     annotations: { readOnlyHint: true },
     parameters: readBatchParameters,
+    outputSchema: readBatchDetailsSchema,
     executionMode: "sequential",
     renderCall(args, theme) {
       const paths = Array.isArray(args?.paths) ? args.paths : [];

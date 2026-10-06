@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Theme } from "@earendil-works/pi-coding-agent";
+import { Check } from "typebox/value";
 import { expect, it } from "vitest";
 
 import type { GitExec } from "../../../src/tools/git/execution.ts";
@@ -10,6 +11,7 @@ import type {
   GitStatusChangedOutput,
   GitStatusOutput,
 } from "../../../src/tools/git/status/output.ts";
+import { gitStatusOutputSchema } from "../../../src/tools/git/status/output.ts";
 import { createGitStatusTool } from "../../../src/tools/git/status/tool.ts";
 import type { GitToolContext } from "../../../src/tools/git/tool.ts";
 
@@ -80,6 +82,45 @@ it("uses array arguments and returns structured renamed entries", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+it("returns schema-conforming structuredContent with unchanged model-facing content", async () => {
+  const exec: GitExec = async (_command, args) => {
+    return args[3] === "rev-parse" ? result(`${cwd}\n`) : result(" M same.txt\0?? new.txt\0");
+  };
+  const tool = createGitStatusTool(exec);
+  expect(tool.outputSchema).toBe(gitStatusOutputSchema);
+
+  const changedResponse = await tool.execute("changed", {}, undefined, undefined, context);
+  expect(changedResponse.structuredContent).toEqual(changedResponse.details);
+  expect(Check(gitStatusOutputSchema, changedResponse.structuredContent)).toBe(true);
+  expect(changedResponse.content).toEqual([
+    { type: "text", text: JSON.stringify(changedResponse.details) },
+  ]);
+
+  const unchangedResponse = await tool.execute("unchanged", {}, undefined, undefined, context);
+  expect(unchangedResponse.structuredContent).toEqual(unchangedResponse.details);
+  expect(Check(gitStatusOutputSchema, unchangedResponse.structuredContent)).toBe(true);
+  expect(unchangedResponse.content).toEqual([
+    { type: "text", text: JSON.stringify(unchangedResponse.details) },
+  ]);
+});
+
+it("returns schema-conforming structuredContent for truncated output", async () => {
+  const oversized = "?? " + "a".repeat(160) + "\0";
+  const exec: GitExec = async (_command, args) => {
+    return args[3] === "rev-parse" ? result(`${cwd}\n`) : result(oversized.repeat(400));
+  };
+  const response = await createGitStatusTool(exec).execute(
+    "truncated",
+    {},
+    undefined,
+    undefined,
+    context,
+  );
+  expect(changed(response.details).output.truncated).toBe(true);
+  expect(Check(gitStatusOutputSchema, response.structuredContent)).toBe(true);
+  expect(response.content).toEqual([{ type: "text", text: JSON.stringify(response.details) }]);
 });
 
 it("renders empty optional paths without an invalid argument marker", () => {

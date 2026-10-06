@@ -6,13 +6,14 @@ import { runGit, validateRevision, type GitExec } from "../execution.ts";
 import { observeGitInvocation, type GitInvocationObservationOptions } from "../invocation.ts";
 import {
   MAX_CONTENT_BYTES,
-  makeToolResult,
+  makeStructuredToolResult,
   truncateUtf8,
   validateIntegerLimit,
 } from "../output.ts";
 import { resolvePath, resolveRepository } from "../repository.ts";
 import { defineGitTool, type GitToolDefinition } from "../tool.ts";
 import type { GitShowOutput } from "./output.ts";
+import { gitShowOutputSchema } from "./output.ts";
 
 const gitShowParameters = Type.Object(
   {
@@ -51,6 +52,7 @@ export function createGitShowTool(
     promptSnippet: "Inspect a bounded Git revision",
     annotations: { readOnlyHint: true },
     parameters: gitShowParameters,
+    outputSchema: gitShowOutputSchema,
     renderCall(args, theme) {
       const parts = [
         renderStringArgument(args?.revision, theme),
@@ -79,7 +81,7 @@ export function createGitShowTool(
           "read Git show",
         );
         const bounded = truncateUtf8(result.stdout, params.maxBytes);
-        return makeToolResult({ content: bounded.text, output: bounded.output });
+        return makeStructuredToolResult({ content: bounded.text, output: bounded.output });
       },
     ),
   });

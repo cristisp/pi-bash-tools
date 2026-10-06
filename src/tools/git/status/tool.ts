@@ -10,15 +10,19 @@ import { normalizeGitBoolean, runGit, validateGitRequestKeys, type GitExec } fro
 import { observeGitInvocation, type GitInvocationObservationOptions } from "../invocation.ts";
 import {
   countStatusRecords,
+  makeStructuredToolResult,
   MAX_RECORDS,
-  makeToolResult,
   parseStatus,
   STRUCTURED_OUTPUT_LIMIT,
   truncateUtf8,
 } from "../output.ts";
 import { resolvePath, resolveRepository } from "../repository.ts";
 import { defineGitTool, type GitToolDefinition } from "../tool.ts";
-import type { GitStatusChangedOutput, GitStatusOutput } from "./output.ts";
+import {
+  gitStatusOutputSchema,
+  type GitStatusChangedOutput,
+  type GitStatusOutput,
+} from "./output.ts";
 
 const MAX_PREVIOUS_STATUS_ENTRIES = 256;
 
@@ -62,6 +66,7 @@ export function createGitStatusTool(
     promptSnippet: "Inspect Git working tree status",
     annotations: { readOnlyHint: true },
     parameters: gitStatusParameters,
+    outputSchema: gitStatusOutputSchema,
     renderCall(args, theme) {
       const path = renderOptionalStringArgument(args?.path, theme);
       const parts = path === undefined ? [] : [path];
@@ -105,7 +110,7 @@ export function createGitStatusTool(
         const digest = createHash("sha256").update(result.stdout, "utf8").digest("hex");
         const previous = previousByRequest.get(key);
         if (previous !== undefined && previous.digest === digest && !refresh) {
-          return makeToolResult({
+          return makeStructuredToolResult({
             repositoryRoot: repository.root,
             unchanged: true as const,
             previous,
@@ -142,7 +147,7 @@ export function createGitStatusTool(
         };
         previousByRequest.set(key, current);
         trimPreviousStatusEntries(previousByRequest);
-        return makeToolResult({
+        return makeStructuredToolResult({
           repositoryRoot: repository.root,
           unchanged: false as const,
           entries,

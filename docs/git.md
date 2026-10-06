@@ -98,6 +98,9 @@ A repeated request for the same repository and path returns `unchanged: true` wi
 
 The status unchanged cache is process-local.
 
+`git_status` declares an `outputSchema` and returns the same payload as `structuredContent` for successful results, so codemode scripts receive it as a typed value.
+Failures throw as before and carry no structured content.
+
 ## `git_diff`
 
 ### Input
@@ -190,6 +193,9 @@ A repeated identical summary request (same repository root, working directory, s
 
 The comparison is process-local, mirrors the `git_status` unchanged behavior, and never changes patch mode responses.
 
+`git_diff` declares an `outputSchema` covering the summary, unchanged comparison, and patch modes, and returns the same payload as `structuredContent` for successful results.
+Failures throw as before and carry no structured content.
+
 ### Patch result
 
 ```json
@@ -260,6 +266,8 @@ Revisit trigger: revisit this determination when the flow-level evidence-referen
 
 Structured Git output is capped at 50 KiB and 2,000 records.
 
+`git_log` declares an `outputSchema` and returns the same payload as `structuredContent` for successful results.
+
 ## `git_show`
 
 ### Input
@@ -300,3 +308,6 @@ Unknown fields are rejected.
   }
 }
 ```
+
+`git_show` declares an `outputSchema` and returns the same payload as `structuredContent` for successful results.
+Failures throw as before and carry no structured content.

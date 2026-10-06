@@ -25,6 +25,7 @@ describe("bash tools extension", () => {
       on(event: string, _handler: unknown) {
         events.push(event);
         handlers.set(event, _handler);
+        return () => {};
       },
       registerTool,
       registerCommand: unsupported,
@@ -34,6 +35,7 @@ describe("bash tools extension", () => {
       registerMessageRenderer: unsupported,
       registerMarkdownTransformer: unsupported,
       registerEntryRenderer: unsupported,
+      registerToolRenderer: unsupported,
       sendMessage: unsupported,
       sendUserMessage: unsupported,
       appendEntry: vi.fn((...args: unknown[]) => {
@@ -50,6 +52,7 @@ describe("bash tools extension", () => {
       }),
       getActiveTools: () => [],
       getAllTools: () => [],
+      getSettings: unsupported,
       setActiveTools: unsupported,
       getCommands: unsupported,
       setModel: unsupported,
@@ -57,6 +60,11 @@ describe("bash tools extension", () => {
       setThinkingLevel: unsupported,
       registerProvider: unsupported,
       unregisterProvider: unsupported,
+      registerMcpServer: unsupported,
+      unregisterMcpServer: unsupported,
+      getMcpServers: unsupported,
+      registerVirtualModel: unsupported,
+      unregisterVirtualModel: unsupported,
       events: {
         emit: unsupported,
         on: unsupported,

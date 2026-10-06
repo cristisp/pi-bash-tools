@@ -40,4 +40,8 @@ Structured custom tools return JSON text plus a typed `details` object.
 
 Bounded text commonly includes `truncated`, `totalBytes`, and `totalLines`.
 
+Tools that declare an `outputSchema` also return `structuredContent`, the same machine-readable payload they serialize as JSON text.
+`structuredContent` is never sent to the model; codemode scripts and other programmatic consumers receive it instead of the text content.
+The host does not validate `structuredContent` against the declared schema, so package tests enforce conformance for every result mode.
+
 Project commands and verification also expose status, category or verdict, execution state, cache state, repository state, and evidence metadata as described in their dedicated pages.

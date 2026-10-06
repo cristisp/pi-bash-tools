@@ -9,6 +9,7 @@ import {
 import {
   createToolInventory,
   createToolInventoryRecorder,
+  type ToolInfoWithOptionalMetadata,
   type ToolInventoryAPI,
   type ToolInventoryContext,
 } from "../../src/observability/tool-inventory.ts";
@@ -25,7 +26,7 @@ function tool(
   parameters: ToolInfo["parameters"],
   sourceInfo: ToolInfo["sourceInfo"],
   metadata: ToolMetadata = {},
-): ToolInfo & ToolMetadata {
+): ToolInfoWithOptionalMetadata {
   return {
     name,
     description: `${name} description should not be persisted`,

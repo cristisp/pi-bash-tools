@@ -1,8 +1,19 @@
+import { Type } from "typebox";
+
 export interface Truncation {
   readonly truncated: boolean;
   readonly totalBytes: number;
   readonly totalLines: number;
 }
+
+export const truncationSchema = Type.Object(
+  {
+    truncated: Type.Boolean({ description: "Whether the result was truncated." }),
+    totalBytes: Type.Integer({ description: "Total result bytes before truncation.", minimum: 0 }),
+    totalLines: Type.Integer({ description: "Total result lines before truncation.", minimum: 0 }),
+  },
+  { additionalProperties: false },
+);
 
 export function decodeUtf8Prefix(
   bytes: Uint8Array,

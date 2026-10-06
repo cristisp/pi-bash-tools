@@ -2,15 +2,17 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { Check } from "typebox/value";
 import { expect, it } from "vitest";
 
 import type { GitInvocationRecord } from "../../../src/observability/git-invocation.ts";
 import type { RenderTheme } from "../../../src/tools/call-render.ts";
 import { createGitDiffSummaryCache } from "../../../src/tools/git/diff/cache.ts";
-import type {
-  GitDiffOutput,
-  GitDiffPatchOutput,
-  GitDiffSummaryOutput,
+import {
+  gitDiffOutputSchema,
+  type GitDiffOutput,
+  type GitDiffPatchOutput,
+  type GitDiffSummaryOutput,
 } from "../../../src/tools/git/diff/output.ts";
 import {
   createGitDiffTool,
@@ -187,6 +189,41 @@ it("defaults to a bounded summary with status, stat, and hunk headers but no bod
     "--stat",
     "--",
   ]);
+});
+
+it("returns schema-conforming structuredContent for summary, patch, and unchanged modes", async () => {
+  const statusOutput = " M README.md\0";
+  let diffText = "diff --git a/README.md b/README.md\n@@ -1 +1 @@\n";
+  let rawText = "raw-a";
+  const exec: GitExec = async (_command, args) => {
+    if (args[3] === "rev-parse") {
+      return result(args[4] === "--show-toplevel" ? `${cwd}\n` : "head-a\n");
+    }
+    if (args[3] === "status") return result(statusOutput);
+    if (args.includes("--raw")) return result(rawText);
+    if (args.includes("--stat")) return result(" README.md | 1 +\n");
+    return result(diffText);
+  };
+  const tool = createGitDiffTool(exec);
+  expect(tool.outputSchema).toBe(gitDiffOutputSchema);
+
+  const assertModelFacingContent = (response: Awaited<ReturnType<typeof tool.execute>>): void => {
+    expect(response.structuredContent).toEqual(response.details);
+    expect(Check(gitDiffOutputSchema, response.structuredContent)).toBe(true);
+    expect(response.content).toEqual([{ type: "text", text: JSON.stringify(response.details) }]);
+  };
+
+  assertModelFacingContent(await tool.execute("summary", {}, undefined, undefined, context));
+  assertModelFacingContent(await tool.execute("repeat", {}, undefined, undefined, context));
+  assertModelFacingContent(
+    await tool.execute(
+      "patch",
+      { mode: "patch", paths: ["README.md"] },
+      undefined,
+      undefined,
+      context,
+    ),
+  );
 });
 
 it("returns a compact unchanged repeat and misses after the working tree changes", async () => {

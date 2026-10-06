@@ -19,7 +19,7 @@ import {
 import { observeGitInvocation, type GitInvocationObservationOptions } from "../invocation.ts";
 import {
   MAX_CONTENT_BYTES,
-  makeToolResult,
+  makeStructuredToolResult,
   MAX_RECORDS,
   parseStatus,
   truncateUtf8,
@@ -41,6 +41,7 @@ import type {
   GitDiffSummaryOutput,
   GitDiffSummaryUnchangedOutput,
 } from "./output.ts";
+import { gitDiffOutputSchema } from "./output.ts";
 import { createGitDiffSummary } from "./summary.ts";
 
 interface GitDiffPreviousSummaryEntry {
@@ -631,6 +632,7 @@ export function createGitDiffTool(
     promptSnippet: "Inspect a bounded Git diff",
     annotations: { readOnlyHint: true },
     parameters: gitDiffParameters,
+    outputSchema: gitDiffOutputSchema,
     renderCall(args, theme) {
       return renderGitDiffCall(args, theme);
     },
@@ -666,7 +668,7 @@ export function createGitDiffTool(
                 rawDiscoveryFlights,
                 previousByRequest,
               );
-        return makeToolResult(details);
+        return makeStructuredToolResult(details);
       },
     ),
   });

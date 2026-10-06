@@ -6,7 +6,7 @@ import { runGit, validateGitRequestKeys, validateRevision, type GitExec } from "
 import { observeGitInvocation, type GitInvocationObservationOptions } from "../invocation.ts";
 import {
   MAX_RECORDS,
-  makeToolResult,
+  makeStructuredToolResult,
   parseLog,
   STRUCTURED_OUTPUT_LIMIT,
   truncateUtf8,
@@ -15,6 +15,7 @@ import {
 import { resolvePath, resolveRepository } from "../repository.ts";
 import { defineGitTool, type GitToolDefinition } from "../tool.ts";
 import type { GitLogOutput } from "./output.ts";
+import { gitLogOutputSchema } from "./output.ts";
 
 const gitLogParameters = Type.Object(
   {
@@ -47,6 +48,7 @@ export function createGitLogTool(
     promptSnippet: "Inspect bounded Git history",
     annotations: { readOnlyHint: true },
     parameters: gitLogParameters,
+    outputSchema: gitLogOutputSchema,
     renderCall(args, theme) {
       const parts: string[] = [];
       if (args?.revision !== undefined) {
@@ -102,7 +104,7 @@ export function createGitLogTool(
           completeFieldCount === 0 ? "" : `${fields.slice(0, completeFieldCount).join("\0")}\0`;
         const entries = parseLog(completeOutput).slice(0, params.maxEntries);
         const totalEntries = parseLog(result.stdout).length;
-        return makeToolResult({
+        return makeStructuredToolResult({
           entries,
           output: {
             ...bounded.output,

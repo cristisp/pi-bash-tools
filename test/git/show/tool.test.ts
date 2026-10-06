@@ -1,6 +1,8 @@
+import { Check } from "typebox/value";
 import { describe, expect, it } from "vitest";
 
 import type { GitExec } from "../../../src/tools/git/execution.ts";
+import { gitShowOutputSchema } from "../../../src/tools/git/show/output.ts";
 import { createGitShowTool } from "../../../src/tools/git/show/tool.ts";
 import type { GitToolContext } from "../../../src/tools/git/tool.ts";
 
@@ -42,6 +44,22 @@ describe("git_show tool", () => {
       content: "commit output\n",
       output: { truncated: false, totalBytes: 14, totalLines: 1 },
     });
+  });
+
+  it("returns schema-conforming structuredContent with unchanged model-facing content", async () => {
+    const { exec } = showExec("commit output\n");
+    const tool = createGitShowTool(exec);
+    expect(tool.outputSchema).toBe(gitShowOutputSchema);
+    const response = await tool.execute(
+      "structured",
+      { revision: "HEAD", maxBytes: 100 },
+      undefined,
+      undefined,
+      context,
+    );
+    expect(response.structuredContent).toEqual(response.details);
+    expect(Check(gitShowOutputSchema, response.structuredContent)).toBe(true);
+    expect(response.content).toEqual([{ type: "text", text: JSON.stringify(response.details) }]);
   });
 
   it("rejects REV:path extraction and invalid revisions", async () => {

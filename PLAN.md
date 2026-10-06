@@ -11,7 +11,7 @@ The active plan focuses on reducing token and tool-call waste identified in [`re
 The `1.0.3` cohort (103 unambiguous sessions, 4,963 calls, 4.84% error rate) is the stable pre-`1.1.0` baseline.
 Version `1.1.2` is released and loaded from folder, so the next report can separate the released `1.0.3` baseline from current behavior for the first time.
 
-The remaining highest-priority work is to evaluate the Pi SDK result-schema and deferred-exposure opportunities listed first below, then complete the analyzer and importer handoff plus per-cohort comparison breakdowns from the first `1.1.2` cohort.
+The highest-priority work is the Pi SDK result-schema implementation below, followed by the deferred-exposure evaluation, the analyzer and importer handoff, and per-cohort comparison breakdowns from the first `1.1.2` cohort.
 
 Orchestration policy and Codegraph implementation remain owned by their respective extensions.
 Codegraph Runner 2.0.2 implements the producer-side evidence contract for `cg_` artifacts; Bash Tools carries the shared envelope additively on `pc_`, `vr_`, and `rr_` records, and the remaining shared-contract work is cross-producer lookup-outcome alignment.
@@ -44,8 +44,36 @@ Bash Tools will not add arbitrary shell execution, orchestration roles, fan-out 
 Tool inventory format 2 now records bounded SDK exposure, namespace names, and allowlisted annotations, and static read-only/destructive hints are assigned to the relevant tools.
 The remaining SDK evaluations are prioritized here before the existing efficiency-analysis work.
 
-- [ ] Evaluate `outputSchema` and `structuredContent` on a bounded result such as `git_status` or `git_log`. Confirm that structured results materially help codemode or other programmatic consumers, remain within output bounds, and do not expose data beyond current authorization or model-facing results.
+- [x] Evaluate `outputSchema` and `structuredContent` on a bounded result such as `git_status` or `git_log`. Confirm that structured results materially help codemode or other programmatic consumers, remain within output bounds, and do not expose data beyond current authorization or model-facing results. Decision (2026-09-17): adopt, with implementation prioritized in the section below. Runtime facts: `structuredContent` is never sent to the model; declaring `outputSchema` switches codemode nested-call resolution from text to `structuredContent` for that tool; the host performs no schema validation, so conformance is the producer's obligation and must be enforced by package tests.
 - [ ] Evaluate deferred exposure for infrequently used tools such as `git_log` and `git_show`. Measure prompt-token savings against discovery success with `tool_search` enabled, and keep tools directly exposed unless the benefit and discoverability are demonstrated.
+
+### P0: Add outputSchema and structuredContent to bounded tools
+
+The evaluation above adopted the SDK result-schema contract for bounded read-shaped tools.
+`structuredContent` reaches programmatic consumers only: codemode nested calls, `tool_result` hooks, and session records; the model-facing `content` of each tool is unchanged.
+Because the host does not validate `structuredContent` against the declared schema, conformance on every result mode is the producer's obligation and is enforced by package tests, not by the runtime.
+
+Staged by codemode value and payload stability:
+
+- [x] Stage 1: `git_status`. The tool already serializes one bounded JSON object; declare its typebox schema and set `structuredContent` to that object, keeping the JSON text as `content`. Outcome: `git_status` declares `gitStatusOutputSchema` and returns `structuredContent` on both the changed and unchanged paths through `makeStructuredToolResult`; the shared `toJsonValue` boundary mirrors JSON.stringify semantics (drops undefined properties, maps undefined array elements to null, fails closed on non-JSON values); the model-facing text is unchanged, and conformance tests cover the changed, unchanged, and truncated result modes.
+- [x] Stage 2: `git_log`, `git_show`, and `git_diff`, which already emit bounded JSON payloads per mode. Outcome: `git_log` declares `gitLogOutputSchema` and `git_show` declares `gitShowOutputSchema`; `git_diff` declares `gitDiffOutputSchema` as a typebox union of the summary, unchanged comparison, and patch modes (the status entry schema is shared with `git_status` via `gitStatusEntrySchema`). All three return `structuredContent` through `makeStructuredToolResult` on success and keep failures throwing; `makeToolResult` was folded into `makeStructuredToolResult` since no tool uses the text-only form anymore. Conformance tests with `Value.Check` cover the log, show, and diff (summary, patch, unchanged) payload shapes against `details`, and the model-facing `content` text is unchanged. Verified: focused tests `pc_0883fd0df628c7e5540a9cb7`, verify `vr_fa09382cdc0439f669bbff37`, fallow dupes 0 groups, fallow audit vs HEAD `a8f24fe` pass with 0 introduced.
+- [x] Stage 3: `read_batch`, whose result envelope (items, aggregates, unchanged flags, repository state) is the highest-volume programmatic surface. Coordinate with the digest-on-repeat item in P1 so the schema covers the digest result mode from the start. Outcome: `read_batch` declares `readBatchDetailsSchema`, an `additionalProperties: false` envelope over per-path results (content, range, `rr_` ref, `contentHash`, unchanged flag, bounded per-path error), the aggregate-limit continuation, the publication block, and the full published-evidence lookup payload (entries with reauthorization status, workspace blocks, repository state status), so the P1 digest-on-repeat change can keep using the same unchanged/ref/contentHash item shape without a schema bump. The tool returns `structuredContent` through `toJsonValue` on every success path, including lookup results with empty `results`, and failures keep throwing; fresh items with `unchanged: false` forced the unchanged field to be a boolean rather than a literal. Conformance tests with `Value.Check` cover the execution, unchanged repeat, aggregate-limit continuation, publication, and lookup modes against `details`, and the model-facing `content` text is unchanged.
+- [ ] Evaluate afterwards: `project_command` and `verify` evidence envelopes (result categories, verdicts, lookup blocks), then `environment`, `move`, and `delete`, whose payloads are small and mostly fixed-shape.
+- [ ] Decide how adoption is measured: an additive inventory field recording `outputSchema` presence would require an inventory format bump, so first determine whether session-entry payloads already make adoption countable.
+
+#### Constraints
+
+- `structuredContent` never adds data beyond what the model-facing text already exposes; bounds, redaction, and authorization shape are identical on both paths.
+- A tool that declares `outputSchema` always sets `structuredContent` on its success path; failures that carry no structured data keep throwing so scripts receive the error text.
+- Adoption is per tool, not global: declaring the schema switches that tool's nested-call resolution from text to structured values.
+- Token-tracker comparisons must show no model-facing regression in result shape or size.
+
+#### Exit criteria
+
+- Implemented tools resolve to typed values in codemode scripts, verified by an integration test per tool.
+- Schema-conformance tests cover every result mode (success, truncation, unchanged, per-item errors) since no host-side enforcement exists.
+- Model-facing text results stay unchanged for the same inputs.
+- No new data crosses an authorized boundary through the structured path.
 
 ### P0: Build a current-version efficiency baseline
 

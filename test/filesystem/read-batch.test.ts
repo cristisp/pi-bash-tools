@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { type AgentToolResult } from "@earendil-works/pi-coding-agent";
+import { Check } from "typebox/value";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AuthorizationOutcomeRecord } from "../../src/observability/authorization-outcome.ts";
@@ -15,6 +17,8 @@ import {
 } from "../../src/observability/read-batch-invocation.ts";
 import {
   createReadBatchToolForTesting,
+  readBatchDetailsSchema,
+  type ReadBatchDetails,
   type ReadBatchInput,
   type ReadBatchToolContext,
 } from "../../src/tools/filesystem/read-batch-tool.ts";
@@ -102,6 +106,56 @@ it("reads bounded ranges in one request and returns per-path errors", async () =
     path: "src/missing.ts",
     error: { code: "path-resolution-failure" },
   });
+});
+
+it("returns schema-conforming structuredContent for every result mode", async () => {
+  const directory = await fixtures.createDirectory();
+  await mkdir(join(directory, "src"));
+  await writeFile(join(directory, "src", "one.ts"), "first\nsecond\nthird\n");
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const tool = createReadBatchToolForTesting({ configPath });
+  expect(tool.outputSchema).toBe(readBatchDetailsSchema);
+
+  const assertConforms = (response: AgentToolResult<ReadBatchDetails>): void => {
+    expect(response.structuredContent).toEqual(response.details);
+    expect(Check(readBatchDetailsSchema, response.structuredContent)).toBe(true);
+    expect(response.content).toEqual([{ type: "text", text: JSON.stringify(response.details) }]);
+  };
+
+  const first = await tool.execute(
+    "first",
+    {
+      paths: [{ path: "src/one.ts", range: { offset: 2, limit: 1 } }, { path: "src/missing.ts" }],
+    },
+    undefined,
+    undefined,
+    context(directory),
+  );
+  assertConforms(first);
+
+  const repeat = await tool.execute(
+    "repeat",
+    { paths: [{ path: "src/one.ts", range: { offset: 2, limit: 1 } }] },
+    undefined,
+    undefined,
+    context(directory),
+  );
+  expect(repeat.details.results[0]).toMatchObject({ unchanged: true });
+  assertConforms(repeat);
+
+  const big = `${"x".repeat(55 * 1024)}\n`;
+  const names = ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"];
+  await Promise.all(names.map((name) => writeFile(join(directory, name), big)));
+  const aggregate = await tool.execute(
+    "aggregate",
+    { paths: names.map((path) => ({ path })) },
+    undefined,
+    undefined,
+    context(directory),
+  );
+  expect(aggregate.details.continuation).toMatchObject({ nextIndex: 4, totalPaths: 5 });
+  assertConforms(aggregate);
 });
 
 it("rejects duplicate and overlapping ranges in one request", async () => {
@@ -1065,6 +1119,8 @@ describe("records one invocation per terminal path", () => {
       );
 
       expect(lookup.details.lookup?.executed).toBe(false);
+      expect(lookup.structuredContent).toEqual(lookup.details);
+      expect(Check(readBatchDetailsSchema, lookup.structuredContent)).toBe(true);
       expect(capture.records).toHaveLength(2);
       expect(capture.records[1]).toMatchObject({
         reason: "completed",

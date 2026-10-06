@@ -1,6 +1,8 @@
+import { Check } from "typebox/value";
 import { describe, expect, it } from "vitest";
 
 import type { GitExec } from "../../../src/tools/git/execution.ts";
+import { gitLogOutputSchema } from "../../../src/tools/git/log/output.ts";
 import { createGitLogTool } from "../../../src/tools/git/log/tool.ts";
 import type { GitToolContext } from "../../../src/tools/git/tool.ts";
 
@@ -49,6 +51,23 @@ describe("git_log tool", () => {
       { id: "a2", author: "Bob", date: "2024-01-02T00:00:00Z", subject: "second commit" },
     ]);
     expect(response.details.output.truncated).toBe(false);
+  });
+
+  it("returns schema-conforming structuredContent with unchanged model-facing content", async () => {
+    const output = "a1\0Alice Example\x002024-01-01T00:00:00Z\0first commit\0";
+    const { exec } = logExec(output);
+    const tool = createGitLogTool(exec);
+    expect(tool.outputSchema).toBe(gitLogOutputSchema);
+    const response = await tool.execute(
+      "structured",
+      { revision: "HEAD", maxEntries: 1 },
+      undefined,
+      undefined,
+      context,
+    );
+    expect(response.structuredContent).toEqual(response.details);
+    expect(Check(gitLogOutputSchema, response.structuredContent)).toBe(true);
+    expect(response.content).toEqual([{ type: "text", text: JSON.stringify(response.details) }]);
   });
 
   it("rejects unsafe revisions and propagates invalid revision errors", async () => {

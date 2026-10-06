@@ -1,4 +1,5 @@
 import { decodeUtf8Prefix, type Truncation } from "../truncation.ts";
+import { toJsonValue, type ToolStructuredContent } from "../value-validation.ts";
 import { invalidGitRequest } from "./execution.ts";
 
 export const STRUCTURED_OUTPUT_LIMIT = 50 * 1024;
@@ -42,13 +43,20 @@ export function truncateUtf8(
   };
 }
 
-export function makeToolResult<T>(details: T): {
+/**
+ * Build a result whose `structuredContent` mirrors the model-facing JSON text.
+ * The host does not validate `structuredContent` against the tool's
+ * `outputSchema`; package tests enforce conformance for every result mode.
+ */
+export function makeStructuredToolResult<T>(details: T): {
   readonly content: { type: "text"; text: string }[];
   readonly details: T;
+  readonly structuredContent: ToolStructuredContent;
 } {
   return {
     content: [{ type: "text", text: JSON.stringify(details) }],
     details,
+    structuredContent: toJsonValue(details),
   };
 }
 
