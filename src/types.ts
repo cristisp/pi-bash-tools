@@ -851,11 +851,37 @@ export interface SingleResult {
 	budget?: BudgetSummary;
 }
 
+/**
+ * Why a subagent call was refused before any child was launched.
+ *
+ * Refusal results keep their existing model-facing text but are marked `isError: true`, so a model
+ * and a programmatic caller both see them as failures instead of empty successes. The kind and the
+ * text are also carried in the bounded structured projection for codemode callers.
+ */
+export type SubagentRefusalKind =
+	| 'invalid-params'
+	| 'nested'
+	| 'session-unavailable'
+	| 'spawn-boundary'
+	| 'overlapping-scope'
+	| 'too-many-tasks'
+	| 'composition'
+	| 'project-agents-denied'
+	| 'reuse-without-task';
+
+export interface SubagentRefusal {
+	kind: SubagentRefusalKind;
+	/** Model-facing refusal text; the structured projection caps it. */
+	message: string;
+}
+
 export interface SubagentDetails {
 	mode: 'single' | 'parallel' | 'chain';
 	agentScope: AgentScope;
 	projectAgentsDir: string | null;
 	results: SingleResult[];
+	/** Set when the call was refused before any child ran; absent on normal results. */
+	refusal?: SubagentRefusal;
 }
 
 export type DisplayItem =

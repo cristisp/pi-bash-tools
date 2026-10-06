@@ -11,6 +11,17 @@ describe('isValidModelSpec', () => {
 		expect(isValidModelSpec('github-copilot/gpt-5.6-luna')).toBe(true);
 		expect(isValidModelSpec('cortecs/deepseek-v4-flash-0731')).toBe(true);
 	});
+	it('treats provider tokens as opaque, including the renamed azure provider', () => {
+		// S13-005: pi 1.0.3 renamed the azure provider key from azure-openai-responses to azure.
+		// herdr model presets never interpret the provider segment, so both tokens are plain specs.
+		expect(isValidModelSpec('azure/gpt-5.2')).toBe(true);
+		expect(isValidModelSpec('azure-openai-responses/gpt-5.2')).toBe(true);
+		expect(splitModelSpec('azure/gpt-5.2')).toEqual({
+			provider: 'azure',
+			modelId: 'gpt-5.2',
+			level: undefined,
+		});
+	});
 	it('accepts thinking levels case-insensitively', () => {
 		expect(isValidModelSpec('provider/model:high')).toBe(true);
 		expect(isValidModelSpec('provider/model:High')).toBe(true);

@@ -1,14 +1,14 @@
 # Orchestration measurement
 
-Agent dir `/Users/cristian.spissack/.pi/agent`. Window 2026-07-13T15:15 .. 2026-09-15T19:24. 426 root sessions, 1295 child sessions, 782 telemetry records. Report cutoff 2026-09-03T10:06.
+Agent dir `/Users/cristian.spissack/.pi/agent`. Window 2026-07-13T15:15 .. 2026-09-18T12:08. 438 root sessions, 1473 child sessions, 1151 telemetry records. Report cutoff 2026-09-03T10:06.
 
 ## Delivered `subagent` result size (estimated tokens, chars / 4)
 
 | window | n | avg | p50 | p95 | p99 | max |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | before cutoff | 1171 | 1514 | 1145 | 5294 | 8698 | 19559 |
-| at or after cutoff | 532 | 562 | 585 | 1136 | 1529 | 2102 |
-| all | 1703 | 1217 | 803 | 4066 | 8000 | 19559 |
+| at or after cutoff | 725 | 565 | 584 | 1128 | 1523 | 2102 |
+| all | 1896 | 1151 | 746 | 3655 | 7841 | 19559 |
 | baseline 2026-08-26..09-02 | 285 | 1821 | 900 | - | 6099 | - |
 
 ## Report digest fidelity (telemetry turns carrying a report)
@@ -30,8 +30,8 @@ These are root-session read requests targeting files under `flows/*/reports/*.md
 | window | report reads |
 | --- | ---: |
 | before cutoff | 0 |
-| at or after cutoff | 255 |
-| all | 255 |
+| at or after cutoff | 362 |
+| all | 362 |
 
 ## Root carry (the W3 target)
 
@@ -40,21 +40,21 @@ Carry is result tokens x the number of later assistant turns in the same root se
 | window | results | delegating roots | carry (token-times) | carry per root |
 | --- | ---: | ---: | ---: | ---: |
 | before cutoff | 1171 | 66 | 281,043,046 | 4,258,228 |
-| at or after cutoff | 532 | 39 | 93,249,384 | 2,391,010 |
-| all | 1703 | 104 | 374,261,080 | 3,598,664 |
+| at or after cutoff | 725 | 49 | 155,146,001 | 3,166,245 |
+| all | 1896 | 114 | 436,157,697 | 3,825,945 |
 
-Root sessions received 2,072,115 estimated tokens of subagent results in total.
+Root sessions received 2,182,487 estimated tokens of subagent results in total.
 
-Child sessions created since telemetry began (2026-09-03T09:14): 498, of which 238 have no telemetry record. Historic children cannot be attributed and are excluded.
+Child sessions created since telemetry began (2026-09-03T09:14): 676, of which 416 have no telemetry record. Historic children cannot be attributed and are excluded.
 
 Child spend recorded in telemetry: $10.0093 across 279 ordinary delegation turns.
 
 ## Composition policy events
 
-Typed composition events: 60 (60 warnings, 0 refusals).
-By rule: R1:15, R2:2, R3:6, R4:37.
-By policy: warn:60.
-By per-call override: warn:18, none:42.
+Typed composition events: 67 (67 warnings, 0 refusals).
+By rule: R1:15, R2:3, R3:6, R4:43.
+By policy: warn:67.
+By per-call override: warn:18, none:49.
 Composition events are excluded from ordinary delegation, validation, and child-spend metrics.
 
 ## Validation evidence (the W7 target)
@@ -204,8 +204,8 @@ The `subagent` tool description and the child prompts now carry what used to req
 | window | guide reads | reads per delegating root |
 | --- | ---: | ---: |
 | before cutoff | 80 | 1.21 |
-| at or after cutoff | 46 | 1.18 |
-| all | 126 | 1.21 |
-| rendered guide (est. tokens) | 4756 | - |
+| at or after cutoff | 63 | 1.29 |
+| all | 143 | 1.25 |
+| rendered guide (est. tokens) | 5459 | - |
 
-Rendered guide source `agents/subagent_orchestration.md` at 19022 chars; the size reads `-` when that file is absent from the agent dir, which is a missing artifact rather than a cost of zero.
+Rendered guide source `agents/subagent_orchestration.md` at 21835 chars; the size reads `-` when that file is absent from the agent dir, which is a missing artifact rather than a cost of zero.

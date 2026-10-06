@@ -2,6 +2,11 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { flowDirFor, flowReportsDir, PREDIGEST_SUBDIR } from './flow.ts';
+import {
+	retainedReviewSurfaceRevisions,
+	reviewSurfaceHistoryDir,
+	reviewSurfacePath,
+} from './scope.ts';
 import { sanitizeReviewScope } from './delegation.ts';
 import { LEDGER_NAME } from './ledger.ts';
 import { sanitizeSegment } from './registry-store.ts';
@@ -215,18 +220,26 @@ function knownRefsFor(flowId: string): KnownManifestRef[] {
 
 export function buildReadManifest(delegation: DelegationContext): ReadManifest {
 	const surfacePath =
-		delegation.flowId &&
-		delegation.reviewSurfacePath ===
-			path.join(flowDirFor(delegation.flowId), PREDIGEST_SUBDIR, 'review-surface.md')
+		delegation.flowId && delegation.reviewSurfacePath === reviewSurfacePath(delegation.flowId)
 			? delegation.reviewSurfacePath
 			: undefined;
+	const surfaceFlowId = surfacePath ? delegation.flowId : undefined;
+	const retainedRevisions = surfaceFlowId ? retainedReviewSurfaceRevisions(surfaceFlowId) : 0;
+	const historyDir =
+		surfaceFlowId && retainedRevisions > 0 ? reviewSurfaceHistoryDir(surfaceFlowId) : undefined;
 	const artifactPaths = [
 		...(surfacePath ? [surfacePath] : []),
+		...(historyDir ? [historyDir] : []),
 		...(delegation.flowId ? [path.join(flowDirFor(delegation.flowId), LEDGER_NAME)] : []),
 	].filter((artifactPath) => artifactPath.length <= MAX_MANIFEST_ITEM_LENGTH);
 	const priorReports = reportPaths(delegation.flowId);
 	const establishedEvidence = [
 		...(surfacePath ? [`The shared review surface is captured at ${surfacePath}.`] : []),
+		...(historyDir
+			? [
+					`${retainedRevisions} earlier review-surface revision(s) are retained under ${historyDir} for delta comparison.`,
+				]
+			: []),
 		...(priorReports.length
 			? [`${priorReports.length} prior role report(s) are available in the flow report directory.`]
 			: []),

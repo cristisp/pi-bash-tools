@@ -69,6 +69,13 @@ describe('budget classification', () => {
 		expect(classifyToolCall('verify', { ref: 'vr_abc', fresh: true })).toBe('validation');
 		expect(isImplementationTool('edit')).toBe(true);
 		expect(isImplementationTool('read')).toBe(false);
+		// S13-005: the Windows powershell tool receives exactly the same budget treatment as the
+		// POSIX bash tool - an ordinary tool call that is never discovery, implementation, or
+		// validation. Both shells are name-shaped generic calls; classification stays in parity.
+		expect(classifyToolCall('bash', { command: 'echo hi' })).toBeUndefined();
+		expect(classifyToolCall('powershell', { command: 'Write-Output hi' })).toBeUndefined();
+		expect(isImplementationTool('bash')).toBe(false);
+		expect(isImplementationTool('powershell')).toBe(false);
 	});
 
 	it('charges a variant command id to its family and fails closed on families that can write', () => {

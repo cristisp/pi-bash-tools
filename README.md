@@ -46,6 +46,16 @@ The extension registers `subagent`, `subagent_override`, and `subagent_stats` to
   error or the path of the last role report, delegation identity, the spend of
   the last run, and relevant warnings.
 
+`subagent` and `subagent_override` declare a structured output schema: codemode and other
+programmatic callers receive a bounded `structuredContent` outcome (mode, agent scope, and
+per-result label, status, exit code, stop reason, error, and usage) while the model-facing
+text stays unchanged. A call refused before any child runs is an error result that carries a
+`refusal` with a `kind` and the same text, so callers never mistake a refusal for an empty
+success. Transcripts, stderr, manifests, and dirty paths are never part of it.
+Informational responses such as agent and session listings stay text-only: the projection reports
+them as empty results without a refusal.
+`subagent_stats` and `subagent_close` remain text-only.
+
 Optional delegation context (recorded and exported, never behaviour-changing on
 its own): `taskId` (e.g. `"T-001"`, reused by every remediation attempt of the
 same work), `tier` (0-4), `workflowMode` (`initial` | `remediation`), `reviewMode`
@@ -389,7 +399,7 @@ append-only telemetry log:
   `createdAt` and `lastUsedAt`
 - `~/.pi/agent/subagent-herdr/flows/<flowId>/reports/` - the full report of every
   settled delegation, as `reports/<label>-<timestamp>.md`
-- `~/.pi/agent/subagent-herdr/flows/<flowId>/predigest/` - the shared review-surface snapshot and persisted read manifests
+- `~/.pi/agent/subagent-herdr/flows/<flowId>/predigest/` - the shared review-surface snapshot, its retained earlier revisions, and persisted read manifests
 - `~/.pi/agent/subagent-herdr/flows/<flowId>/ledger.md` - the flow ledger, one
   machine-readable revision per delegation boundary
 - `~/.pi/agent/subagent-herdr.telemetry.jsonl` - append-only records for composition boundaries,
@@ -399,7 +409,20 @@ append-only telemetry log:
   `reuseCount` is the session's reuse count after this turn, recorded from the registry,
   so `reused: true` implies `reuseCount > 0`
 
-A scoped fan-out receives one flow-level review-surface snapshot containing working-tree status, diff stat, and hunk headers at `predigest/review-surface.md`.
+A scoped fan-out receives one flow-level review-surface snapshot at `predigest/review-surface.md` containing per-file content hashes, diff stat, working-tree status, and hunk headers.
+The snapshot is content-derived: untracked files are listed individually, the first 100 dirty paths are hashed, and the diff stat stays in the fingerprint as an aggregate backstop, so a same-size edit inside the window still refreshes it into a new revision.
+On top of that sample, the fingerprint covers a capped binary delta of the whole worktree against the head, which is what makes it complete for tracked content: it sees content changes of any size and at any path, and permission changes, which neither the status codes nor the diff stat show.
+A window that leaves a dirty path out - more than 100 dirty paths, or a path too long to bound - makes the fingerprint incomplete, so such a tree is refreshed on every delegation instead of being reused.
+The status read is NUL-separated with renaming disabled, so git's line-mode C-quoting cannot turn a non-ASCII or escaped path into an unhashable literal and a rename appears as a delete plus an add with both sides hashed; a dirty symlink is hashed by its target string, so repointing it refreshes the revision even when the target bytes are unchanged.
+A dirty path whose name does not round-trip through a JavaScript string is refused instead of hashed, because the decoded name could address a different file than the one git reported.
+Every git read runs from the repository root and paths are listed relative to it, so a delegation rooted in a subdirectory still hashes the right files.
+Every evidence read enters the fingerprint or taints when it fails: a failed read, including a delta or hunk-header read too large for the read bound to hold in full, taints the fingerprint and forces a new revision instead of reuse, so a stale snapshot is never served as unchanged for the paths it hashes, and an unreadable hunk-header section renders `(unavailable)` rather than looking like a tree without hunks.
+The hunk-header read compares against the head like the stat and delta reads, so a staged change reaches that section, and its digest is exposed in the header next to the worktree delta.
+Residual bounds: an equal-size edit strictly between the head and tail windows of an untracked path above the hashing bound is not covered by that path's `(partial)` hash, a dirty path that is not a regular file - a submodule checkout, or a tracked file replaced by a FIFO - counts as unreadable and refreshes on every delegation instead of opening something a FIFO would leave blocking, and git-ignored paths are outside the snapshot by design.
+Changes git itself does not model - the permission bits of a clean tracked file, ownership, extended attributes, or an empty directory - are outside the snapshot's change set, which describes what git reports for the worktree plus the bytes and permission bits of every dirty path.
+Paths above the hashing bound are hashed by prefix, size, and a tail window and marked `(partial)`; paths that cannot be read are marked `(unavailable)`.
+The previous revisions are retained under `predigest/surfaces/` (newest 10), and the read manifest points there only when such a revision exists, so a later round can compare per-file hashes instead of re-deriving what changed.
+The fingerprint, the worktree delta and hunk digests, and per-file hashes are recorded in the snapshot header and its hash section, and handoffs cite the gate digest from the validation evidence alongside the snapshot path, revision, and head, because the extension cannot observe the harness digest.
 Each child also receives a temporary read manifest containing its allowed paths, prior report paths, established evidence, and do-not-reread paths.
 The manifest is persisted under `predigest/manifests/` and its path is included in the role report, registry, `subagent_stats`, and telemetry.
 Manifest-protected rereads appear in `subagent_stats` as a warning when a do-not-reread path is read more than once in the turn; the first read is retained as evidence and a documented evidence-gap read is never blocked.

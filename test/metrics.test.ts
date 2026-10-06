@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { JsonValue } from '@earendil-works/pi-ai';
 import { measureExecutionMetrics, outputTokensOf } from '../src/metrics.ts';
 import { assistantMsg, makeSingleResult, toolResultMsg } from './helpers.ts';
 
@@ -807,21 +808,21 @@ describe('measureExecutionMetrics', () => {
 
 	describe('read_batch evidence refs', () => {
 		it('captures minted refs with publication provenance and unchanged flags', () => {
+			// Typed as JsonValue so the fixture matches the tool-result details contract; the union of
+			// the mixed-shape entries would otherwise not be assignable to it.
+			const details: JsonValue = {
+				results: [
+					{ path: 'src/a.ts', unchanged: false, ref: 'rr_fresh', contentHash: 'aa11' },
+					{ path: 'src/b.ts', unchanged: true, ref: 'rr_repeat', contentHash: 'bb22' },
+					{ path: 'src/c.ts', error: { code: 'outside-repository' } },
+				],
+				publish: { scope: 'flow', flowId: 'flow-reads', published: true },
+			};
 			const messages = [
 				assistantMsg('batching reads', {
 					toolCalls: [{ id: 'rb1', name: 'read_batch', args: { paths: [] } }],
 				}),
-				{
-					...toolResultMsg('rb1', 'ok', 'read_batch'),
-					details: {
-						results: [
-							{ path: 'src/a.ts', unchanged: false, ref: 'rr_fresh', contentHash: 'aa11' },
-							{ path: 'src/b.ts', unchanged: true, ref: 'rr_repeat', contentHash: 'bb22' },
-							{ path: 'src/c.ts', error: { code: 'outside-repository' } },
-						],
-						publish: { scope: 'flow', flowId: 'flow-reads', published: true },
-					},
-				},
+				{ ...toolResultMsg('rb1', 'ok', 'read_batch'), details },
 			];
 			const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
 
@@ -959,23 +960,20 @@ describe('measureExecutionMetrics', () => {
 	});
 
 	it('captures codegraph producer index states with distinct ids', () => {
+		const details: JsonValue[] = [
+			{ producerState: { indexId: 'idx-1' } },
+			{ producerState: { indexId: 'idx-1' } },
+			{ producerState: { indexId: 'idx-2' } },
+			{},
+		];
 		const messages = [
 			assistantMsg('exploring', {
 				toolCalls: [{ id: 'cg1', name: 'codegraph_explore', args: { query: 'q' } }],
 			}),
-			{
-				...toolResultMsg('cg1', 'ok', 'codegraph_explore'),
-				details: { producerState: { indexId: 'idx-1' } },
-			},
-			{
-				...toolResultMsg('cg1', 'ok', 'codegraph_explore'),
-				details: { producerState: { indexId: 'idx-1' } },
-			},
-			{
-				...toolResultMsg('cg1', 'ok', 'codegraph_explore'),
-				details: { producerState: { indexId: 'idx-2' } },
-			},
-			{ ...toolResultMsg('cg1', 'ok', 'codegraph_explore'), details: {} },
+			{ ...toolResultMsg('cg1', 'ok', 'codegraph_explore'), details: details[0] },
+			{ ...toolResultMsg('cg1', 'ok', 'codegraph_explore'), details: details[1] },
+			{ ...toolResultMsg('cg1', 'ok', 'codegraph_explore'), details: details[2] },
+			{ ...toolResultMsg('cg1', 'ok', 'codegraph_explore'), details: details[3] },
 		];
 		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
 

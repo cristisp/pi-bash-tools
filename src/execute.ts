@@ -41,6 +41,7 @@ import type {
 	ReviewScope,
 	SingleResult,
 	SubagentDetails,
+	SubagentRefusal,
 	S4CompositionObservation,
 	S4Preflight,
 } from './types.ts';
@@ -261,11 +262,12 @@ interface ExecuteContext {
 
 function makeDetailsFor(ctx: ExecuteContext) {
 	return (mode: 'single' | 'parallel' | 'chain') =>
-		(results: SingleResult[]): SubagentDetails => ({
+		(results: SingleResult[], refusal?: SubagentRefusal): SubagentDetails => ({
 			mode,
 			agentScope: ctx.agentScope,
 			projectAgentsDir: ctx.projectAgentsDir,
 			results,
+			...(refusal ? { refusal } : {}),
 		});
 }
 
@@ -336,9 +338,11 @@ function invalidParamsResponse(
 	text: string,
 ): AgentToolResult<SubagentDetails> {
 	const available = agents.map((a) => `${a.name} (${a.source})`).join(', ') || 'none';
+	const message = text.replace('{available}', available);
 	return {
-		content: [{ type: 'text', text: text.replace('{available}', available) }],
-		details: makeDetails('single')([]),
+		content: [{ type: 'text', text: message }],
+		details: makeDetails('single')([], { kind: 'invalid-params', message }),
+		isError: true,
 	};
 }
 
@@ -874,17 +878,17 @@ function compositionRefusalResponse(
 		policyOverride: ctx.orchestration.compositionPolicyOverride,
 		boundaryId,
 	});
+	const refusalText = compositionWarningText(refusals).replaceAll(
+		'Composition warning',
+		'Composition refusal',
+	);
 	return {
-		content: [
-			{
-				type: 'text',
-				text: compositionWarningText(refusals).replaceAll(
-					'Composition warning',
-					'Composition refusal',
-				),
-			},
-		],
-		details: makeDetails(mode === 'reuse' ? 'single' : mode)([]),
+		content: [{ type: 'text', text: refusalText }],
+		details: makeDetails(mode === 'reuse' ? 'single' : mode)([], {
+			kind: 'composition',
+			message: refusalText,
+		}),
+		isError: true,
 	};
 }
 
@@ -895,14 +899,11 @@ async function executeParallelMode(
 	const makeDetails = makeDetailsFor(ctx);
 	const maxParallelTasks = getConfig().maxParallelTasks;
 	if (tasks.length > maxParallelTasks) {
+		const message = `Too many parallel tasks (${tasks.length}). Max is ${maxParallelTasks}.`;
 		return {
-			content: [
-				{
-					type: 'text',
-					text: `Too many parallel tasks (${tasks.length}). Max is ${maxParallelTasks}.`,
-				},
-			],
-			details: makeDetails('parallel')([]),
+			content: [{ type: 'text', text: message }],
+			details: makeDetails('parallel')([], { kind: 'too-many-tasks', message }),
+			isError: true,
 		};
 	}
 	const effectiveScopes = tasks.map((task) =>
@@ -910,7 +911,11 @@ async function executeParallelMode(
 	);
 	const scopeError = disjointScopeError(effectiveScopes);
 	if (scopeError)
-		return { content: [{ type: 'text', text: scopeError }], details: makeDetails('parallel')([]) };
+		return {
+			content: [{ type: 'text', text: scopeError }],
+			details: makeDetails('parallel')([], { kind: 'overlapping-scope', message: scopeError }),
+			isError: true,
+		};
 
 	const flowId = deriveFlowId(ctx.sessionFile);
 	const reviewSurface = ensureReviewSurface(flowId, ctx.cwd);
@@ -1091,9 +1096,14 @@ async function confirmProjectAgentsIfNeeded(
 		`Agents: ${names}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
 	);
 	if (ok) return null;
+	const message = 'Canceled: project-local agents not approved.';
 	return {
-		content: [{ type: 'text', text: 'Canceled: project-local agents not approved.' }],
-		details: makeDetails(hasChain ? 'chain' : hasTasks ? 'parallel' : 'single')([]),
+		content: [{ type: 'text', text: message }],
+		details: makeDetails(hasChain ? 'chain' : hasTasks ? 'parallel' : 'single')([], {
+			kind: 'project-agents-denied',
+			message,
+		}),
+		isError: true,
 	};
 }
 
@@ -1101,14 +1111,12 @@ function nestedResponse(
 	mode: SubagentMode,
 	makeDetails: ReturnType<typeof makeDetailsFor>,
 ): AgentToolResult<SubagentDetails> {
+	const message =
+		'Nested subagents are disabled: this session is itself a subagent (PI_SUBAGENT_NESTED is set), so it cannot spawn its own subagents.';
 	return {
-		content: [
-			{
-				type: 'text',
-				text: 'Nested subagents are disabled: this session is itself a subagent (PI_SUBAGENT_NESTED is set), so it cannot spawn its own subagents.',
-			},
-		],
-		details: makeDetails(mode as 'single')([]),
+		content: [{ type: 'text', text: message }],
+		details: makeDetails(mode as 'single')([], { kind: 'nested', message }),
+		isError: true,
 	};
 }
 
@@ -1167,28 +1175,24 @@ function agentsResponse(
 function reuseWithoutTaskResponse(
 	makeDetails: ReturnType<typeof makeDetailsFor>,
 ): AgentToolResult<SubagentDetails> {
+	const message =
+		'Invalid parameters. reuseLabel requires a task (the next message for that session).';
 	return {
-		content: [
-			{
-				type: 'text',
-				text: 'Invalid parameters. reuseLabel requires a task (the next message for that session).',
-			},
-		],
-		details: makeDetails('single')([]),
+		content: [{ type: 'text', text: message }],
+		details: makeDetails('single')([], { kind: 'reuse-without-task', message }),
+		isError: true,
 	};
 }
 
 function sessionOwnerUnavailableResponse(
 	makeDetails: ReturnType<typeof makeDetailsFor>,
 ): AgentToolResult<SubagentDetails> {
+	const message =
+		'Subagent session ownership is unavailable: the current Pi session has no session file, so listing and reuse are unavailable.';
 	return {
-		content: [
-			{
-				type: 'text',
-				text: 'Subagent session ownership is unavailable: the current Pi session has no session file, so listing and reuse are unavailable.',
-			},
-		],
-		details: makeDetails('single')([]),
+		content: [{ type: 'text', text: message }],
+		details: makeDetails('single')([], { kind: 'session-unavailable', message }),
+		isError: true,
 	};
 }
 
@@ -1221,7 +1225,11 @@ export async function executeSubagent(
 	if (mode === 'single' || mode === 'parallel' || mode === 'chain') {
 		const spawnRefusal = spawnBoundaryRefusalText(executeCtx.cwd, params);
 		if (spawnRefusal) {
-			return { content: [{ type: 'text', text: spawnRefusal }], details: makeDetails(mode)([]) };
+			return {
+				content: [{ type: 'text', text: spawnRefusal }],
+				details: makeDetails(mode)([], { kind: 'spawn-boundary', message: spawnRefusal }),
+				isError: true,
+			};
 		}
 	}
 	if (mode === 'reuse' && !params.task) return reuseWithoutTaskResponse(makeDetails);

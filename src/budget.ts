@@ -682,6 +682,18 @@ function contentionNote(contention: RepositoryWriteContention, consequence: stri
 	return `${who} (${seconds}s in flight), so ${consequence}`;
 }
 
+/** A call that writes the repository, either by command id or by overriding a `verify` phase. */
+function isWriteCapableCall(
+	toolName: string,
+	input: Record<string, unknown> | undefined,
+	commandId: string,
+): boolean {
+	return (
+		(commandId !== '' && isExclusiveWriteCommandId(commandId)) ||
+		(toolName === 'verify' && verifySetsScriptOverrides(input))
+	);
+}
+
 export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 	if (process.env.PI_SUBAGENT_NESTED !== '1') return;
 	const role = process.env.PI_ORCHESTRATION_ROLE;
@@ -746,18 +758,6 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 			if (!breached) persist(label, state);
 		}, delay);
 	};
-
-	/** A call that writes the repository, either by command id or by overriding a `verify` phase. */
-	function isWriteCapableCall(
-		toolName: string,
-		input: Record<string, unknown> | undefined,
-		commandId: string,
-	): boolean {
-		return (
-			(commandId !== '' && isExclusiveWriteCommandId(commandId)) ||
-			(toolName === 'verify' && verifySetsScriptOverrides(input))
-		);
-	}
 
 	/**
 	 * Repository contention between sibling sessions, in two halves.

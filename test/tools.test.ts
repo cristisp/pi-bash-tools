@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { Check } from 'typebox/value';
+import type { TSchema } from 'typebox';
 import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { DEFAULT_ROLE_BUDGETS } from '../src/config.ts';
 import { SubagentOverrideParams, SubagentParams } from '../src/execute.ts';
@@ -21,7 +23,9 @@ import {
 	registerSubagentStatsTool,
 	registerSubagentTool,
 } from '../src/tools.ts';
+import { structuredContentOf, SubagentStructuredResultSchema } from '../src/structured-result.ts';
 import { COMPOSITION_RULES, compositionToolSummary } from '../src/types.ts';
+import { makeSingleResult } from './helpers.ts';
 
 /**
  * Coverage for the registration surface of src/tools.ts. The tools registered here are the only
@@ -38,6 +42,16 @@ interface RegisteredTool {
 	execute: unknown;
 	renderCall?: unknown;
 	renderResult?: unknown;
+	outputSchema?: TSchema;
+	exposure?: string;
+	namespace?: unknown;
+	defaultActive?: boolean;
+	annotations?: {
+		readOnlyHint?: boolean;
+		destructiveHint?: boolean;
+		idempotentHint?: boolean;
+		openWorldHint?: boolean;
+	};
 }
 
 /** Minimal ExtensionAPI stand-in: registration is the only thing these tests exercise. */
@@ -186,12 +200,72 @@ describe('subagent tool registration', () => {
 		expect(toolByName('subagent').parameters).toBe(SubagentParams);
 		expect(toolByName('subagent_override').parameters).toBe(SubagentOverrideParams);
 	});
+
+	it('declares the structured output schema on the execution tools only', () => {
+		// S13-001: codemode and other programmatic callers read structuredContent when the tool
+		// declares outputSchema. Text-only tools (stats, close) stay text-only on purpose.
+		expect(toolByName('subagent').outputSchema).toBe(SubagentStructuredResultSchema);
+		expect(toolByName('subagent_override').outputSchema).toBe(SubagentStructuredResultSchema);
+		expect(toolByName('subagent_stats').outputSchema).toBeUndefined();
+		expect(toolByName('subagent_close').outputSchema).toBeUndefined();
+	});
+
+	it('declares direct exposure and advisory annotations without a namespace', () => {
+		// S13-002: `direct` keeps every tool model-declared and programmatically reachable while active
+		// (a session that excludes a tool also excludes it from scripts). The annotations are hints for
+		// permission extensions only; no code path reads them, the absence of a namespace keeps the
+		// tools ungrouped, and `defaultActive` stays unset so the model-facing toolset is unchanged.
+		for (const tool of registerAllTools()) {
+			expect(tool.exposure).toBe('direct');
+			expect(tool.namespace).toBeUndefined();
+			expect(tool.defaultActive).toBeUndefined();
+		}
+		expect(toolByName('subagent').annotations).toEqual({
+			readOnlyHint: false,
+			destructiveHint: true,
+			idempotentHint: false,
+		});
+		expect(toolByName('subagent_override').annotations).toEqual({
+			readOnlyHint: false,
+			destructiveHint: true,
+			idempotentHint: false,
+		});
+		expect(toolByName('subagent_stats').annotations).toEqual({
+			readOnlyHint: true,
+			idempotentHint: true,
+		});
+		expect(toolByName('subagent_close').annotations).toEqual({
+			readOnlyHint: false,
+			destructiveHint: true,
+			idempotentHint: true,
+		});
+	});
+
+	it('validates a real projection against the registered output schema', () => {
+		const outputSchema = toolByName('subagent').outputSchema;
+		if (!outputSchema) throw new Error('the subagent tool did not declare an outputSchema');
+		const content = structuredContentOf({
+			mode: 'single',
+			agentScope: 'user',
+			projectAgentsDir: null,
+			results: [makeSingleResult({ label: 'worker-1', herdrStatus: 'done' })],
+		});
+		expect(Check(outputSchema, content)).toBe(true);
+		const refusal = structuredContentOf({
+			mode: 'single',
+			agentScope: 'user',
+			projectAgentsDir: null,
+			results: [],
+			refusal: { kind: 'nested', message: 'Nested subagents are disabled' },
+		});
+		expect(Check(outputSchema, refusal)).toBe(true);
+	});
 });
 
-describe('subagent parameter schema', () => {
-	const schema = () => jsonSchema(toolByName('subagent').parameters);
-	const props = () => properties(toolByName('subagent').parameters);
+const schema = () => jsonSchema(toolByName('subagent').parameters);
+const props = () => properties(toolByName('subagent').parameters);
 
+describe('subagent parameter schema', () => {
 	it('accepts an object whose top-level keys are all optional', () => {
 		expect(schema().type).toBe('object');
 		// No key is required: single/parallel/chain/list/agents/reuse modes are resolved from the keys
@@ -339,9 +413,9 @@ describe('registered description text is composed, not paraphrased', () => {
 	});
 
 	it('carries the reuse guidance into the parameters a caller picks before reuse', () => {
-		const props = properties(toolByName('subagent').parameters);
-		expect(props.reuseLabel.description).toContain(REUSE_WORKFLOW_GUIDANCE);
-		expect(props.listSubagents.description).toContain(REUSE_WORKFLOW_GUIDANCE);
+		const parameterProps = properties(toolByName('subagent').parameters);
+		expect(parameterProps.reuseLabel.description).toContain(REUSE_WORKFLOW_GUIDANCE);
+		expect(parameterProps.listSubagents.description).toContain(REUSE_WORKFLOW_GUIDANCE);
 	});
 
 	it('tells the child how to reuse a session and how to judge reuse', () => {
@@ -460,6 +534,20 @@ describe('registered description text is composed, not paraphrased', () => {
 	});
 });
 
+/** Sentences the child reads, taken from the registered tools. */
+function sentences(): string[] {
+	const dynamic = Object.values(DYNAMIC_VALUES);
+	return (
+		registerAllTools()
+			.flatMap((tool) => tool.description.split(/(?<=\.)\s+/))
+			.map((sentence) => sentence.trim())
+			.filter((sentence) => sentence.length > 40)
+			// Sentences carrying an interpolated runtime value are asserted in their composed form
+			// above; here the interest is the static prose.
+			.filter((sentence) => !dynamic.some((value) => sentence.includes(value)))
+	);
+}
+
 describe('description prose lives in one source', () => {
 	const source = readFileSync(new URL('../src/tools.ts', import.meta.url), 'utf8');
 	const templatesSource = readFileSync(new URL('../src/templates.ts', import.meta.url), 'utf8');
@@ -468,20 +556,6 @@ describe('description prose lives in one source', () => {
 		'Composition policy uses the configured policy by default.',
 		...COMPOSITION_RULES.flatMap((rule) => [rule.description, rule.alternative]),
 	];
-
-	/** Sentences the child reads, taken from the registered tools. */
-	const sentences = () => {
-		const dynamic = Object.values(DYNAMIC_VALUES);
-		return (
-			registerAllTools()
-				.flatMap((tool) => tool.description.split(/(?<=\.)\s+/))
-				.map((sentence) => sentence.trim())
-				.filter((sentence) => sentence.length > 40)
-				// Sentences carrying an interpolated runtime value are asserted in their composed form
-				// above; here the interest is the static prose.
-				.filter((sentence) => !dynamic.some((value) => sentence.includes(value)))
-		);
-	};
 
 	function isCompositionSentence(sentence: string): boolean {
 		return compositionSourceFragments.some((fragment) => sentence.includes(fragment));

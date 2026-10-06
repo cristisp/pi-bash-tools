@@ -3,6 +3,76 @@
 This file tracks only unfinished work and the decisions needed for future work.
 Completed implementation history, review rounds, and superseded plans remain available in Git history and the analysis artifacts.
 
+## S13: evaluate Pi 0.86.0-1.0.3 feature adoption
+
+The installed Pi runtime is 1.0.3. The available changelog has releases 0.86.0, 0.86.1, 0.87.0, and 0.87.1, then resumes at 0.99.0; no 0.88-0.98 entries are present.
+This is an adoption review, not a blanket migration: no general extension API break has been identified for the extension's current integration points.
+The extension already uses UI-prompt events and per-tool `renderCall`/`renderResult`; do not duplicate them with newer renderer APIs.
+
+### S13 candidate work items
+
+- [x] **S13-001: Structured subagent results.** Evaluate `outputSchema` and `structuredContent` for the subagent tools so codemode and other programmatic callers can consume typed outcomes without parsing display text.
+  Preserve the current model-facing text and avoid exposing private or unbounded result details.
+  Implemented: `subagent` and `subagent_override` declare `outputSchema` and always attach a bounded `structuredContent` projection owned by `src/structured-result.ts` (mode, agent scope, and per-result label, outcome, status, stop reason, error, and usage; results capped with a `truncated` marker).
+  Transcripts, stderr, read manifests, dirty paths, and internal metrics are excluded, the model-facing `content` is untouched, and tests validate the projection against the schema; the tools are registered directly because the installed pi 1.0.3 types include `outputSchema`, and the contract is documented in `docs/development.md`.
+  Calls refused before any child runs are `isError: true` results whose model-facing text is unchanged and which carry a bounded `refusal` (kind plus capped message) in the projection, so programmatic callers cannot mistake a refusal for an empty success; informational responses such as agent and session listings stay normal results and stay text-only, reported as empty results in the projection instead of a new listing surface.
+  `subagent_stats` and `subagent_close` stay text-only.
+- [x] **S13-002: Tool exposure and permission metadata.** Evaluate `namespace`, `exposure`, and tool `annotations` for the subagent, override, stats, and close tools.
+  Choose intentionally whether session-spawning tools are callable through `ctx.executeTool()` and whether permission extensions should treat them as destructive or read-only.
+  These annotations are advisory and must not be treated as enforcement.
+  Implemented as metadata only, with no runtime behavior change: all four tools declare `exposure: "direct"` explicitly, so they stay model-declared and callable through `ctx.executeTool()` and codemode scripts while they are active, and a session that excludes a tool through `--tools` or settings excludes it from programmatic callers too.
+  `subagent` and `subagent_override` declare `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: false`; `subagent_stats` declares `readOnlyHint: true`, `idempotentHint: true`; `subagent_close` declares `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: true`; `openWorldHint` stays unset.
+  No tool declares a `namespace` and `defaultActive` stays at its default, so the tools stay ungrouped and the model-facing toolset is unchanged; `test/tools.test.ts` pins the exposure, the annotations, the absence of a `defaultActive` override, and the absence of a namespace, and no code path reads annotations.
+- [ ] **S13-003: Nested tool-call accounting.** Pi 0.99 routes `ctx.executeTool()` calls through normal tool hooks and marks them with `parentToolCallId`, but does not add separate transcript entries for them.
+  Decide whether nested calls should consume role budgets and how session statistics represent them, then test that the chosen policy neither double-counts nor bypasses enforcement.
+- [ ] **S13-004: Agent finalization boundaries.** Evaluate whether `agent_before_settle` or actionable `turn_end` can improve budget or review finalization compared with the current abort/steer path.
+  Adopt these boundaries only if they provide a bounded, loop-safe behavior with clearer validation evidence.
+- [x] **S13-005: Built-in tool and provider compatibility.** Audit whether Windows `powershell` calls receive the same budget and write-guard treatment as other implementation tools.
+  Check configuration and preset guidance for Pi 1.0.3's `azure-openai-responses` to `azure` provider rename without adding an Azure-specific dependency to the extension.
+  Audit result: no code change needed.
+  `powershell` already receives exactly the same budget and write-guard treatment as `bash` (an ordinary tool call that is never discovery, implementation, or validation; neither shell takes the repository write guard), and regression tests pin that parity.
+  The provider rename does not affect this extension: model presets store opaque `provider/model[:level]` specs and never interpret provider names; a regression test pins the renamed token as a valid spec.
+
+### S13 scope and acceptance
+
+In scope: `src/tools.ts`, `src/budget.ts`, `src/session-stats.ts`, `src/config.ts`, related tool rendering and documentation, and focused tests.
+Out of scope: replacing separate child Pi sessions with `ctx.executeTool()`, adding custom providers or MCP servers, blanket migration to `registerToolRenderer()`, and pinning peer dependencies as part of this feature review.
+Complete this workstream only after each candidate is either implemented with focused regression tests or explicitly deferred with its rationale.
+
+Implementation status: S13-001, S13-002, and S13-005 are implemented with focused regression tests; S13-003 and S13-004 remain open.
+
+## S14: review-surface delta evidence
+
+A reviewer must be able to compare rounds per file instead of re-deriving what changed.
+The review surface was keyed by `git status` plus `git diff --stat` plus the head revision, so an edit that kept the same line counts and the same file set served a stale snapshot, and no earlier revision survived for a delta comparison.
+
+- [x] **S14-001: Content-derived snapshot fingerprint.** Keep the status codes, the diff stat, and the git head, and add a bounded per-file SHA-256 for the first `MAX_DIRTY_PATHS` dirty paths, so a same-size, same-stat edit refreshes the revision; the diff stat stays in the fingerprint as the aggregate backstop for line-count changes, a capped binary delta of the worktree against the head makes the coverage complete for tracked content and permission changes, a digest of the hunk-header read joins the fingerprint like every other evidence read, and a hashing window that leaves a dirty path out is never reused.
+  Untracked files are listed individually (`status --short -z --no-renames --untracked-files=all`) so a collapsed untracked directory cannot hide a change, and the NUL-separated read keeps paths verbatim, so a name git would C-quote in line mode (non-ASCII, quotes, backslashes) still hashes instead of degrading to an unreadable literal.
+  Disabling rename detection keeps every status entry to one path: a rename is a delete plus an add and both sides stay hashable.
+  A dirty symlink is hashed by its target string, so repointing it refreshes the revision even when the target bytes are unchanged.
+  Files above `MAX_HASH_BYTES` are hashed as their first bytes plus a bounded tail window and their size and marked `(partial)`, and unreadable paths are marked `(unavailable)`, so the snapshot degrades instead of failing.
+  Implemented in `src/scope.ts`; the snapshot lists the hashes in a `## File hashes` section and returns the fingerprint to the caller.
+  Every git read runs from the repository root (`git rev-parse --show-toplevel`) because machine-readable status paths are root-relative, so a delegation rooted in a subdirectory still hashes the right files; the header records repository facts only, because the snapshot belongs to the flow rather than to one delegation.
+  A failed git read of any kind, or an existing path that cannot be read, taints the fingerprint, and a tainted fingerprint is never reused, so a repeated failure cannot serve a stale surface as unchanged; a deleted path stays taint-free and does not churn revisions.
+  The hunk-header read compares against the head like the stat and delta reads, so a staged change reaches that section, and a read that fails renders `(unavailable)` instead of looking like a tree without hunks; its digest is exposed in the header next to the worktree delta.
+  Fail closed by outcome rather than by cause: any hash that stays `(unavailable)` for a path whose status code is not a deletion taints the fingerprint, so a path the snapshot cannot address (for example bytes that do not round-trip through the status read on filesystems that allow them) forces a refresh instead of being served as unchanged; such a path is refused rather than hashed, because its decoded name could address a different file.
+  A hashing window that leaves a dirty path out - more than `MAX_DIRTY_PATHS` dirty paths, or a path beyond `MAX_DIRTY_PATH_LENGTH` - also taints, so a same-size edit past the cap can never keep the previous revision.
+  The worktree delta is read as `git -c core.fileMode=true diff HEAD --binary --no-color` and the hunk headers as `git diff HEAD --no-color --unified=0`, and a read that fails or exceeds the read bound taints instead of silently hiding the change, which also keeps the revision fresh for a permission change on a file that is already dirty.
+  A dirty path that is not a regular file - a submodule checkout's directory, or a tracked file replaced by a FIFO - has no readable content, so it counts as unreadable and refreshes on every delegation rather than opening something a FIFO would leave blocking; git neither lists nor tracks other non-regular files, so an untracked FIFO cannot reach the hash in the first place. That churn is the accepted fail-closed cost.
+  The per-file hashes and diff stat are emitted before the status text, so the artifact size cap spends itself on the status text and hunk tail rather than the delta evidence.
+  Residual bounds: an equal-size edit strictly between the head and tail windows of an untracked `(partial)` path is not covered by its hash, git-ignored paths are outside the snapshot by design, and so are changes git itself does not model - the permission bits of a clean tracked file, ownership, extended attributes, or an empty directory - because the snapshot describes what git reports for the worktree plus the bytes and permission bits of every dirty path.
+- [x] **S14-002: Retained earlier revisions.** Before overwriting, copy the outgoing snapshot to `predigest/surfaces/review-surface-r<N>.md` and keep the newest `MAX_SNAPSHOT_HISTORY` (10) revisions.
+  Retention is best-effort: an unusable history directory leaves the refreshed snapshot in place, and the read-only reuse path writes no snapshot revision (only the flow lock file is created and removed around the call).
+  Accepted low-severity note from review: that lock is the flow's shared dispatch lock, so even a pure reuse serializes against other flow operations for the duration of the git reads; computing the fingerprint outside the lock is a possible future refactor, and no artifact byte, revision, or manifest output differs between the two paths.
+  Implemented in `src/scope.ts`; `buildReadManifest` compares against `reviewSurfacePath()` instead of a literal path, cites the history directory with its retained count only when `retainedReviewSurfaceRevisions()` finds one, and states it as established evidence.
+- [x] **S14-003: Digest linkage and path integrity.** The extension cannot observe the harness `dirtyFilesDigest`, so handoffs cite the gate digest from the validation evidence alongside the snapshot path, revision, and head; the fingerprint and the worktree delta and hunk digests live in the snapshot header, the hash list stays inside the snapshot artifact, and the delegation envelope and telemetry keep carrying only the surface path, revision, and head.
+  Propagating the fingerprint itself into the envelope, report, and telemetry is deliberately deferred: those records already carry the surface path, revision, and head, the fingerprint stays in the snapshot header, and a new field would cross the report, telemetry, registry, and template contracts for little audit value.
+  The same work fixed a pre-existing defect where dirty paths were parsed from a trimmed status line, corrupting a leading-space status code such as ` D path`; the displayed status now also keeps that leading space.
+  Implemented and documented in `README.md` and `docs/artifacts.md`; `test/scope.test.ts` covers same-shape refresh, per-file hash stability, `(unavailable)` and `(partial)` paths, untracked directory listing, the truncated-window non-reuse rule, tainted-git-input refresh, a hunk-header read failure, an over-bound worktree delta, an isolated head-only change, unreadable-path refresh, over-long-path taint, a mode-only change to an already dirty path, an untracked file's mode, a dirty path that is not a regular file, a name that cannot round-trip, delta-evidence ordering, C-quoted-path hashing, symlink repointing, rename splitting, staged changes reaching the hunk section, root-relative subdirectory reading across delegation directories, forced-color parsing, bounded retention, retention failure, and manifest exposure.
+  The scope tests also neutralize the developer's global git config and bound every git call: a global `commit.gpgsign` can block on a locked signing agent, which left the test repositories without the commit under test and hung the suite instead of failing it.
+
+Implementation status: S14 is implemented with focused regression tests; primary review and five remediation rounds of review findings are addressed, and an independent validation pass plus a fresh from-scratch primary review approved it.
+
 ## Current status
 
 - S1 registry write-path optimization is complete.
@@ -19,6 +89,8 @@ Completed implementation history, review rounds, and superseded plans remain ava
 - The current uncommitted tree carries five workstreams: S4 measurement-semantics fixes, T-014 blocked-subagent reporting, the spawn boundary, S11 evidence-reacquisition and Tier 2 finalization hardening, and S12 compact child-context handoffs.
 - S11 implementation is present in the uncommitted tree. The current `@ztc/bash-tools` 1.1.7 source confirms the `{ ref }` lookup contract and flow publication schema; its fresh-process runtime completion gate remains open.
 - S12 compact child-context handoffs are implemented and review-clean. They reduce unnecessary historical ledger and manifest discovery without changing role budgets, scope enforcement, or producer ownership. The final repository verification passed after the last remediation.
+- S13-001 structured subagent results, the S13-002 tool metadata decisions, and the S13-005 audit are implemented on top of head `2b34be7`; S13-003 and S13-004 remain open.
+- S14 review-surface delta evidence is implemented on top of head `2b34be7`, passed primary review (reviewer-63), and its F-001 to F-006 findings are remediated; re-review is pending.
 
 ## S4: decide whether `warn` can become `enforce`
 

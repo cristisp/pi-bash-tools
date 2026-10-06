@@ -140,16 +140,16 @@ describe('extension registration', () => {
 	});
 });
 
-describe('subagent_stats tool - ownership', () => {
-	async function getStatsTool() {
-		const { default: register } = await loadIndex();
-		const pi = mockPi();
-		register(pi as never);
-		const tool = pi.registerTool.mock.calls.find((c) => c[0].name === 'subagent_stats');
-		expect(tool).toBeDefined();
-		return tool![0];
-	}
+async function getStatsTool() {
+	const { default: register } = await loadIndex();
+	const pi = mockPi();
+	register(pi as never);
+	const tool = pi.registerTool.mock.calls.find((c) => c[0].name === 'subagent_stats');
+	expect(tool).toBeDefined();
+	return tool![0];
+}
 
+describe('subagent_stats tool - ownership', () => {
 	it('fails closed without looking up a same-workspace entry when the session file is missing', async () => {
 		const { registerEntry } = await import('../src/registry.ts');
 		const { readRegistry } = await import('../src/registry-store.ts');
@@ -172,16 +172,16 @@ describe('subagent_stats tool - ownership', () => {
 	});
 });
 
-describe('input handler - pass-through', () => {
-	async function getInputHandler() {
-		const { default: register } = await loadIndex();
-		const pi = mockPi();
-		register(pi as never);
-		const call = pi.on.mock.calls.find((c) => c[0] === 'input');
-		expect(call).toBeDefined();
-		return call![1];
-	}
+async function getInputHandler() {
+	const { default: register } = await loadIndex();
+	const pi = mockPi();
+	register(pi as never);
+	const call = pi.on.mock.calls.find((c) => c[0] === 'input');
+	expect(call).toBeDefined();
+	return call![1];
+}
 
+describe('input handler - pass-through', () => {
 	it('passes through when no sessions are linked', async () => {
 		const handler = await getInputHandler();
 		const ctx = handlerCtx();
@@ -202,15 +202,6 @@ describe('input handler - pass-through', () => {
 });
 
 describe('input handler - interception', () => {
-	async function getInputHandler() {
-		const { default: register } = await loadIndex();
-		const pi = mockPi();
-		register(pi as never);
-		const call = pi.on.mock.calls.find((c) => c[0] === 'input');
-		expect(call).toBeDefined();
-		return call![1];
-	}
-
 	it('passes through while a done session is working again', async () => {
 		const { registerEntry } = await import('../src/registry.ts');
 		registerEntry(makeRegistryEntry({ parentSession: '/sess/a.jsonl', status: 'done' }));
@@ -239,16 +230,16 @@ describe('input handler - interception', () => {
 	});
 });
 
-describe('subagent_close tool - label handling', () => {
-	async function getCloseTool() {
-		const { default: register } = await loadIndex();
-		const pi = mockPi();
-		register(pi as never);
-		const tool = pi.registerTool.mock.calls.find((c) => c[0].name === 'subagent_close');
-		expect(tool).toBeDefined();
-		return tool![0];
-	}
+async function getCloseTool() {
+	const { default: register } = await loadIndex();
+	const pi = mockPi();
+	register(pi as never);
+	const tool = pi.registerTool.mock.calls.find((c) => c[0].name === 'subagent_close');
+	expect(tool).toBeDefined();
+	return tool![0];
+}
 
+describe('subagent_close tool - label handling', () => {
 	it('reports unknown labels', async () => {
 		const tool = await getCloseTool();
 		const ctx = handlerCtx();
@@ -275,15 +266,6 @@ describe('subagent_close tool - label handling', () => {
 });
 
 describe('subagent_close tool - bulk close', () => {
-	async function getCloseTool() {
-		const { default: register } = await loadIndex();
-		const pi = mockPi();
-		register(pi as never);
-		const tool = pi.registerTool.mock.calls.find((c) => c[0].name === 'subagent_close');
-		expect(tool).toBeDefined();
-		return tool![0];
-	}
-
 	it('closes all linked subagents without a label', async () => {
 		const { registerEntry } = await import('../src/registry.ts');
 		registerEntry(makeRegistryEntry({ parentSession: '/sess/a.jsonl' }));
@@ -307,16 +289,16 @@ describe('subagent_close tool - bulk close', () => {
 	});
 });
 
-describe('commands - kill', () => {
-	async function getCommand(name: string) {
-		const { default: register } = await loadIndex();
-		const pi = mockPi();
-		register(pi as never);
-		const cmd = pi.registerCommand.mock.calls.find((c) => c[0] === name);
-		expect(cmd).toBeDefined();
-		return cmd![1];
-	}
+async function getCommand(name: string) {
+	const { default: register } = await loadIndex();
+	const pi = mockPi();
+	register(pi as never);
+	const cmd = pi.registerCommand.mock.calls.find((c) => c[0] === name);
+	expect(cmd).toBeDefined();
+	return cmd![1];
+}
 
+describe('commands - kill', () => {
 	it('kill-session-subagents closes linked sessions and notifies', async () => {
 		const { registerEntry } = await import('../src/registry.ts');
 		registerEntry(makeRegistryEntry({ parentSession: '/sess/a.jsonl' }));
@@ -329,15 +311,6 @@ describe('commands - kill', () => {
 });
 
 describe('commands - setup warnings and cancel', () => {
-	async function getCommand(name: string) {
-		const { default: register } = await loadIndex();
-		const pi = mockPi();
-		register(pi as never);
-		const cmd = pi.registerCommand.mock.calls.find((c) => c[0] === name);
-		expect(cmd).toBeDefined();
-		return cmd![1];
-	}
-
 	it('setup-subagents warns without UI', async () => {
 		const cmd = await getCommand('setup-subagents');
 		const ctx = { hasUI: false, ui: { notify: vi.fn() } };
@@ -445,15 +418,6 @@ describe('commands - setup warnings and cancel', () => {
 });
 
 describe('commands - setup file creation', () => {
-	async function getCommand(name: string) {
-		const { default: register } = await loadIndex();
-		const pi = mockPi();
-		register(pi as never);
-		const cmd = pi.registerCommand.mock.calls.find((c) => c[0] === name);
-		expect(cmd).toBeDefined();
-		return cmd![1];
-	}
-
 	it('setup-subagents creates agent files without model frontmatter and seeds the default preset', async () => {
 		const cmd = await getCommand('setup-subagents');
 		const input = vi.fn().mockResolvedValue('github-copilot/gpt-5.6-luna:high');
@@ -598,15 +562,6 @@ describe('commands - setup file creation', () => {
 });
 
 describe('commands - setup overwrite', () => {
-	async function getCommand(name: string) {
-		const { default: register } = await loadIndex();
-		const pi = mockPi();
-		register(pi as never);
-		const cmd = pi.registerCommand.mock.calls.find((c) => c[0] === name);
-		expect(cmd).toBeDefined();
-		return cmd![1];
-	}
-
 	it('setup-subagents overwrites existing files after confirm', async () => {
 		const agentsDir = path.join(dir, 'agents');
 		fs.mkdirSync(agentsDir, { recursive: true });
@@ -624,29 +579,29 @@ describe('commands - setup overwrite', () => {
 	});
 });
 
+function writePresetConfig(): void {
+	fs.writeFileSync(
+		path.join(dir, 'subagent-herdr.config.json'),
+		JSON.stringify({
+			modelPresets: {
+				cheap: { worker: 'p/m:low' },
+				deep: { worker: 'p/m:high', reviewer: 'p/n:high' },
+			},
+			defaultPreset: 'cheap',
+		}),
+	);
+}
+
+async function getSelectCommand() {
+	const { default: register } = await loadIndex();
+	const pi = mockPi();
+	register(pi as never);
+	const cmd = pi.registerCommand.mock.calls.find((c) => c[0] === 'select-subagent-preset');
+	expect(cmd).toBeDefined();
+	return { cmd: cmd![1], pi };
+}
+
 describe('commands - select-subagent-preset', () => {
-	const writePresetConfig = (): void => {
-		fs.writeFileSync(
-			path.join(dir, 'subagent-herdr.config.json'),
-			JSON.stringify({
-				modelPresets: {
-					cheap: { worker: 'p/m:low' },
-					deep: { worker: 'p/m:high', reviewer: 'p/n:high' },
-				},
-				defaultPreset: 'cheap',
-			}),
-		);
-	};
-
-	async function getSelectCommand() {
-		const { default: register } = await loadIndex();
-		const pi = mockPi();
-		register(pi as never);
-		const cmd = pi.registerCommand.mock.calls.find((c) => c[0] === 'select-subagent-preset');
-		expect(cmd).toBeDefined();
-		return { cmd: cmd![1], pi };
-	}
-
 	it('warns without UI', async () => {
 		const { cmd } = await getSelectCommand();
 		const ctx = { hasUI: false, ui: { notify: vi.fn() } };
@@ -745,35 +700,35 @@ describe('commands - select-subagent-preset', () => {
 	});
 });
 
+function writeAgent(name: string): void {
+	const agentsDir = path.join(dir, 'agents');
+	fs.mkdirSync(agentsDir, { recursive: true });
+	fs.writeFileSync(
+		path.join(agentsDir, `${name}.md`),
+		`---\nname: ${name}\ndescription: ${name} agent\n---\n\nPrompt for ${name}.`,
+	);
+}
+
+function createCtx(input: unknown, confirm = vi.fn(), notify = vi.fn()) {
+	return {
+		hasUI: true,
+		cwd: dir,
+		ui: { input, confirm, notify },
+		modelRegistry: { find: (): unknown => ({}) },
+		sessionManager: { getSessionFile: () => '/sess/a.jsonl', getEntries: () => [] },
+	};
+}
+
+async function getCreateCommand() {
+	const { default: register } = await loadIndex();
+	const pi = mockPi();
+	register(pi as never);
+	const cmd = pi.registerCommand.mock.calls.find((c) => c[0] === 'create-subagent-preset');
+	expect(cmd).toBeDefined();
+	return { cmd: cmd![1], pi };
+}
+
 describe('commands - create-subagent-preset', () => {
-	function writeAgent(name: string): void {
-		const agentsDir = path.join(dir, 'agents');
-		fs.mkdirSync(agentsDir, { recursive: true });
-		fs.writeFileSync(
-			path.join(agentsDir, `${name}.md`),
-			`---\nname: ${name}\ndescription: ${name} agent\n---\n\nPrompt for ${name}.`,
-		);
-	}
-
-	function createCtx(input: unknown, confirm = vi.fn(), notify = vi.fn()) {
-		return {
-			hasUI: true,
-			cwd: dir,
-			ui: { input, confirm, notify },
-			modelRegistry: { find: (): unknown => ({}) },
-			sessionManager: { getSessionFile: () => '/sess/a.jsonl', getEntries: () => [] },
-		};
-	}
-
-	async function getCreateCommand() {
-		const { default: register } = await loadIndex();
-		const pi = mockPi();
-		register(pi as never);
-		const cmd = pi.registerCommand.mock.calls.find((c) => c[0] === 'create-subagent-preset');
-		expect(cmd).toBeDefined();
-		return { cmd: cmd![1], pi };
-	}
-
 	it('warns without UI', async () => {
 		const { cmd } = await getCreateCommand();
 		const ctx = { hasUI: false, ui: { notify: vi.fn() } };
@@ -1033,41 +988,41 @@ function statusCtx(entries: unknown[] = [], overrides: Record<string, unknown> =
 	};
 }
 
+async function getSessionStartHandlers() {
+	const { default: register } = await loadIndex();
+	const pi = mockPi();
+	register(pi as never);
+	const handlers = pi.on.mock.calls.filter((c) => c[0] === 'session_start').map((c) => c[1]);
+	expect(handlers.length).toBeGreaterThan(0);
+	return handlers;
+}
+
+function writeStatusPresetConfig(): void {
+	fs.writeFileSync(
+		path.join(dir, 'subagent-herdr.config.json'),
+		JSON.stringify({
+			modelPresets: { cheap: { worker: 'p/m:low' }, deep: { worker: 'p/m:high' } },
+			defaultPreset: 'cheap',
+		}),
+	);
+}
+
+function writeStalePresetConfig(): void {
+	fs.writeFileSync(
+		path.join(dir, 'subagent-herdr.config.json'),
+		JSON.stringify({
+			modelPresets: {
+				cheap: { worker: 'p/ok:low' },
+				stale: { worker: 'p/gone:high', scout: 'p/also-gone:low' },
+			},
+			defaultPreset: 'cheap',
+		}),
+	);
+}
+
 describe('commands - subagent preset status bar', () => {
-	async function getSessionStartHandlers() {
-		const { default: register } = await loadIndex();
-		const pi = mockPi();
-		register(pi as never);
-		const handlers = pi.on.mock.calls.filter((c) => c[0] === 'session_start').map((c) => c[1]);
-		expect(handlers.length).toBeGreaterThan(0);
-		return handlers;
-	}
-
-	function writePresetConfig(): void {
-		fs.writeFileSync(
-			path.join(dir, 'subagent-herdr.config.json'),
-			JSON.stringify({
-				modelPresets: { cheap: { worker: 'p/m:low' }, deep: { worker: 'p/m:high' } },
-				defaultPreset: 'cheap',
-			}),
-		);
-	}
-
-	function writeStalePresetConfig(): void {
-		fs.writeFileSync(
-			path.join(dir, 'subagent-herdr.config.json'),
-			JSON.stringify({
-				modelPresets: {
-					cheap: { worker: 'p/ok:low' },
-					stale: { worker: 'p/gone:high', scout: 'p/also-gone:low' },
-				},
-				defaultPreset: 'cheap',
-			}),
-		);
-	}
-
 	it('shows the effective preset on session start', async () => {
-		writePresetConfig();
+		writeStatusPresetConfig();
 		const handlers = await getSessionStartHandlers();
 		const ctx = statusCtx();
 		for (const handler of handlers) await handler({}, ctx);
@@ -1075,7 +1030,7 @@ describe('commands - subagent preset status bar', () => {
 	});
 
 	it('prefers the session override over the config default', async () => {
-		writePresetConfig();
+		writeStatusPresetConfig();
 		const handlers = await getSessionStartHandlers();
 		const ctx = statusCtx([
 			{ type: 'custom', customType: PRESET_ENTRY_TYPE, data: { preset: 'deep' } },
@@ -1092,7 +1047,7 @@ describe('commands - subagent preset status bar', () => {
 	});
 
 	it('does not touch the status without UI', async () => {
-		writePresetConfig();
+		writeStatusPresetConfig();
 		const handlers = await getSessionStartHandlers();
 		const ctx = statusCtx([], { hasUI: false });
 		for (const handler of handlers) await handler({}, ctx);
@@ -1119,7 +1074,7 @@ describe('commands - subagent preset status bar', () => {
 	});
 
 	it('does not warn when all preset models resolve, even without a registry', async () => {
-		writePresetConfig();
+		writeStatusPresetConfig();
 		const handlers = await getSessionStartHandlers();
 		const ctx = statusCtx([], { modelRegistry: undefined });
 		for (const handler of handlers) await handler({}, ctx);

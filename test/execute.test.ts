@@ -1,9 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { SubagentExecutionParams } from '../src/execute.ts';
 import { deriveFlowId } from '../src/delegation.ts';
+import type { SubagentDetails, SubagentRefusalKind } from '../src/types.ts';
 import { makeRegistryEntry, makeTempDir, stubEnv, writeAgentFile } from './helpers.ts';
 
 let dir: string;
@@ -42,6 +44,12 @@ async function execSubagent(
 	return executeSubagent(params, undefined, undefined, ctx(overrides));
 }
 
+/** A refusal is an error result carrying its machine-readable kind beside the unchanged text. */
+function expectRefusal(result: AgentToolResult<SubagentDetails>, kind: SubagentRefusalKind): void {
+	expect(result.isError).toBe(true);
+	expect(result.details.refusal?.kind).toBe(kind);
+}
+
 async function seedRegistry(entries: ReturnType<typeof makeRegistryEntry>[]) {
 	const { registerEntry } = await import('../src/registry.ts');
 	for (const e of entries) registerEntry(e);
@@ -71,6 +79,11 @@ describe('executeSubagent - mode validation', () => {
 			type: 'text',
 			text: 'Invalid parameters. Provide exactly one mode (single, parallel, chain, reuse, list, or agents).\nAvailable agents: none',
 		});
+		// Refusals are error results with a machine-readable reason, not empty successes.
+		expectRefusal(result, 'invalid-params');
+		expect(result.details.refusal?.message).toBe(
+			'Invalid parameters. Provide exactly one mode (single, parallel, chain, reuse, list, or agents).\nAvailable agents: none',
+		);
 	});
 
 	it('rejects multiple modes at once', async () => {
@@ -235,6 +248,9 @@ describe('executeSubagent - agents listing', () => {
 			type: 'text',
 			text: expect.stringContaining('No agents found for agentScope "user"'),
 		});
+		// An explicit listing is informational, not a refusal: it stays a normal result.
+		expect(result.isError).toBeUndefined();
+		expect(result.details.refusal).toBeUndefined();
 	});
 
 	it('rejects agents combined with another mode', async () => {
@@ -256,6 +272,10 @@ describe('executeSubagent - reuse and single lookups', () => {
 			type: 'text',
 			text: 'Invalid parameters. reuseLabel requires a task (the next message for that session).',
 		});
+		expectRefusal(result, 'reuse-without-task');
+		expect(result.details.refusal?.message).toBe(
+			'Invalid parameters. reuseLabel requires a task (the next message for that session).',
+		);
 	});
 
 	it('reports unknown reuse labels', async () => {
@@ -278,6 +298,7 @@ describe('executeSubagent - reuse and single lookups', () => {
 			type: 'text',
 			text: expect.stringContaining('session ownership is unavailable'),
 		});
+		expectRefusal(result, 'session-unavailable');
 		expect(readRegistry()).toEqual(before);
 	});
 
@@ -439,6 +460,7 @@ describe('executeSubagent - listing', () => {
 			type: 'text',
 			text: expect.stringContaining('session ownership is unavailable'),
 		});
+		expectRefusal(result, 'session-unavailable');
 		expect(result.content[0]).toMatchObject({
 			type: 'text',
 			text: expect.not.stringContaining('worker-1'),
@@ -467,6 +489,9 @@ describe('executeSubagent - listing', () => {
 			type: 'text',
 			text: expect.not.stringContaining('reviewer-1'),
 		});
+		// A listing is informational, not a refusal, and the projection carries no listing surface.
+		expect(result.isError).toBeUndefined();
+		expect(result.details.refusal).toBeUndefined();
 	});
 	it('lists only subagents owned by the active Pi session', async () => {
 		await seedRegistry([
@@ -496,6 +521,7 @@ describe('executeSubagent - parallel and chain', () => {
 			type: 'text',
 			text: expect.stringContaining('Too many parallel tasks (9)'),
 		});
+		expectRefusal(result, 'too-many-tasks');
 	});
 
 	it('respects maxParallelTasks from config', async () => {
@@ -510,6 +536,7 @@ describe('executeSubagent - parallel and chain', () => {
 			type: 'text',
 			text: expect.stringContaining('Too many parallel tasks (3). Max is 2.'),
 		});
+		expectRefusal(result, 'too-many-tasks');
 	});
 
 	it('rejects equivalent overlapping parallel scopes before fan-out', async () => {
@@ -524,6 +551,7 @@ describe('executeSubagent - parallel and chain', () => {
 			type: 'text',
 			text: expect.stringContaining('Parallel review scopes overlap at src/run.ts'),
 		});
+		expectRefusal(result, 'overlapping-scope');
 		expect(runSingleAgent).not.toHaveBeenCalled();
 	});
 
@@ -540,6 +568,7 @@ describe('executeSubagent - parallel and chain', () => {
 			type: 'text',
 			text: expect.stringContaining('Parallel review scopes overlap at src'),
 		});
+		expectRefusal(result, 'overlapping-scope');
 		expect(runSingleAgent).not.toHaveBeenCalled();
 	});
 
@@ -638,6 +667,7 @@ describe('executeSubagent - composition policy', () => {
 		const text = (result.content[0] as { text: string }).text;
 		expect(text).toContain('Composition refusal [R1]');
 		expect(text).toContain('worker verify ref');
+		expectRefusal(result, 'composition');
 		expect((await import('../src/run.ts')).runSingleAgent).not.toHaveBeenCalled();
 		expect(result.details).toMatchObject({ mode: 'single', results: [] });
 		const telemetry = (await import('../src/telemetry.ts')).readTelemetryRecords();
@@ -658,6 +688,7 @@ describe('executeSubagent - composition policy', () => {
 			compositionPolicy: 'enforce',
 		});
 		expect((overridden.content[0] as { text: string }).text).toContain('Composition refusal [R1]');
+		expectRefusal(overridden, 'composition');
 		expect((await import('../src/run.ts')).runSingleAgent).not.toHaveBeenCalled();
 		const telemetry = (await import('../src/telemetry.ts')).readTelemetryRecords();
 		expect(telemetry.filter((record) => record.event === 'composition')).toHaveLength(1);
@@ -764,6 +795,7 @@ describe('executeSubagent - composition policy', () => {
 			expect(text).toContain('Composition refusal [R4]');
 			expect(text).toContain('Tier 3');
 			expect(text).toContain('parallel fan-out');
+			expectRefusal(result, 'composition');
 			expect(text).toContain('completed planner');
 			expect(text).toContain('Compliant alternative:');
 			expect(result.details).toMatchObject({ mode: 'parallel', results: [] });
@@ -803,6 +835,7 @@ describe('executeSubagent - composition policy', () => {
 			],
 		});
 		expect((refused.content[0] as { text: string }).text).toContain('Composition refusal [R2]');
+		expectRefusal(refused, 'composition');
 		expect((await import('../src/run.ts')).runSingleAgent).not.toHaveBeenCalled();
 		writeConfig({ compositionPolicy: 'off' });
 		const safe = await execSubagent({
@@ -812,6 +845,7 @@ describe('executeSubagent - composition policy', () => {
 			],
 		});
 		expect((safe.content[0] as { text: string }).text).toContain('Parallel review scopes overlap');
+		expectRefusal(safe, 'overlapping-scope');
 	});
 
 	it('leaves unknown agent names untouched', async () => {
@@ -835,6 +869,7 @@ describe('executeSubagent - project agents', () => {
 			type: 'text',
 			text: 'Canceled: project-local agents not approved.',
 		});
+		expectRefusal(result, 'project-agents-denied');
 		expect(confirm).toHaveBeenCalledWith(
 			'Run project-local agents?',
 			expect.stringContaining('scout'),
@@ -877,6 +912,7 @@ describe('executeSubagent - nested guard', () => {
 			text: expect.stringContaining('Nested subagents are disabled'),
 		});
 		expect(result.details).toMatchObject({ mode: 'single', results: [] });
+		expectRefusal(result, 'nested');
 	});
 });
 
@@ -892,6 +928,7 @@ describe('executeSubagent - spawn boundary', () => {
 		const result = await execSubagent({ agent: 'worker', task: 'x', cwd: '/tmp' });
 		const runSingleAgent = await runSingleAgentSpy();
 		expect(runSingleAgent).not.toHaveBeenCalled();
+		expectRefusal(result, 'spawn-boundary');
 		const text = (result.content[0] as { text: string }).text;
 		expect(text).toContain('Spawn boundary refusal');
 		expect(text).toContain('no child was launched');
@@ -922,6 +959,7 @@ describe('executeSubagent - spawn boundary', () => {
 		const runSingleAgent = await runSingleAgentSpy();
 		expect(runSingleAgent).not.toHaveBeenCalled();
 		expect((result.content[0] as { text: string }).text).toContain("cwd '../outside'");
+		expectRefusal(result, 'spawn-boundary');
 	});
 
 	it('refuses a parallel task cwd outside the root session folder', async () => {
@@ -936,6 +974,7 @@ describe('executeSubagent - spawn boundary', () => {
 		expect((result.content[0] as { text: string }).text).toContain(
 			"outside this session's root folder",
 		);
+		expectRefusal(result, 'spawn-boundary');
 	});
 
 	it('refuses a chain step cwd outside the root session folder', async () => {
@@ -945,6 +984,7 @@ describe('executeSubagent - spawn boundary', () => {
 		const runSingleAgent = await runSingleAgentSpy();
 		expect(runSingleAgent).not.toHaveBeenCalled();
 		expect((result.content[0] as { text: string }).text).toContain('Spawn boundary refusal');
+		expectRefusal(result, 'spawn-boundary');
 	});
 });
 
