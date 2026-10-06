@@ -166,6 +166,9 @@ Unsafe symbolic-link paths are rejected during destination canonicalization.
 
 The operation authorizes both source and destination with the `move` capability.
 
+`move` declares an `outputSchema` and returns the same payload as `structuredContent` for successful results.
+Failures throw as before and carry no structured content.
+
 ## `delete`
 
 ### Input and result
@@ -188,6 +191,9 @@ The target must be an existing regular file.
 Directories and symbolic links are rejected, and deletion is never recursive.
 
 The operation uses the separate `delete` capability.
+
+`delete` declares an `outputSchema` and returns the same payload as `structuredContent` for successful results.
+Failures throw as before and carry no structured content.
 
 ## Native filesystem tools
 

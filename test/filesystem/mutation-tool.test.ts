@@ -1,12 +1,15 @@
 import { mkdir, readFile, realpath, rename, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { Check } from "typebox/value";
 import { afterEach, expect, it, vi } from "vitest";
 
 import type { AuthorizationOutcomeRecord } from "../../src/observability/authorization-outcome.ts";
 import {
   createDeleteToolForTesting,
   createMoveToolForTesting,
+  filesystemDeleteDetailsSchema,
+  filesystemMoveDetailsSchema,
   type FilesystemMutationToolContext,
 } from "../../src/tools/filesystem/mutation-tool.ts";
 import type { GitExec } from "../../src/tools/git/execution.ts";
@@ -214,6 +217,9 @@ it("moves a regular file within the active workspace", async () => {
     source: join(canonicalDirectory, "source.txt"),
     destination: join(canonicalDirectory, "destination.txt"),
   });
+  expect(result.structuredContent).toEqual(result.details);
+  expect(Check(filesystemMoveDetailsSchema, result.structuredContent)).toBe(true);
+  expect(result.content).toEqual([{ type: "text", text: JSON.stringify(result.details) }]);
   await expect(stat(source)).rejects.toMatchObject({ code: "ENOENT" });
   await expect(readFile(destination, "utf8")).resolves.toBe("content");
 });
@@ -240,6 +246,9 @@ it("deletes a regular file within the active workspace", async () => {
     operation: "delete",
     path: join(await realpath(directory), "delete.txt"),
   });
+  expect(result.structuredContent).toEqual(result.details);
+  expect(Check(filesystemDeleteDetailsSchema, result.structuredContent)).toBe(true);
+  expect(result.content).toEqual([{ type: "text", text: JSON.stringify(result.details) }]);
   await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
 });
 

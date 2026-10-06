@@ -1,9 +1,11 @@
 import { readFile, realpath } from "node:fs/promises";
 
+import { Check } from "typebox/value";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { EnvironmentToolError } from "../../src/tools/environment/environment-schema.ts";
 import { createEnvironmentToolForTesting } from "../../src/tools/environment/environment-tool.ts";
+import { environmentOutputSchema } from "../../src/tools/environment/output.ts";
 import type { PolicyStore } from "../../src/tools/policy/types.ts";
 import { createEnvironmentToolTestFixtures } from "./environment-tool-test-fixtures.ts";
 
@@ -159,6 +161,9 @@ it("prompts in order and persists each choice before returning all values", asyn
   );
   expect(select).toHaveBeenCalledTimes(2);
   expect(response.details.values).toEqual({ FIRST: "one", SECOND: "two" });
+  expect(response.structuredContent).toEqual(response.details);
+  expect(Check(environmentOutputSchema, response.structuredContent)).toBe(true);
+  expect(response.content).toEqual([{ type: "text", text: JSON.stringify(response.details) }]);
   const saved = JSON.parse(await readFile(fixture.configPath, "utf8"));
   const projectPath = await realpath(fixture.directory);
   expect(saved).toMatchObject({

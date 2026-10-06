@@ -16,6 +16,7 @@ import {
   effectiveOrchestrationFlowId,
   readProjectCommandOrchestrationContext,
 } from "../project-command/orchestration.ts";
+import { toJsonValue } from "../value-validation.ts";
 import {
   authorizeAndPersistEnvironmentKeys,
   loadEnvironmentPolicyForRequest,
@@ -30,6 +31,7 @@ import {
   validateEnvironmentKeys,
 } from "./environment-schema.ts";
 import type { EnvironmentOutput } from "./output.ts";
+import { environmentOutputSchema } from "./output.ts";
 
 export interface EnvironmentToolTestOptions {
   readonly configPath: string;
@@ -65,6 +67,7 @@ function makeEnvironmentToolResult(details: EnvironmentOutput): AgentToolResult<
   return {
     content: [{ type: "text", text: JSON.stringify(details) }],
     details,
+    structuredContent: toJsonValue(details),
   };
 }
 
@@ -124,6 +127,7 @@ function createEnvironmentToolWithDependencies(
       "Read explicitly requested environment variables after user-owned policy authorization. Unauthorized variables are denied in non-interactive modes.",
     promptSnippet: "Read authorized environment variables",
     parameters: environmentInputSchema,
+    outputSchema: environmentOutputSchema,
     executionMode: "sequential",
     renderCall(args, theme) {
       const keys = Array.isArray(args?.keys) ? args.keys : [];

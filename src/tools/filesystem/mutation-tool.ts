@@ -27,6 +27,7 @@ import {
   effectiveOrchestrationFlowId,
   readProjectCommandOrchestrationContext,
 } from "../project-command/orchestration.ts";
+import { toJsonValue } from "../value-validation.ts";
 import {
   authorizeAndPersistFilesystemAccesses,
   loadFilesystemPolicyForRequest,
@@ -99,6 +100,31 @@ export interface FilesystemDeleteDetails {
   readonly operation: "delete";
   readonly path: string;
 }
+
+export const filesystemMoveDetailsSchema = Type.Object(
+  {
+    operation: Type.Literal("move"),
+    source: Type.String({ description: "Canonical absolute source path." }),
+    destination: Type.String({ description: "Canonical absolute destination path." }),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Move result payload, also returned as the model-facing JSON text. Failures throw and carry no structured content.",
+  },
+);
+
+export const filesystemDeleteDetailsSchema = Type.Object(
+  {
+    operation: Type.Literal("delete"),
+    path: Type.String({ description: "Canonical absolute deleted path." }),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Delete result payload, also returned as the model-facing JSON text. Failures throw and carry no structured content.",
+  },
+);
 
 export type FilesystemMutationToolContext = FilesystemAuthorizationContext;
 
@@ -376,6 +402,7 @@ function result<D>(details: D): AgentToolResult<D> {
   return {
     content: [{ type: "text", text: JSON.stringify(details) }],
     details,
+    structuredContent: toJsonValue(details),
   };
 }
 
@@ -411,6 +438,7 @@ function createMoveToolWithDependencies(
     promptSnippet: "Move or rename an authorized file",
     annotations: { destructiveHint: true },
     parameters: moveParameters,
+    outputSchema: filesystemMoveDetailsSchema,
     executionMode: "sequential",
     renderCall(args, theme) {
       return renderCallLine(theme, "move", [
@@ -488,6 +516,7 @@ function createDeleteToolWithDependencies(
     promptSnippet: "Delete an authorized file",
     annotations: { destructiveHint: true },
     parameters: deleteParameters,
+    outputSchema: filesystemDeleteDetailsSchema,
     executionMode: "sequential",
     renderCall(args, theme) {
       return renderCallLine(theme, "delete", [renderStringArgument(args?.path, theme)]);

@@ -31,6 +31,9 @@ Missing variables are returned as `null`.
 
 Values are returned only after every requested key is authorized.
 
+`environment` declares an `outputSchema` and returns the same payload as `structuredContent` for successful results.
+Failures throw as before and carry no structured content.
+
 ## Authorization
 
 The policy file is user-owned and located at `getAgentDir()/bash-tools.json`, which normally resolves to `~/.pi/agent/bash-tools.json`.
