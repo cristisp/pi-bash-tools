@@ -128,6 +128,8 @@ The `SharedEvidenceKind` union stays Bash Tools-only and must not be extended to
 
 The default cache root is `~/.pi/agent/bash-tools`.
 
+Setting `BASH_TOOLS_CACHE_ROOT` to an absolute directory relocates the cache root for every durable cache surface and the maintenance passes; relative, empty, or unset values keep the default.
+
 Flow-scoped project-command and verification records are stored below `flows/<flow-id>/project-command/`.
 
 Published `rr_` read evidence records share that flow directory and are keyed by their distinct `rr_` logical reference; they are bounded to 384 KiB per record, 256 KiB of stored content, and 32 entries. Each flow retains at most 128 records in memory, while durable records persist until the shared cache evicts them under the per-record, age, and directory bounds below. A record that meets the content caps but exceeds the 384 KiB serialized bound is rejected with a distinct `published: false` error instead of the unauthorized-publication error.
@@ -141,6 +143,20 @@ Cache writes use temporary files, atomic rename, and lock files with stale-owner
 Cache coordination may briefly create `flows.lock`, per-entry claim files, owner-token files, and temporary files under the cache root.
 
 Root-session result caches remain in memory and do not become durable unless explicitly published to an authorized flow.
+
+### Cache maintenance
+
+Expired and over-capacity records under all flow directories are pruned with the same age and byte-cap policy as lazy eviction on a cache write.
+
+The extension runs one bounded prune pass on every session start with a 500 ms wall-clock budget and fails soft, so session start is never delayed or broken by prune failures.
+
+The `/bash-tools-prune` command runs the same prune pass with a 10 s budget and reports the removed file count, removed bytes, scanned directory count, and whether the pass hit the time budget.
+
+A prune pass takes the shared cache lock once and skips silently with a lock-busy notice when another session holds it.
+
+The same pass reclaims orphaned temp files that an interrupted cache write could leave behind (`<hash>.json.<pid>.<hex>.tmp`), deleting only files matching that exact pattern and only when they are older than one minute.
+
+Fresh-looking, pattern-mismatched, and coordination files (`flows.lock`, `*.claim`, owner tokens, and records) are never touched; the summary reports reclaimed temp files separately from records.
 
 ## Pi session entries
 

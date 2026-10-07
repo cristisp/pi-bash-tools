@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+import { describeEvidenceCachePrune, pruneEvidenceCaches } from "./evidence/cache-maintenance.ts";
 import { createAuthorizationOutcomeRecorder } from "./observability/authorization-outcome.ts";
 import { createGitInvocationRecorder } from "./observability/git-invocation.ts";
 import {
@@ -32,6 +33,13 @@ import {
 import { createVerifyTool } from "./tools/verify/tool.ts";
 
 export default function (pi: ExtensionAPI): void {
+  const runStartupCachePrune = (): void => {
+    try {
+      pruneEvidenceCaches({ timeBudgetMs: 500 });
+    } catch {
+      // Startup prune is best-effort and must never affect session start.
+    }
+  };
   const exec: GitExec = (command, args, options) =>
     options?.maxOutputBytes === undefined
       ? pi.exec(command, [...args], options)
@@ -53,6 +61,7 @@ export default function (pi: ExtensionAPI): void {
       context satisfies ProjectCommandInvocationLifecycleContext,
     );
     toolInventoryRecorder(event, context);
+    runStartupCachePrune();
   });
   pi.on("session_shutdown", invocationSessionRecorder.onSessionShutdown);
   pi.on(
@@ -128,4 +137,20 @@ export default function (pi: ExtensionAPI): void {
   );
   pi.registerTool(createMoveTool(exec, authorizationOutcomeRecorder, authorizationRetryTracker));
   pi.registerTool(createDeleteTool(exec, authorizationOutcomeRecorder, authorizationRetryTracker));
+  pi.registerCommand("bash-tools-prune", {
+    description: "Prune expired and over-capacity bash-tools disk cache records",
+    handler: async (_args, context) => {
+      let message: string;
+      try {
+        message = describeEvidenceCachePrune(pruneEvidenceCaches({ timeBudgetMs: 10_000 }));
+      } catch (error) {
+        message = `bash-tools cache prune failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      try {
+        context.ui.notify(message, "info");
+      } catch {
+        // Non-TUI surfaces may not provide a notify channel; the prune already ran.
+      }
+    },
+  });
 }

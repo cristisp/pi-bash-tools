@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import { isRecord, FLOW_ID_PATTERN } from "../value-validation.ts";
 import {
@@ -84,8 +84,17 @@ export interface ProjectCommandDiskResultCacheOptions {
 }
 
 const DEFAULT_CACHE_ROOT = join(homedir(), ".pi", "agent", "bash-tools");
-const DEFAULT_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
-const DEFAULT_CACHE_MAX_BYTES = 50 * 1024 * 1024;
+export const DEFAULT_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
+export const DEFAULT_CACHE_MAX_BYTES = 50 * 1024 * 1024;
+const BASH_TOOLS_CACHE_ROOT = "BASH_TOOLS_CACHE_ROOT";
+
+export function defaultCacheRoot(): string {
+  const configured = process.env[BASH_TOOLS_CACHE_ROOT]?.trim();
+  if (configured !== undefined && configured.length > 0 && isAbsolute(configured)) {
+    return configured;
+  }
+  return DEFAULT_CACHE_ROOT;
+}
 const CACHE_ENTRY_FORMAT_VERSION = 1 as const;
 const CACHE_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
 
@@ -142,7 +151,7 @@ function createProjectCommandDiskJsonCacheInternal(
   options: ProjectCommandDiskResultCacheOptions,
   validate: ProjectCommandDiskCacheRecordValidator,
 ): ProjectCommandDiskJsonCache {
-  const rootDirectory = options.rootDirectory ?? DEFAULT_CACHE_ROOT;
+  const rootDirectory = options.rootDirectory ?? defaultCacheRoot();
   const allowedScopeKey = options.scopeKey;
   const maxAgeMs =
     options.maxAgeMs !== undefined && Number.isFinite(options.maxAgeMs) && options.maxAgeMs >= 0

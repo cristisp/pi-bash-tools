@@ -188,20 +188,58 @@ export function acquireGlobalMutationLock(
   }
 }
 
+const ORPHAN_TEMP_PATTERN = /\.json\.\d+\.[0-9a-f]{16}\.tmp$/u;
+
+export interface EvictionResult {
+  readonly removedFiles: number;
+  readonly removedBytes: number;
+}
+
+export function reclaimOrphanTemps(
+  directory: string,
+  now: number,
+  minAgeMs: number,
+): EvictionResult {
+  let names: string[];
+  try {
+    names = readdirSync(directory);
+  } catch {
+    return { removedFiles: 0, removedBytes: 0 };
+  }
+  let removedFiles = 0;
+  let removedBytes = 0;
+  for (const name of names) {
+    if (!ORPHAN_TEMP_PATTERN.test(name)) continue;
+    const path = join(directory, name);
+    try {
+      const stats = statSync(path);
+      if (now - stats.mtimeMs <= minAgeMs) continue;
+      removeFile(path);
+      removedFiles += 1;
+      removedBytes += stats.size;
+    } catch {
+      continue;
+    }
+  }
+  return { removedFiles, removedBytes };
+}
+
 export function evictDirectory(
   directory: string,
   now: number,
   maxAgeMs: number,
   maxBytes: number,
-): void {
+): EvictionResult {
   let names: string[];
   try {
     names = readdirSync(directory);
   } catch {
-    return;
+    return { removedFiles: 0, removedBytes: 0 };
   }
   const files: Array<{ readonly path: string; readonly size: number; readonly modified: number }> =
     [];
+  let removedFiles = 0;
+  let removedBytes = 0;
   for (const name of names) {
     if (!name.endsWith(".json")) continue;
     const path = join(directory, name);
@@ -209,6 +247,8 @@ export function evictDirectory(
       const stats = statSync(path);
       if (now - stats.mtimeMs > maxAgeMs) {
         removeFile(path);
+        removedFiles += 1;
+        removedBytes += stats.size;
         continue;
       }
       files.push({ path, size: stats.size, modified: stats.mtimeMs });
@@ -217,11 +257,14 @@ export function evictDirectory(
     }
   }
   let total = files.reduce((sum, file) => sum + file.size, 0);
-  if (total <= maxBytes) return;
+  if (total <= maxBytes) return { removedFiles, removedBytes };
   files.sort((left, right) => left.modified - right.modified);
   for (const file of files) {
     if (total <= maxBytes) break;
     removeFile(file.path);
+    removedFiles += 1;
+    removedBytes += file.size;
     total -= file.size;
   }
+  return { removedFiles, removedBytes };
 }
