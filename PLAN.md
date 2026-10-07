@@ -71,6 +71,9 @@ The review surface was keyed by `git status` plus `git diff --stat` plus the hea
   A dirty path that is not a regular file - a submodule checkout's directory, or a tracked file replaced by a FIFO - has no readable content, so it counts as unreadable and refreshes on every delegation rather than opening something a FIFO would leave blocking; git neither lists nor tracks other non-regular files, so an untracked FIFO cannot reach the hash in the first place. That churn is the accepted fail-closed cost.
   The per-file hashes and diff stat are emitted before the status text, so the artifact size cap spends itself on the status text and hunk tail rather than the delta evidence.
   Residual bounds: an equal-size edit strictly between the head and tail windows of an untracked `(partial)` path is not covered by its hash, git-ignored paths are outside the snapshot by design, and so are changes git itself does not model - the permission bits of a clean tracked file, ownership, extended attributes, or an empty directory - because the snapshot describes what git reports for the worktree plus the bytes and permission bits of every dirty path.
+- [x] **S14-004: Snapshot status mid-read race (accepted residual risk).** The clean-area-vs-hash consistency check resolves by re-reading the dirty status after the hash reads, so a change landing between the status read and the hash window is usually detected by the status re-check and taints the fingerprint.
+  An equal-size edit strictly between those two reads can still hide: the hash covers only the bytes it saw, the status shows the file dirty either way for an already-dirty path, and no fault injection can deterministically reproduce the window.
+  Accepted from the reviewer-68 review: the cost is an at-most-one-delegation-stale surface for an edit inside that window, and any later delegation re-reads status and refreshes the revision regardless.
 - [x] **S14-002: Retained earlier revisions.** Before overwriting, copy the outgoing snapshot to `predigest/surfaces/review-surface-r<N>.md` and keep the newest `MAX_SNAPSHOT_HISTORY` (10) revisions.
   Retention is best-effort: an unusable history directory leaves the refreshed snapshot in place, and the read-only reuse path writes no snapshot revision (only the flow lock file is created and removed around the call).
   Accepted low-severity note from review: that lock is the flow's shared dispatch lock, so even a pure reuse serializes against other flow operations for the duration of the git reads; computing the fingerprint outside the lock is a possible future refactor, and no artifact byte, revision, or manifest output differs between the two paths.
@@ -94,13 +97,13 @@ Implementation status: S14 is implemented with focused regression tests; primary
 - The S8 producer artifact-alignment analysis is complete and all seven consumption items are implemented below.
 - The S8 implementation is committed as `align producer evidence contract ...` (1.8.0).
 - The optional S9 consumption of `read_batch` evidence refs and structured producer lookup outcomes is implemented and committed on top of head `dec0dc08`.
-- The T-014 blocked-subagent notification flow is implemented and uncommitted on top of the S9 measurement-semantics fixes.
-- The S10 spawn-boundary item is implemented and review-clean (reviewer-47 remediation pass): subagent spawns whose cwd resolves outside the root session folder are refused before launch, including the reuse pane-recreation path; it shares the same uncommitted tree.
-- The current uncommitted tree carries five workstreams: S4 measurement-semantics fixes, T-014 blocked-subagent reporting, the spawn boundary, S11 evidence-reacquisition and Tier 2 finalization hardening, and S12 compact child-context handoffs.
-- S11 implementation is present in the uncommitted tree. The current `@ztc/bash-tools` 1.1.7 source confirms the `{ ref }` lookup contract and flow publication schema; its fresh-process runtime completion gate remains open.
+- All completed workfiles are committed: T-014, the S10 spawn boundary, S11, S12, S13-001/002/003/004/005 with the codemode/tool_search toolset policy, and S14 are committed and released (latest: `c91bcd4c`, 1.11.2).
+- The S10 spawn-boundary item is implemented and review-clean (reviewer-47 remediation pass): subagent spawns whose cwd resolves outside the root session folder are refused before launch, including the reuse pane-recreation path.
+- S11 evidence-reacquisition and Tier 2 finalization hardening is complete.
+  The current `@ztc/bash-tools` 1.1.7 source confirms the `{ ref }` lookup contract and flow publication schema, and the fresh-process parent/child probe required by the completion gate was executed, so the gate is satisfied.
 - S12 compact child-context handoffs are implemented and review-clean. They reduce unnecessary historical ledger and manifest discovery without changing role budgets, scope enforcement, or producer ownership. The final repository verification passed after the last remediation.
-- S13-001 structured subagent results, the S13-002 tool metadata decisions, S13-003 nested tool-call accounting, S13-004 report-turn finalization, and the S13-005 audit are implemented on top of head `75dc5085`; the codemode/tool_search toolset policy landed as an S13-003 follow-up.
-- S14 review-surface delta evidence is implemented on top of head `2b34be7`, passed primary review (reviewer-63), and its F-001 to F-006 findings are remediated; re-review is pending.
+- S13-001 structured subagent results, the S13-002 tool metadata decisions, S13-003 nested tool-call accounting, S13-004 report-turn finalization, and the S13-005 audit are implemented on top of head `75dc5085`; the codemode/tool_search toolset policy landed as an S13-003 follow-up; all committed and released as `c91bcd4c` (1.11.2) after a clean primary review (reviewer-70) and a passing smoke test on the released extension.
+- S14 review-surface delta evidence is implemented, passed primary review (reviewer-63) with its F-001 to F-006 findings remediated, and an independent from-scratch primary review (reviewer-68) returned PASS with no blocking findings; committed and released.
 
 ## S4: decide whether `warn` can become `enforce`
 
@@ -258,7 +261,8 @@ This workstream keeps producer ownership in `@ztc/bash-tools` and changes only t
 The current `src/manifest.ts` publication filter is an intended safety boundary and must not be weakened.
 If a published ref is still unresolvable from a fresh child after these changes, record a separate producer-contract or integration defect rather than advertising the ref more broadly.
 
-Current implementation status: the herdr-side focused and full package verification gates pass, including fresh-process manifest coverage. The current `@ztc/bash-tools` 1.1.7 source and tests confirm the minimal `{ ref }` lookup and flow publication contract; an independent fresh-process parent/child probe is still required before S11 can be marked complete.
+Current implementation status: the herdr-side focused and full package verification gates pass, including fresh-process manifest coverage. The current `@ztc/bash-tools` 1.1.7 source and tests confirm the minimal `{ ref }` lookup and flow publication contract.
+The completion gate is satisfied: the required fresh-process parent/child probe was executed (a worker published a read ref into the flow and a sibling resolved it), and the probe artifacts under `test/tmp-*.test.ts` are pinned as regression coverage, so S11 is complete.
 
 ### S11 acceptance criteria
 
