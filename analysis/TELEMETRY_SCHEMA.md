@@ -3,8 +3,8 @@
 Telemetry is written as one JSON object per boundary or delegation event.
 
 Ordinary child turns produce one completed delegation record.
-Composition boundary records and S4 preflight records are emitted at the boundary before child execution or refusal completes.
-S4 outcomes are additive fields on ordinary child records rather than replacements for the existing delegation event semantics.
+Composition boundary records are emitted at the boundary before child execution or refusal completes.
+Ordinary child records may carry an additive `compositionObservations` summary counting which composition rules had eligible candidates and how many of those held.
 
 The top-level `v` field is `1`.
 
@@ -64,33 +64,12 @@ Read refs are session-scoped unless the minting call published them to the flow,
 
 Composition boundary events use `event: "composition"` and carry exactly one `compositionVerdict` object with the rule, action (`warn` or `refuse`), effective policy, mode, role/agent, tier, scope, reason, and compliant alternative. `compositionBoundaryStatus` repeats the action as `warning` or `refusal` for consumers that do not inspect the verdict; these are boundary statuses, not child outcomes. `compositionPolicyOverride` is present when a per-call override selected the effective policy, and `compositionBoundaryId` groups multiple rule events from one subagent boundary. These records have zero execution metrics and are excluded from ordinary delegation, validation, child-count, and spend aggregates by `analysis/measure.ts`; use the analyzer's `composition` result for event counts by rule, policy, and override.
 
-## S4 evidence records
+## Composition observation summary
 
-Every real composition boundary emits one `event: "s4_preflight"` record before children are spawned or a refusal is returned.
-The record carries `s4Preflight` with version `1`, the `compositionBoundaryId`, mode, effective policy, optional policy override, expected child count, and one observation for each catalog rule.
-Each observation records the rule ID, whether the rule was eligible, compliance (`true`, `false`, or `null`), the additive action (`not_applicable`, `allow`, `warn`, `refuse`, or `disabled`), decision provenance (`default` or `override`), reason, boundary identity, mode, policy, and expected child count.
-
-Every child outcome in an S4 boundary may carry an additive `s4Outcome` object on its ordinary delegation telemetry record.
-Runtime records retain their ordinary event semantics, so consumers must not require `event: "s4_outcome"` when `s4Outcome` is present.
-The outcome contains lifecycle (`settled`, `failed`, `aborted`, `blocked`, `abandoned`, or `unknown`), normalized quality, validation, review, and budget statuses, independent-review status, structured quality signals, and a correlation object.
-The `unresolvedOrAbandoned` signal combines lifecycle, the `unresolved_questions` ledger boolean, and the blocking ledger fields `environment_blockers`, `unresolved_questions`, and `validation_omitted`.
-`findings` and `baseline_failures` are work product and evidence gaps that the verdict fields already carry, so they never count as unresolved blockers.
-`tier1DiscoveryFailure` is measured only from an explicit `tier1_discovery_failure` ledger value; when the signal is absent the guardrail reports unknown rather than assuming failure.
-
-A valid S4 correlation must match the outer record's `flowId`, `taskId`, `delegationId`, positive `ledgerRevision`, and `compositionBoundaryId`.
-The optional tier must also match when present.
-If flow identity, task identity, boundary identity, or a positive ledger revision is unavailable, runtime telemetry omits the S4 outcome instead of fabricating correlation.
-
-R2 is eligible only for a real parallel fan-out with more than one reviewer.
-Synthetic overlapping-scope probes do not count as R2 evidence.
-Rules without a real eligible candidate receive a `not_applicable` catalog observation.
-Disabled eligible rules receive `disabled` observations and cannot authorize enforcement.
-
-The S4 analyzer fails closed on missing, malformed, unknown, incomplete, or uncorrelated evidence.
-It excludes S4 preflight and outcome records from ordinary delegation counts while retaining legacy composition event counts.
-The fixed version-1 thresholds are stored in `analysis/s4-policy.json`.
-Run `npm run s4:gate` to write the JSON and Markdown decision artifacts without modifying `analysis/MEASUREMENT.md`.
-The gate emits `ENFORCE_CANDIDATE`, `RETAIN_WARN`, or `INSUFFICIENT_EVIDENCE` and never changes the configured policy automatically.
+Every ordinary delegation record in an evaluated composition boundary may carry `compositionObservations`, a per-rule summary over the rules that had real eligible candidates.
+Each rule entry records `eligible`, `compliant`, and `noncompliant` counts; the eligibility violation rate is `noncompliant / eligible` and the compliance rate is `compliant / eligible`.
+R2 is eligible only for a real parallel fan-out with more than one reviewer; synthetic overlapping-scope probes do not count as R2 evidence.
+Rules without a real eligible candidate are omitted from the summary, so rule presence means the rule was eligible at this boundary.
 
 Analyzer guidance:
 

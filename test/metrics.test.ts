@@ -72,7 +72,7 @@ describe('measureExecutionMetrics', () => {
 		expect(outputTokensOf(messages)).toBe(42);
 	});
 
-	it('does not count a preflight resolution failure as an executed validation', () => {
+	it('charges a preflight resolution failure a validation pass at issue', () => {
 		const messages = [
 			assistantMsg('validating', {
 				toolCalls: [{ id: 'v1', name: 'verify', args: {} }],
@@ -104,7 +104,8 @@ describe('measureExecutionMetrics', () => {
 		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
 
 		expect(metrics.toolCalls).toBe(2);
-		expect(metrics.fullValidationPasses).toBe(1);
+		// S15-004: charged at issue and never refunded; only the evidence is suppressed.
+		expect(metrics.fullValidationPasses).toBe(2);
 		expect(metrics.failedToolCalls).toBe(1);
 		expect(metrics.validationRefs?.map(({ ref }) => ref)).toEqual(['vr_corrected']);
 		expect(metrics.validationExecutions).toHaveLength(1);
@@ -150,7 +151,7 @@ describe('measureExecutionMetrics', () => {
 		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
 
 		expect(metrics.toolCalls).toBe(2);
-		expect(metrics.fullValidationPasses).toBe(1);
+		expect(metrics.fullValidationPasses).toBe(2);
 		expect(metrics.failedToolCalls).toBe(3);
 		expect(metrics.validationRefs?.map(({ ref }) => ref)).toEqual(['vr_executed']);
 		expect(metrics.validationExecutions).toHaveLength(1);
@@ -186,7 +187,8 @@ describe('measureExecutionMetrics', () => {
 		];
 		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
 
-		expect(metrics.fullValidationPasses).toBe(0);
+		// S15-004: the charge stands; only the evidence is suppressed.
+		expect(metrics.fullValidationPasses).toBe(1);
 		expect(metrics.validationRefs).toBeUndefined();
 		expect(metrics.validationExecutions).toBeUndefined();
 	});
@@ -212,7 +214,7 @@ describe('measureExecutionMetrics', () => {
 		];
 		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
 
-		expect(metrics.fullValidationPasses).toBe(0);
+		expect(metrics.fullValidationPasses).toBe(1);
 		expect(metrics.validationRefs).toBeUndefined();
 		expect(metrics.validationExecutions).toBeUndefined();
 		expect(metrics.failedToolCalls).toBe(0);
@@ -261,7 +263,8 @@ describe('measureExecutionMetrics', () => {
 		];
 		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
 
-		expect(metrics.fullValidationPasses).toBe(0);
+		// S15-004: the charge stands; only the execution evidence is withheld.
+		expect(metrics.fullValidationPasses).toBe(1);
 		expect(metrics.validationExecutions).toBeUndefined();
 	});
 
@@ -488,6 +491,30 @@ describe('measureExecutionMetrics', () => {
 		expect(metrics.validationRefs?.[1]?.stateDigest).toBeUndefined();
 	});
 
+	it('carries publication into captured validation executions', () => {
+		const messages = [
+			assistantMsg('validating', {
+				toolCalls: [{ id: 'pc1', name: 'project_command', args: { commandId: 'node_test' } }],
+			}),
+			toolResultMsg(
+				'pc1',
+				JSON.stringify({
+					ref: 'pc_pub_1',
+					status: 'passed',
+					publication: { published: true },
+				}),
+				'project_command',
+			),
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+		// S15-007: the render gate keys on publication, so capture must populate it.
+		expect(metrics.validationExecutions?.[0]).toMatchObject({
+			ref: 'pc_pub_1',
+			publication: 'published',
+		});
+	});
+
 	it('normalizes publication outcomes from both producer vocabularies', () => {
 		const publicationCases: Record<string, unknown>[] = [
 			{ state: 'published', ref: 'cg_fresh', reason: null },
@@ -549,6 +576,45 @@ describe('measureExecutionMetrics', () => {
 		});
 		expect(metrics.validationRefs?.[5]?.publication).toBeUndefined();
 		expect(metrics.validationRefs?.[5]?.publicationReason).toBeUndefined();
+	});
+
+	it('captures project_command execution refs even when publication is not published', () => {
+		// S15-007c: the publication gate lives only in handoff rendering; capture keeps the ref for
+		// the owning run's records whether or not the producer published into the flow.
+		const messages = [
+			assistantMsg('validating', {
+				toolCalls: [
+					{ id: 'pc-pub', name: 'project_command', args: { commandId: 'node_test' } },
+					{ id: 'pc-nopub', name: 'project_command', args: { commandId: 'node_build' } },
+				],
+			}),
+			toolResultMsg(
+				'pc-pub',
+				JSON.stringify({
+					ref: 'vr_pc_published',
+					reused: false,
+					publication: { state: 'published', reason: null },
+				}),
+				'project_command',
+			),
+			toolResultMsg(
+				'pc-nopub',
+				JSON.stringify({ ref: 'vr_pc_unpublished', reused: false }),
+				'project_command',
+			),
+		];
+		const metrics = measureExecutionMetrics(makeSingleResult({ messages }), Date.now() - 5);
+
+		expect(
+			metrics.validationExecutions?.map(
+				({ ref, commandId, tool }) => `${tool}:${commandId}:${ref}`,
+			),
+		).toEqual([
+			'project_command:node_test:vr_pc_published',
+			'project_command:node_build:vr_pc_unpublished',
+		]);
+		// Capture preserves the execution without fabricating producer evidence it did not observe.
+		expect(metrics.validationExecutions?.[1]).not.toHaveProperty('publication');
 	});
 
 	it('records failed lookups and preserves producer freshness fields', () => {

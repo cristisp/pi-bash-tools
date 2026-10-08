@@ -36,23 +36,19 @@ import {
 	resolveWorkspaceName,
 } from '../src/herdr.ts';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
-import { DEFAULT_CONFIG, configPath, roleBudgetFor } from '../src/config.ts';
+import { roleBudgetFor } from '../src/config.ts';
 import { ledgerPath, parseLedger } from '../src/ledger.ts';
 import { writeReadManifest } from '../src/manifest.ts';
 import { pollSubagent } from '../src/poll.ts';
-import { runReusedAgent, runSingleAgent } from '../src/run.ts';
+import { runReusedAgent, runSingleAgent, scopeGuidance } from '../src/run.ts';
 import { registerEntry } from '../src/registry.ts';
 import { readRegistry } from '../src/registry-store.ts';
-import {
-	appendS4PreflightTelemetry,
-	readTelemetryRecords,
-	telemetryPath,
-} from '../src/telemetry.ts';
+import { readTelemetryRecords, telemetryPath } from '../src/telemetry.ts';
 import { flowReportsDir, flowsRoot } from '../src/flow.ts';
 import type { AgentConfig } from '../src/agents.ts';
 import type {
+	CompositionObservationSummary,
 	OrchestrationContext,
-	S4Preflight,
 	SingleResult,
 	SubagentDetails,
 } from '../src/types.ts';
@@ -366,7 +362,6 @@ describe('runSingleAgent - failures', () => {
 				limits: roleBudgetFor('worker'),
 				usage: {
 					toolCalls: 25,
-					nestedToolCalls: 0,
 					discoveryCalls: 0,
 					fullValidationPasses: 0,
 					failedToolCalls: 0,
@@ -818,32 +813,33 @@ describe('runReusedAgent - lookups', () => {
 	});
 });
 
-describe('runReusedAgent - flow ledger', () => {
-	it('keeps the raw task out of the ledger pointer line when pointers are off', async () => {
-		vi.mocked(getAgentStatus).mockResolvedValue({ status: 'working' });
-		fs.writeFileSync(
-			configPath(),
-			JSON.stringify({ ...structuredClone(DEFAULT_CONFIG), ledgerPointers: false }),
-		);
-		try {
-			registerEntry(
-				makeRegistryEntry({ status: 'done', parentSession: '/sess/current.jsonl', flowId: 'f1' }),
-			);
-			const result = await reuseCall('worker-1', 'next task', '/sess/current.jsonl');
-			expect(result.exitCode).toBe(0);
-			expect(herdrCli).toHaveBeenCalledWith([
-				'agent',
-				'prompt',
-				'ws1:p10',
-				expect.stringContaining('next task'),
-			]);
-			expect(result.ledgerInjection).toBe('none');
-		} finally {
-			fs.rmSync(configPath(), { force: true });
-		}
+describe('scopeGuidance - review-surface scope-check hint', () => {
+	// The hint line compares the most recent folded changed_files claim with the freshly computed
+	// snapshot delta. It never gates: it renders for every launched delegation regardless of output.
+	it('omits the hint when no delta was computed and renders no-claim when none was folded', () => {
+		const fields = {
+			delegationId: 'guidance-hint',
+			flowId: 'flow-guidance-hint',
+			role: 'worker',
+			evidenceScope: 'flow' as const,
+			reviewSurfacePath: '/flows/flow-guidance-hint/predigest/review-surface.md',
+			dirtyPaths: ['src/a.ts', 'src/b.ts'],
+		};
+		// A reused surface (no freshly computed delta classes) must not carry a stale hint.
+		const reused = scopeGuidance(fields);
+		expect(reused).toContain('Shared review surface snapshot:');
+		expect(reused).not.toContain('Scope-check hint');
+		// An absent or unparseable flow ledger yields no claim, so the hint says so instead of inventing one.
+		const noClaim = scopeGuidance({ ...fields, reviewSurfaceChangedPaths: ['src/a.ts'] });
+		expect(noClaim).toContain('Scope-check hint (non-enforcing): (no claim to compare)');
+		expect(noClaim).toContain('Dirty paths at snapshot:');
+		// Non-enforcing by contract: the hint never asserts or clears anything.
+		expect(noClaim).not.toContain('must not');
 	});
+});
 
-	it('emits a correlated S4 outcome for a reused turn', async () => {
+describe('runReusedAgent - flow ledger', () => {
+	it('emits composition denominator counts on the delegation telemetry record', async () => {
 		registerEntry(
 			makeRegistryEntry({
 				status: 'done',
@@ -852,31 +848,9 @@ describe('runReusedAgent - flow ledger', () => {
 				taskId: 'entry-task',
 			}),
 		);
-		appendS4PreflightTelemetry({
-			preflight: {
-				v: 1,
-				compositionBoundaryId: 'boundary-reuse',
-				mode: 'single',
-				policy: 'warn',
-				expectedChildCount: 1,
-				observations: (['R1', 'R2', 'R3', 'R4'] as const).map((ruleId) => ({
-					ruleId,
-					eligible: false,
-					compliant: null,
-					action: 'not_applicable' as const,
-					decisionSource: 'default' as const,
-					reason: 'not applicable',
-					compositionBoundaryId: 'boundary-reuse',
-					mode: 'single' as const,
-					policy: 'warn' as const,
-					expectedChildCount: 1,
-				})),
-			} as S4Preflight,
-			workspace: 'ws1',
-			parentSession: '/sess/parent.jsonl',
-			flowId: 'flow-reuse',
-			taskId: 'reuse-task',
-		});
+		const observations: CompositionObservationSummary = {
+			R2: { eligible: 2, compliant: 1, noncompliant: 1 },
+		};
 		const result = await runReusedAgent(
 			'/tmp',
 			[agent],
@@ -889,30 +863,20 @@ describe('runReusedAgent - flow ledger', () => {
 			'/sess/parent.jsonl',
 			undefined,
 			{ taskId: 'reuse-task' },
-			'boundary-reuse',
-			'reuse-task',
+			observations,
 		);
 		expect(result.exitCode).toBe(0);
 		const records = readTelemetryRecords();
-		expect(records.filter((record) => record.event === 's4_preflight')).toHaveLength(1);
-		const outcome = records.find((record) => record.s4Outcome !== undefined);
-		expect(outcome).toMatchObject({
-			flowId: 'flow-reuse',
-			taskId: 'reuse-task',
-			compositionBoundaryId: 'boundary-reuse',
-			s4Outcome: {
-				correlation: {
-					flowId: 'flow-reuse',
-					taskId: 'reuse-task',
-					compositionBoundaryId: 'boundary-reuse',
-					ledgerRevision: expect.any(Number),
-				},
-			},
-		});
-		expect(outcome?.s4Outcome?.correlation.ledgerRevision).toBeGreaterThan(0);
+		const record = records.find(
+			(candidate) =>
+				candidate.delegationId !== undefined && candidate.compositionObservations !== undefined,
+		);
+		expect(record?.compositionObservations).toEqual(observations);
+		expect(record?.flowId).toBe('flow-reuse');
+		expect(record?.taskId).toBe('reuse-task');
 	});
 
-	it('omits S4 outcomes when flow identity is unavailable', async () => {
+	it('omits composition observations when none were supplied', async () => {
 		registerEntry(makeRegistryEntry({ status: 'done', flowId: undefined }));
 		await runReusedAgent(
 			'/tmp',
@@ -926,10 +890,9 @@ describe('runReusedAgent - flow ledger', () => {
 			undefined,
 			undefined,
 			{ taskId: 'reuse-task' },
-			'boundary-reuse',
-			'reuse-task',
 		);
-		expect(readTelemetryRecords().some((record) => record.s4Outcome !== undefined)).toBe(false);
+		const records = readTelemetryRecords();
+		expect(records.some((record) => record.compositionObservations !== undefined)).toBe(false);
 	});
 
 	it('writes a dispatch revision and points the launch prompt at it', async () => {

@@ -12,7 +12,6 @@ import {
 	isReportRead,
 	readRequestKey,
 	readRequestKeysOf,
-	budgetSummaryFromMetrics,
 	registerBudgetEnforcement,
 	scopeCallAllowance,
 	scopedRoleBudget,
@@ -237,7 +236,9 @@ describe('live budget enforcement', () => {
 		handlers.agent_end?.({}, { abort: vi.fn() });
 	});
 
-	it('does not charge a preflight-rejected verify as an executed validation pass', () => {
+	it('charges a preflight-rejected verify a validation pass at issue', () => {
+		// S15-004 strictness change: a producer preflight rejection consumes the validation pass, so
+		// the limit stays enforceable against parallel tool issuance.
 		const dir = makeTempDir();
 		stubEnv(dir);
 		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
@@ -245,7 +246,7 @@ describe('live budget enforcement', () => {
 			configPath(),
 			JSON.stringify({
 				roleBudgets: {
-					validator: { fullValidationPasses: 1, failedToolCalls: 1 },
+					validator: { fullValidationPasses: 2, failedToolCalls: 1 },
 				},
 			}),
 		);
@@ -285,7 +286,7 @@ describe('live budget enforcement', () => {
 		settleBudget(handlers, ctx);
 
 		expect(findEntry('validator-preflight')?.budget).toMatchObject({
-			usage: { toolCalls: 2, fullValidationPasses: 1, failedToolCalls: 1 },
+			usage: { toolCalls: 2, fullValidationPasses: 2, failedToolCalls: 1 },
 			breaches: [],
 		});
 		expect(sendUserMessage).not.toHaveBeenCalled();
@@ -330,8 +331,9 @@ describe('live budget enforcement', () => {
 		handlers.tool_result?.(result, ctx);
 		settleBudget(handlers, ctx);
 		expect(findEntry('validator-idempotent')?.budget?.usage).toMatchObject({
+			// Charged at issue and never refunded; duplicate results are inert.
 			toolCalls: 1,
-			fullValidationPasses: 0,
+			fullValidationPasses: 1,
 			failedToolCalls: 3,
 		});
 		handlers.agent_end?.({}, ctx);
@@ -364,7 +366,7 @@ describe('live budget enforcement', () => {
 		);
 		handlers.tool_call?.({ toolName: 'verify', toolCallId: 'final-1', input: {} }, ctx);
 
-		// A same-id result from another tool must not refund the pass or start finalization.
+		// A same-id result from another tool must not start finalization.
 		handlers.tool_result?.(
 			{
 				toolName: 'project_command',
@@ -439,7 +441,7 @@ describe('live budget enforcement', () => {
 		handlers.agent_end?.({}, ctx);
 	});
 
-	it('refunds a project command preflight once without minting finalization state', () => {
+	it('charges a project command preflight at issue without minting finalization state', () => {
 		const dir = makeTempDir();
 		stubEnv(dir);
 		fs.writeFileSync(
@@ -481,7 +483,7 @@ describe('live budget enforcement', () => {
 
 		expect(findEntry('worker-project-preflight')?.budget).toMatchObject({
 			finalStateValidation: false,
-			usage: { toolCalls: 1, fullValidationPasses: 0, failedToolCalls: 0 },
+			usage: { toolCalls: 1, fullValidationPasses: 1, failedToolCalls: 0 },
 			breaches: [],
 		});
 		handlers.agent_end?.({}, ctx);
@@ -538,19 +540,14 @@ describe('live budget enforcement', () => {
 		handlers.agent_end?.({}, ctx);
 	});
 
-	it('defers validation breaches until all provisional validation results settle', () => {
+	it('breaches the validation limit immediately at issue, before results settle', () => {
 		const dir = makeTempDir();
 		stubEnv(dir);
 		fs.writeFileSync(
 			configPath(),
 			JSON.stringify({
 				roleBudgets: {
-					worker: {
-						toolCalls: 8,
-						fullValidationPasses: 1,
-						finalizationReserveCalls: 1,
-						finalizationReserveValidationPasses: 1,
-					},
+					worker: { toolCalls: 8, fullValidationPasses: 1, finalizationReserveCalls: 1 },
 				},
 			}),
 		);
@@ -565,8 +562,19 @@ describe('live budget enforcement', () => {
 
 		handlers.before_agent_start?.({ prompt: 'implement this' }, ctx);
 		handlers.tool_call?.({ toolName: 'edit', input: { path: 'src/a.ts' } }, ctx);
-		handlers.tool_call?.({ toolName: 'verify', toolCallId: 'preflight-1', input: {} }, ctx);
-		handlers.tool_call?.({ toolName: 'verify', toolCallId: 'executed-1', input: {} }, ctx);
+		const first = handlers.tool_call?.(
+			{ toolName: 'verify', toolCallId: 'preflight-1', input: {} },
+			ctx,
+		);
+		// The first call charges its pass at issue and stays within the limit.
+		expect(first).toBeUndefined();
+		const second = handlers.tool_call?.(
+			{ toolName: 'verify', toolCallId: 'executed-1', input: {} },
+			ctx,
+		);
+		// S15-004: the limit is breached at issue even though the first call's result has not
+		// settled; charge-at-issue replaces the deferred provisional accounting.
+		expect(second).toMatchObject({ block: true });
 		handlers.tool_result?.(
 			{
 				toolName: 'verify',
@@ -589,12 +597,13 @@ describe('live budget enforcement', () => {
 			ctx,
 		);
 
-		expect(sendUserMessage).not.toHaveBeenCalled();
+		settleBudget(handlers, ctx);
+		expect(sendUserMessage).toHaveBeenCalledTimes(1);
 		expect(findEntry('worker-provisional-validation')?.budget).toMatchObject({
-			phase: 'finalization',
-			finalStateValidation: true,
-			usage: { fullValidationPasses: 1, failedToolCalls: 1 },
-			breaches: [],
+			outcome: 'steered',
+			reportOnly: true,
+			usage: { toolCalls: 3, fullValidationPasses: 2, failedToolCalls: 1 },
+			breaches: [{ metric: 'fullValidationPasses', limit: 1, observed: 2 }],
 		});
 		handlers.agent_end?.({}, ctx);
 	});
@@ -649,7 +658,9 @@ describe('live budget enforcement', () => {
 
 		expect(executed).toBeUndefined();
 		expect(lookup).toBeUndefined();
-		expect(rerun).toBeUndefined();
+		// S15-004: the second executing call breaches the validation limit at issue, before any
+		// result settles - the charge is not provisional.
+		expect(rerun).toMatchObject({ block: true });
 		expect(sendUserMessage).toHaveBeenCalledTimes(1);
 		expect(findEntry('validator-1')?.budget).toMatchObject({
 			usage: { toolCalls: 3, fullValidationPasses: 2 },
@@ -1059,9 +1070,9 @@ describe('live budget enforcement', () => {
 		handlers.agent_end?.({}, ctx);
 	});
 
-	it('charges nested ctx.executeTool calls to the same budget and counts them separately', () => {
+	it('charges nested ctx.executeTool calls to the same budget', () => {
 		// S13-003: nested calls run through the same hooks with a parentToolCallId, so they consume
-		// the same role budgets as model-issued calls; the extra counter makes their share visible.
+		// the same role budgets as model-issued calls; there is no separate enforcement counter.
 		const dir = makeTempDir();
 		stubEnv(dir);
 		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
@@ -1105,7 +1116,7 @@ describe('live budget enforcement', () => {
 		handlers.agent_settled?.({}, ctx);
 		expect(findEntry('worker-nested')?.budget).toMatchObject({
 			outcome: 'aborted',
-			usage: { toolCalls: 4, nestedToolCalls: 3 },
+			usage: { toolCalls: 4 },
 			breaches: [expect.objectContaining({ metric: 'toolCalls', observed: 4 })],
 		});
 		handlers.agent_end?.({}, ctx);
@@ -1142,55 +1153,8 @@ describe('live budget enforcement', () => {
 		);
 		handlers.agent_settled?.({}, ctx);
 		expect(findEntry('worker-nested-failure')?.budget).toMatchObject({
-			usage: { toolCalls: 2, nestedToolCalls: 1, failedToolCalls: 1 },
+			usage: { toolCalls: 2, failedToolCalls: 1 },
 		});
-		handlers.agent_end?.({}, ctx);
-	});
-
-	it('reports the same nestedToolCalls in the transcript-derived summary the hooks observed', () => {
-		// F-001 pin: for a single finished run the report-side budget summary (rebuilt from
-		// transcript metrics) agrees with the hook-side enforcement count; the registry ledger
-		// stays the enforcement authority either way.
-		const dir = makeTempDir();
-		stubEnv(dir);
-		vi.stubEnv('PI_SUBAGENT_NESTED', '1');
-		vi.stubEnv('PI_ORCHESTRATION_ROLE', 'worker');
-		vi.stubEnv('PI_SUBAGENT_LABEL', 'worker-nested-summary');
-		registerEntry(makeRegistryEntry({ label: 'worker-nested-summary' }));
-		const { pi, handlers } = fakePi();
-		registerBudgetEnforcement(pi);
-		const ctx = { abort: vi.fn() };
-
-		handlers.before_agent_start?.({ prompt: 'scripted work' }, ctx);
-		handlers.tool_call?.({ toolName: 'bash', toolCallId: 'c1', input: {} }, ctx);
-		for (let i = 1; i <= 3; i++) {
-			handlers.tool_call?.(
-				{
-					toolName: 'read',
-					toolCallId: `c1/${i}`,
-					parentToolCallId: 'c1',
-					input: { path: `src/${i}.ts` },
-				},
-				ctx,
-			);
-		}
-		handlers.agent_settled?.({}, ctx);
-		const enforced = findEntry('worker-nested-summary')?.budget;
-		expect(enforced?.usage).toMatchObject({ toolCalls: 4, nestedToolCalls: 3 });
-		if (!enforced) throw new Error('registry entry lost');
-
-		const summary = budgetSummaryFromMetrics('worker', enforced.limits, {
-			toolCalls: 4,
-			nestedToolCalls: 3,
-			discoveryCalls: 3,
-			fullValidationPasses: 0,
-			failedToolCalls: 0,
-			repeatedReads: 0,
-			outputTokens: 0,
-			wallTimeMs: 0,
-		});
-		expect(summary.usage.nestedToolCalls).toBe(enforced.usage.nestedToolCalls);
-		expect(summary.usage.toolCalls).toBe(enforced.usage.toolCalls);
 		handlers.agent_end?.({}, ctx);
 	});
 

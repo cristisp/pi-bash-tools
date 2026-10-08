@@ -20,8 +20,9 @@ It contains:
 | `flow.json` | Flow id, root session, participants, timestamps, and the highest ledger revision ever issued. |
 | `ledger.md` | Append-only dispatch and result revisions. It is owner-written and mode `0400`, so children cannot record their own verdicts. |
 | `reports/<label>-<timestamp>.md` | Full settled role reports with identity, scope, manifest, and completion metadata. |
-| `predigest/review-surface.md` | Bounded snapshot with per-file SHA-256 content hashes for the first `MAX_DIRTY_PATHS` dirty paths, diff stat, working-tree status, and diff hunk headers, all read from the repository root, for a scoped delegation. It refreshes whenever the status codes, the diff stat, the head, the capped worktree delta, the hunk-header digest, or a hashed path changes, including a same-size edit that leaves the diff stat untouched and a permission change on an already dirty file; paths come from a NUL-separated status read, so a non-ASCII name is hashed rather than quoted and a symlink is hashed by its target string, while a failed git read, an incomplete hashing window, or any other path it cannot address or read (except a deletion) taints the fingerprint and forces a refresh instead of reuse. |
-| `predigest/surfaces/review-surface-r<N>.md` | Retained earlier revisions of the review surface (newest 10, created only once a revision is superseded), so a later reviewer can compare per-file hashes across rounds. |
+| `predigest/review-surface.md` | Bounded child-read snapshot (~32 KiB token-shaped cap) with the snapshot fingerprint, revision, and git head, a `## Changes since revision N` section with the computed round-to-round change classes, the diff stat, working-tree status, and diff hunk headers, all read from the repository root. It refreshes whenever the status codes, the diff stat, the head, the capped worktree delta, the hunk-header digest, or a hashed path changes, including a same-size edit that leaves the diff stat untouched and a permission change on an already dirty file; paths come from a NUL-separated status read, so a non-ASCII name is hashed rather than quoted and a symlink is hashed by its target string, while a failed git read, an incomplete hashing window, or any other path it cannot address or read (except a deletion) taints the fingerprint and forces a refresh instead of reuse. |
+| `predigest/hashes-r<N>.json` | Per-revision sidecar carrying the raw per-file SHA-256 content hashes (plus `(partial)` / `(unavailable)` marks) for that revision's first `MAX_DIRTY_PATHS` dirty paths, one JSON file directly under `predigest/` sharing the newest-10 pruning with the surfaces history. The extension reads the previous revision's sidecar to compute the `Changes since` classes; children compare revisions through those classes rather than by diffing two hash lists. |
+| `predigest/surfaces/review-surface-r<N>.md` | Retained earlier revisions of the review surface (newest 10, created only once a revision is superseded), backed by the same-numbered hash sidecars so the delta classes stay recomputable. |
 | `predigest/manifests/<delegationId>.json` | Persisted read manifest for the delegation's allowed paths and established artifacts. |
 | `predigest/refs/<delegationId>.json` | Per-turn knownRefs record: the `vr_` validation refs and published `rr_` read refs observed in that turn, capped per turn. |
 
@@ -65,14 +66,16 @@ The status read is NUL-separated with renaming disabled, so git's line-mode C-qu
 A dirty path whose name does not round-trip through a JavaScript string is refused instead of hashed, because the decoded name could address a different file than the one git reported, and the refusal taints the fingerprint.
 Every git read runs from the repository root, so paths stay root-relative and a delegation rooted in a subdirectory still hashes the right files; the header records repository facts only, because the snapshot belongs to the flow rather than to one delegation.
 Fail closed by outcome rather than by cause: a failed git read of any kind, including a delta or hunk-header read too large for the read bound to hold in full, or any hash that stays `(unavailable)` for a path whose status code is not a deletion, taints the fingerprint and forces a new revision instead of reuse, so a path the snapshot cannot address or read is never served as unchanged.
-The hunk-header read compares against the head like the stat and delta reads, so a staged change reaches that section, its digest is exposed in the header next to the worktree delta, and a read that fails renders `(unavailable)` instead of looking like a tree without hunks.
+The hunk-header read compares against the head like the stat and delta reads, so a staged change reaches that section, and a read that fails renders `(unavailable)` instead of looking like a tree without hunks.
 A dirty path that is not a regular file - a submodule checkout, or a tracked file replaced by a FIFO - has no readable content, so it counts as unreadable and refreshes on every delegation rather than opening something a FIFO would leave blocking; git neither lists nor tracks other non-regular files, so an untracked FIFO cannot reach the hash in the first place. That churn is the accepted fail-closed cost.
 Residual bounds: an equal-size edit strictly between the head and tail windows of an untracked path above the hashing bound is not covered by that path's `(partial)` hash, and git-ignored paths are outside the snapshot by design.
 Changes git itself does not model - the permission bits of a clean tracked file, ownership, extended attributes, or an empty directory - are outside the snapshot's change set, which describes what git reports for the worktree plus the bytes and permission bits of every dirty path.
-Paths above the hashing bound are hashed as their first bytes, their size, and a tail window and marked `(partial)`; paths that cannot be read are marked `(unavailable)`.
-The hash section and diff stat precede the working-tree status, so the snapshot size cap spends itself on the status text and the hunk tail rather than the hashes or diff stat; the full stat is still in the fingerprint.
+Paths above the hashing bound are hashed as their first bytes, their size, and a tail window and marked `(partial)`; paths that cannot be read are marked `(unavailable)`. The raw hashes themselves stay out of the child-read snapshot: each revision writes them beside it as `predigest/hashes-r<N>.json`, and only the derived comparison is published.
+That comparison is the `## Changes since revision N` section. The extension classifies every path present on either side into `changed while dirty`, `unchanged while dirty`, `newly dirty`, `clean again`, and `indeterminate`: equal hashes on both sides read unchanged, a path dirty now but absent from the previous sidecar is newly dirty, a previous path that left the dirty set is clean again, and a `partial` or `(unavailable)` hash on either side classifies strictly as `indeterminate` - never `unchanged while dirty` - so an unprovable pair cannot read as evidence of no change. A first revision renders `(no prior revision)`, an incomplete hashing window or a missing previous sidecar marks the header `(partial)` and puts every current path in `indeterminate`, and a reused revision keeps the section it was written with.
+On top of the classes, the child handoff shows one non-enforcing scope-check hint that compares the most recent folded ledger `changed_files` claim with the snapshot delta's `changed while dirty` + `newly dirty` set. The hint never gates, warns, or alters delegation behavior: a reused surface renders no hint, and no folded claim renders `(no claim to compare)`.
+The snapshot is capped at `MAX_SNAPSHOT_BYTES` (a token-shaped bound of tens of kilobytes rather than a multi-megabyte cap). When the intact snapshot exceeds the cap, the hunk-tail section drops whole first, then the working-tree status tail truncates to the remaining budget, and `[review surface snapshot truncated]` records the degradation; the `Changes since` classes and the diff stat always survive, and the full stat stays in the fingerprint.
 An unusable retention directory costs the earlier revisions, never the refreshed snapshot, and the read-only reuse path writes no snapshot revision (only the flow lock file is created and removed around the call).
-The generated compact handoff cites the snapshot path, revision, and head; the fingerprint and the worktree delta and hunk digests live in the snapshot header, and because the extension cannot observe a harness validation digest, handoffs cite that digest from the validation evidence instead of expecting the snapshot to embed it.
+The generated compact handoff cites the snapshot path, revision, and head; the fingerprint lives in the snapshot header, and because the extension cannot observe a harness validation digest, handoffs cite that digest from the validation evidence instead of expecting the snapshot to embed it.
 
 Normal handoffs carry the manifest pointer and a compact summary without requiring the child to preload this file.
 A named stale, rejected, ambiguous, or otherwise required evidence gap permits one bounded manifest or ledger reacquisition.
@@ -95,19 +98,18 @@ Runtime scope and tool permissions remain authoritative.
 9. The parent consumes the digest for immediate routing and reads the report or ledger path for details.
 10. Later roles consume existing reports and validation references instead of rereading everything.
 
-If a report omits its ledger block, the digest still carries status lines and leading prose.
-The `reportContractPolicy` setting controls whether that omission is flagged or treated as unfinished.
+If a report omits its ledger block, the digest still carries status lines and leading prose,
+flagged in the parent-facing text.
 Reviewer reports also require a `## Files Reviewed` section.
 
 ## Telemetry
 
 The append-only telemetry file is `~/.pi/agent/subagent-herdr.telemetry.jsonl`.
 It records delegation identity, flow, role, tier, mode, scope, reuse, outcome, usage, budgets, reports, validation references, context mode and reason, read-manifest status, and wait time.
-Separate typed events record composition warnings or refusals, S4 preflights, and correlated child outcomes.
+Composition warning and refusal events are typed separately, and every delegation record carries per-rule eligible and compliant counts for the composition rules.
 
 `npm run test:analyze` reads live telemetry and flow stores to generate the measurement report in `analysis/MEASUREMENT.md`.
 That generated report must not be edited by hand.
-`npm run s4:gate` writes a separate S4 decision artifact and never rewrites the measurement report.
 
 ## External validation artifacts
 
@@ -120,7 +122,7 @@ See [Validation and evidence](evidence.md) for how those references are consumed
 A child that runs `verify`, `project_command`, or `read_batch` can share completed evidence with its flow siblings by adding `publish: { flowId }` with the flow id of its delegation.
 The producers check that request against the flow id they resolve from the environment, so a delegation can only publish into its own flow.
 The extension exports `PI_ORCHESTRATION_FLOW` into delegation launch commands and sets it in the root session process itself, so the root and its children resolve the same flow id, and the installed producers read it: `@ztc/bash-tools` reads it directly, and `@ztc/codegraph-runner` reads `CODEGRAPH_RUNNER_FLOW` first and falls back to `PI_ORCHESTRATION_FLOW`.
-Each producer writes to its own store and issues its own reference shape: `rr_` for bash-tools read and validation evidence, `cg_` for codegraph-runner artifacts.
+Each producer writes to its own store and issues its own reference shape: `vr_` for bash-tools validation (verify) evidence, `rr_` for bash-tools read evidence, `pc_` records for bash-tools `project_command` evidence (process-scoped unless published), and `cg_` for codegraph-runner artifacts.
 Siblings resolve a producer reference with the producer's own lookup surface: the `verify` and `read_batch` lookup forms for bash-tools references, and `codegraph_artifact` for codegraph references.
 Use `{ ref }` as the default `read_batch` lookup shape; `flowId` and `covers` are optional lookup-only fields in the current bash-tools contract.
 Resolving a `cg_` reference needs only the opaque ref plus its flow scope, so a sibling of the same flow resolves it without herdr involvement.

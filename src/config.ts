@@ -7,9 +7,6 @@ export type { CompositionPolicy } from './types.ts';
 
 export type ConfigAgentScope = 'user' | 'project' | 'both';
 
-/** What to do when a child report carries no parseable ledger block. */
-export type ReportContractPolicy = 'flag' | 'reject';
-
 export type ModelPreset = Record<string, string>;
 
 export interface SubagentHerdrConfig {
@@ -31,13 +28,10 @@ export interface SubagentHerdrConfig {
 	scopeCallAllowancePerPath: number;
 	/** Ceiling on the scope-derived allowance added to the tool and discovery budgets. */
 	scopeCallAllowanceMax: number;
-	reportContractPolicy: ReportContractPolicy;
 	/** How standard-role composition violations are handled before children are spawned. */
 	compositionPolicy: CompositionPolicy;
 	/** Ledger revisions kept per flow; the oldest are dropped when appending past this count. */
 	ledgerMaxRevisions: number;
-	/** Whether children receive ledger pointers in their prompts at all. */
-	ledgerPointers: boolean;
 	registryLockTimeoutMs: number;
 	registryLockStaleMs: number;
 	herdrCliTimeoutMs: number;
@@ -142,10 +136,8 @@ export const DEFAULT_CONFIG: SubagentHerdrConfig = {
 	reportDigestTokens: 250,
 	scopeCallAllowancePerPath: 2,
 	scopeCallAllowanceMax: 32,
-	reportContractPolicy: 'flag',
 	compositionPolicy: 'warn',
-	ledgerMaxRevisions: 60,
-	ledgerPointers: true,
+	ledgerMaxRevisions: 12,
 	registryLockTimeoutMs: 10_000,
 	registryLockStaleMs: 5000,
 	herdrCliTimeoutMs: 8000,
@@ -167,7 +159,6 @@ const DEFAULT_EVIDENCE_SCOPE_BY_ROLE: Record<string, EvidenceScope> = {};
 
 const EVIDENCE_SCOPES = new Set<EvidenceScope>(['session', 'flow']);
 
-const REPORT_CONTRACT_POLICIES = new Set<ReportContractPolicy>(['flag', 'reject']);
 const COMPOSITION_POLICIES = new Set<CompositionPolicy>(['warn', 'enforce', 'off']);
 const BUDGET_POLICIES = new Set<BudgetPolicy>(['steer', 'abort']);
 const BUDGET_KEYS = [
@@ -300,17 +291,11 @@ export function getConfig(filePath?: string): SubagentHerdrConfig {
 	if (typeof overrides.confirmProjectAgents === 'boolean') {
 		cfg.confirmProjectAgents = overrides.confirmProjectAgents;
 	}
-	if (typeof overrides.ledgerPointers === 'boolean') {
-		cfg.ledgerPointers = overrides.ledgerPointers;
-	}
 	if (typeof overrides.repositoryWriteLock === 'boolean') {
 		cfg.repositoryWriteLock = overrides.repositoryWriteLock;
 	}
 	if (EVIDENCE_SCOPES.has(overrides.evidenceScopeDefault as EvidenceScope)) {
 		cfg.evidenceScopeDefault = overrides.evidenceScopeDefault as EvidenceScope;
-	}
-	if (REPORT_CONTRACT_POLICIES.has(overrides.reportContractPolicy as ReportContractPolicy)) {
-		cfg.reportContractPolicy = overrides.reportContractPolicy as ReportContractPolicy;
 	}
 	if (COMPOSITION_POLICIES.has(overrides.compositionPolicy as CompositionPolicy)) {
 		cfg.compositionPolicy = overrides.compositionPolicy as CompositionPolicy;

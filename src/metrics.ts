@@ -161,14 +161,8 @@ export function measureExecutionMetrics(result: SingleResult, startedAt: number)
 			) {
 				lookupFailures.push(verifyLookupFailureOf(message, call.ref));
 			}
-			if (
-				call &&
-				(call.tool === 'verify' || call.tool === 'project_command') &&
-				!call.lookup &&
-				unexecutedResolutionFailure
-			) {
-				fullValidationPasses = Math.max(0, fullValidationPasses - 1);
-			}
+			// The validation pass is charged at issue and never refunded: a preflight rejection only
+			// suppresses evidence (refs, executions, lookup failures), not the charge.
 			if (call?.tool === 'read_batch' && !unexecutedResolutionFailure && !message.isError) {
 				const observed = readRefsOf(message);
 				for (const entry of observed) {
@@ -732,6 +726,7 @@ function validationExecutionOf(
 	const payload = payloadCandidates(message)[0];
 	const fields = payload ? validationFieldsOf(payload) : {};
 	const producer = producerFieldsOfMessage(message);
+	const publication = payload ? publicationFieldsOf(payload) : {};
 	const producedRef =
 		typeof payload?.ref === 'string' && payload.ref.length > 0 ? payload.ref : undefined;
 	return {
@@ -747,6 +742,10 @@ function validationExecutionOf(
 			? {}
 			: { forced: fields.forced ?? call.forced }),
 		...producerEvidenceFieldsOf(producer),
+		...(publication.publication === undefined ? {} : { publication: publication.publication }),
+		...(publication.publicationReason === undefined
+			? {}
+			: { publicationReason: publication.publicationReason }),
 	};
 }
 

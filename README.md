@@ -80,46 +80,12 @@ strategy and reason in the orchestration ledger. The TUI shows the reused
 session's state on the `reuse` call line (context, reuse count), in warning
 color when context is large, so the choice is visible.
 
-## S4 composition evidence gate
+## Composition policy
 
 Composition checks use the configured `compositionPolicy`, which defaults to `warn`.
 The standard `subagent` tool records the default policy, while `subagent_override` records deliberate per-call overrides separately.
-
-The S4 analyzer evaluates additive preflight and child-outcome telemetry without changing legacy composition or delegation counts.
-It emits `ENFORCE_CANDIDATE`, `RETAIN_WARN`, or `INSUFFICIENT_EVIDENCE`.
-A human release owner must still approve any manual change from `warn` to `enforce`.
-
-Run the gate with:
-
-```bash
-npm run s4:gate -- ~/.pi/agent \
-  --independent-review pending \
-  --from 2026-01-01 --to 2026-01-08 \
-  --json /tmp/s4-decision.json \
-  --markdown /tmp/s4-decision.md
-```
-
-The `--from` and `--to` options must be supplied together when an explicit window is required.
-The independent-review option defaults to `pending`.
-An ordinary reviewer `PASS` does not count as independent-review evidence without an explicit handoff and passing independent-review status.
-
-By default, the gate writes `subagent-herdr.s4-decision.json` and `subagent-herdr.s4-decision.md` under the selected agent directory.
-Explicit `--json` and `--markdown` paths are recommended for release artifacts.
-The S4 path never rewrites `analysis/MEASUREMENT.md`.
-The normal `npm run test:analyze` path remains the command that generates that legacy measurement report.
-
-The fixed version-1 policy is stored in `analysis/s4-policy.json` and requires:
-
-- at least 8 valid preflights;
-- a representative window of at least 7 days;
-- at least 2 eligible observations for every composition rule;
-- at least 1 independent review pass;
-- zero unknown evidence, unresolved or abandoned outcomes, and regressions after reviewer pass;
-- escalation at or below 25%; and
-- zero Tier 1 discovery failures without a scout.
-
-Missing, malformed, uncorrelated, or unknown evidence is insufficient evidence rather than a zero-rate pass.
-The gate exits with status `0` only for `ENFORCE_CANDIDATE`, status `1` for a non-candidate decision, and status `2` for invalid CLI options.
+Each delegation record carries per-rule eligible and compliant counts (`compositionObservations`) so violation rates stay measurable.
+Changing the configured policy remains a manual release decision.
 See [analysis/TELEMETRY_SCHEMA.md](analysis/TELEMETRY_SCHEMA.md) for the record contract.
 
 Setting up the standard agents:
@@ -151,7 +117,7 @@ multi-worker fan-out, a remediation round, or any task the guide classifies abov
 worker. An unconditional system-prompt read costs the whole guide before the first delegation. When an older hand-maintained copy such as `~/.pi/agent/SUBAGENTS_GUIDE.md` still
 exists, the command reports it as superseded - delete it, because two copies of one contract drift.
 
-The installed `bash-tools` 1.1.7 producer grants one composite operator per project for flow-scoped child seats by default; `paths` are no longer part of that authorization identity.
+The installed `bash-tools` producer authorizes project commands through a command policy identity - a semantic ID plus a definition fingerprint, scoped by the canonical project path - and `paths` are not part of that identity (verified against 1.1.15).
 The extension consumes that policy but does not write the producer policy file.
 Workers publish reusable evidence with `publish: { flowId }`, consumers resolve with `{ ref, flowId?, covers? }`, and `fresh: true` is an execution request rather than a lookup.
 Single-flight coordination is process-local; flow publication shares completed evidence but does not coordinate active executions across child processes.
@@ -402,14 +368,14 @@ append-only telemetry log:
 - `~/.pi/agent/subagent-herdr/flows/<flowId>/predigest/` - the shared review-surface snapshot, its retained earlier revisions, and persisted read manifests
 - `~/.pi/agent/subagent-herdr/flows/<flowId>/ledger.md` - the flow ledger, one
   machine-readable revision per delegation boundary
-- `~/.pi/agent/subagent-herdr.telemetry.jsonl` - append-only records for composition boundaries,
-  S4 preflights, and delegation turns. Ordinary delegation records contain identity,
+- `~/.pi/agent/subagent-herdr.telemetry.jsonl` - append-only records for composition boundaries
+  and delegation turns. Ordinary delegation records contain identity,
   outcome (`settled` / `failed` / `aborted`), usage, tool-call and failed-tool-call counts,
   repeated reads, turns, and time spent waiting on approvals or steers.
   `reuseCount` is the session's reuse count after this turn, recorded from the registry,
   so `reused: true` implies `reuseCount > 0`
 
-A scoped fan-out receives one flow-level review-surface snapshot at `predigest/review-surface.md` containing per-file content hashes, diff stat, working-tree status, and hunk headers.
+A scoped fan-out receives one flow-level review-surface snapshot at `predigest/review-surface.md` containing a `## Changes since revision N` summary of the round-to-round change classes, the diff stat, working-tree status, and diff hunk headers; the raw per-file content hashes are written beside it as `predigest/hashes-r<N>.json` sidecars instead of being published inline.
 The snapshot is content-derived: untracked files are listed individually, the first 100 dirty paths are hashed, and the diff stat stays in the fingerprint as an aggregate backstop, so a same-size edit inside the window still refreshes it into a new revision.
 On top of that sample, the fingerprint covers a capped binary delta of the whole worktree against the head, which is what makes it complete for tracked content: it sees content changes of any size and at any path, and permission changes, which neither the status codes nor the diff stat show.
 A window that leaves a dirty path out - more than 100 dirty paths, or a path too long to bound - makes the fingerprint incomplete, so such a tree is refreshed on every delegation instead of being reused.
@@ -417,12 +383,15 @@ The status read is NUL-separated with renaming disabled, so git's line-mode C-qu
 A dirty path whose name does not round-trip through a JavaScript string is refused instead of hashed, because the decoded name could address a different file than the one git reported.
 Every git read runs from the repository root and paths are listed relative to it, so a delegation rooted in a subdirectory still hashes the right files.
 Every evidence read enters the fingerprint or taints when it fails: a failed read, including a delta or hunk-header read too large for the read bound to hold in full, taints the fingerprint and forces a new revision instead of reuse, so a stale snapshot is never served as unchanged for the paths it hashes, and an unreadable hunk-header section renders `(unavailable)` rather than looking like a tree without hunks.
-The hunk-header read compares against the head like the stat and delta reads, so a staged change reaches that section, and its digest is exposed in the header next to the worktree delta.
+The hunk-header read compares against the head like the stat and delta reads, so a staged change reaches that section.
 Residual bounds: an equal-size edit strictly between the head and tail windows of an untracked path above the hashing bound is not covered by that path's `(partial)` hash, a dirty path that is not a regular file - a submodule checkout, or a tracked file replaced by a FIFO - counts as unreadable and refreshes on every delegation instead of opening something a FIFO would leave blocking, and git-ignored paths are outside the snapshot by design.
 Changes git itself does not model - the permission bits of a clean tracked file, ownership, extended attributes, or an empty directory - are outside the snapshot's change set, which describes what git reports for the worktree plus the bytes and permission bits of every dirty path.
 Paths above the hashing bound are hashed by prefix, size, and a tail window and marked `(partial)`; paths that cannot be read are marked `(unavailable)`.
-The previous revisions are retained under `predigest/surfaces/` (newest 10), and the read manifest points there only when such a revision exists, so a later round can compare per-file hashes instead of re-deriving what changed.
-The fingerprint, the worktree delta and hunk digests, and per-file hashes are recorded in the snapshot header and its hash section, and handoffs cite the gate digest from the validation evidence alongside the snapshot path, revision, and head, because the extension cannot observe the harness digest.
+The previous revisions are retained under `predigest/surfaces/` with same-numbered `predigest/hashes-r<N>.json` hash sidecars (both newest 10), and the read manifest points there only when such a revision exists, so the delta classes stay recomputable across rounds.
+Each snapshot carries a `## Changes since revision N` section the extension computes from that revision's hashes against the previous sidecar: `changed while dirty`, `unchanged while dirty`, `newly dirty`, `clean again`, and `indeterminate`, where a `partial` or `(unavailable)` hash on either side classifies strictly as `indeterminate` rather than `unchanged while dirty`, so an unprovable pair cannot read as evidence of no change. A first revision renders `(no prior revision)`, an incomplete hashing window or a missing sidecar marks the header `(partial)`, and a reused revision keeps the section it was written with.
+When the delta is freshly computed, the child handoff also renders one non-enforcing scope-check hint comparing the most recent folded ledger `changed_files` claim with the snapshot delta's changed paths; it never gates, a reused surface renders no hint, and no folded claim renders `(no claim to compare)`.
+The snapshot is capped at a token-shaped bound of tens of kilobytes (`MAX_SNAPSHOT_BYTES`): when it exceeds the cap, the hunk-tail section drops whole, then the working-tree status tail truncates, and a truncation marker records the loss, while the change classes and the diff stat always survive.
+The unchanged fingerprint and its fail-closed taint rules stay exactly as described above - that attestation is what makes reuse safe across rounds - and handoffs cite the gate digest from the validation evidence alongside the snapshot path, revision, and head, because the extension cannot observe the harness digest.
 Each child also receives a temporary read manifest containing its allowed paths, prior report paths, established evidence, and do-not-reread paths.
 The manifest is persisted under `predigest/manifests/` and its path is included in the role report, registry, `subagent_stats`, and telemetry.
 Manifest-protected rereads appear in `subagent_stats` as a warning when a do-not-reread path is read more than once in the turn; the first read is retained as evidence and a documented evidence-gap read is never blocked.
@@ -476,7 +445,6 @@ Rules the store enforces rather than requests:
 
 `ledgerMaxRevisions` caps how many revisions are kept; the oldest are dropped when
 appending, and the whole file ages out with its flow directory.
-`ledgerPointers: false` turns the whole mechanism off, including the writes.
 
 ## Role report and digest
 
@@ -490,9 +458,7 @@ the parent receives is a bounded digest plus the absolute report path:
 
 When the child omits the ledger block the digest degrades instead of failing: it
 carries the status lines (`delegation_status`, `validation_verdict`,
-`review_verdict`, `budget`, ...) and records `ledgerParsed: false`. With
-`reportContractPolicy: "reject"` the parent is additionally told to treat the
-delegation as unfinished rather than being handed a prose answer to re-interpret.
+`review_verdict`, `budget`, ...) and records `ledgerParsed: false`.
 
 The digest is a transport optimization, not a source of truth: cross-child
 aggregation must read the ledger blocks, not digests. Token counts are estimates
@@ -532,10 +498,8 @@ file is re-read on every use, so edits take effect without a restart. Running
   "reportDigestTokens": 250,
   "scopeCallAllowancePerPath": 2,
   "scopeCallAllowanceMax": 32,
-  "reportContractPolicy": "flag",
   "compositionPolicy": "warn",
-  "ledgerMaxRevisions": 60,
-  "ledgerPointers": true,
+  "ledgerMaxRevisions": 12,
   "registryLockTimeoutMs": 10000,
   "registryLockStaleMs": 5000,
   "herdrCliTimeoutMs": 8000,
@@ -572,10 +536,8 @@ file is re-read on every use, so edits take effect without a restart. Running
 | `uiPromptLostIdleMs` | 30000 | Treat an open ui-prompt marker as lost (and allow settling again) once the daemon has reported `idle`/`done` for this long |
 | `perTaskOutputCap` | 51200 | Per-task byte cap in parallel summaries (bytes) |
 | `reportDigestTokens` | 250 | Token budget for the digest a child's report is reduced to |
-| `reportContractPolicy` | `"flag"` | `"flag"` or `"reject"` a report that omits its ledger block |
 | `compositionPolicy` | `"warn"` | Composition handling for standard delegations: `warn`, `enforce`, or `off` |
-| `ledgerMaxRevisions` | 60 | Ledger revisions kept per flow before the oldest are dropped |
-| `ledgerPointers` | true | Whether children receive ledger pointers (and the ledger is written at all) |
+| `ledgerMaxRevisions` | 12 | Ledger revisions kept per flow before the oldest are dropped |
 | `registryLockTimeoutMs` | 10000 | Max wait for the registry lock |
 | `registryLockStaleMs` | 5000 | Steal the registry lock after this age |
 | `herdrCliTimeoutMs` | 8000 | Timeout for each herdr CLI call |

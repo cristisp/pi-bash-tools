@@ -14,7 +14,7 @@ import {
 import { makeRegistryEntry, makeTempDir, stubEnv } from './helpers.ts';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { contextPolicyFor } from '../src/types.ts';
-import type { DelegationContext } from '../src/types.ts';
+import type { DelegationContext, RunSummary } from '../src/types.ts';
 
 function section(body: string, heading: string): string {
 	const start = body.indexOf(`${heading}\n\n`);
@@ -78,7 +78,7 @@ describe('context policy', () => {
 		expect(handoff).toContain('Context mode: bounded-recovery (remediation)');
 		expect(handoff).toContain('Finding IDs: F-001');
 		expect(handoff).toContain('Allowed path boundary: src/run.ts');
-		expect(handoff).toContain('Known evidence refs: vr_12345678 (passed)');
+		expect(handoff).toContain('Known evidence refs: vr_12345678 verdict:passed reused:false');
 		expect(handoff).toContain('one bounded ledger/manifest reacquisition');
 		expect(handoff).toContain('Final-state validation:');
 	});
@@ -138,6 +138,50 @@ describe('context policy', () => {
 		expect(handoff).toContain('Finalization summary (last turn): no prior turn executed');
 		expect(handoff).toContain('## Authoritative current handoff');
 		expect(handoff).toContain('supersedes any frozen prior session system prompt');
+	});
+
+	it('advertises only published execution refs in the prior-run summary', () => {
+		// S15-007c: project_command refs ride on the producer evidence; gate the prior-run handoff
+		// rendering at render only, keeping capture intact. Rendering falls back to commandId.
+		const priorRun: RunSummary = {
+			at: 1,
+			durationMs: 2,
+			toolCalls: 3,
+			failedToolCalls: 0,
+			repeatedReads: 0,
+			turns: 1,
+			cost: 0,
+			contextTokens: 4,
+			validationExecutions: [
+				{
+					tool: 'project_command',
+					commandId: 'node_test',
+					ref: 'vr_project_unpublished',
+					decision: 'hit',
+					publication: 'unauthorized',
+				},
+				{
+					tool: 'project_command',
+					commandId: 'node_build',
+					ref: 'vr_project_published',
+					decision: 'hit',
+					publication: 'published',
+				},
+				{ tool: 'verify', ref: 'vr_verify_unpublished', decision: 'hit' },
+			],
+		};
+		const handoff = contextHandoffBlock({
+			policy: contextPolicyFor({ role: 'worker', workflowMode: 'initial' }),
+			delegation,
+			task: 'Implement AC-001',
+			priorRun,
+		});
+		expect(handoff).toContain(
+			'executions=project_command:node_test:hit, project_command:vr_project_published:hit, verify:unknown:hit',
+		);
+		expect(handoff).toContain('vr_project_published');
+		expect(handoff).not.toContain('project_command:vr_project_unpublished');
+		expect(handoff).not.toContain('verify:vr_verify_unpublished');
 	});
 
 	it('installs the policy in role prompts', () => {
@@ -458,7 +502,10 @@ describe('renderAgentFile', () => {
 		expect((worker?.tools ?? '').split(',').map((tool) => tool.trim())).toContain('codemode');
 		expect(worker?.body).toContain('## Codemode discipline');
 		expect(worker?.body).toContain('Promise.allSettled');
-		expect(worker?.body).toContain('nested:N');
+		// S15-003: script-internal calls are charged to the tool budget; the nested:N share shown by
+		// run summaries is not promised to the model in the prompt.
+		expect(worker?.body).toContain('charged to the tool budget');
+		expect(worker?.body).not.toContain('nested:N');
 	});
 	it('gives the verify gate to the roles that execute validation', () => {
 		for (const role of ['worker', 'validator']) {

@@ -1,11 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { roleBudgetFor } from '../src/config.ts';
 import { flowReportsDir } from '../src/flow.ts';
 import {
 	buildReportDigest,
-	normalizeS4Outcome,
 	estimateTokens,
 	parseFilesReviewed,
 	parseLedgerBlock,
@@ -13,7 +11,7 @@ import {
 	tokensFromChars,
 	writeRoleReport,
 } from '../src/report.ts';
-import type { BudgetSummary, DelegationContext } from '../src/types.ts';
+import type { DelegationContext } from '../src/types.ts';
 import { makeTempDir, stubEnv } from './helpers.ts';
 
 const LEGGED = `## Completed
@@ -52,43 +50,6 @@ function delegation(overrides: Partial<DelegationContext> = {}): DelegationConte
 		...overrides,
 	};
 }
-
-describe('budget/report interaction', () => {
-	it('does not turn a report-only output breach into a failed quality status', () => {
-		const budget = {
-			role: 'planner',
-			limits: roleBudgetFor('planner'),
-			usage: {
-				toolCalls: 3,
-				nestedToolCalls: 0,
-				discoveryCalls: 2,
-				fullValidationPasses: 0,
-				failedToolCalls: 0,
-				repeatedReads: 0,
-				outputTokens: 900,
-				wallTimeMs: 10,
-			},
-			outcome: 'report_only' as const,
-			breaches: [{ metric: 'outputTokens' as const, limit: 800, observed: 900, at: 1 }],
-			steerIssued: false,
-			reportOnly: true,
-		} satisfies BudgetSummary;
-		const outcome = normalizeS4Outcome(
-			{
-				delegation_status: 'completed',
-				validation_verdict: 'PASS',
-				review_verdict: 'none',
-				unresolved_questions: 'none',
-			},
-			'planner',
-			{ tokens: 900, digestTokens: 100, truncated: false, ledgerParsed: true, contractIssues: [] },
-			budget,
-			'settled',
-		);
-		expect(outcome.budgetStatus).toBe('pass');
-		expect(outcome.quality).toBe('pass');
-	});
-});
 
 describe('parseFilesReviewed', () => {
 	it('extracts reviewer paths and folds them into changed_files', () => {
@@ -150,6 +111,14 @@ describe('buildReportDigest', () => {
 		expect(built.digest).toContain('workflow_version: 1');
 		expect(built.digest).toContain('Wired the digest.');
 		expect(built.digest.match(/workflow_version/g)).toHaveLength(1);
+	});
+
+	it('caps ledger field values to the shared VALUE_CHARS bound', () => {
+		const long = 'x'.repeat(250);
+		const verbose = LEGGED.replace('delegation_status: completed', `delegation_status: ${long}`);
+		const built = buildReportDigest(verbose, 250);
+		expect(built.digest).toContain(`delegation_status: ${'x'.repeat(200)}...`);
+		expect(built.digest).not.toContain('x'.repeat(201));
 	});
 
 	it('requires the reviewer inspection section when requested', () => {

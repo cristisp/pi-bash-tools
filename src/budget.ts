@@ -146,7 +146,6 @@ function noopAbort(): void {}
 function emptyBudgetUsage(): BudgetUsage {
 	return {
 		toolCalls: 0,
-		nestedToolCalls: 0,
 		discoveryCalls: 0,
 		fullValidationPasses: 0,
 		failedToolCalls: 0,
@@ -430,26 +429,40 @@ function budgetSummary(
 	};
 }
 
+/**
+ * Builds the report-side budget summary from transcript-derived run metrics. Metrics carry keys the
+ * enforcement usage does not (e.g. the transcript-derived `nestedToolCalls`), so only the limited
+ * usage keys are read: the enforcement surface charges calls, it does not re-derive nested counts.
+ */
 export function budgetSummaryFromMetrics(
 	role: string,
 	limits: RoleBudget,
-	usage: BudgetUsage,
+	usage: BudgetUsage & Record<string, unknown>,
 	existing?: BudgetSummary,
 ): BudgetSummary {
+	const enforcementUsage: BudgetUsage = {
+		toolCalls: usage.toolCalls,
+		discoveryCalls: usage.discoveryCalls,
+		fullValidationPasses: usage.fullValidationPasses,
+		failedToolCalls: usage.failedToolCalls,
+		repeatedReads: usage.repeatedReads,
+		outputTokens: usage.outputTokens,
+		wallTimeMs: usage.wallTimeMs,
+	};
 	const breaches =
 		existing?.breaches ??
-		USAGE_TO_LIMIT.filter(([, usageKey]) => usage[usageKey] > limits[usageKey]).map(
+		USAGE_TO_LIMIT.filter(([, usageKey]) => enforcementUsage[usageKey] > limits[usageKey]).map(
 			([metric, usageKey]) => ({
 				metric,
 				limit: limits[usageKey],
-				observed: usage[usageKey],
+				observed: enforcementUsage[usageKey],
 				at: Date.now(),
 			}),
 		);
 	return budgetSummary(
 		role,
 		limits,
-		usage,
+		enforcementUsage,
 		breaches,
 		existing?.outcome ?? (breaches.length > 0 ? 'report_only' : 'within'),
 		existing?.steerIssued ?? false,
@@ -709,9 +722,10 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 	const lockLabel = label ?? 'unlabeled-session';
 	/** Write holds keyed by tool call id, released by the matching tool_result. */
 	const heldWrites = new Map<string, RepositoryWriteLockHandle>();
-	/** Accepted validation calls whose execution status is resolved by the matching tool result. */
-	const pendingValidationCalls = new Map<string, { toolName: string }>();
-	/** Final-validation calls wait for their result so a producer preflight failure cannot lock the worker. */
+	/**
+	 * Final-validation calls wait for their result so finalization begins only after a matching
+	 * executed result; a producer preflight failure cannot lock the worker into finalization.
+	 */
 	const pendingFinalizationCalls = new Map<string, { toolName: string }>();
 	const state: MutableBudgetState = {
 		role,
@@ -874,7 +888,6 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		const previousOutcome = state.outcome;
 		resetTurn(state);
 		readKeys.clear();
-		pendingValidationCalls.clear();
 		pendingFinalizationCalls.clear();
 		reportDelivered = false;
 		if (previousOutcome !== state.outcome) persist(label, state);
@@ -887,11 +900,6 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		abortCurrent = ctx.abort;
 		state.usage.wallTimeMs = Math.max(state.usage.wallTimeMs, Date.now() - turnStartedAt);
 		state.usage.toolCalls++;
-		// Nested calls (ctx.executeTool from a running tool, ids like `<parent>/<n>`) run through the
-		// same hooks, so they are charged against the same limits like every other call; the extra
-		// counter only makes their share visible. A transcript never contains them, so the
-		// transcript-derived metrics cannot double count them either.
-		if (event.parentToolCallId) state.usage.nestedToolCalls++;
 		const commandId = event.toolName === 'project_command' ? commandIdOf(event.input) : '';
 		if (commandId && isMutatingCommandId(commandId) && !mutatingRoles.has(role)) {
 			return {
@@ -985,13 +993,9 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 				readKeys.set(key, prior + 1);
 			}
 		}
-		const breached = enforceNewBreach(
-			pi,
-			ctx,
-			state,
-			() => persist(label, state),
-			pendingValidationCalls.size > 0 || executingValidation ? 'fullValidationPasses' : undefined,
-		);
+		// Charge-at-issue: the just-charged validation pass is not provisional, so a breach is decided
+		// immediately and finally at issue time instead of waiting for results to settle.
+		const breached = enforceNewBreach(pi, ctx, state, () => persist(label, state));
 		if (state.outcome === 'aborted')
 			return {
 				block: true,
@@ -1037,10 +1041,8 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 			state.phase = 'implementation';
 			persist(label, state);
 		}
-		const executesValidation = category === 'validation' && !verifyIsRefLookupOnly(event.input);
-		// Calls without an identity remain charged, but cannot settle preflight status or finalization.
-		if (executesValidation && event.toolCallId)
-			pendingValidationCalls.set(event.toolCallId, { toolName: event.toolName });
+		// Identity-less calls remain charged as attempts, but they cannot enter finalization: the
+		// finalization gate settles only a call matchable by both id and originating tool name.
 		if (startsFinalization && event.toolCallId)
 			pendingFinalizationCalls.set(event.toolCallId, { toolName: event.toolName });
 		return undefined;
@@ -1050,35 +1052,21 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		abortCurrent = ctx.abort;
 		if (writeLockEnabled) releaseWriteHold(event.toolCallId);
 		if (event.isError) state.usage.failedToolCalls++;
-		const pendingValidation = pendingValidationCalls.get(event.toolCallId);
 		const pendingFinalization = pendingFinalizationCalls.get(event.toolCallId);
-		const validationWasPending = pendingValidation?.toolName === event.toolName;
 		const finalizationWasPending = pendingFinalization?.toolName === event.toolName;
-		if (validationWasPending) pendingValidationCalls.delete(event.toolCallId);
 		if (finalizationWasPending) pendingFinalizationCalls.delete(event.toolCallId);
+		// The validation pass was charged at issue and is never refunded, so a producer preflight
+		// rejection only withholds finalization and evidence, not the charge.
 		const preflightFailure =
-			(validationWasPending || finalizationWasPending) &&
-			isUnexecutedResolutionFailure(event.details, event.content);
+			finalizationWasPending && isUnexecutedResolutionFailure(event.details, event.content);
 		let stateChanged = false;
-		if (validationWasPending && preflightFailure) {
-			// The call itself remains charged, as does the producer error, but no package-script
-			// validation pass was executed.
-			state.usage.fullValidationPasses = Math.max(0, state.usage.fullValidationPasses - 1);
-			stateChanged = true;
-		}
 		if (finalizationWasPending && !preflightFailure) {
 			state.finalizationStarted = true;
 			state.phase = 'finalization';
 			state.finalStateValidation = true;
 			stateChanged = true;
 		}
-		const breached = enforceNewBreach(
-			pi,
-			ctx,
-			state,
-			() => persist(label, state),
-			pendingValidationCalls.size > 0 ? 'fullValidationPasses' : undefined,
-		);
+		const breached = enforceNewBreach(pi, ctx, state, () => persist(label, state));
 		if (stateChanged && !breached) persist(label, state);
 	});
 
@@ -1104,17 +1092,11 @@ export function registerBudgetEnforcement(pi: ExtensionAPI): void {
 		state.usage.wallTimeMs = Math.max(state.usage.wallTimeMs, Date.now() - turnStartedAt);
 		if (deliveredReport) {
 			state.phase = 'report';
-			noteReportBreach(state, pendingValidationCalls.size > 0 ? 'fullValidationPasses' : undefined);
+			noteReportBreach(state);
 			persist(label, state);
 			return;
 		}
-		enforceNewBreach(
-			pi,
-			ctx,
-			state,
-			() => persist(label, state),
-			pendingValidationCalls.size > 0 ? 'fullValidationPasses' : undefined,
-		);
+		enforceNewBreach(pi, ctx, state, () => persist(label, state));
 		persist(label, state);
 	});
 

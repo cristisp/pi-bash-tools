@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { flowDirFor, flowReportsDir, PREDIGEST_SUBDIR } from './flow.ts';
 import {
+	retainedHashRevisions,
 	retainedReviewSurfaceRevisions,
 	reviewSurfaceHistoryDir,
 	reviewSurfacePath,
@@ -149,41 +150,33 @@ function parsedKnownRef(value: unknown): KnownManifestRef | undefined {
 	if (!value || typeof value !== 'object') return undefined;
 	const entry = value as Record<string, unknown>;
 	const ref = typeof entry.ref === 'string' ? entry.ref.trim() : '';
+	// Tolerant hint reading: a corrupt optional field degrades one hint, so drop only that field
+	// instead of discarding the ref. The ref itself (bounded string) and reused (boolean) must
+	// still be usable, otherwise the hint cannot be confirmed and the whole entry is dropped.
 	if (!ref || ref.length > MAX_REF_LENGTH || typeof entry.reused !== 'boolean') return undefined;
 	let kind: KnownManifestRef['kind'];
-	if (entry.kind !== undefined) {
-		if (!(typeof entry.kind === 'string' && REF_KINDS.has(entry.kind))) return undefined;
+	if (typeof entry.kind === 'string' && REF_KINDS.has(entry.kind))
 		kind = entry.kind === 'read' ? 'read' : undefined;
-	}
-	if (
-		entry.verdict !== undefined &&
-		!(typeof entry.verdict === 'string' && VERDICTS.has(entry.verdict))
-	)
-		return undefined;
-	if (
-		entry.repositoryStateStatus !== undefined &&
-		!(
-			typeof entry.repositoryStateStatus === 'string' &&
-			STATE_STATUSES.has(entry.repositoryStateStatus)
-		)
-	)
-		return undefined;
-	for (const field of ['head', 'stateDigest'] as const) {
-		if (entry[field] !== undefined && typeof entry[field] !== 'string') return undefined;
-	}
 	// Read refs carry no verdict or state identity: the confirm lookup is the source of truth.
 	if (kind === 'read') return { ref, kind, reused: entry.reused as boolean };
+	const verdict =
+		typeof entry.verdict === 'string' && VERDICTS.has(entry.verdict)
+			? (entry.verdict as KnownManifestRef['verdict'])
+			: undefined;
+	const repositoryStateStatus =
+		typeof entry.repositoryStateStatus === 'string' &&
+		STATE_STATUSES.has(entry.repositoryStateStatus)
+			? (entry.repositoryStateStatus as RepositoryStateStatus)
+			: undefined;
+	const head = typeof entry.head === 'string' ? entry.head : undefined;
+	const stateDigest = typeof entry.stateDigest === 'string' ? entry.stateDigest : undefined;
 	return {
 		ref,
-		...(typeof entry.verdict === 'string'
-			? { verdict: entry.verdict as KnownManifestRef['verdict'] }
-			: {}),
+		...(verdict ? { verdict } : {}),
 		reused: entry.reused,
-		...(typeof entry.repositoryStateStatus === 'string'
-			? { repositoryStateStatus: entry.repositoryStateStatus as RepositoryStateStatus }
-			: {}),
-		...(typeof entry.head === 'string' ? { head: entry.head } : {}),
-		...(typeof entry.stateDigest === 'string' ? { stateDigest: entry.stateDigest } : {}),
+		...(repositoryStateStatus ? { repositoryStateStatus } : {}),
+		...(head ? { head } : {}),
+		...(stateDigest ? { stateDigest } : {}),
 	};
 }
 
@@ -225,6 +218,7 @@ export function buildReadManifest(delegation: DelegationContext): ReadManifest {
 			: undefined;
 	const surfaceFlowId = surfacePath ? delegation.flowId : undefined;
 	const retainedRevisions = surfaceFlowId ? retainedReviewSurfaceRevisions(surfaceFlowId) : 0;
+	const retainedHashes = surfaceFlowId ? retainedHashRevisions(surfaceFlowId) : 0;
 	const historyDir =
 		surfaceFlowId && retainedRevisions > 0 ? reviewSurfaceHistoryDir(surfaceFlowId) : undefined;
 	const artifactPaths = [
@@ -237,7 +231,12 @@ export function buildReadManifest(delegation: DelegationContext): ReadManifest {
 		...(surfacePath ? [`The shared review surface is captured at ${surfacePath}.`] : []),
 		...(historyDir
 			? [
-					`${retainedRevisions} earlier review-surface revision(s) are retained under ${historyDir} for delta comparison.`,
+					`${retainedRevisions} earlier review-surface revision(s) are retained under ${historyDir}; each snapshot carries a changes-since summary computed from the per-revision hash sidecars.`,
+				]
+			: []),
+		...(retainedHashes > 0
+			? [
+					`The newest ${retainedHashes} revisions' per-file hash sidecars (predigest/hashes-r<N>.json, newest 10) back those summaries.`,
 				]
 			: []),
 		...(priorReports.length

@@ -40,7 +40,7 @@ A documentation-only task is Tier 0 and does not require a subagent.
 | Ledger | Every dispatch and result boundary | Later children, validators, reviewers, and telemetry correlation |
 | Role report | A settled child with a flow id | The parent digest, later roles, and reviewers |
 | Validation reference | The validation producer after a check | Sibling consumers and reviewers through lookup |
-| Telemetry JSONL | Composition and delegation boundaries | Measurement and the S4 gate |
+| Telemetry JSONL | Composition and delegation boundaries | Measurement |
 
 See [Artifacts](artifacts.md) for exact paths and read/write rules.
 

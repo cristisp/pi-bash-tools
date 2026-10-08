@@ -700,17 +700,10 @@ describe('executeSubagent - composition policy', () => {
 		const off = await execSubagent({ agent: 'validator', task: 'check', tier: 1 });
 		expect((off.content[0] as { text: string }).text).not.toContain('Composition');
 		expect((await import('../src/run.ts')).runSingleAgent).toHaveBeenCalledTimes(1);
-		const offPreflight = (await import('../src/telemetry.ts'))
-			.readTelemetryRecords()
-			.find((record) => record.event === 's4_preflight' && record.s4Preflight?.policy === 'off');
-		expect(offPreflight?.s4Preflight?.observations).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ ruleId: 'R1', eligible: true, action: 'disabled' }),
-				expect.objectContaining({ ruleId: 'R2', eligible: false, action: 'not_applicable' }),
-				expect.objectContaining({ ruleId: 'R3', eligible: false, action: 'not_applicable' }),
-				expect.objectContaining({ ruleId: 'R4', eligible: false, action: 'not_applicable' }),
-			]),
-		);
+		const runCalls = vi.mocked((await import('../src/run.ts')).runSingleAgent).mock.calls;
+		expect(runCalls[0][13]).toEqual({
+			R1: { eligible: 1, compliant: 0, noncompliant: 1 },
+		});
 		expect(
 			(await import('../src/telemetry.ts'))
 				.readTelemetryRecords()
@@ -1104,8 +1097,7 @@ describe('executeSubagent - delegation context', () => {
 			compositionPolicy: 'warn',
 			compositionBoundaryId: expect.any(String),
 		});
-		expect(runReusedAgent.mock.calls[0][11]).toEqual(expect.any(String));
-		expect(runReusedAgent.mock.calls[0][12]).toMatch(/^s4-/);
+		expect(runReusedAgent.mock.calls[0][11]).toEqual({});
 	});
 });
 
@@ -1170,21 +1162,6 @@ describe('report delivery', () => {
 		const result = await execSubagent({ agent: 'worker', task: 'x' });
 		expect(result.content[0]).toMatchObject({
 			text: expect.stringContaining('Report contract: no ledger block parsed'),
-		});
-	});
-
-	it('names a contract failure when the policy rejects', async () => {
-		writeConfig({ reportContractPolicy: 'reject' });
-		mockRunWithReport({
-			digest: 'status only',
-			tokens: 900,
-			digestTokens: 120,
-			truncated: false,
-			ledgerParsed: false,
-		});
-		const result = await execSubagent({ agent: 'worker', task: 'x' });
-		expect(result.content[0]).toMatchObject({
-			text: expect.stringContaining('Report contract FAILED'),
 		});
 	});
 

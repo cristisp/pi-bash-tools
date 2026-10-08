@@ -126,7 +126,6 @@ describe('buildTelemetryRecord', () => {
 				},
 				usage: {
 					toolCalls: 3,
-					nestedToolCalls: 0,
 					discoveryCalls: 0,
 					fullValidationPasses: 0,
 					failedToolCalls: 0,
@@ -182,5 +181,43 @@ describe('buildTelemetryRecord', () => {
 		expect(record.contextReason).toBe('normal');
 		expect(record.readManifest?.persistedPath).toBe('/tmp/read-manifest.json');
 		expect(record.readManifestStatus).toBe('available');
+	});
+
+	it('carries composition observation denominators when supplied and omits them otherwise', () => {
+		const record = buildTelemetryRecord({
+			delegation: {
+				delegationId: 'delegation-observed',
+				role: 'worker',
+				evidenceScope: 'flow',
+			},
+			workspace: 'ws1',
+			label: 'worker-1',
+			agent: 'worker',
+			reused: false,
+			reuseCount: 0,
+			outcome: 'settled',
+			result: makeSingleResult(),
+			compositionObservations: {
+				R2: { eligible: 2, compliant: 1, noncompliant: 1 },
+			},
+		});
+		expect(record.compositionObservations).toEqual({
+			R2: { eligible: 2, compliant: 1, noncompliant: 1 },
+		});
+		const plain = buildTelemetryRecord({
+			delegation: {
+				delegationId: 'delegation-plain',
+				role: 'worker',
+				evidenceScope: 'flow',
+			},
+			workspace: 'ws1',
+			label: 'worker-1',
+			agent: 'worker',
+			reused: false,
+			reuseCount: 0,
+			outcome: 'settled',
+			result: makeSingleResult(),
+		});
+		expect(plain.compositionObservations).toBeUndefined();
 	});
 });

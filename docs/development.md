@@ -17,7 +17,7 @@ The main runtime is split into these concerns:
 - `src/budget.ts` enforces child budgets, role permissions, and repository write exclusion.
 - `src/structured-result.ts` owns the bounded structured-output projection and `outputSchema` for the subagent tools.
 - `src/report.ts`, `src/format.ts`, and `src/metrics.ts` reduce child output and collect run summaries.
-- `src/telemetry.ts` writes delegation, composition, and S4 records for analysis.
+- `src/telemetry.ts` writes delegation and composition records for analysis.
 - `src/commands.ts`, `src/presets.ts`, and `src/templates.ts` provide setup, model selection, and standard role contracts.
 
 ## Pi 1.0.3 features (S13)
@@ -26,7 +26,9 @@ The repository installs and typechecks against pi 1.0.3.
 The `*` peer dependencies only promise that any installed version is accepted; the exact version comes from `package-lock.json`, so bumping it means installing the package explicitly (for example `npm install @earendil-works/pi-coding-agent@latest`), while a plain `npm install` or `npm ci` keeps the locked version.
 
 - `src/structured-result.ts` owns the bounded structured-output projection and the `outputSchema` declared on `subagent` and `subagent_override`.
-  The projection and the schema must stay in sync: the same field and array limits apply in both, and tests validate projected output against the schema with `typebox/value`.
+  The projection and the schema share the same field and array limit constants, so they cannot
+drift; tests validate projected output against the schema with `typebox/value` and pin field
+coverage, so there is no manual sync rule to maintain.
   A refused call is an `isError: true` result whose model-facing text is unchanged and whose bounded `refusal` (`kind` plus capped message) is part of the projection, so codemode callers can tell a refusal apart from an empty success; informational responses such as agent and session listings stay normal results and stay text-only, reported as empty results in the projection rather than as a new listing surface.
   Every projected string is capped, including the agent name; the model-facing text is never derived from the projection, and transcripts, stderr, read manifests, dirty paths, and internal metrics are never part of it.
 
@@ -48,13 +50,11 @@ S13-003 decisions (nested tool-call accounting):
 
 - Calls a tool makes while it runs through `ctx.executeTool()` (ids shaped `<parent id>/<n>`, carrying `parentToolCallId`) consume the same per-role budgets as model-issued calls.
   Pi 1.0.3 routes them through the same `tool_call` and `tool_result` hooks, so enforcement stays in one surface and a codemode loop cannot bypass a budget; a refused nested call returns to the caller as an `isError: true` outcome and never spawns anything.
-- `BudgetUsage.nestedToolCalls` records their share on the enforcement surface (they are still charged to `toolCalls`, `discoveryCalls`, validation, repeated-read, and wall-time accounting like every other call).
 - Transcript-derived metrics (`ExecutionMetrics.nestedToolCalls`, shown as `nested:N` in run summaries and `subagent_stats`) count the bounded `nestedCalls` record each parent tool result carries.
   Each nested call is flattened into exactly one record (its top-level caller's), so the count never double counts, and a record with `complete: false` is treated as the lower bound it attests to.
   Nested usage needs no separate accounting: pi already folds it into the parent result message's `usage`.
 - Transcript parsing never double counts nested calls as model-issued `toolCalls`, because nested calls produce no transcript tool-call entries.
-- `nestedToolCalls` follows the same two-surface split as every other usage counter: the registry ledger counts hook-side calls per agent run and is never derived from transcript evidence, while `result.budget` is a report view rebuilt from transcript metrics and takes the count from the bounded `nestedCalls` records.
-  For a single finished run the two agree (pinned by test); across several agent runs, or with enforcement inactive, they can differ, and the ledger remains the enforcement authority regardless of what the report view shows.
+- The transcript-derived count from the bounded `nestedCalls` records is the single nested-call surface: there is no hook-side registry nested counter, so the registry run summary and `nested:N` both derive their nested count from that one metric, and `BudgetUsage` keeps no separate nested counter, so there is no second number for a test to pin equal.
 
 S13-004 decisions (agent finalization boundaries):
 
@@ -96,9 +96,7 @@ Run focused Vitest files when iterating, then run the full suite before release.
 `npm run test:analyze` reads the live agent stores and rewrites the generated `analysis/MEASUREMENT.md` report.
 Do not edit that report manually.
 
-`npm run s4:gate -- <agent-dir> [options]` evaluates the composition evidence gate.
-It produces a decision artifact and exits successfully only for `ENFORCE_CANDIDATE`.
-The decision does not change the configured composition policy.
+
 
 ## Packaging
 

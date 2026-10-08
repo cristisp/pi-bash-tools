@@ -59,7 +59,7 @@ Call `subagent({"listSubagents":true})` before reuse, then call `subagent_stats`
 
 ## Boundary preflight
 
-Before any child is launched, the extension records an S4 preflight and evaluates the standard composition rules.
+Before any child is launched, the extension evaluates the standard composition rules and records the outcome in composition telemetry.
 The configured `compositionPolicy` is `warn` by default.
 `warn` reports a violation and still launches, `enforce` refuses the boundary, and `off` disables the checks.
 Only `subagent_override` can deliberately supply a per-call policy override.
@@ -73,7 +73,7 @@ The rules are:
 
 Warnings are included in the parent result and telemetry.
 A refusal returns before child creation.
-The S4 analyzer is evidence for a future policy decision and never changes `compositionPolicy` automatically.
+Each delegation record carries per-rule eligible and compliant counts so violation rates stay measurable; nothing changes `compositionPolicy` automatically.
 
 ## Launch and execution
 

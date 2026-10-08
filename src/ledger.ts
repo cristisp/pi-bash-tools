@@ -109,7 +109,8 @@ export function ledgerShapeBlock(): string {
 	return ['```text', ...lines, '```'].join('\n');
 }
 
-function oneLine(value: unknown): string {
+/** Cap and flatten one ledger value; shared with the report digest so both hop to the parent face the same bound. */
+export function oneLine(value: unknown): string {
 	const raw = Array.isArray(value) ? value.join(',') : (value ?? '');
 	const flat = String(raw).replace(/\s+/g, ' ').trim();
 	return flat.length > VALUE_CHARS ? `${flat.slice(0, VALUE_CHARS)}...` : flat;
@@ -274,6 +275,27 @@ export function nextAttempt(existing: LedgerRevision[], taskId?: string): number
 		existing.filter((entry) => entry.fields.kind === 'dispatch' && entry.fields.task_id === taskId)
 			.length + 1
 	);
+}
+
+/**
+ * The most recent non-empty `changed_files` claim folded into the flow ledger, if any; `undefined`
+ * means no folded claim exists for the scope-check hint to compare against.
+ */
+export function latestFoldedChangedFiles(flowId: string | undefined): string[] | undefined {
+	if (!isOpaqueId(flowId)) return undefined;
+	let claim: string | undefined;
+	try {
+		const revisions = parseLedger(fs.readFileSync(ledgerPath(flowId), 'utf-8'));
+		for (let index = revisions.length - 1; index >= 0 && claim === undefined; index -= 1) {
+			const value = revisions[index]?.fields.changed_files;
+			if (value) claim = value;
+		}
+	} catch {}
+	if (!claim) return undefined;
+	return claim
+		.split(',')
+		.map((entry) => entry.trim())
+		.filter(Boolean);
 }
 
 export function ledgerPointer(flowId: string | undefined): LedgerPointer | undefined {

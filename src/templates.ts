@@ -105,9 +105,17 @@ function compactItems(items: string[] | undefined, empty = 'none'): string {
 }
 
 function knownRefItem(ref: NonNullable<ReadManifest['knownRefs']>[number]): string {
-	const label = `${ref.ref}${ref.verdict ? ` (${ref.verdict})` : ''}`;
-	// Keep the readable prefix for operators while retaining every structured field losslessly.
-	return `${label} ${JSON.stringify(ref)}`;
+	// One compact lossless line per ref: every structured field survives (ref, kind, verdict,
+	// reused, state) and only the JSON encoding goes, so the bounded refs line stays readable.
+	return [
+		ref.ref,
+		...(ref.kind ? [`kind:${ref.kind}`] : []),
+		...(ref.verdict ? [`verdict:${ref.verdict}`] : []),
+		`reused:${ref.reused}`,
+		...(ref.repositoryStateStatus ? [`state:${ref.repositoryStateStatus}`] : []),
+		...(ref.head ? [`head:${ref.head}`] : []),
+		...(ref.stateDigest ? [`digest:${ref.stateDigest}`] : []),
+	].join(' ');
 }
 
 function validationHandoffLines(
@@ -125,10 +133,16 @@ function validationHandoffLines(
 		: 'none';
 	const executions = priorRun?.validationExecutions?.length
 		? priorRun.validationExecutions
-				.map(
-					(execution) =>
-						`${execution.tool}:${execution.ref ?? execution.commandId ?? 'unknown'}:${execution.decision ?? 'unknown'}${execution.stateDrift ? ':state-drift' : ''}`,
-				)
+				.map((execution) => {
+					// Gate at render only: project_command evidence refs are process-scoped unless the
+					// execution published into the flow, so only published refs are advertised.
+					// Capture and the owning run's records keep their refs regardless.
+					const identity =
+						(execution.publication === 'published' && execution.ref) ||
+						execution.commandId ||
+						'unknown';
+					return `${execution.tool}:${identity}:${execution.decision ?? 'unknown'}${execution.stateDrift ? ':state-drift' : ''}`;
+				})
 				.join(', ')
 		: 'none';
 	const lookupFailures = priorRun?.lookupFailures?.length ?? 0;
@@ -755,7 +769,7 @@ Prefer \`read_batch\` when you need several files, and keep its item ranges boun
 ## Codemode discipline
 
 Use \`codemode\` scripts when several independent tool calls or one large output would otherwise cost turns: batch parallel checks with \`Promise.allSettled\`, and filter or summarize large output before it reaches the model.
-Every call made from inside a script consumes the same role budgets as a model-issued call and is refused at the limit exactly like one; the run summary shows their share as \`nested:N\`.
+Every call made from inside a script is charged to the tool budget and refused at the limit exactly like a model-issued call.
 Do not use codemode to route around a budget, the validation gate, or the assigned toolset; \`tool_search\` is deliberately not part of any role toolset, so undeclared tools stay undeclared.
 
 ${WORKFLOW_CLASSIFICATION_GUIDANCE}

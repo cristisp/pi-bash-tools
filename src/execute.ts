@@ -29,7 +29,7 @@ import { runReusedAgent, runSingleAgent } from './run.ts';
 import { ensureReviewSurface } from './scope.ts';
 import { outsideRootCwds } from './spawn-boundary.ts';
 import { REUSE_WORKFLOW_GUIDANCE } from './templates.ts';
-import { appendCompositionTelemetry, appendS4PreflightTelemetry } from './telemetry.ts';
+import { appendCompositionTelemetry } from './telemetry.ts';
 import { makeEmptyUsage } from './types.ts';
 import { COMPOSITION_RULES } from './types.ts';
 import type {
@@ -42,8 +42,9 @@ import type {
 	SingleResult,
 	SubagentDetails,
 	SubagentRefusal,
-	S4CompositionObservation,
-	S4Preflight,
+	CompositionObservationSummary,
+	CompositionRuleId,
+	CompositionRuleObservations,
 } from './types.ts';
 
 const ReviewScope = Type.Object({
@@ -256,8 +257,7 @@ interface ExecuteContext {
 	onUpdate: OnUpdateCallback | undefined;
 	onBlocked: ((info: BlockEventInfo) => void) | undefined;
 	orchestration: OrchestrationContext;
-	s4BoundaryId?: string;
-	s4TaskId?: string;
+	compositionObservations?: CompositionObservationSummary;
 }
 
 function makeDetailsFor(ctx: ExecuteContext) {
@@ -421,8 +421,7 @@ async function executeChainMode(
 				...ctx.orchestration,
 				...(step.scope ? { scope: step.scope } : {}),
 			},
-			ctx.s4BoundaryId,
-			ctx.s4TaskId,
+			ctx.compositionObservations,
 		);
 		results.push(result);
 
@@ -532,8 +531,7 @@ async function runParallelTask(
 					...(effectiveScope ? { scope: effectiveScope } : {}),
 				}
 			: { ...ctx.orchestration, scope: effectiveScope },
-		ctx.s4BoundaryId,
-		ctx.s4TaskId,
+		ctx.compositionObservations,
 	);
 	allResults[index] = result;
 	emitUpdate();
@@ -559,18 +557,11 @@ function deliverableText(result: SingleResult, fallback?: string): string {
 	// A short acknowledgement has no report shape to enforce; the note would be pure noise.
 	if (!report.ledgerParsed && report.tokens >= CONTRACT_NOTE_MIN_TOKENS) {
 		parts.push(
-			getConfig().reportContractPolicy === 'reject'
-				? '[Report contract FAILED: the child returned no orchestration ledger block. Treat this delegation as unfinished: request the ledger or re-delegate.]'
-				: `[Report contract: no ledger block parsed from ~${report.tokens} tokens of report.]`,
+			`[Report contract: no ledger block parsed from ~${report.tokens} tokens of report.]`,
 		);
 	}
 	if (report.contractIssues?.length) {
-		const issue = report.contractIssues.join('; ');
-		parts.push(
-			getConfig().reportContractPolicy === 'reject'
-				? `[Report contract FAILED: ${issue}. Treat this delegation as unfinished: request the required section or re-delegate.]`
-				: `[Report contract: ${issue}.]`,
-		);
+		parts.push(`[Report contract: ${report.contractIssues.join('; ')}.]`);
 	}
 	return applyOutputByteCap(parts.filter((part) => part.trim()).join('\n\n'));
 }
@@ -610,7 +601,8 @@ function disjointScopeError(scopes: (ReviewScope | undefined)[]): string | undef
 interface CompositionEvaluation {
 	warnings: CompositionVerdict[];
 	refusals: CompositionVerdict[];
-	preflight: S4Preflight;
+	boundaryId: string;
+	compositionObservations: CompositionObservationSummary;
 }
 
 function compositionRule(id: CompositionVerdict['rule']) {
@@ -647,38 +639,24 @@ function evaluateComposition(
 		| { chain: Static<typeof ChainItem>[] },
 ): CompositionEvaluation {
 	const policy = ctx.orchestration.compositionPolicy ?? getConfig().compositionPolicy;
-	const policyOverride = ctx.orchestration.compositionPolicyOverride;
-	const decisionSource = policyOverride ? 'override' : 'default';
+	const tier = ctx.orchestration.tier;
 	const boundaryId = randomUUID();
 	const items = 'agent' in input ? [input] : 'tasks' in input ? input.tasks : input.chain;
-	const expectedChildCount = items.length;
-	const tier = ctx.orchestration.tier;
 	const verdicts: CompositionVerdict[] = [];
-	// This must remain an array: a chain can contain several eligible R1/R3/R4
-	// candidates, and each candidate is part of the S4 denominator.
-	const observations: S4CompositionObservation[] = [];
-	const eligibleRules = new Set<S4CompositionObservation['ruleId']>();
+	// Denominator counts for the delegation telemetry record: per rule, how many
+	// observations evaluated a real candidate and how many of those held.
+	const observationCounts = new Map<CompositionRuleId, CompositionRuleObservations>();
 	const addObservation = (
-		ruleId: S4CompositionObservation['ruleId'],
+		ruleId: CompositionRuleId,
 		eligible: boolean,
 		compliant: boolean | null,
-		action: S4CompositionObservation['action'],
-		reason: string,
 	) => {
-		if (eligible) eligibleRules.add(ruleId);
-		observations.push({
-			ruleId,
-			eligible,
-			compliant,
-			action,
-			decisionSource,
-			reason,
-			compositionBoundaryId: boundaryId,
-			mode,
-			policy,
-			...(policyOverride ? { policyOverride } : {}),
-			expectedChildCount,
-		});
+		if (!eligible) return;
+		const entry = observationCounts.get(ruleId) ?? { eligible: 0, compliant: 0, noncompliant: 0 };
+		entry.eligible++;
+		if (compliant === true) entry.compliant++;
+		else if (compliant === false) entry.noncompliant++;
+		observationCounts.set(ruleId, entry);
 	};
 	const violation = (
 		ruleId: CompositionVerdict['rule'],
@@ -720,19 +698,7 @@ function evaluateComposition(
 				? 'One or more real parallel reviewers is missing a non-empty scope.paths list.'
 				: 'Real parallel reviewer scope.paths overlap.';
 	if (r2Eligible) {
-		addObservation(
-			'R2',
-			true,
-			r2Compliant,
-			r2Compliant
-				? 'allow'
-				: policy === 'off'
-					? 'disabled'
-					: policy === 'enforce'
-						? 'refuse'
-						: 'warn',
-			r2Reason,
-		);
+		addObservation('R2', true, r2Compliant);
 		if (!r2Compliant && policy !== 'off')
 			violation(
 				'R2',
@@ -750,13 +716,7 @@ function evaluateComposition(
 		if (agent === 'validator' && tier === 1) {
 			const reason =
 				'Tier 1 validation is already covered by the worker verify ref; delegating another validator duplicates the deterministic gate.';
-			addObservation(
-				'R1',
-				true,
-				false,
-				policy === 'off' ? 'disabled' : policy === 'enforce' ? 'refuse' : 'warn',
-				reason,
-			);
+			addObservation('R1', true, false);
 			if (policy !== 'off') violation('R1', reason, agent, scope);
 		}
 		if (agent === 'validator' && tier !== undefined && tier <= 2 && tier !== 1) {
@@ -771,19 +731,7 @@ function evaluateComposition(
 			const reason = compliant
 				? 'Validator uses session evidence scope for an independent validation run.'
 				: `Validator tier ${tier} without evidenceScope: "session" resolves the flow/default lookup instead of independently executing the gate.`;
-			addObservation(
-				'R3',
-				true,
-				compliant,
-				policy === 'off'
-					? 'disabled'
-					: compliant
-						? 'allow'
-						: policy === 'enforce'
-							? 'refuse'
-							: 'warn',
-				reason,
-			);
+			addObservation('R3', true, compliant);
 			if (!compliant && policy !== 'off') violation('R3', reason, agent, scope);
 		}
 		if (agent === 'worker' && tier === 3) {
@@ -793,19 +741,7 @@ function evaluateComposition(
 				: mode === 'parallel'
 					? 'Tier 3 worker in a parallel fan-out has no completed planner; array order does not establish precedence.'
 					: 'Tier 3 worker has no preceding planner in this composition, so the required investigation plan is missing.';
-			addObservation(
-				'R4',
-				true,
-				compliant,
-				policy === 'off'
-					? 'disabled'
-					: compliant
-						? 'allow'
-						: policy === 'enforce'
-							? 'refuse'
-							: 'warn',
-				reason,
-			);
+			addObservation('R4', true, compliant);
 			if (!compliant && policy !== 'off') violation('R4', reason, agent, scope);
 		}
 	};
@@ -815,33 +751,11 @@ function evaluateComposition(
 		items.forEach((item, index) =>
 			checkAgent(item.agent, sanitizeReviewScope(item.scope ?? ctx.orchestration.scope), index),
 		);
-	for (const rule of COMPOSITION_RULES) {
-		if (!observations.some((observation) => observation.ruleId === rule.id))
-			addObservation(
-				rule.id,
-				false,
-				null,
-				policy === 'off' && eligibleRules.has(rule.id) ? 'disabled' : 'not_applicable',
-				`No real eligible ${rule.id} candidate was present at this boundary.`,
-			);
-	}
-	const finalExpectedChildCount = verdicts.some((verdict) => verdict.action === 'refuse')
-		? 0
-		: expectedChildCount;
 	return {
 		warnings: verdicts.filter((verdict) => verdict.action === 'warn'),
 		refusals: verdicts.filter((verdict) => verdict.action === 'refuse'),
-		preflight: {
-			v: 1,
-			compositionBoundaryId: boundaryId,
-			mode,
-			policy,
-			...(policyOverride ? { policyOverride } : {}),
-			expectedChildCount: finalExpectedChildCount,
-			observations: observations.map((observation) =>
-				Object.assign({}, observation, { expectedChildCount: finalExpectedChildCount }),
-			),
-		},
+		boundaryId,
+		compositionObservations: Object.fromEntries(observationCounts) as CompositionObservationSummary,
 	};
 }
 
@@ -974,8 +888,7 @@ async function executeSingleMode(
 		ctx.onBlocked,
 		ctx.presetModels,
 		ctx.orchestration,
-		ctx.s4BoundaryId,
-		ctx.s4TaskId,
+		ctx.compositionObservations,
 	);
 	const isError = isFailedResult(result);
 	if (isError) {
@@ -1022,8 +935,7 @@ async function executeReuseMode(
 		ctx.sessionFile,
 		ctx.presetModels,
 		ctx.orchestration,
-		ctx.s4BoundaryId,
-		ctx.s4TaskId,
+		ctx.compositionObservations,
 	);
 	const isError = isFailedResult(result);
 	if (isError) {
@@ -1259,40 +1171,24 @@ export async function executeSubagent(
 							agent: reuseEntry?.agent ?? 'reuse',
 							scope: params.scope,
 						});
-	const s4TaskId =
-		compositionCtx.orchestration.taskId ??
-		`s4-${composition.preflight.compositionBoundaryId.replaceAll('-', '').slice(0, 28)}`;
 	const childCtx: ExecuteContext = {
 		...compositionCtx,
-		s4BoundaryId: composition.preflight.compositionBoundaryId,
-		s4TaskId,
+		compositionObservations: composition.compositionObservations,
 		orchestration: {
 			...compositionCtx.orchestration,
 			...(composition.warnings.length > 0 ? { compositionVerdicts: composition.warnings } : {}),
 			...(compositionCtx.orchestration.compositionBoundaryId
 				? {}
-				: { compositionBoundaryId: composition.preflight.compositionBoundaryId }),
+				: { compositionBoundaryId: composition.boundaryId }),
 		},
 	};
-	const s4FlowId =
-		mode === 'reuse'
-			? (reuseEntry?.flowId ?? deriveFlowId(executeCtx.sessionFile))
-			: deriveFlowId(executeCtx.sessionFile);
-	appendS4PreflightTelemetry({
-		preflight: composition.preflight,
-		workspace: ownWorkspaceId(),
-		parentSession: executeCtx.sessionFile,
-		flowId: s4FlowId,
-		taskId: s4TaskId,
-		tier: compositionCtx.orchestration.tier,
-	});
 	if (composition.refusals.length > 0) {
 		return compositionRefusalResponse(
 			compositionCtx,
 			mode,
 			composition.refusals,
 			makeDetails,
-			composition.preflight.compositionBoundaryId,
+			composition.boundaryId,
 		);
 	}
 	if (composition.warnings.length > 0) {
@@ -1303,7 +1199,7 @@ export async function executeSubagent(
 			flowId: deriveFlowId(executeCtx.sessionFile),
 			policy: compositionCtx.orchestration.compositionPolicy ?? composition.warnings[0].policy,
 			policyOverride: compositionCtx.orchestration.compositionPolicyOverride,
-			boundaryId: composition.preflight.compositionBoundaryId,
+			boundaryId: composition.boundaryId,
 		});
 	}
 	const confirmProjectAgents = params.confirmProjectAgents ?? getConfig().confirmProjectAgents;

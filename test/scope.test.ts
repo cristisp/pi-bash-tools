@@ -4,8 +4,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flowDirFor, flowReportsDir } from '../src/flow.ts';
-import { ensureReviewSurface, reviewSurfaceHistoryDir } from '../src/scope.ts';
 import { buildReadManifest, recordKnownRefs, writeReadManifest } from '../src/manifest.ts';
+import {
+	ensureReviewSurface,
+	scopeCheckHint,
+	reviewSurfaceHistoryDir,
+	type FileHash,
+} from '../src/scope.ts';
 import { resolveDelegation, sanitizeReviewScope } from '../src/delegation.ts';
 import { makeTempDir, stubEnv } from './helpers.ts';
 
@@ -250,7 +255,17 @@ if (process.argv[2] === 'write') {
 		);
 		fs.writeFileSync(
 			path.join(flowDirFor(flowId), 'predigest', 'refs', 'badshape.json'),
-			JSON.stringify({ v: 1, at: 1, refs: [{ ref: 'vr_bad', reused: 'yes' }, 'vr_worse'] }),
+			JSON.stringify({
+				v: 1,
+				at: 1,
+				refs: [
+					// Unusable ref and reused mean the whole hint is gone.
+					{ ref: 'vr_bad', reused: 'yes' },
+					'vr_worse',
+					// Otherwise a corrupt optional field degrades only that field.
+					{ ref: 'vr_degraded', reused: true, verdict: 'nope', head: 42, extra: 'unknown' },
+				],
+			}),
 		);
 		fs.writeFileSync(
 			path.join(flowDirFor(flowId), 'predigest', 'refs', 'legacy-read.json'),
@@ -268,7 +283,42 @@ if (process.argv[2] === 'write') {
 			role: 'validator',
 			evidenceScope: 'flow',
 		});
-		expect(manifest.knownRefs).toEqual([{ ref: 'vr_keep', verdict: 'passed', reused: false }]);
+		expect(manifest.knownRefs).toEqual([
+			{ ref: 'vr_degraded', reused: true },
+			{ ref: 'vr_keep', verdict: 'passed', reused: false },
+		]);
+	});
+
+	it('keeps a ref with one corrupt optional field as a degraded hint', () => {
+		const agentDir = makeTempDir();
+		stubEnv(agentDir);
+		const flowId = 'flow-degraded-ref';
+		fs.mkdirSync(path.join(flowDirFor(flowId), 'predigest', 'refs'), { recursive: true });
+		fs.writeFileSync(
+			path.join(flowDirFor(flowId), 'predigest', 'refs', 'degraded.json'),
+			JSON.stringify({
+				v: 1,
+				flowId,
+				at: 1,
+				refs: [
+					{ ref: 'vr_half', reused: false, verdict: 'passed', repositoryStateStatus: 7 },
+					{ ref: 'vr_read_half', reused: false, kind: 'read', verdict: 'passed' },
+				],
+				readFlows: { vr_read_half: flowId },
+			}),
+		);
+		const manifest = buildReadManifest({
+			delegationId: 'consumer',
+			flowId,
+			role: 'validator',
+			evidenceScope: 'flow',
+		});
+		// Unrecognized and wrong-typed optional fields are dropped; the still-resolvable hint and
+		// the read-kind stripping and readFlows re-check all keep working.
+		expect(manifest.knownRefs).toEqual([
+			{ ref: 'vr_half', verdict: 'passed', reused: false },
+			{ ref: 'vr_read_half', kind: 'read', reused: false },
+		]);
 	});
 
 	it('canonicalizes safe scope paths and drops traversal or absolute paths', () => {
@@ -411,15 +461,29 @@ function fakeGitBin(dir: string): string {
 	return dir;
 }
 
-/** Parses the snapshot's `## File hashes` section into path -> hash. */
-function surfaceHashes(content: string): Map<string, string> {
-	const section = content.split('## File hashes\n')[1]?.split('\n## ')[0] ?? '';
+/** Reads a revision's `predigest/hashes-r<N>.json` sidecar into path -> hash. */
+function sidecarHashes(flowId: string, revision: number): Map<string, string> {
 	const hashes = new Map<string, string>();
-	for (const line of section.split('\n')) {
-		const match = /^(\S+)(?: \(partial\))?  (.+)$/.exec(line);
-		if (match) hashes.set(match[2], match[1]);
-	}
+	for (const entry of sidecarRecords(flowId, revision)) hashes.set(entry.path, entry.hash);
 	return hashes;
+}
+
+/** Reads one revision's raw sidecar records, or throws when the sidecar is absent. */
+function sidecarRecords(flowId: string, revision: number): FileHash[] {
+	const pathValue = path.join(flowDirFor(flowId), 'predigest', `hashes-r${revision}.json`);
+	const parsed = JSON.parse(fs.readFileSync(pathValue, 'utf8')) as {
+		revision: number;
+		hashes: FileHash[];
+	};
+	if (parsed.revision !== revision)
+		throw new Error(`sidecar revision mismatch: ${parsed.revision}`);
+	return parsed.hashes;
+}
+
+function sidecarRecord(flowId: string, revision: number, pathValue: string): FileHash {
+	const record = sidecarRecords(flowId, revision).find((entry) => entry.path === pathValue);
+	if (!record) throw new Error(`no sidecar record for ${pathValue}`);
+	return record;
 }
 
 describe('review surface content hashes', () => {
@@ -435,11 +499,19 @@ describe('review surface content hashes', () => {
 			const first = ensureReviewSurface(flowId, repo);
 			expect(first?.refreshed).toBe(true);
 			expect(first?.revision).toBe(1);
-			const firstHashes = surfaceHashes(fs.readFileSync(first!.path, 'utf8'));
+			const firstHashes = sidecarHashes(flowId, 1);
 			expect(firstHashes.size).toBe(2);
 			expect(firstHashes.get('a.txt')).toMatch(/^[0-9a-f]{64}$/);
 			expect(firstHashes.get('a.txt')).not.toBe(firstHashes.get('b.txt'));
-			expect(fs.readFileSync(first!.path, 'utf8')).toMatch(/^worktree_hunks: [0-9a-f]{64}$/m);
+			// S15-001b: the raw hashes exiled from the snapshot into the sidecar, and the derived digest
+			// header fields deleted; the fingerprint still covers everything it covered before.
+			const firstContent = fs.readFileSync(first!.path, 'utf8');
+			expect(firstContent).not.toContain('## File hashes');
+			expect(firstContent).not.toMatch(/^worktree_hunks:/m);
+			expect(firstContent).not.toMatch(/^worktree_delta:/m);
+			// S15-001c: a first revision renders the honest degeneracy instead of invented classes.
+			expect(firstContent).toMatch(/^## Changes since revision 1\n\n\(no prior revision\)$/m);
+			expect(first?.changedPaths).toEqual([]);
 
 			// Same byte length, same diff stat, same head: a status+stat+head fingerprint cannot see this.
 			fs.writeFileSync(path.join(repo, 'a.txt'), 'AAA\n');
@@ -447,16 +519,25 @@ describe('review surface content hashes', () => {
 			expect(second?.refreshed).toBe(true);
 			expect(second?.revision).toBe(2);
 			expect(second?.fingerprint).not.toBe(first?.fingerprint);
-			const secondHashes = surfaceHashes(fs.readFileSync(second!.path, 'utf8'));
+			const secondHashes = sidecarHashes(flowId, 2);
 			expect(secondHashes.get('a.txt')).not.toBe(firstHashes.get('a.txt'));
 			expect(secondHashes.get('b.txt')).toBe(firstHashes.get('b.txt'));
 
-			// The outgoing revision is retained so a later round can compare snapshots per file.
+			// S15-001c: the extension computes the round-to-round comparison into classes.
+			const secondContent = fs.readFileSync(second!.path, 'utf8');
+			expect(secondContent).toMatch(/^## Changes since revision 1$/m);
+			expect(secondContent).toContain('changed while dirty: a.txt');
+			expect(secondContent).toContain('unchanged while dirty: b.txt');
+			expect(secondContent).toContain('newly dirty: (none)');
+			expect(secondContent).toContain('clean again: (none)');
+			expect(secondContent).toContain('indeterminate: (none)');
+			expect(second?.changedPaths).toEqual(['a.txt']);
+
+			// The outgoing revision is retained so a later round can compare snapshots, and the previous
+			// sidecar is what the delta was computed from.
 			const retained = path.join(reviewSurfaceHistoryDir(flowId), 'review-surface-r1.md');
 			expect(fs.existsSync(retained)).toBe(true);
-			expect(surfaceHashes(fs.readFileSync(retained, 'utf8')).get('a.txt')).toBe(
-				firstHashes.get('a.txt'),
-			);
+			expect(sidecarHashes(flowId, 1).get('a.txt')).toBe(firstHashes.get('a.txt'));
 
 			const unchanged = ensureReviewSurface(flowId, repo);
 			expect(unchanged?.refreshed).toBe(false);
@@ -480,7 +561,10 @@ describe('review surface content hashes', () => {
 			expect(after?.refreshed).toBe(true);
 			const afterContent = fs.readFileSync(after!.path, 'utf8');
 			expect(afterContent).toContain('\n D tracked.txt');
-			expect(surfaceHashes(afterContent).get('tracked.txt')).toBe('(unavailable)');
+			expect(sidecarHashes(flowId, 2).get('tracked.txt')).toBe('(unavailable)');
+			// A deletion is the one unhashable case whose absence is by design, so the delta marks it
+			// indeterminate (the path stays dirty) without tainting the fingerprint.
+			expect(afterContent).toContain(`indeterminate: tracked.txt`);
 			// A deleted path is expected and content-independent, so it must not churn the revision.
 			const reused = ensureReviewSurface(flowId, repo);
 			expect(reused?.refreshed).toBe(false);
@@ -501,16 +585,18 @@ describe('review surface content hashes', () => {
 			const flowId = 'flow-surface-staging';
 			const unstaged = ensureReviewSurface(flowId, repo);
 			expect(unstaged?.refreshed).toBe(true);
-			const beforeHashes = surfaceHashes(fs.readFileSync(unstaged!.path, 'utf8'));
+			const beforeHashes = sidecarHashes(flowId, 1);
 			gitIn(repo, ['add', 'tracked.txt']);
 			const staged = ensureReviewSurface(flowId, repo);
 			expect(staged?.refreshed).toBe(true);
 			expect(staged?.revision).toBe(2);
-			expect(surfaceHashes(fs.readFileSync(staged!.path, 'utf8')).get('tracked.txt')).toBe(
-				beforeHashes.get('tracked.txt'),
-			);
+			expect(sidecarHashes(flowId, 2).get('tracked.txt')).toBe(beforeHashes.get('tracked.txt'));
+			// S15-001c: equal bytes on both sides while the path stays dirty classify as unchanged.
+			const stagedContent = fs.readFileSync(staged!.path, 'utf8');
+			expect(stagedContent).toMatch(/^## Changes since revision 1$/m);
+			expect(stagedContent).toContain('unchanged while dirty: tracked.txt');
 			// The hunk read compares against the head too, so staging a change does not empty that section.
-			expect(fs.readFileSync(staged!.path, 'utf8')).toContain('@@ ');
+			expect(stagedContent).toContain('@@ ');
 		},
 		GIT_TEST_TIMEOUT_MS,
 	);
@@ -546,6 +632,14 @@ describe('review surface content hashes', () => {
 			expect(retained).toContain('review-surface-r12.md');
 			expect(retained).not.toContain('review-surface-r1.md');
 			expect(retained).not.toContain('review-surface-r2.md');
+			// The hash sidecars share the newest-10 pruning, numbered by their own revision.
+			const sidecarNames = fs
+				.readdirSync(path.join(flowDirFor(flowId), 'predigest'))
+				.filter((name) => /^hashes-r\d+\.json$/.test(name))
+				.toSorted();
+			expect(sidecarNames).toHaveLength(10);
+			expect(sidecarNames).toContain('hashes-r12.json');
+			expect(sidecarNames).not.toContain('hashes-r1.json');
 
 			const manifest = buildReadManifest({
 				delegationId: 'history-consumer',
@@ -560,6 +654,9 @@ describe('review surface content hashes', () => {
 				manifest.establishedEvidence.some((line) =>
 					line.includes(`10 earlier review-surface revision(s) are retained under ${historyDir}`),
 				),
+			).toBe(true);
+			expect(
+				manifest.establishedEvidence.some((line) => line.includes('predigest/hashes-r<N>.json')),
 			).toBe(true);
 			const withoutSurface = buildReadManifest({
 				delegationId: 'no-surface',
@@ -583,16 +680,18 @@ describe('review surface content hashes', () => {
 			const flowId = 'flow-surface-large';
 			const first = ensureReviewSurface(flowId, repo);
 			expect(first?.refreshed).toBe(true);
-			const firstContent = fs.readFileSync(first!.path, 'utf8');
-			expect(firstContent).toContain('(partial)  large.bin');
+			expect(sidecarRecord(flowId, 1, 'large.bin').partial).toBe(true);
+			const firstHash = sidecarHashes(flowId, 1).get('large.bin');
 			// Same size, changed last byte: only a tail window can see this edit.
 			fs.writeFileSync(large, `${'x'.repeat(9 * 1024 * 1024 - 2)}y\n`);
 			const second = ensureReviewSurface(flowId, repo);
 			expect(second?.refreshed).toBe(true);
 			expect(second?.revision).toBe(2);
-			expect(surfaceHashes(fs.readFileSync(second!.path, 'utf8')).get('large.bin')).not.toBe(
-				surfaceHashes(firstContent).get('large.bin'),
-			);
+			expect(sidecarHashes(flowId, 2).get('large.bin')).not.toBe(firstHash);
+			// S15-001c STRICT: a partial hash on either side classifies indeterminate, never unchanged.
+			const secondContent = fs.readFileSync(second!.path, 'utf8');
+			expect(secondContent).toContain('indeterminate: large.bin');
+			expect(secondContent).not.toContain('unchanged while dirty: large.bin');
 		},
 		GIT_TEST_TIMEOUT_MS,
 	);
@@ -608,16 +707,14 @@ describe('review surface content hashes', () => {
 			const flowId = 'flow-surface-untracked-dir';
 			const first = ensureReviewSurface(flowId, repo);
 			expect(first?.dirtyPaths).toEqual(['dir/a.txt']);
-			expect(surfaceHashes(fs.readFileSync(first!.path, 'utf8')).get('dir/a.txt')).toMatch(
-				/^[0-9a-f]{64}$/,
-			);
+			expect(sidecarHashes(flowId, 1).get('dir/a.txt')).toMatch(/^[0-9a-f]{64}$/);
 			fs.writeFileSync(path.join(repo, 'dir', 'b.txt'), 'b\n');
 			const second = ensureReviewSurface(flowId, repo);
 			expect(second?.refreshed).toBe(true);
 			expect(second?.revision).toBe(2);
-			expect(surfaceHashes(fs.readFileSync(second!.path, 'utf8')).get('dir/b.txt')).toMatch(
-				/^[0-9a-f]{64}$/,
-			);
+			expect(sidecarHashes(flowId, 2).get('dir/b.txt')).toMatch(/^[0-9a-f]{64}$/);
+			// An added dirty path is newly dirty on the next revision's delta.
+			expect(second?.changedPaths).toEqual(['dir/b.txt']);
 		},
 		GIT_TEST_TIMEOUT_MS,
 	);
@@ -706,11 +803,17 @@ describe('review surface content hashes', () => {
 			const flowId = 'flow-surface-order';
 			const surface = ensureReviewSurface(flowId, repo);
 			const content = fs.readFileSync(surface!.path, 'utf8');
-			expect(content.indexOf('## File hashes')).toBeLessThan(
+			// Section order: the computed delta and the diff stat are the truncation-priority evidence and
+			// precede the status text, while the raw hashes have moved to the sidecar entirely.
+			expect(content.indexOf('## Changes since revision 1')).toBeLessThan(
+				content.indexOf('## Diff stat'),
+			);
+			expect(content.indexOf('## Diff stat')).toBeLessThan(
 				content.indexOf('## Working-tree status'),
 			);
+			expect(content).not.toContain('## File hashes');
 			expect(content).toContain('file-149.txt');
-			expect(surfaceHashes(content).size).toBe(100);
+			expect(sidecarHashes(flowId, 1).size).toBe(100);
 			expect(surface?.dirtyPaths).toHaveLength(100);
 		},
 		GIT_TEST_TIMEOUT_MS,
@@ -729,7 +832,7 @@ describe('review surface content hashes', () => {
 			const firstContent = fs.readFileSync(first!.path, 'utf8');
 			expect(firstContent).toContain(`?? ${name}`);
 			expect(firstContent).not.toContain('\\317');
-			const firstHash = surfaceHashes(firstContent).get(name);
+			const firstHash = sidecarHashes(flowId, 1).get(name);
 			expect(firstHash).toMatch(/^[0-9a-f]{64}$/);
 
 			// Same byte length, same stat, same head: only the content hash can see this edit.
@@ -737,7 +840,7 @@ describe('review surface content hashes', () => {
 			const second = ensureReviewSurface(flowId, repo);
 			expect(second?.refreshed).toBe(true);
 			expect(second?.revision).toBe(2);
-			expect(surfaceHashes(fs.readFileSync(second!.path, 'utf8')).get(name)).not.toBe(firstHash);
+			expect(sidecarHashes(flowId, 2).get(name)).not.toBe(firstHash);
 			const reused = ensureReviewSurface(flowId, repo);
 			expect(reused?.refreshed).toBe(false);
 			expect(reused?.revision).toBe(2);
@@ -756,8 +859,8 @@ describe('review surface content hashes', () => {
 			commitAll(repo, 'targets');
 			fs.symlinkSync('left.txt', path.join(repo, 'link'));
 			const flowId = 'flow-surface-symlink';
-			const first = ensureReviewSurface(flowId, repo);
-			const firstHash = surfaceHashes(fs.readFileSync(first!.path, 'utf8')).get('link');
+			ensureReviewSurface(flowId, repo);
+			const firstHash = sidecarHashes(flowId, 1).get('link');
 			expect(firstHash).toMatch(/^[0-9a-f]{64}$/);
 
 			// Repointing the link to a target with identical bytes keeps the status text, the stat, and the
@@ -767,7 +870,7 @@ describe('review surface content hashes', () => {
 			const second = ensureReviewSurface(flowId, repo);
 			expect(second?.refreshed).toBe(true);
 			expect(second?.revision).toBe(2);
-			expect(surfaceHashes(fs.readFileSync(second!.path, 'utf8')).get('link')).not.toBe(firstHash);
+			expect(sidecarHashes(flowId, 2).get('link')).not.toBe(firstHash);
 			const reused = ensureReviewSurface(flowId, repo);
 			expect(reused?.refreshed).toBe(false);
 			expect(reused?.revision).toBe(2);
@@ -789,7 +892,7 @@ describe('review surface content hashes', () => {
 			expect(surface?.dirtyPaths.toSorted()).toEqual(['renamed.txt', 'tracked.txt']);
 			const content = fs.readFileSync(surface!.path, 'utf8');
 			expect(content).not.toContain(' -> ');
-			const hashes = surfaceHashes(content);
+			const hashes = sidecarHashes(flowId, 1);
 			expect(hashes.get('renamed.txt')).toMatch(/^[0-9a-f]{64}$/);
 			expect(hashes.get('tracked.txt')).toBe('(unavailable)');
 		},
@@ -806,10 +909,12 @@ describe('review surface content hashes', () => {
 			fs.writeFileSync(locked, 'secret\n');
 			fs.chmodSync(locked, 0o000);
 			const flowId = 'flow-surface-unreadable';
-			const first = ensureReviewSurface(flowId, repo);
-			expect(surfaceHashes(fs.readFileSync(first!.path, 'utf8')).get('locked.txt')).toBe(
-				'(unavailable)',
-			);
+			ensureReviewSurface(flowId, repo);
+			expect(sidecarRecord(flowId, 1, 'locked.txt')).toMatchObject({
+				hash: '(unavailable)',
+				tainted: true,
+				partial: false,
+			});
 			// The same unreadable path would repeat the same gap, so reuse cannot claim freshness.
 			const second = ensureReviewSurface(flowId, repo);
 			expect(second?.refreshed).toBe(true);
@@ -830,9 +935,7 @@ describe('review surface content hashes', () => {
 			const flowId = 'flow-surface-color';
 			const surface = ensureReviewSurface(flowId, repo);
 			expect(surface?.dirtyPaths).toEqual(['colored.txt']);
-			expect(surfaceHashes(fs.readFileSync(surface!.path, 'utf8')).get('colored.txt')).toMatch(
-				/^[0-9a-f]{64}$/,
-			);
+			expect(sidecarHashes(flowId, 1).get('colored.txt')).toMatch(/^[0-9a-f]{64}$/);
 		},
 		GIT_TEST_TIMEOUT_MS,
 	);
@@ -858,8 +961,8 @@ describe('review surface content hashes', () => {
 				return;
 			}
 			const flowId = 'flow-surface-raw-bytes';
-			const first = ensureReviewSurface(flowId, repo);
-			expect(fs.readFileSync(first!.path, 'utf8')).toContain('(unavailable)');
+			ensureReviewSurface(flowId, repo);
+			expect(sidecarHashes(flowId, 1).values().next().value).toBe('(unavailable)');
 			// The decoded status cannot address that path, so a repeated read cannot prove freshness.
 			const second = ensureReviewSurface(flowId, repo);
 			expect(second?.refreshed).toBe(true);
@@ -902,13 +1005,14 @@ describe('review surface content hashes', () => {
 			expect(first?.refreshed).toBe(true);
 			expect(first?.revision).toBe(1);
 			const content = fs.readFileSync(first!.path, 'utf8');
-			expect(content).toMatch(/^worktree_delta: [0-9a-f]{64}$/m);
+			expect(content).not.toMatch(/^worktree_delta:/m);
 			// The bytes, the status codes, and the diff stat all stay the same, so only the worktree delta
 			// covers the permission change.
 			fs.chmodSync(target, 0o755);
 			const second = ensureReviewSurface(flowId, repo);
 			expect(second?.refreshed).toBe(true);
 			expect(second?.revision).toBe(2);
+			expect(second?.fingerprint).not.toBe(first?.fingerprint);
 			const unchanged = ensureReviewSurface(flowId, repo);
 			expect(unchanged?.refreshed).toBe(false);
 			expect(unchanged?.revision).toBe(2);
@@ -953,8 +1057,7 @@ describe('review surface content hashes', () => {
 			expect(first?.refreshed).toBe(true);
 			// The decoded name may address a different file than git reported, so the path is refused instead
 			// of hashing bytes that may not be that path's, and the refusal taints the fingerprint.
-			const content = fs.readFileSync(first!.path, 'utf8');
-			expect(content).toContain(`(unavailable)  ${name}`);
+			expect(sidecarRecord(flowId, 1, name)).toMatchObject({ hash: '(unavailable)' });
 			const second = ensureReviewSurface(flowId, repo);
 			expect(second?.refreshed).toBe(true);
 			expect(second?.revision).toBe(2);
@@ -976,8 +1079,6 @@ describe('review surface content hashes', () => {
 			const flowId = 'flow-surface-delta-bound';
 			const first = ensureReviewSurface(flowId, repo);
 			expect(first?.refreshed).toBe(true);
-			const content = fs.readFileSync(first!.path, 'utf8');
-			expect(content).toContain('worktree_delta: (unavailable)');
 			// A delta the read bound cannot hold in full cannot prove the tree unchanged, so the fingerprint is
 			// tainted instead of being reused as if the unseen part had not changed.
 			const second = ensureReviewSurface(flowId, repo);
@@ -1006,7 +1107,7 @@ describe('review surface content hashes', () => {
 			// only: a delegation rooted elsewhere reuses it instead of reading a header field that names
 			// another delegation's directory.
 			expect(content).not.toMatch(/^cwd:/m);
-			expect(surfaceHashes(content).get('sub/nested.txt')).toMatch(/^[0-9a-f]{64}$/);
+			expect(sidecarHashes(flowId, 1).get('sub/nested.txt')).toMatch(/^[0-9a-f]{64}$/);
 			const reused = ensureReviewSurface(flowId, sub);
 			expect(reused?.refreshed).toBe(false);
 			expect(reused?.revision).toBe(1);
@@ -1035,7 +1136,7 @@ describe('review surface content hashes', () => {
 				const failed = ensureReviewSurface(flowId, repo);
 				expect(failed?.refreshed).toBe(true);
 				const content = fs.readFileSync(failed!.path, 'utf8');
-				expect(content).toContain('worktree_hunks: (unavailable)');
+				expect(content).not.toMatch(/^worktree_hunks:/m);
 				expect(content).toContain('## Diff hunk headers\n\n(unavailable)');
 				// A failed read cannot prove the tree unchanged, so the degraded revision is never reused.
 				expect(ensureReviewSurface(flowId, repo)?.revision).toBe(2);
@@ -1090,11 +1191,129 @@ describe('review surface content hashes', () => {
 			const flowId = 'flow-surface-special-file';
 			const first = ensureReviewSurface(flowId, repo);
 			expect(first?.dirtyPaths).toEqual(['swapped.txt']);
-			expect(fs.readFileSync(first!.path, 'utf8')).toContain('(unavailable)  swapped.txt');
+			expect(sidecarRecord(flowId, 1, 'swapped.txt')).toMatchObject({ hash: '(unavailable)' });
 			// The path exists but has no readable content, so the fingerprint is tainted rather than reused.
 			const second = ensureReviewSurface(flowId, repo);
 			expect(second?.refreshed).toBe(true);
 			expect(second?.revision).toBe(2);
+		},
+		GIT_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		'classifies newly dirty, clean again, and delta-degenerate comparisons',
+		() => {
+			const agentDir = makeTempDir();
+			stubEnv(agentDir);
+			const repo = gitRepo();
+			fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n');
+			fs.writeFileSync(path.join(repo, 'b.txt'), 'b\n');
+			const flowId = 'flow-surface-classes';
+			ensureReviewSurface(flowId, repo);
+			// A commit leaves both paths clean at revision 2, so they are clean again rather than changed.
+			commitAll(repo, 'stage both');
+			const committed = ensureReviewSurface(flowId, repo)!;
+			expect(committed.revision).toBe(2);
+			expect(committed.changedPaths).toEqual([]);
+			expect(fs.readFileSync(committed.path, 'utf8')).toContain('clean again: a.txt, b.txt');
+			// An added dirty path is newly dirty, not changed while dirty.
+			fs.writeFileSync(path.join(repo, 'c.txt'), 'c\n');
+			const added = ensureReviewSurface(flowId, repo)!;
+			expect(added.revision).toBe(3);
+			expect(added.changedPaths).toEqual(['c.txt']);
+			const addedContent = fs.readFileSync(added.path, 'utf8');
+			expect(addedContent).toContain('newly dirty: c.txt');
+			expect(addedContent).toContain('clean again: (none)');
+			// A missing previous sidecar cannot claim a comparison: every path is indeterminate and the
+			// header names the previous revision and marks the delta partial.
+			fs.rmSync(path.join(flowDirFor(flowId), 'predigest', 'hashes-r3.json'));
+			fs.writeFileSync(path.join(repo, 'a.txt'), 'a2\n');
+			const missing = ensureReviewSurface(flowId, repo)!;
+			expect(missing.revision).toBe(4);
+			expect(missing.changedPaths).toEqual([]);
+			const missingContent = fs.readFileSync(missing.path, 'utf8');
+			expect(missingContent).toMatch(/^## Changes since revision 3 \(partial\)$/m);
+			expect(missingContent).toContain('indeterminate: a.txt, c.txt');
+		},
+		GIT_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		'marks a delta computed from an incomplete hashing window as partial',
+		() => {
+			const agentDir = makeTempDir();
+			stubEnv(agentDir);
+			const repo = gitRepo();
+			const names = Array.from(
+				{ length: 101 },
+				(_, index) => `f${String(index).padStart(3, '0')}.txt`,
+			);
+			for (const name of names) fs.writeFileSync(path.join(repo, name), 'x\n');
+			commitAll(repo, 'seed files');
+			for (const name of names) fs.writeFileSync(path.join(repo, name), 'y\n');
+			const flowId = 'flow-surface-partial-window';
+			ensureReviewSurface(flowId, repo);
+			fs.writeFileSync(path.join(repo, 'f000.txt'), 'y\nz\n');
+			const second = ensureReviewSurface(flowId, repo)!;
+			expect(second.revision).toBe(2);
+			const content = fs.readFileSync(second.path, 'utf8');
+			expect(content).toMatch(/^## Changes since revision 1 \(partial\)$/m);
+		},
+		GIT_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		'degrades the status tail and the hunk tail under the token-shaped cap while the delta and stat survive',
+		() => {
+			const agentDir = makeTempDir();
+			stubEnv(agentDir);
+			const repo = gitRepo();
+			const names = Array.from(
+				{ length: 600 },
+				(_, index) => `f${String(index).padStart(3, '0')}.txt`,
+			);
+			for (const name of names) fs.writeFileSync(path.join(repo, name), 'one\n');
+			commitAll(repo, 'seed files');
+			for (const name of names) fs.writeFileSync(path.join(repo, name), 'two\n');
+			const flowId = 'flow-surface-cap';
+			const surface = ensureReviewSurface(flowId, repo)!;
+			const content = fs.readFileSync(surface.path, 'utf8');
+			// The section order is the truncation priority: a first-revision snapshot that exceeds the cap
+			// loses the hunk tail first, and loses the status text before it loses the delta evidence.
+			expect(content).toContain('## Changes since revision 1');
+			expect(content).toContain('## Diff stat');
+			expect(content).toContain('## Working-tree status');
+			expect(content).not.toContain('## Diff hunk headers');
+			expect(content.endsWith('[review surface snapshot truncated]\n')).toBe(true);
+		},
+		GIT_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		'renders the scope-check hint for match, mismatch, and no-claim shapes',
+		() => {
+			const agentDir = makeTempDir();
+			stubEnv(agentDir);
+			// No delta computed for this launch: no hint at all.
+			expect(scopeCheckHint(['src/a.ts'], undefined)).toBeUndefined();
+			// A purely delta-shaped hint never gates: it reports agreement, mismatch, or no claim.
+			expect(scopeCheckHint(undefined, ['src/a.ts'])).toContain('(no claim to compare)');
+			expect(scopeCheckHint([], ['src/a.ts'])).toContain('(no claim to compare)');
+			const match = scopeCheckHint(['src/a.ts', 'src/b.ts'], ['src/a.ts', 'src/b.ts']);
+			expect(match).toContain('Scope-check hint (non-enforcing):');
+			expect(match).toContain('matches the snapshot delta (2 path(s))');
+			// './' is only spelling, not a different path.
+			expect(scopeCheckHint(['./src/a.ts'], ['src/a.ts'])).toContain('matches the snapshot delta');
+			const mismatch = scopeCheckHint(['src/other.ts'], ['src/a.ts']);
+			expect(mismatch).toContain('does not match the snapshot delta');
+			expect(mismatch).toContain('unaccounted for by the claim: src/a.ts');
+			expect(mismatch).toContain('missing from the delta: src/other.ts');
+			// The hint stays bounded even when the delta is the full hashing window.
+			const wide = scopeCheckHint(
+				Array.from({ length: 15 }, (_, index) => `f${index}.txt`),
+				Array.from({ length: 14 }, (_, index) => `g${index}.txt`),
+			);
+			expect(wide).toContain('...4 more');
 		},
 		GIT_TEST_TIMEOUT_MS,
 	);

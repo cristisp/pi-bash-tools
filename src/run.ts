@@ -14,10 +14,11 @@ import {
 } from './delegation.ts';
 import { ensureFlow, recordFlowParticipant } from './flow.ts';
 import { outsideRootCwds } from './spawn-boundary.ts';
-import { ensureReviewSurface, type ReviewSurfaceSnapshot } from './scope.ts';
+import { ensureReviewSurface, scopeCheckHint, type ReviewSurfaceSnapshot } from './scope.ts';
 import { manifestGuidance, recordKnownRefs, writeReadManifest } from './manifest.ts';
 import {
 	appendLedgerRevision,
+	latestFoldedChangedFiles,
 	ledgerPrefixBlock,
 	ledgerTurnLine,
 	type LedgerPointer,
@@ -29,7 +30,7 @@ import {
 	getResultOutput,
 	isFailedResult,
 } from './format.ts';
-import { normalizeS4Outcome, parseLedgerBlock } from './report.ts';
+import { parseLedgerBlock } from './report.ts';
 import {
 	closeTab,
 	createTaskTab,
@@ -61,6 +62,7 @@ import { appendTelemetryRecord, buildTelemetryRecord } from './telemetry.ts';
 import { ABORT_ERROR, contextPolicyFor, makeEmptyUsage } from './types.ts';
 import type {
 	BlockEventInfo,
+	CompositionObservationSummary,
 	DelegationContext,
 	OnUpdateCallback,
 	OrchestrationContext,
@@ -90,7 +92,7 @@ function shellQuote(s: string): string {
 	return `'${s.replaceAll("'", "'\\''")}'`;
 }
 
-function scopeGuidance(delegation: DelegationContext): string {
+export function scopeGuidance(delegation: DelegationContext): string {
 	const scope = delegation.scope;
 	const lines = ['## Assigned review scope'];
 	if (delegation.reviewSurfacePath)
@@ -99,6 +101,16 @@ function scopeGuidance(delegation: DelegationContext): string {
 		lines.push(
 			`Review surface revision: ${delegation.reviewSurfaceRevision}${delegation.reviewSurfaceRefreshed ? ' (refreshed for this launch)' : ' (unchanged)'}`,
 		);
+	// A non-enforcing scope-drift hint only the freshly computed delta can back: reused surfaces keep
+	// their stored section, and the hint stays out of a rewritten handoff it cannot speak for.
+	const hint =
+		delegation.reviewSurfaceChangedPaths !== undefined
+			? scopeCheckHint(
+					delegation.flowId ? latestFoldedChangedFiles(delegation.flowId) : undefined,
+					delegation.reviewSurfaceChangedPaths,
+				)
+			: undefined;
+	if (hint) lines.push(hint);
 	if (delegation.dirtyPaths?.length)
 		lines.push(`Dirty paths at snapshot: ${delegation.dirtyPaths.join(', ')}`);
 	if (scope?.paths?.length) {
@@ -128,6 +140,7 @@ function applyReviewSurface(
 		delegation.reviewSurfaceRefreshed = surface.refreshed;
 		delegation.reviewSurfaceHead = surface.head;
 		delegation.dirtyPaths = surface.dirtyPaths;
+		delegation.reviewSurfaceChangedPaths = surface.changedPaths;
 	}
 	currentResult.reviewSurfacePath = delegation.reviewSurfacePath;
 	currentResult.reviewSurfaceRevision = delegation.reviewSurfaceRevision;
@@ -309,7 +322,7 @@ interface DelegationFinishContext {
 	reused: boolean;
 	reuseCount: number;
 	aborted: boolean;
-	compositionBoundaryId?: string;
+	compositionObservations?: CompositionObservationSummary;
 }
 
 /**
@@ -366,7 +379,6 @@ function recordLedgerDispatch(
 	delegation: DelegationContext,
 	options: { reused: boolean; label?: string },
 ): LedgerPointer | undefined {
-	if (!getConfig().ledgerPointers) return undefined;
 	ensureFlow({ flowId: delegation.flowId });
 	return appendLedgerRevision({
 		flowId: delegation.flowId,
@@ -420,36 +432,6 @@ function emitDelegationTelemetry(
 		readRefs: currentResult.metrics?.readRefs,
 	});
 	if (!currentResult.ledgerInjection) currentResult.ledgerInjection = 'none';
-	const normalized = normalizeS4Outcome(
-		childFields,
-		delegation.role,
-		currentResult.report,
-		currentResult.budget,
-		outcome,
-	);
-	const s4LedgerRevision = currentResult.ledgerRevision ?? revision?.revision;
-	const s4CorrelationAvailable = Boolean(
-		context.compositionBoundaryId &&
-		delegation.flowId &&
-		delegation.taskId &&
-		typeof s4LedgerRevision === 'number' &&
-		Number.isSafeInteger(s4LedgerRevision) &&
-		s4LedgerRevision > 0,
-	);
-	const s4Outcome = s4CorrelationAvailable
-		? {
-				v: 1 as const,
-				...normalized,
-				correlation: {
-					flowId: delegation.flowId!,
-					taskId: delegation.taskId!,
-					delegationId: delegation.delegationId,
-					ledgerRevision: s4LedgerRevision!,
-					compositionBoundaryId: context.compositionBoundaryId!,
-					...(delegation.tier !== undefined ? { tier: delegation.tier } : {}),
-				},
-			}
-		: undefined;
 	appendTelemetryRecord(
 		buildTelemetryRecord({
 			delegation,
@@ -469,7 +451,7 @@ function emitDelegationTelemetry(
 				contextMode: delegation.contextMode,
 				contextReason: delegation.contextReason,
 			},
-			s4Outcome,
+			compositionObservations: context.compositionObservations,
 		}),
 	);
 	if (!context.label) return;
@@ -845,12 +827,7 @@ async function launchFreshAgent(
 	currentResult.scope = delegation.scope;
 	const dispatch = recordLedgerDispatch(delegation, { reused: false });
 	if (dispatch) currentResult.ledgerInjection = 'prefix';
-	const tmp = await writeAgentTempFiles(
-		agent,
-		task,
-		getConfig().ledgerPointers ? dispatch : undefined,
-		delegation,
-	);
+	const tmp = await writeAgentTempFiles(agent, task, dispatch, delegation);
 	currentResult.readManifest = tmp.readManifest;
 	currentResult.readManifestStatus = tmp.readManifestStatus;
 	const cleanupTmp = (): void => {
@@ -1048,8 +1025,7 @@ export async function runSingleAgent(
 	onBlocked?: (info: BlockEventInfo) => void,
 	presetModels?: Record<string, string>,
 	orchestration?: OrchestrationContext,
-	s4BoundaryId?: string,
-	s4TaskId?: string,
+	compositionObservations?: CompositionObservationSummary,
 ): Promise<SingleResult> {
 	const startedAt = Date.now();
 	const found = findAgentOrFail(agents, agentName, task, step);
@@ -1058,7 +1034,7 @@ export async function runSingleAgent(
 		return found;
 	}
 	const agent = found;
-	const childOrchestration = s4TaskId ? { ...orchestration, taskId: s4TaskId } : orchestration;
+	const childOrchestration = orchestration;
 	const delegation = resolveDelegation({
 		role: agentName,
 		policy: scopePolicy(),
@@ -1168,7 +1144,7 @@ export async function runSingleAgent(
 			reused: false,
 			reuseCount: 0,
 			aborted: abortedRun,
-			compositionBoundaryId: s4BoundaryId,
+			compositionObservations,
 		});
 		if (tmpFiles) {
 			removeTempFiles(tmpFiles.promptDir, tmpFiles.promptPath);
@@ -1198,8 +1174,7 @@ export async function runReusedAgent(
 	parentSession?: string,
 	presetModels?: Record<string, string>,
 	orchestration?: OrchestrationContext,
-	s4BoundaryId?: string,
-	s4TaskId?: string,
+	compositionObservations?: CompositionObservationSummary,
 ): Promise<SingleResult> {
 	const startedAt = Date.now();
 	const init = initReusedSession(agents, label, task, parentSession);
@@ -1208,7 +1183,7 @@ export async function runReusedAgent(
 		return init;
 	}
 	const { entry, agent, currentResult } = init;
-	const childOrchestration = s4TaskId ? { ...orchestration, taskId: s4TaskId } : orchestration;
+	const childOrchestration = orchestration;
 	const delegation = delegationFromEntry(entry, {
 		policy: scopePolicy(),
 		orchestration: childOrchestration,
@@ -1376,7 +1351,7 @@ export async function runReusedAgent(
 			reused: true,
 			reuseCount: findEntry(label)?.reuseCount ?? entry.reuseCount ?? 0,
 			aborted: abortedRun,
-			compositionBoundaryId: s4BoundaryId,
+			compositionObservations,
 		});
 		if (relaunchTmp) {
 			removeTempFiles(relaunchTmp.promptDir, relaunchTmp.promptPath);

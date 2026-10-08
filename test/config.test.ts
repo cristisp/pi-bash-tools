@@ -25,6 +25,7 @@ describe('getConfig - defaults', () => {
 		const dir = makeTempDir();
 		stubEnv(dir);
 		expect(DEFAULT_CONFIG.reportDigestTokens).toBe(250);
+		expect(DEFAULT_CONFIG.ledgerMaxRevisions).toBe(12);
 		expect(getConfig()).toEqual(DEFAULT_CONFIG);
 	});
 
@@ -58,10 +59,8 @@ describe('getConfig - overrides', () => {
 			reportDigestTokens: 400,
 			scopeCallAllowancePerPath: 3,
 			scopeCallAllowanceMax: 64,
-			reportContractPolicy: 'reject',
 			compositionPolicy: 'enforce',
 			ledgerMaxRevisions: 25,
-			ledgerPointers: false,
 			registryLockTimeoutMs: 2000,
 			registryLockStaleMs: 1000,
 			herdrCliTimeoutMs: 4000,
@@ -95,13 +94,22 @@ describe('getConfig - overrides', () => {
 		expect(getConfig().compositionPolicy).toBe('warn');
 	});
 
-	it('falls back to defaults for invalid report contract values', () => {
+	it('falls back to defaults for an invalid reportDigestTokens value', () => {
 		const dir = makeTempDir();
 		stubEnv(dir);
-		writeConfigFile({ reportDigestTokens: 0, reportContractPolicy: 'ignore' });
+		writeConfigFile({ reportDigestTokens: 0 });
 		const cfg = getConfig();
 		expect(cfg.reportDigestTokens).toBe(DEFAULT_CONFIG.reportDigestTokens);
-		expect(cfg.reportContractPolicy).toBe('flag');
+	});
+
+	it('ignores config keys that were removed and keeps the defaults', () => {
+		const dir = makeTempDir();
+		stubEnv(dir);
+		writeConfigFile({ reportContractPolicy: 'reject', ledgerPointers: false });
+		const cfg = getConfig();
+		expect(cfg).toEqual(DEFAULT_CONFIG);
+		expect(Object.hasOwn(cfg, 'reportContractPolicy')).toBe(false);
+		expect(Object.hasOwn(cfg, 'ledgerPointers')).toBe(false);
 	});
 
 	it('keeps every role on the default evidence scope and honours explicit narrowing', () => {

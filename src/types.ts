@@ -59,8 +59,6 @@ export interface RoleBudget {
 
 export interface BudgetUsage {
 	toolCalls: number;
-	/** Calls this session made through `ctx.executeTool()` while another tool was running. */
-	nestedToolCalls: number;
 	discoveryCalls: number;
 	fullValidationPasses: number;
 	failedToolCalls: number;
@@ -125,82 +123,20 @@ export type CompositionMode = 'single' | 'parallel' | 'chain';
 export type CompositionAction = 'warn' | 'refuse';
 export type CompositionVerdictKind = 'warning' | 'refusal';
 
-/** Additive S4 preflight action; unlike CompositionAction this records clean and disabled decisions. */
-export type S4CompositionAction = 'not_applicable' | 'allow' | 'warn' | 'refuse' | 'disabled';
-export type S4DecisionSource = 'default' | 'override';
-export type S4Lifecycle = 'settled' | 'failed' | 'aborted' | 'blocked' | 'abandoned' | 'unknown';
-export type S4Quality = 'pass' | 'fail' | 'incomplete' | 'not_run' | 'unknown';
-export type S4GuardrailStatus = 'pass' | 'fail' | 'unknown' | 'insufficient';
-export type S4IndependentReviewStatus = 'pass' | 'fail' | 'pending' | 'unknown';
-export type S4EscalationDirection = 'up' | 'down' | 'same' | 'unknown';
-
-export type S4DirectionCounts = Record<S4EscalationDirection, number>;
-
-export interface S4EscalationSignal {
-	fromTier: number | null;
-	toTier: number | null;
-	direction: S4EscalationDirection;
+/** Denominator counts for one composition rule's real observations at one boundary. */
+export interface CompositionRuleObservations {
+	/** Observations that evaluated the rule against a real candidate. */
+	eligible: number;
+	/** Eligible observations whose rule held. */
+	compliant: number;
+	/** Eligible observations whose rule was violated; violation rate is noncompliant/eligible. */
+	noncompliant: number;
 }
 
-/** Structured quality and lifecycle signals. Undefined/null values remain unknown to the analyzer. */
-export interface S4QualitySignals {
-	unresolvedOrAbandoned?: boolean | null;
-	reviewerPass?: boolean | null;
-	regressionAfterReviewPass?: boolean | null;
-	escalation?: S4EscalationSignal;
-	tier1DiscoveryFailure?: boolean | null;
-	independentReviewStatus?: S4IndependentReviewStatus;
-	componentStatusConsistent?: boolean;
-}
-
-/** One catalog rule observation for one real subagent preflight boundary. */
-export interface S4CompositionObservation {
-	ruleId: CompositionRuleId;
-	eligible: boolean;
-	compliant: boolean | null;
-	action: S4CompositionAction;
-	decisionSource: S4DecisionSource;
-	reason: string;
-	compositionBoundaryId: string;
-	mode: CompositionMode;
-	policy: CompositionPolicy;
-	policyOverride?: CompositionPolicy;
-	expectedChildCount: number;
-}
-
-/** All rule observations emitted before children are spawned (or a refusal is returned). */
-export interface S4Preflight {
-	v: 1;
-	compositionBoundaryId: string;
-	mode: CompositionMode;
-	policy: CompositionPolicy;
-	policyOverride?: CompositionPolicy;
-	expectedChildCount: number;
-	observations: S4CompositionObservation[];
-}
-
-export interface S4Correlation {
-	flowId: string;
-	taskId: string;
-	delegationId: string;
-	ledgerRevision: number;
-	compositionBoundaryId: string;
-	tier?: number;
-}
-
-/** Normalized child lifecycle and quality evidence correlated to one S4 boundary. */
-export interface S4Outcome {
-	v: 1;
-	lifecycle: S4Lifecycle;
-	quality: S4Quality;
-	validationStatus: S4Quality;
-	reviewStatus: S4Quality;
-	budgetStatus: S4Quality;
-	/** Independent review is distinct from the ordinary child review component. */
-	independentReviewStatus: S4IndependentReviewStatus;
-	qualitySignals: S4QualitySignals;
-	correlation: S4Correlation;
-}
+/** Per-rule eligible and compliant counts for one composition boundary. */
+export type CompositionObservationSummary = Partial<
+	Record<CompositionRuleId, CompositionRuleObservations>
+>;
 
 export interface CompositionRuleDefinition {
 	id: CompositionRuleId;
@@ -404,9 +340,8 @@ export interface OrchestrationContext {
 	evidenceScope?: EvidenceScope;
 	/** Effective standard-role composition policy for this delegation. */
 	compositionPolicy?: CompositionPolicy;
-	/** S4 boundary correlation for children of one real preflight. */
+	/** Composition-boundary correlation for children of one evaluated boundary. */
 	compositionBoundaryId?: string;
-	expectedChildCount?: number;
 	/** Explicit per-call composition policy override, when supplied by the parent. */
 	compositionPolicyOverride?: CompositionPolicy;
 	/** Composition warnings that were checked before this child was spawned. */
@@ -426,6 +361,8 @@ export interface OrchestrationContext {
 	reviewSurfaceHead?: string;
 	/** Dirty paths captured while producing the review surface snapshot. */
 	dirtyPaths?: string[];
+	/** Paths the current snapshot delta classifies `changed while dirty` or `newly dirty`; hint input only. */
+	reviewSurfaceChangedPaths?: string[];
 }
 
 /** Identity resolved for one delegation, exported into the child environment. */
@@ -765,16 +702,14 @@ export interface TelemetryRecord {
 	compositionPolicyOverride?: CompositionPolicy;
 	/** Legacy child-context alias; boundary events use the singular compositionVerdict field below. */
 	compositionVerdicts?: CompositionVerdict[];
-	/** Discriminates typed S4/composition events from ordinary child delegation records. */
-	event?: 'composition' | 's4_preflight' | 's4_outcome';
+	/** Discriminates typed composition boundary records from ordinary child delegation records. */
+	event?: 'composition';
 	/** One composition decision checked at one subagent boundary. */
 	compositionVerdict?: CompositionVerdict;
 	/** Groups the per-rule event records emitted for one subagent boundary. */
 	compositionBoundaryId?: string;
-	/** Additive S4 preflight catalog coverage. */
-	s4Preflight?: S4Preflight;
-	/** Additive S4 correlated lifecycle/quality outcome. */
-	s4Outcome?: S4Outcome;
+	/** Per-rule eligible and compliant counts observed at this boundary, on ordinary child records. */
+	compositionObservations?: CompositionObservationSummary;
 	/** Action-specific status for typed composition boundary events; these are not child turns. */
 	compositionBoundaryStatus?: 'warning' | 'refusal';
 	/** Pane that directly launched this child. */
