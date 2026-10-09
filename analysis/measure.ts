@@ -327,10 +327,16 @@ function invocationStateDigest(value: unknown): string | undefined {
 	if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
 		const digest =
 			(nested as Record<string, unknown>).dirtyFilesDigest ??
+			(nested as Record<string, unknown>).dirtyDigest ??
 			(nested as Record<string, unknown>).dirty_digest;
 		if (typeof digest === 'string') return digest.slice(0, 12);
 	}
-	const digest = state.stateDigest ?? state.state_digest ?? state.dirtyFilesDigest;
+	const digest =
+		state.stateDigest ??
+		state.state_digest ??
+		state.dirtyDigest ??
+		state.dirty_digest ??
+		state.dirtyFilesDigest;
 	return typeof digest === 'string' ? digest.slice(0, 12) : undefined;
 }
 

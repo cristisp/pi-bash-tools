@@ -604,6 +604,37 @@ describe('producer validation invocations', () => {
 		]);
 	});
 
+	it('extracts the shared-envelope dirtyDigest shape from git and read-batch records', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'orchestration-producer-'));
+		const file = join(dir, 'invocations.jsonl');
+		writeFileSync(
+			file,
+			[
+				JSON.stringify({
+					tool: 'git_status',
+					flowId: 'f1',
+					executed: true,
+					repositoryState: {
+						repositoryId: 'repo',
+						head: 'head',
+						dirtyDigest: 'ffff000011112222',
+						status: 'readable',
+					},
+				}),
+				JSON.stringify({
+					tool: 'git_status',
+					flowId: 'f1',
+					executed: true,
+					dirtyDigest: 'aaaa000011112222',
+				}),
+			].join('\n'),
+		);
+		expect(readProducerExecutionInvocations(dir, file)).toMatchObject([
+			{ executed: true, stateDigest: 'ffff00001111' },
+			{ executed: true, stateDigest: 'aaaa00001111' },
+		]);
+	});
+
 	it('carries a structured lookup outcome from the producer record', () => {
 		const dir = mkdtempSync(join(tmpdir(), 'orchestration-producer-'));
 		const file = join(dir, 'invocations.jsonl');

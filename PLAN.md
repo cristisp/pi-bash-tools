@@ -6,10 +6,7 @@ Current behavior is documented in `README.md` and `docs/`; do not duplicate it h
 
 ## Outstanding work
 
-- [ ] `rm analysis/s4-policy.json.removed` - the renamed tombstone of the S4 policy file deleted by S15-002.
-  Agent `delete` and `move` are access-policy-blocked on that path, so removal is manual.
-- [ ] Rerun `/setup-subagents` so the installed agent copies regenerate from `src/orchestration-guide.md` and `src/templates.ts` after the S15 workstream.
-  Never edit installed copies by hand.
+None. The S4 policy tombstone was removed manually, and the installed `@ztc/subagent-herdr` package (1.11.3) now matches the S15 release; `/setup-subagents` has regenerated the installed agent copies with no S4 remnants.
 
 ## Closed decisions with revisit triggers
 
