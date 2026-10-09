@@ -21,7 +21,6 @@ import type {
 } from "../../observability/authorization-outcome.ts";
 import { createAuthorizationOutcomeObserver } from "../../observability/authorization-outcome.ts";
 import {
-  createProjectCommandInvocationMeasurements,
   projectCommandInvocationLookupOutcome,
   recordProjectCommandInvocation,
   type ProjectCommandInvocationLookupMetadata,
@@ -524,7 +523,6 @@ function verifyInvocationSuccess(
   | "durationMs"
   | "executionDurationMs"
   | "output"
-  | "measurements"
   | "verdict"
 > {
   const cacheDecision = input.fresh
@@ -553,7 +551,6 @@ function verifyInvocationSuccess(
     durationMs: durationMs(startedAt),
     executionDurationMs: reused ? 0 : durationMs(startedAt),
     output,
-    measurements: createProjectCommandInvocationMeasurements(cacheDecision, reused, output),
     verdict: record.verdict,
   };
 }

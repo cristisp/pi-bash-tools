@@ -6,7 +6,7 @@ import type { GitExec } from "../../git/execution.ts";
 import { runGit } from "../../git/execution.ts";
 import { safeRelativePath } from "../safe-relative-path.ts";
 
-const MAX_REPOSITORY_STATE_BYTES = 2 * 1024 * 1024;
+export const MAX_REPOSITORY_STATE_BYTES = 2 * 1024 * 1024;
 const MAX_REPOSITORY_STATE_PATHS = 4_096;
 const MAX_REPOSITORY_STATE_PATH_BYTES = 128 * 1024;
 const MAX_REPOSITORY_STATE_FILE_BYTES = 8 * 1024 * 1024;

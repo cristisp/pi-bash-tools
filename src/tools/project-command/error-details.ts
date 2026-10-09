@@ -5,7 +5,7 @@ import { isRecord } from "../value-validation.ts";
 import { getProjectCommandDefinitions } from "./definitions.ts";
 import { ProjectCommandToolError, validateProjectCommandInput } from "./schema/validation.ts";
 
-export type ProjectCommandErrorDetails = Readonly<Record<string, unknown>>;
+type ProjectCommandErrorDetails = Readonly<Record<string, unknown>>;
 
 export type ProjectCommandErrorDetailsStore = ToolErrorDetailsStore;
 
@@ -27,7 +27,7 @@ function detailsFromProjectCommandError(
   });
 }
 
-export function projectCommandSchemaRejectionDetails(
+function projectCommandSchemaRejectionDetails(
   input: unknown,
 ): ProjectCommandErrorDetails | undefined {
   const definitions = getProjectCommandDefinitions();

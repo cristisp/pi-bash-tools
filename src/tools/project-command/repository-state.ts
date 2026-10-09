@@ -2,15 +2,13 @@ import { realpath } from "node:fs/promises";
 
 import type { GitExec } from "../git/execution.ts";
 import { runGit } from "../git/execution.ts";
-import { contentDigest } from "./repository-state/dirty-files.ts";
+import { MAX_REPOSITORY_STATE_BYTES, contentDigest } from "./repository-state/dirty-files.ts";
 import type { ProjectCommandRepositoryStateReader } from "./repository-state/types.ts";
 
 export type {
   ProjectCommandRepositoryState,
   ProjectCommandRepositoryStateReader,
 } from "./repository-state/types.ts";
-
-const MAX_REPOSITORY_STATE_BYTES = 2 * 1024 * 1024;
 
 export function createProjectCommandRepositoryStateReader(
   exec: GitExec,

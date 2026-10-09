@@ -5,15 +5,7 @@ import { EXTENSION_VERSION } from "../../version.ts";
 import { OBSERVABILITY_MAX_METADATA_NUMBER, boundedIdentifier, boundedNumber } from "../bounded.ts";
 
 const MAX_METADATA_NUMBER = OBSERVABILITY_MAX_METADATA_NUMBER;
-import {
-  MEASUREMENT_KEYS,
-  createMeasurementState,
-  measurementsFromStates,
-  validCacheDecision,
-  validCategory,
-  validStatus,
-  type MutableMeasurementState,
-} from "./bound.ts";
+import { validCacheDecision, validCategory, validStatus } from "./bound.ts";
 import {
   PROJECT_COMMAND_SUMMARY_FORMAT_VERSION,
   PROJECT_COMMAND_SUMMARY_MAX_BYTES,
@@ -46,8 +38,6 @@ export interface ProjectCommandInvocationSummaryAccumulator {
   stderrBytes: number;
   stdoutTruncations: number;
   stderrTruncations: number;
-  readonly measurementsBefore: MutableMeasurementState;
-  readonly measurementsAfter: MutableMeasurementState;
   readonly schemaHashes: Set<string>;
 }
 
@@ -94,8 +84,6 @@ export function createSummaryAccumulator(
     stderrBytes: 0,
     stdoutTruncations: 0,
     stderrTruncations: 0,
-    measurementsBefore: createMeasurementState(),
-    measurementsAfter: createMeasurementState(),
     schemaHashes: new Set(),
   };
 }
@@ -162,22 +150,6 @@ export function addSummaryRecord(
     );
   }
 
-  const measurements = record.measurements;
-  if (measurements !== undefined) {
-    for (const key of MEASUREMENT_KEYS) {
-      const pair = measurements[key];
-      if (pair === undefined) continue;
-      accumulator.measurementsBefore[key] = Math.min(
-        MAX_METADATA_NUMBER,
-        accumulator.measurementsBefore[key] + boundedNumber(pair.before),
-      );
-      accumulator.measurementsAfter[key] = Math.min(
-        MAX_METADATA_NUMBER,
-        accumulator.measurementsAfter[key] + boundedNumber(pair.after),
-      );
-    }
-  }
-
   if (
     accumulator.schemaHashes.size < PROJECT_COMMAND_SUMMARY_MAX_SCHEMA_HASHES &&
     typeof record.schemaHash === "string"
@@ -220,10 +192,6 @@ export function summaryFromAccumulator(
       stdout: accumulator.stdoutTruncations,
       stderr: accumulator.stderrTruncations,
     },
-    measurements: measurementsFromStates(
-      accumulator.measurementsBefore,
-      accumulator.measurementsAfter,
-    ),
     schemaHashes: [...accumulator.schemaHashes],
   });
 

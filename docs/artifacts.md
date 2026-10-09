@@ -245,7 +245,7 @@ Recording is best effort from the shared authorization path and never changes an
 
 At session shutdown, the extension emits a `bash-tools.project-command-summary` entry for the active session when possible.
 
-The summary aggregates invocation count, cache decisions, result categories, process statuses, durations, output bytes, truncation counts, measurements, and a bounded set of schema hashes.
+The summary aggregates invocation count, cache decisions, result categories, process statuses, durations, output bytes, truncation counts, and a bounded set of schema hashes.
 
 Custom-entry persistence failures are ignored and do not change tool results.
 

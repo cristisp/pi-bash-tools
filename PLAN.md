@@ -139,7 +139,7 @@ These measurements are owned by the session analyzer and importer rather than by
 - [ ] Report the `edit-stale-context` hit rate from the recorded `evidenceBacked` flag, separating evidence-backed stale classifications from plain no-match failures.
 - [ ] Consume the newly recorded fields: authorization `mode`, `flowId`, and `decisionSource`; read-batch `role`, `delegationId`, and `publication`; Git `mode`, `maxBytes`, and `truncated`; and the project-command `preparationDurationMs`, `authorizationDurationMs`, and `queueDurationMs` phase split. (Consuming the read-batch consumer fields also closes the `artifact_consumer_tracking` availability gap.)
 - [ ] Reconcile telemetry field names before consuming them: the analyzer's data map expects `policySource` while the record emits `decisionSource`, and expects `repositoryStateStatus` while the record emits `repositoryState.stateMatchesCurrent` and `stateDrift`.
-- [ ] Decide whether the two workspace-block shapes should be unified, because `git-invocation` and `read-batch-invocation` use the shared envelope's `repositoryId`/`dirtyDigest` while `project-command-invocation` uses `repositoryIdentity`/`dirtyFilesDigest`.
+- [x] Decide whether the two workspace-block shapes should be unified, because `git-invocation` and `read-batch-invocation` use the shared envelope's `repositoryId`/`dirtyDigest` while `project-command-invocation` uses `repositoryIdentity`/`dirtyFilesDigest`. Decision: the producer shapes stay unchanged and the consumer closes the gap with a tolerant read; `subagent-herdr` `analysis/measure.ts` now extracts both `dirtyFilesDigest` and the envelope `dirtyDigest`, which the analyzer previously could not see.
 - [ ] Confirm that `codegraph_sync` excess calls do not represent repeated work before treating them as waste, because an idempotent unchanged result still counts as an excess call. (101 recorded checks with 41 executions and zero failures, so most checks do not execute work; the 362 excess calls are a request-repetition count, and the redundancy claim stays unresolved.)
 
 #### Exit criteria
@@ -172,6 +172,60 @@ Codegraph Runner 2.0.2 satisfies the producer-side requirements for its `cg_` ev
 - Lookup authorization and stale-state behavior are unambiguous.
 - Codegraph index freshness is distinct from Git workspace freshness.
 - No extension must access another extension's private cache format.
+
+### P1: Make the producer-consumer contract executable
+
+The contract between artifact producers (Bash Tools, Codegraph Runner) and the orchestration consumer (`subagent-herdr`) is prose in `docs/artifacts.md` plus hand-written tolerant readers, and it leaks by construction.
+A routine cross-repo audit found five vocabulary or shape mismatches, one silent extraction gap, and one field that no consumer read (`measurements`, since deleted in the Simplify evidence infrastructure Batch 4).
+The mismatches are two workspace-block shapes (`repositoryIdentity`/`dirtyFilesDigest` versus envelope `repositoryId`/`dirtyDigest`), two publication vocabularies (`{ published, error }` versus `{ state, reason }`), two lookup-status spellings (`not-found` in records versus `NOT_FOUND` in the Codegraph Runner outcome mapping), and the analyzer field-name expectations tracked under Analyzer and importer handoff (`policySource` versus `decisionSource`, `repositoryStateStatus` versus `repositoryState.stateMatchesCurrent`).
+The silent gap is `invocationStateDigest` in `subagent-herdr`, which could not see the envelope `dirtyDigest` and returned nothing instead of failing.
+The lookup-outcome enum alone is defined in both extensions and twice inside `subagent-herdr`.
+TypeScript types never cross a repository boundary, and consumer fallback chains absorb drift by returning `undefined` without failing anything, so the program below makes the contract executable: one machine-readable source of truth, tested from both sides, with counted runtime drift signals.
+
+#### Stage 1: shared golden fixtures and bidirectional conformance tests
+
+- [ ] Author a neutral fixture set of canonical JSON records: one record per type per format version (`project-command-invocation`, `git-invocation`, `read-batch-invocation`, `authorization-outcome`, `tool-inventory`), the tool-result `details` envelopes the consumer reads (including `resultCategory` and `executed`, which `subagent-herdr` `budget.ts` depends on and which carry no runtime schema today), and the `pc_`/`vr_`/`rr_` evidence envelopes.
+- [ ] Decide where the fixture set is hosted before the shared package repository exists; an acceptable interim is a pinned copy in each repository with a cross-repo sync check, and the target is that fixtures ship inside the shared package.
+- [ ] Add producer-side conformance tests asserting that every emitted record validates against and structurally matches its fixture, extending the `Value.Check` pattern already used for `structuredContent` to telemetry records and `tool_result.details`.
+- [ ] Add consumer-side extraction tests with an explicit expected-extraction map per fixture, so a renamed or dropped field fails a test on one side instead of silently vanishing; the deleted `dirtyDigest` gap must be exactly the kind of failure these tests catch.
+- [ ] Pin the consumer's accepted input variants (`payload` wrappers, snake_case keys, `tool` versus `toolName`, `repositoryState` versus `repository_state`) as tested shapes rather than accidental ones.
+- [ ] Run the consumer conformance suite against producer fixtures on every change in either repository.
+
+#### Stage 2: neutral protocol package in its own repository
+
+- [ ] The shared package sits in a separate git repository that is not Bash Tools, not `subagent-herdr`, and not Codegraph Runner, so no producer depends on the consumer and every extension keeps its independence rules.
+- [ ] At a future time, generate the instructions for its creation: a bootstrap specification covering repository layout, package manifest, typebox schemas per record type and format version, the shared enum constants (lookup outcomes, publication states, cache decisions, record format versions), the workspace-block schema with its nullable fields, the publication vocabulary, and the semver compatibility policy (additive field = minor, shape change = major). Generating those instructions is a later task; this plan item reserves it and nothing is implemented yet.
+- [ ] Fold the duplicated vocabularies onto the single source: one lookup-outcome enum, one publication vocabulary, and one workspace-block shape whose legacy aliases are declared and tested instead of implicit.
+- [ ] Converge publication on the `{ state, reason }` form that `subagent-herdr` already normalizes to, retaining the current Bash Tools `published`/`error` fields as a deprecated additive alias for a bounded window.
+- [ ] Move the compatibility rule from `research/findings-1409-token-tracker.md` into the machine-checkable contract: additive and optional under a version, version bump only on shape change, enforced by schema diff.
+- [ ] Keep tolerant reads of stored records a requirement: `pc_` version 1 normalization and `vr_` version 2 alias wrappers stay, and schemas govern emission and cross-repo exchange rather than historical storage.
+
+#### Stage 3: runtime drift telemetry
+
+- [ ] Count extraction misses in the consumer: a record that carries a `repositoryState` block from which no digest extracts, or an unknown `lookup.outcome` or publication value, emits a bounded `producerShapeMismatch` marker instead of silently returning `undefined`.
+- [ ] Report mismatch counts in the next analyzer pass so contract drift appears in measurements instead of audits.
+
+#### Ownership
+
+- Bash Tools owns its producer records and the `rr_`/`pc_`/`vr_` evidence it mints.
+- Codegraph Runner owns `cg_` artifacts and its own producer records.
+- `subagent-herdr` owns its telemetry schema and its extraction layer; the contract boundary is producer records plus tool-result `details`, never the consumer's own telemetry format.
+- The shared package is a neutral protocol dependency owned outside all three extensions, matching the evidence-contract ownership rule above.
+
+#### Constraints
+
+- Tolerant reads stay; the program adds fixtures, tests, and counters around them and never tightens reads of stored records.
+- No extension imports another extension's modules; the shared package is protocol-level, not an implementation dependency.
+- Producers never gain orchestration semantics, and Bash Tools does not become a generic artifact database.
+- Fixture, schema, and telemetry work must not change any tool result, error wording, or authorization decision.
+- Cross-repo consumer-side changes land through `subagent-herdr`'s own review, and producer-side changes through each producer's.
+
+#### Exit criteria
+
+- A field rename, removal, or vocabulary change on either side fails a test in every repository that consumes it.
+- One machine-readable definition exists per record shape, enum, and vocabulary, and the schema diff makes the version-bump rule checkable.
+- Drift that survives a release is visible as a counted signal in analyzer output.
+- The shared package repository is created from generated instructions rather than by copying implementation code out of any extension.
 
 ### P1: Improve authorization outcome observability
 
@@ -237,6 +291,12 @@ A fallow and source-level analysis found the disk-cache engine and canonical-JSO
 
 - [x] Verify disk records are now keyed by ref with a single write per record (disk format version 2 to 3): `set`/`publish` write the bare record once at the `ref:` location, request lookup derives the ref from the key's 24-hex prefix and requires a current-version record whose key matches (fail-closed on prefix collisions), and `getByRef` tolerantly reads both bare v3 records and legacy v2-era `ref:` alias wrappers, so existing `vr_` analyzer references keep resolving; v1 records miss. The `vr_` ref format, publish gating, and public error wording are unchanged. Known limitation: `writeRecord` has no write-time version validation, so publishing a legacy v2 source record (unreachable via the tool path) would persist an unreadable record - candidate follow-up.
 - [x] Strip duplicated provenance and repository-state encodings from the `pc_` evidence record (`evidenceFormatVersion` 1 to 2): the pc record now carries `provenance` as the single producer identity, raw `repositoryState`, and envelope identity fields only; top-level `producerScope`/`flowId`/`producerRole`/`producerDelegationId`, the envelope `workspace` block, and envelope `scope` are gone. Strict v2 validation requires a valid `provenance`; `getByRef` tolerantly normalizes v1 records in memory (never persisted, fail-closed when unnormalizable); publish of a legacy source normalizes and writes strict v2. `mapEvidenceScope` was removed as dead, and the format constant collapsed to a single source in `record-validation.ts`. Model-facing details, session-entry payloads, ref/key derivations, and disk keys are unchanged. Accepted deviation: v2 reads bounds-check known envelope fields when present and ignore leftover dropped identity keys (mirroring the `vr_` v3 philosophy, marginally weaker there); design at `research/pc-evidence-dedup-design.md`.
+
+#### Batch 4: cross-repo-verified dead weight
+
+- [x] Delete the invocation `measurements` subsystem (`MeasurementPair`, `measurementPair`, `createProjectCommandInvocationMeasurements`, `boundedMeasurements`, the summary `measurementsBefore`/`measurementsAfter` aggregation, and the `measurements` record and summary fields). The per-record `before` half was structurally always zero and every `after` value duplicated `reused`, `cacheDecisions.invalidated`, `truncationCounts`, or `repeatedUnchangedRequests`. A cross-repo consumption check confirmed no reader in `subagent-herdr` (tool-result details in `src/metrics.ts`/`src/budget.ts` and the producer invocation stream in `analysis/measure.ts`), in the research reports, or on the analyzer consume list, so `invocationFormatVersion` and `summaryFormatVersion` bump 1 to 2 as shape changes with no coordinated importer update.
+- [x] Un-export `projectCommandSchemaRejectionDetails`, which is module-internal only, closing the remaining fallow dead-code finding.
+- [x] Single-source `CACHE_ENTRY_FORMAT_VERSION` in `cache/record-validation.ts` and `MAX_REPOSITORY_STATE_BYTES` in `repository-state/dirty-files.ts`, which were each defined twice with identical values.
 
 #### Cache maintenance sweeps
 

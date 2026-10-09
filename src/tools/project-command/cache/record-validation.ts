@@ -12,7 +12,7 @@ import type { ProjectCommandOutputDetails } from "../output.ts";
 import { PROJECT_COMMAND_DISPLAY_COMMAND_MAX_CHARS } from "../parameters/limits.ts";
 import type { ProjectCommandStateSnapshot } from "../state-snapshot.ts";
 
-const CACHE_ENTRY_FORMAT_VERSION = 1 as const;
+export const CACHE_ENTRY_FORMAT_VERSION = 1 as const;
 const CACHE_FIELD_MAX_LENGTH = 8 * 1024;
 const CACHE_ARRAY_MAX_ITEMS = 4_096;
 

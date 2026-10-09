@@ -297,6 +297,176 @@ it("persists delete approval for a folder and reuses it for descendants", async 
   });
 });
 
+it("deletes a folder itself with the approval persisted for its files", async () => {
+  const directory = await fixtures.createDirectory();
+  const folder = join(directory, "removable");
+  await mkdir(folder);
+  const file = join(folder, "only.txt");
+  await writeFile(file, "content");
+  const tool = createDeleteToolForTesting({ configPath: await configPath(directory) });
+  const select = vi.fn(async () => "Allow for this project");
+  const approvalContext = context(directory, { hasUI: true, mode: "tui", select });
+
+  await tool.execute("1", { path: file }, undefined, undefined, approvalContext);
+  await tool.execute("2", { path: folder }, undefined, undefined, approvalContext);
+
+  expect(select).toHaveBeenCalledTimes(1);
+  await expect(stat(folder)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("deletes a directory tree after folder-scoped approval", async () => {
+  const directory = await fixtures.createDirectory();
+  const folder = join(directory, "tree");
+  await mkdir(join(folder, "nested"), { recursive: true });
+  await writeFile(join(folder, "first.txt"), "first");
+  await writeFile(join(folder, "nested", "second.txt"), "second");
+  await symlink(join(folder, "first.txt"), join(folder, "link"));
+  const tool = createDeleteToolForTesting({ configPath: await configPath(directory) });
+  const select = vi.fn(async (title: string) => {
+    expect(title).toContain("Requested folder:");
+    return "Allow for this project";
+  });
+
+  const result = await tool.execute(
+    "1",
+    { path: folder },
+    undefined,
+    undefined,
+    context(directory, { hasUI: true, mode: "tui", select }),
+  );
+
+  expect(select).toHaveBeenCalledTimes(1);
+  expect(Check(filesystemDeleteDetailsSchema, result.structuredContent)).toBe(true);
+  expect(result.content).toEqual([{ type: "text", text: JSON.stringify(result.details) }]);
+  await expect(stat(folder)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("blocks folder deletion when a descendant path is denied", async () => {
+  const directory = await fixtures.createDirectory();
+  const folder = join(directory, "guarded");
+  await mkdir(join(folder, "private"), { recursive: true });
+  const secret = join(folder, "private", "secret.txt");
+  await writeFile(secret, "secret");
+  const projectPath = await realpath(directory);
+  const config = join(projectPath, "bash-tools.json");
+  await writeFile(
+    config,
+    JSON.stringify({
+      version: 4,
+      environment: { version: 1, global: { allow: [], deny: [] }, projects: {} },
+      projectCommands: { version: 1, global: { allow: [], deny: [] }, projects: {} },
+      filesystem: {
+        version: 2,
+        global: {
+          allowRead: [],
+          allowWrite: [],
+          denyRead: [],
+          denyWrite: [],
+          allowMove: [],
+          denyMove: [],
+          allowDelete: [],
+          denyDelete: [],
+        },
+        projects: {
+          [projectPath]: {
+            allowRead: [],
+            allowWrite: [],
+            denyRead: [],
+            denyWrite: [],
+            allowMove: [],
+            denyMove: [],
+            allowDelete: [],
+            denyDelete: [join(projectPath, "guarded", "private")],
+          },
+        },
+      },
+    }),
+  );
+  const tool = createDeleteToolForTesting({ configPath: config });
+
+  await expect(
+    tool.execute("1", { path: folder }, undefined, undefined, context(directory)),
+  ).rejects.toThrow(/denied by the project policy rule/u);
+  await expect(stat(secret)).resolves.toBeTruthy();
+  await expect(stat(folder)).resolves.toBeTruthy();
+});
+
+it("rejects deleting a directory tree that exceeds the entry bound", async () => {
+  const directory = await fixtures.createDirectory();
+  const folder = join(directory, "huge");
+  await mkdir(folder);
+  const tool = createDeleteToolForTesting({
+    configPath: await configPath(directory),
+    fs: {
+      readdir: async () => Array.from({ length: 10_001 }, (_value, index) => `entry-${index}`),
+    },
+  });
+  const select = vi.fn(async () => "Allow for this project");
+
+  await expect(
+    tool.execute(
+      "1",
+      { path: folder },
+      undefined,
+      undefined,
+      context(directory, { hasUI: true, mode: "tui", select }),
+    ),
+  ).rejects.toThrow(/exceeds 10000 entries/u);
+  await expect(stat(folder)).resolves.toBeTruthy();
+});
+
+it("rejects deleting a folder that contains the active workspace", async () => {
+  const base = await fixtures.createDirectory();
+  const workspace = join(base, "workspace");
+  await mkdir(workspace);
+  const tool = createDeleteToolForTesting({ configPath: await configPath(workspace) });
+
+  await expect(
+    tool.execute("1", { path: ".." }, undefined, undefined, context(workspace)),
+  ).rejects.toThrow(/must not contain the active workspace/u);
+});
+
+it("moves a directory within the active workspace", async () => {
+  const directory = await fixtures.createDirectory();
+  const source = join(directory, "source-folder");
+  await mkdir(join(source, "nested"), { recursive: true });
+  await writeFile(join(source, "nested", "file.txt"), "content");
+  const destination = join(directory, "destination-folder");
+  const tool = createMoveToolForTesting({ configPath: await configPath(directory) });
+  const choices = ["Allow for this project", "Allow for this project"];
+  const select = vi.fn(async () => choices.shift() ?? "Deny once");
+
+  const result = await tool.execute(
+    "1",
+    { source, destination },
+    undefined,
+    undefined,
+    context(directory, { hasUI: true, mode: "tui", select }),
+  );
+
+  expect(Check(filesystemMoveDetailsSchema, result.structuredContent)).toBe(true);
+  expect(result.content).toEqual([{ type: "text", text: JSON.stringify(result.details) }]);
+  await expect(stat(source)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(readFile(join(destination, "nested", "file.txt"), "utf8")).resolves.toBe("content");
+});
+
+it("rejects moving a directory into its own subtree", async () => {
+  const directory = await fixtures.createDirectory();
+  const source = join(directory, "source-folder");
+  await mkdir(source);
+  const tool = createMoveToolForTesting({ configPath: await configPath(directory) });
+
+  await expect(
+    tool.execute(
+      "1",
+      { source, destination: join(source, "nested") },
+      undefined,
+      undefined,
+      context(directory),
+    ),
+  ).rejects.toThrow(/inside the source directory/u);
+});
+
 it("blocks mutation outside the active workspace without authorization", async () => {
   const directory = await fixtures.createDirectory();
   const outside = await fixtures.createDirectory();

@@ -18,8 +18,8 @@ The extension registers exactly these custom tools:
 - `read_batch` reads up to 32 authorized repository-relative files with optional bounded line ranges and per-path errors.
 - `project_command` runs the fixed `workspace_path` and `node_version` observations, discovers Node project state with `node_project_info`, lists top-level dependencies with `node_deps_list`, runs exact package scripts from the supported Node command families, and runs six fixed Fallow analyses after policy authorization.
 - `verify` runs the configured format, lint, typecheck, and test phases in a fixed order with bounded output and evidence.
-- `move` moves or renames one authorized regular file.
-- `delete` deletes one authorized regular file.
+- `move` moves or renames one authorized regular file or directory.
+- `delete` deletes one authorized regular file or directory tree.
 
 ## Environment policy
 
@@ -86,7 +86,9 @@ The same path may not appear twice with overlapping ranges in one request; such 
 A repeated path and range in the same process-local scope returns `unchanged: true` with the prior reference when the file content hash is unchanged.
 The batch cache is process-local and separates effective flow scopes without using orchestration environment variables as authorization.
 `move` authorizes both the source and destination with the move capability and rejects existing destinations.
-`delete` uses a separate delete capability and rejects directories, symlinks, and recursive deletion.
+Moving a directory relocates its tree in one atomic rename, and a destination inside the source directory is rejected.
+`delete` uses a separate delete capability and rejects symbolic links.
+A directory target is deleted together with its contents; entries that are symbolic links are removed as directory entries without being followed, and a tree above 10,000 entries is rejected so oversized trees can be removed in batches.
 
 Filesystem rules are stored in the same user-owned `~/.pi/agent/bash-tools.json` policy file.
 Filesystem decisions are stored in document version 4 while preserving the environment and project command namespaces.
@@ -128,8 +130,10 @@ The filesystem namespace has version `2`, with separate read, write, move, and d
 `allowMove` controls the `move` tool for both its source and destination paths.
 `allowDelete` controls the `delete` tool.
 Delete prompts authorize the containing folder, so an approved `allowDelete` folder applies to files in that folder and all of its descendants.
+A directory target is authorized at the directory itself, so an approval persisted for its files also covers deleting the folder.
 A project and all of its descendants have implicit read and write access for the active workspace.
 Tracked files under the active workspace also have implicit move and delete access when Git is available.
+A directory target always requires explicit approval; implicit tracked-file access never covers a directory tree, and a move or delete of a folder that contains the active workspace is rejected.
 For `move`, the tracked source grants the move to a new destination under the active workspace; untracked existing files are never implicitly approved.
 Untracked files and paths outside the active workspace remain unknown and require an explicit approval.
 If Git cannot identify the repository or tracked path, the mutation remains unknown and requires an explicit approval.
@@ -150,7 +154,7 @@ The action never contains the requested path, policy contents, or environment va
 The block decision, the `policy-path-resolution-failure` contract, and the exact message text are unchanged.
 Resolution failure reasons do not include outside-workspace or traversal forms: the request path is normalized before resolution, and containment or traversal outcomes are policy decisions that are reported as policy denials.
 
-An edit preflight reads at most 256 KiB and diagnoses empty `oldText`, no-op replacements, no match, stale context, ambiguous matches, and overlapping edits before the native edit is allowed to run.
+An edit preflight reads at most 256,000 bytes and diagnoses empty `oldText`, no-op replacements, no match, stale context, ambiguous matches, and overlapping edits before the native edit is allowed to run.
 Diagnostics include the nearest candidate line numbers, a `fileFingerprint` (SHA-256 of the preflight-read content), and bounded repair context without file content.
 When a `read_batch` full-file read recorded the file and its content changed since that observation, a failing no-match edit is classified as `edit-stale-context`; without observed evidence it stays `edit-no-match`.
 Repeating an identical edit after any preflight failure is rejected once per session with `edit-unchanged-retry` until the edit is rebased on a fresh reread.

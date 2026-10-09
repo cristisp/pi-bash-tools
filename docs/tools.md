@@ -10,8 +10,8 @@
 | `git_show`        | Read bounded revision output with an optional path filter.                                          | [Git tools](git.md)                          |
 | `environment`     | Read explicitly requested environment variables after authorization.                                | [Environment](environment.md)                |
 | `read_batch`      | Read up to 32 authorized repository-relative files with bounded ranges and a 256 KiB aggregate cap. | [Filesystem tools and policy](filesystem.md) |
-| `move`            | Move or rename one authorized regular file.                                                         | [Filesystem tools and policy](filesystem.md) |
-| `delete`          | Delete one authorized regular file.                                                                 | [Filesystem tools and policy](filesystem.md) |
+| `move`            | Move or rename one authorized regular file or directory.                                            | [Filesystem tools and policy](filesystem.md) |
+| `delete`          | Delete one authorized regular file or directory tree.                                               | [Filesystem tools and policy](filesystem.md) |
 | `project_command` | Run one command from the fixed Node and Fallow catalog or look up evidence.                         | [Project commands](project-command.md)       |
 | `verify`          | Run the configured verification phases in fixed order or look up evidence.                          | [Verification](verify.md)                    |
 
@@ -23,7 +23,10 @@ The filesystem interceptor applies to native `read`, `write`, `edit`, `grep`, `f
 
 `edit` requires both `read` and `write` access and receives an edit preflight that can report empty, no-op, missing, stale-context, ambiguous, overlapping, and unchanged-retry replacements before the native call runs.
 
-Edit preflight failures carry structured details: the diagnostic code, nearest candidate line numbers, a `fileFingerprint` (sha256 of the preflight-read content), and bounded repair context (`contentLength`, `lineCount`) — never file content itself. When a prior `read_batch` read observed the file, a no-match against changed content is classified as `edit-stale-context` with a reread-and-rebase hint; without observed evidence it stays a plain `edit-no-match`. Repeating an identical edit after a preflight failure is rejected with `edit-unchanged-retry` (bounded per session); rebasing the edit on a fresh read clears the block. The tool never retries or rebases a mutation automatically — rereading and rebasing is the single caller-controlled recovery.
+Edit preflight failures carry structured details: the diagnostic code, nearest candidate line numbers, a `fileFingerprint` (sha256 of the preflight-read content), and bounded repair context (`contentLength`, `lineCount`) - never file content itself.
+When a prior `read_batch` read observed the file, a no-match against changed content is classified as `edit-stale-context` with a reread-and-rebase hint; without observed evidence it stays a plain `edit-no-match`.
+Repeating an identical edit after a preflight failure is rejected with `edit-unchanged-retry` (bounded per session); rebasing the edit on a fresh read clears the block.
+The tool never retries or rebases a mutation automatically - rereading and rebasing is the single caller-controlled recovery.
 
 The interceptor canonicalizes and authorizes the requested path before allowing the native implementation to execute.
 A blocked path-resolution failure additionally carries `resolutionFailure.reason` and `resolutionFailure.action` additive details.

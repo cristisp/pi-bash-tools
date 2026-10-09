@@ -13,7 +13,6 @@ import {
   type AuthorizationOutcomeRecorder,
 } from "../../observability/authorization-outcome.ts";
 import {
-  createProjectCommandInvocationMeasurements,
   recordProjectCommandInvocation,
   redactProjectCommandParameters,
   type ProjectCommandInvocationLookupMetadata,
@@ -1419,11 +1418,6 @@ function recordInvocation(
         ? {}
         : { queueDurationMs: elapsedMilliseconds(state.queueStartedAt, state.queueFinishedAt) }),
       output: state.output,
-      measurements: createProjectCommandInvocationMeasurements(
-        state.cacheDecision,
-        state.reused,
-        state.output,
-      ),
       producerScope: state.producerScope,
       flowId: state.flowId,
       delegationId: state.delegationId,

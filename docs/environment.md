@@ -54,6 +54,8 @@ A cancellation before policy commit changes nothing, while a cancellation after 
 
 A confirmation timeout records a project-level deny and returns no values.
 
-When an orchestrated subagent reaches an approval prompt, the extension emits a pi warning and may emit a terminal-native notification.
+When an orchestrated subagent reaches a manual policy approval prompt, the extension emits a warning notification through Pi before opening the prompt.
+In TUI and RPC modes it also emits a terminal-native notification through OSC 777, Kitty OSC 99, or a Windows toast when the terminal supports it.
+Notification failures are ignored and never change the authorization result.
 
 See [Policy document](policy.md) for the complete policy schema and storage rules.

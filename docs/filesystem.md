@@ -158,7 +158,8 @@ The repeated-read cache is process-local, scoped by effective flow, and capped a
 }
 ```
 
-`source` must identify an existing regular file and must not itself be a symbolic link or directory.
+`source` must identify an existing regular file or directory and must not itself be a symbolic link.
+A directory source is relocated together with its tree in one atomic rename, and a destination inside the source directory is rejected.
 
 `destination` must be absent before the operation and is resolved relative to the current workspace when it is not absolute.
 
@@ -186,9 +187,11 @@ Failures throw as before and carry no structured content.
 }
 ```
 
-The target must be an existing regular file.
+The target must be an existing regular file or directory.
 
-Directories and symbolic links are rejected, and deletion is never recursive.
+Symbolic links are rejected.
+A directory target is deleted together with its contents; entries that are symbolic links are removed as directory entries without being followed, and a tree above 10,000 entries is rejected so oversized trees can be removed in batches.
+A directory target is authorized at the directory itself, so an `allowDelete` approval persisted for its files also covers deleting the folder.
 
 The operation uses the separate `delete` capability.
 
@@ -203,7 +206,7 @@ Failures throw as before and carry no structured content.
 
 `edit` requests both `read` and `write` access.
 
-An edit preflight reads at most 256 KiB and diagnoses empty `oldText`, no-op replacements, no match, stale context, ambiguous matches, and overlapping edits before the native edit is allowed to run.
+An edit preflight reads at most 256,000 bytes and diagnoses empty `oldText`, no-op replacements, no match, stale context, ambiguous matches, and overlapping edits before the native edit is allowed to run.
 
 Diagnostics include the nearest candidate line numbers, a `fileFingerprint` (sha256 of the preflight-read content), and bounded repair context (`contentLength`, `lineCount`) without file content. A `read_batch` full-file read records the observed content hash (hash-only, bounded, best-effort): when a later edit no longer matches content that changed since that observation, the failure is classified as `edit-stale-context`; without observed evidence it stays `edit-no-match`. A stale-context or equal-hash no-match diagnostic carries the additive `evidenceBacked: true` flag when an observation existed for the path, so the `edit-stale-context` hit rate is measurable; the flag is omitted when no observation existed. Repeating an identical edit after any preflight failure is rejected once per session with `edit-unchanged-retry` until the edit is rebased on a fresh reread. The extension never retries or rebases a mutation automatically.
 
@@ -221,6 +224,8 @@ The active workspace and its descendants have implicit read and write access.
 Tracked files under the active workspace also have implicit move and delete access when Git is available.
 
 An untracked existing source or destination is never implicitly approved for mutation.
+
+A directory target always requires explicit approval; implicit tracked-file access never covers a directory tree, and a move or delete of a folder that contains the active workspace is rejected.
 
 Explicit deny rules override implicit access and explicit allow rules.
 

@@ -4,8 +4,10 @@ import {
   lstat,
   mkdir,
   open as openFileHandle,
+  readdir,
   realpath,
   rename,
+  rmdir,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -39,7 +41,9 @@ export interface PolicyFileSystem {
     data: string,
     options: { readonly encoding: "utf8"; readonly flag: "wx"; readonly mode: number },
   ): Promise<void>;
+  readdir(path: string): Promise<readonly string[]>;
   rename(source: string, destination: string): Promise<void>;
+  rmdir(path: string): Promise<void>;
   unlink(path: string): Promise<void>;
   chmod(path: string, mode: number): Promise<void>;
   realpath(path: string): Promise<string>;
@@ -65,7 +69,9 @@ export function createNodePolicyFileSystem(): PolicyFileSystem {
     writeFile: async (path, data, options) => {
       await writeFile(path, data, options);
     },
+    readdir: async (path) => [...(await readdir(path))],
     rename: (source, destination) => rename(source, destination),
+    rmdir: (path) => rmdir(path),
     unlink: (path) => unlink(path),
     chmod: (path, mode) => chmod(path, mode),
     realpath: (path) => realpath(path),

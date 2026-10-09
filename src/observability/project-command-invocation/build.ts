@@ -1,15 +1,11 @@
-import type { ProjectCommandCacheDecision } from "../../tools/project-command/cache.ts";
 import { boundedIdentifier, boundedNumber } from "../bounded.ts";
 import {
   boundedCoercions,
   boundedLookup,
-  boundedMeasurements,
   boundedOutput,
   boundedPublication,
   boundedRecord,
   boundedState,
-  createMeasurementState,
-  measurementsFromStates,
   redactProjectCommandParameters,
   validCacheDecision,
   validCategory,
@@ -18,38 +14,12 @@ import {
 } from "./bound.ts";
 import {
   PROJECT_COMMAND_INVOCATION_FORMAT_VERSION,
-  type ProjectCommandInvocationMeasurements,
-  type ProjectCommandInvocationOutputMetadata,
   type ProjectCommandInvocationRecord,
   type ProjectCommandInvocationRecordInput,
 } from "./types.ts";
 
 function boundedOptionalIdentifier(value: string | undefined): string | undefined {
   return value === undefined ? undefined : boundedIdentifier(value);
-}
-
-export function createProjectCommandInvocationMeasurements(
-  cacheDecision: ProjectCommandCacheDecision,
-  reused: boolean,
-  output: ProjectCommandInvocationOutputMetadata | undefined,
-): ProjectCommandInvocationMeasurements {
-  const after = createMeasurementState();
-  after.cacheReuse = reused ? 1 : 0;
-  after.cacheInvalidation = cacheDecision === "invalidated" ? 1 : 0;
-  after.truncation =
-    (output?.stdout.truncated === true ? 1 : 0) + (output?.stderr.truncated === true ? 1 : 0);
-  after.repeatedRequests = cacheDecision === "hit" && reused ? 1 : 0;
-  return measurementsFromStates(createMeasurementState(), after);
-}
-
-function defaultMeasurements(
-  input: ProjectCommandInvocationRecordInput,
-): ProjectCommandInvocationMeasurements {
-  return createProjectCommandInvocationMeasurements(
-    input.cacheDecision,
-    input.reused,
-    input.output,
-  );
 }
 
 /** Build a compact, persistence-safe invocation record without command output or paths. */
@@ -85,7 +55,6 @@ export function buildProjectCommandInvocationRecord(
       ? {}
       : { queueDurationMs: boundedNumber(input.queueDurationMs) }),
     output: boundedOutput(input.output),
-    measurements: boundedMeasurements(input.measurements ?? defaultMeasurements(input)),
     ...(input.producerScope === undefined ? {} : { producerScope: input.producerScope }),
     ...(boundedOptionalIdentifier(input.flowId) === undefined
       ? {}

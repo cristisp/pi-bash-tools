@@ -1,4 +1,4 @@
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 import type {
   AgentToolResult,
@@ -57,7 +57,7 @@ const moveParameters = Type.Object(
     source: Type.String({
       minLength: 1,
       description:
-        "Path to the existing regular file, resolved relative to the current workspace when not absolute; the source itself must not be a symbolic link or directory.",
+        "Path to the existing regular file or directory, resolved relative to the current workspace when not absolute; the source itself must not be a symbolic link.",
     }),
     destination: Type.String({
       minLength: 1,
@@ -68,7 +68,7 @@ const moveParameters = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Move or rename one regular file. The source must exist, the destination must be absent, and both paths are checked against filesystem policy before mutation.",
+      "Move or rename one regular file or directory. The source must exist, the destination must be absent, and both paths are checked against filesystem policy before mutation.",
   },
 );
 
@@ -77,13 +77,13 @@ const deleteParameters = Type.Object(
     path: Type.String({
       minLength: 1,
       description:
-        "Path to the existing regular file, resolved relative to the current workspace when not absolute; symbolic links and directories are rejected.",
+        "Path to the existing regular file or directory, resolved relative to the current workspace when not absolute; symbolic links are rejected, and a directory target is deleted together with its contents.",
     }),
   },
   {
     additionalProperties: false,
     description:
-      "Delete one regular file after filesystem policy authorization. The target is rechecked immediately before deletion.",
+      "Delete one regular file or one directory tree after filesystem policy authorization. The target is rechecked immediately before deletion.",
   },
 );
 
@@ -130,8 +130,12 @@ export type FilesystemMutationToolContext = FilesystemAuthorizationContext;
 
 type FilesystemMutationFileSystem = Pick<
   PolicyFileSystem,
-  "lstat" | "realpath" | "rename" | "unlink"
+  "lstat" | "readdir" | "realpath" | "rename" | "rmdir" | "unlink"
 >;
+
+type MutationTargetKind = "file" | "directory";
+
+const MAX_DELETE_TREE_ENTRIES = 10_000;
 
 export interface FilesystemMutationToolTestOptions {
   readonly configPath?: string;
@@ -241,11 +245,11 @@ function authorizationError(
   return filesystemError(message, filesystemAuthorizationContract(kind));
 }
 
-async function requireRegularFile(
+async function requireMutationEntry(
   fileSystem: FilesystemMutationFileSystem,
   path: string,
   label: string,
-): Promise<void> {
+): Promise<MutationTargetKind> {
   let stats;
   try {
     stats = await fileSystem.lstat(path);
@@ -255,19 +259,20 @@ async function requireRegularFile(
     }
     throw filesystemInspectionError(`Unable to inspect ${label}`);
   }
-  if (stats.isSymbolicLink() || !stats.isFile()) {
-    throw invalidInput(`${label} must be a regular file`, requestField(label));
+  if (stats.isSymbolicLink() || (!stats.isFile() && !stats.isDirectory())) {
+    throw invalidInput(`${label} must be a regular file or a directory`, requestField(label));
   }
+  return stats.isDirectory() ? "directory" : "file";
 }
 
-async function canonicalRegularFile(
+async function canonicalMutationTarget(
   fileSystem: FilesystemMutationFileSystem,
   path: string,
   cwd: string,
   label: string,
-): Promise<string> {
+): Promise<{ path: string; kind: MutationTargetKind }> {
   const requested = requestPath(path, cwd);
-  await requireRegularFile(fileSystem, requested, label);
+  await requireMutationEntry(fileSystem, requested, label);
   let canonical: string;
   try {
     canonical = await canonicalExistingPath(requested, fileSystem);
@@ -277,8 +282,93 @@ async function canonicalRegularFile(
     }
     throw filesystemInspectionError(`Unable to inspect ${label}`);
   }
-  await requireRegularFile(fileSystem, canonical, label);
-  return canonical;
+  const kind = await requireMutationEntry(fileSystem, canonical, label);
+  return { path: canonical, kind };
+}
+
+async function rejectContainingWorkspace(
+  fileSystem: FilesystemMutationFileSystem,
+  target: string,
+  kind: MutationTargetKind,
+  cwd: string,
+  label: string,
+): Promise<void> {
+  if (kind !== "directory") return;
+  let workspace: string;
+  try {
+    workspace = await fileSystem.realpath(cwd);
+  } catch (error) {
+    if (error instanceof FilesystemToolError) {
+      throw error;
+    }
+    throw filesystemInspectionError(`Unable to inspect ${label}`);
+  }
+  if (isPathWithin(target, workspace)) {
+    throw invalidInput(`${label} must not contain the active workspace`, requestField(label));
+  }
+}
+
+async function removeTreeEntry(
+  fileSystem: FilesystemMutationFileSystem,
+  path: string,
+  directory: boolean,
+): Promise<void> {
+  try {
+    if (directory) {
+      await fileSystem.rmdir(path);
+    } else {
+      await fileSystem.unlink(path);
+    }
+  } catch (error) {
+    if (isMissingPathError(error)) return;
+    throw filesystemMutationError(
+      directory ? "Unable to delete directory" : "Unable to delete file",
+    );
+  }
+}
+
+async function deleteTree(
+  fileSystem: FilesystemMutationFileSystem,
+  root: string,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  let visited = 0;
+  const walk = async (directory: string): Promise<void> => {
+    let names: readonly string[];
+    try {
+      names = await fileSystem.readdir(directory);
+    } catch {
+      throw filesystemInspectionError("Unable to inspect Delete target");
+    }
+    for (const name of names) {
+      if (signal?.aborted) {
+        throw cancellationError(true);
+      }
+      visited += 1;
+      if (visited > MAX_DELETE_TREE_ENTRIES) {
+        throw invalidInput(
+          `Delete target tree exceeds ${MAX_DELETE_TREE_ENTRIES} entries; delete its contents in batches first`,
+          "path",
+        );
+      }
+      const child = join(directory, name);
+      let stats;
+      try {
+        stats = await fileSystem.lstat(child);
+      } catch (error) {
+        if (isMissingPathError(error)) continue;
+        throw filesystemInspectionError("Unable to inspect Delete target");
+      }
+      if (stats.isDirectory()) {
+        await walk(child);
+        await removeTreeEntry(fileSystem, child, true);
+      } else {
+        await removeTreeEntry(fileSystem, child, false);
+      }
+    }
+  };
+  await walk(root);
+  await removeTreeEntry(fileSystem, root, true);
 }
 
 async function canonicalMoveDestination(
@@ -338,6 +428,7 @@ function mutationObserver(
 async function authorizeMutation(
   operation: string,
   requests: readonly FilesystemAuthorizationRequest[],
+  targetNoun: "file" | "folder",
   ctx: FilesystemMutationToolContext,
   policy: PolicyStore,
   signal: AbortSignal | undefined,
@@ -390,7 +481,7 @@ async function authorizeMutation(
     promptText: ({ access, path, policyPath }) =>
       policyPath === undefined
         ? `Authorize ${access} access for ${operation} to ${displayPath(path)}?`
-        : `Authorize deletion of files in ${displayPath(policyPath)} and its subfolders for this project only? Requested file: ${displayPath(path)}`,
+        : `Authorize deletion of files in ${displayPath(policyPath)} and its subfolders for this project only? Requested ${targetNoun}: ${displayPath(path)}`,
     error: (kind, request, decision, currentLoaded) =>
       authorizationError(operation, kind, request, decision, currentLoaded),
     observe,
@@ -432,10 +523,10 @@ function createMoveToolWithDependencies(
 ): FilesystemMoveToolDefinition {
   return {
     name: "move",
-    label: "Move file",
+    label: "Move file or folder",
     description:
-      "Move or rename one regular file after separate move authorization for the source and destination.",
-    promptSnippet: "Move or rename an authorized file",
+      "Move or rename one regular file or directory after separate move authorization for the source and destination.",
+    promptSnippet: "Move or rename an authorized file or folder",
     annotations: { destructiveHint: true },
     parameters: moveParameters,
     outputSchema: filesystemMoveDetailsSchema,
@@ -452,19 +543,27 @@ function createMoveToolWithDependencies(
       const destinationInput = inputPath(params?.destination, "destination");
       const requestSignal = signal ?? ctx.signal;
       throwIfAborted(requestSignal);
-      const source = await canonicalRegularFile(fileSystem, sourceInput, ctx.cwd, "Move source");
+      const source = await canonicalMutationTarget(fileSystem, sourceInput, ctx.cwd, "Move source");
+      await rejectContainingWorkspace(fileSystem, source.path, source.kind, ctx.cwd, "Move source");
       throwIfAborted(requestSignal);
       const destination = await canonicalMoveDestination(fileSystem, destinationInput, ctx.cwd);
       throwIfAborted(requestSignal);
-      if (source === destination) {
+      if (source.path === destination) {
         throw invalidInput("Move source and destination must differ");
+      }
+      if (source.kind === "directory" && isPathWithin(source.path, destination)) {
+        throw invalidInput(
+          "Move destination must not be inside the source directory",
+          "destination",
+        );
       }
       await authorizeMutation(
         "move",
         [
-          { access: "move", path: source },
+          { access: "move", path: source.path },
           { access: "move", path: destination },
         ],
+        source.kind === "directory" ? "folder" : "file",
         ctx,
         policy,
         requestSignal,
@@ -473,7 +572,7 @@ function createMoveToolWithDependencies(
         authorizationRetryTracker,
       );
       throwIfAborted(requestSignal);
-      await requireRegularFile(fileSystem, source, "Move source");
+      await requireMutationEntry(fileSystem, source.path, "Move source");
       throwIfAborted(requestSignal);
       try {
         await fileSystem.lstat(destination);
@@ -487,17 +586,19 @@ function createMoveToolWithDependencies(
         }
       }
       try {
-        await fileSystem.rename(source, destination);
+        await fileSystem.rename(source.path, destination);
       } catch {
         if (requestSignal?.aborted) {
           throw cancellationError(true);
         }
-        throw filesystemMutationError("Unable to move file");
+        throw filesystemMutationError(
+          source.kind === "directory" ? "Unable to move directory" : "Unable to move file",
+        );
       }
       if (requestSignal?.aborted) {
         throw cancellationError(true);
       }
-      return result({ operation: "move", source, destination });
+      return result({ operation: "move", source: source.path, destination });
     },
   };
 }
@@ -511,9 +612,9 @@ function createDeleteToolWithDependencies(
 ): FilesystemDeleteToolDefinition {
   return {
     name: "delete",
-    label: "Delete file",
-    description: "Delete one regular file after separate delete authorization.",
-    promptSnippet: "Delete an authorized file",
+    label: "Delete file or folder",
+    description: "Delete one regular file or directory tree after separate delete authorization.",
+    promptSnippet: "Delete an authorized file or folder",
     annotations: { destructiveHint: true },
     parameters: deleteParameters,
     outputSchema: filesystemDeleteDetailsSchema,
@@ -525,11 +626,25 @@ function createDeleteToolWithDependencies(
       const pathInput = inputPath(params?.path, "path");
       const requestSignal = signal ?? ctx.signal;
       throwIfAborted(requestSignal);
-      const path = await canonicalRegularFile(fileSystem, pathInput, ctx.cwd, "Delete target");
+      const target = await canonicalMutationTarget(fileSystem, pathInput, ctx.cwd, "Delete target");
+      await rejectContainingWorkspace(
+        fileSystem,
+        target.path,
+        target.kind,
+        ctx.cwd,
+        "Delete target",
+      );
       throwIfAborted(requestSignal);
       await authorizeMutation(
         "delete",
-        [{ access: "delete", path, policyPath: dirname(path) }],
+        [
+          {
+            access: "delete",
+            path: target.path,
+            policyPath: target.kind === "directory" ? target.path : dirname(target.path),
+          },
+        ],
+        target.kind === "directory" ? "folder" : "file",
         ctx,
         policy,
         requestSignal,
@@ -538,20 +653,27 @@ function createDeleteToolWithDependencies(
         authorizationRetryTracker,
       );
       throwIfAborted(requestSignal);
-      await requireRegularFile(fileSystem, path, "Delete target");
+      const recheckedKind = await requireMutationEntry(fileSystem, target.path, "Delete target");
+      if (recheckedKind !== target.kind) {
+        throw invalidInput("Delete target changed during the request", "path");
+      }
       throwIfAborted(requestSignal);
-      try {
-        await fileSystem.unlink(path);
-      } catch {
-        if (requestSignal?.aborted) {
-          throw cancellationError(true);
+      if (target.kind === "directory") {
+        await deleteTree(fileSystem, target.path, requestSignal);
+      } else {
+        try {
+          await fileSystem.unlink(target.path);
+        } catch {
+          if (requestSignal?.aborted) {
+            throw cancellationError(true);
+          }
+          throw filesystemMutationError("Unable to delete file");
         }
-        throw filesystemMutationError("Unable to delete file");
       }
       if (requestSignal?.aborted) {
         throw cancellationError(true);
       }
-      return result({ operation: "delete", path });
+      return result({ operation: "delete", path: target.path });
     },
   };
 }

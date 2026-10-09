@@ -12,7 +12,11 @@ import {
   removeFile,
   type CacheLockHandle,
 } from "./cache/locking.ts";
-import { isCacheEntry, isCacheProvenance } from "./cache/record-validation.ts";
+import {
+  CACHE_ENTRY_FORMAT_VERSION,
+  isCacheEntry,
+  isCacheProvenance,
+} from "./cache/record-validation.ts";
 import { readProjectCommandOrchestrationContext } from "./orchestration.ts";
 import type { ProjectCommandOutputDetails } from "./output.ts";
 import type { ProjectCommandStateSnapshot } from "./state-snapshot.ts";
@@ -95,7 +99,6 @@ export function defaultCacheRoot(): string {
   }
   return DEFAULT_CACHE_ROOT;
 }
-const CACHE_ENTRY_FORMAT_VERSION = 1 as const;
 const CACHE_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
 
 function cacheFileKey(scopeKey: string, logicalRequestKey: string): string {

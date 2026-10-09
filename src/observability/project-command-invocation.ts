@@ -18,10 +18,7 @@ export {
   type ProjectCommandInvocationRecorder,
 } from "./project-command-invocation/types.ts";
 
-export {
-  buildProjectCommandInvocationRecord,
-  createProjectCommandInvocationMeasurements,
-} from "./project-command-invocation/build.ts";
+export { buildProjectCommandInvocationRecord } from "./project-command-invocation/build.ts";
 
 export { summarizeProjectCommandInvocations } from "./project-command-invocation/summarize.ts";
 

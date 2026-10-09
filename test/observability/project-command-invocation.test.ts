@@ -58,7 +58,7 @@ describe("project command invocation metadata", () => {
     const record = buildProjectCommandInvocationRecord(input());
 
     expect(record).toMatchObject({
-      invocationFormatVersion: 1,
+      invocationFormatVersion: 2,
       sessionId: "session-1",
       toolCallId: "call-1",
       schemaHash: "schema-hash",
@@ -415,7 +415,7 @@ describe("project command invocation metadata", () => {
     ];
 
     expect(summarizeProjectCommandInvocations(records)).toMatchObject({
-      summaryFormatVersion: 1,
+      summaryFormatVersion: 2,
       sessionId: "session-1",
       invocationCount: 5,
       cacheDecisions: { miss: 1, hit: 1, forced: 1, ineligible: 1, invalidated: 1 },
@@ -438,12 +438,6 @@ describe("project command invocation metadata", () => {
       executionDurationMs: 40,
       outputBytes: { stdout: 617_280, stderr: 100 },
       truncationCounts: { stdout: 5, stderr: 0 },
-      measurements: {
-        cacheReuse: { before: 0, after: 1 },
-        cacheInvalidation: { before: 0, after: 1 },
-        truncation: { before: 0, after: 5 },
-        repeatedRequests: { before: 0, after: 1 },
-      },
       schemaHashes: ["schema-hash"],
     });
   });
@@ -459,9 +453,6 @@ describe("project command invocation metadata", () => {
       output: {
         stdout: { truncated: true, totalBytes: Number.NaN, totalLines: -1 },
         stderr: { truncated: false, totalBytes: Number.POSITIVE_INFINITY, totalLines: 0 },
-      },
-      measurements: {
-        cacheReuse: { before: Number.NaN, after: -1 },
       },
       schemaHash: 42,
       // oxlint-disable-next-line typescript/no-unsafe-type-assertion
@@ -484,7 +475,6 @@ describe("project command invocation metadata", () => {
     expect(summary.executionDurationMs).toBe(0);
     expect(summary.outputBytes).toEqual({ stdout: 0, stderr: 0 });
     expect(summary.truncationCounts).toEqual({ stdout: 1, stderr: 0 });
-    expect(summary.measurements.cacheReuse).toEqual({ before: 0, after: 0 });
     expect(summary.schemaHashes).toEqual([]);
   });
 

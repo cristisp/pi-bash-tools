@@ -3,15 +3,12 @@ import type { ProjectCommandCacheDecision } from "../../tools/project-command/ca
 import type { ProjectCommandExecutionStatus } from "../../tools/project-command/execution.ts";
 import { boundedIdentifier, boundedLookupOutcome, boundedNumber } from "../bounded.ts";
 import { hashCanonicalJson } from "../canonical-json.ts";
-import { measurementPair } from "../measurements.ts";
 import {
   PROJECT_COMMAND_INVOCATION_FORMAT_VERSION,
   PROJECT_COMMAND_INVOCATION_MAX_BYTES,
   PROJECT_COMMAND_INVOCATION_REASONS,
   type ProjectCommandInvocationLookupMetadata,
   type ProjectCommandInvocationLookupOutcome,
-  type ProjectCommandInvocationMeasurementState,
-  type ProjectCommandInvocationMeasurements,
   type ProjectCommandInvocationOutputMetadata,
   type ProjectCommandInvocationParameters,
   type ProjectCommandInvocationPublicationMetadata,
@@ -24,16 +21,6 @@ import {
 const MAX_PARAMETER_KEYS = 16;
 const MAX_PARAMETER_ITEMS = 16;
 const MAX_PARAMETER_LENGTH = 1_000_000;
-
-export const MEASUREMENT_KEYS = [
-  "cacheReuse",
-  "cacheInvalidation",
-  "truncation",
-  "repeatedRequests",
-] as const satisfies readonly (keyof ProjectCommandInvocationMeasurementState)[];
-
-export type MeasurementKey = (typeof MEASUREMENT_KEYS)[number];
-export type MutableMeasurementState = Record<MeasurementKey, number>;
 
 /** Clamp an untrusted lookup outcome string to the bounded persisted enum. */
 export function projectCommandInvocationLookupOutcome(
@@ -56,40 +43,6 @@ export function boundedOutput(
     stdout: stream(output?.stdout),
     stderr: stream(output?.stderr),
   };
-}
-
-export function createMeasurementState(): MutableMeasurementState {
-  return {
-    cacheReuse: 0,
-    cacheInvalidation: 0,
-    truncation: 0,
-    repeatedRequests: 0,
-  };
-}
-
-export function measurementsFromStates(
-  before: ProjectCommandInvocationMeasurementState,
-  after: ProjectCommandInvocationMeasurementState,
-): ProjectCommandInvocationMeasurements {
-  return Object.freeze({
-    cacheReuse: measurementPair(before.cacheReuse, after.cacheReuse),
-    cacheInvalidation: measurementPair(before.cacheInvalidation, after.cacheInvalidation),
-    truncation: measurementPair(before.truncation, after.truncation),
-    repeatedRequests: measurementPair(before.repeatedRequests, after.repeatedRequests),
-  });
-}
-
-export function boundedMeasurements(
-  value: ProjectCommandInvocationMeasurements | undefined,
-): ProjectCommandInvocationMeasurements | undefined {
-  if (value === undefined) return undefined;
-  const before = createMeasurementState();
-  const after = createMeasurementState();
-  for (const key of MEASUREMENT_KEYS) {
-    before[key] = boundedNumber(value[key].before);
-    after[key] = boundedNumber(value[key].after);
-  }
-  return measurementsFromStates(before, after);
 }
 
 export function boundedState(
@@ -267,7 +220,6 @@ export function boundedRecord(
       : { authorizationDurationMs: record.authorizationDurationMs }),
     ...(record.queueDurationMs === undefined ? {} : { queueDurationMs: record.queueDurationMs }),
     output: record.output,
-    ...(record.measurements === undefined ? {} : { measurements: record.measurements }),
     ...(record.flowId === undefined ? {} : { flowId: record.flowId }),
     ...(record.delegationId === undefined ? {} : { delegationId: record.delegationId }),
     ...(record.role === undefined ? {} : { role: record.role }),

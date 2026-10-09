@@ -8,13 +8,11 @@ import type {
 import type { ResultCategory } from "../../tools/errors.ts";
 import type { ProjectCommandCacheDecision } from "../../tools/project-command/cache.ts";
 import type { ProjectCommandExecutionStatus } from "../../tools/project-command/execution.ts";
-import type { MeasurementPair } from "../measurements.ts";
-
-export const PROJECT_COMMAND_INVOCATION_FORMAT_VERSION = 1 as const;
+export const PROJECT_COMMAND_INVOCATION_FORMAT_VERSION = 2 as const;
 export const PROJECT_COMMAND_INVOCATION_ENTRY_TYPE =
   "bash-tools.project-command-invocation" as const;
 export const PROJECT_COMMAND_INVOCATION_MAX_BYTES = 8 * 1024;
-export const PROJECT_COMMAND_SUMMARY_FORMAT_VERSION = 1 as const;
+export const PROJECT_COMMAND_SUMMARY_FORMAT_VERSION = 2 as const;
 export const PROJECT_COMMAND_SUMMARY_ENTRY_TYPE = "bash-tools.project-command-summary" as const;
 export const PROJECT_COMMAND_SUMMARY_MAX_BYTES = 8 * 1024;
 export const PROJECT_COMMAND_SUMMARY_MAX_COUNT = 1_000_000;
@@ -46,20 +44,6 @@ export interface ProjectCommandInvocationStreamMetadata {
 export interface ProjectCommandInvocationOutputMetadata {
   readonly stdout: ProjectCommandInvocationStreamMetadata;
   readonly stderr: ProjectCommandInvocationStreamMetadata;
-}
-
-export interface ProjectCommandInvocationMeasurementState {
-  readonly cacheReuse: number;
-  readonly cacheInvalidation: number;
-  readonly truncation: number;
-  readonly repeatedRequests: number;
-}
-
-export interface ProjectCommandInvocationMeasurements {
-  readonly cacheReuse: MeasurementPair;
-  readonly cacheInvalidation: MeasurementPair;
-  readonly truncation: MeasurementPair;
-  readonly repeatedRequests: MeasurementPair;
 }
 
 export interface ProjectCommandInvocationRepositoryStateMetadata {
@@ -117,7 +101,6 @@ export interface ProjectCommandInvocationRecordInput {
   /** Time a single-flight follower waited for the in-flight execution to settle. */
   readonly queueDurationMs?: number;
   readonly output?: ProjectCommandInvocationOutputMetadata;
-  readonly measurements?: ProjectCommandInvocationMeasurements;
   readonly producerScope?: "session" | "flow";
   readonly flowId?: string;
   readonly delegationId?: string;
@@ -158,7 +141,6 @@ export interface ProjectCommandInvocationRecord {
   readonly authorizationDurationMs?: number;
   readonly queueDurationMs?: number;
   readonly output: ProjectCommandInvocationOutputMetadata;
-  readonly measurements?: ProjectCommandInvocationMeasurements;
   readonly producerScope?: "session" | "flow";
   readonly flowId?: string;
   readonly delegationId?: string;
@@ -214,7 +196,6 @@ export interface ProjectCommandInvocationSummary {
     readonly stdout: number;
     readonly stderr: number;
   };
-  readonly measurements: ProjectCommandInvocationMeasurements;
   /** The first distinct schema hashes observed, capped for bounded persistence. */
   readonly schemaHashes: readonly string[];
 }
