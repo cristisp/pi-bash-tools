@@ -98,12 +98,3 @@ export function isBoundedOutputMetadata(
     isBoundedInteger(value.totalLines, 0, maximumLines)
   );
 }
-
-export function isValidPublishValue(value: unknown): value is { readonly flowId: string } {
-  return (
-    isRecord(value) &&
-    typeof value.flowId === "string" &&
-    FLOW_ID_PATTERN.test(value.flowId) &&
-    Object.keys(value).every((key) => key === "flowId")
-  );
-}

@@ -5,7 +5,6 @@ import { RESULT_CATEGORIES } from "../errors.ts";
 import type { ProjectCommandCacheDecision } from "./cache.ts";
 import { definedObjectProperties } from "./defined-properties.ts";
 import { sanitizeProjectCommandText } from "./diagnostics.ts";
-import type { ProjectCommandEvidencePublication } from "./evidence.ts";
 import type { ProjectCommandOutput } from "./execution.ts";
 import type { ProjectCommandOutputDetails } from "./output.ts";
 
@@ -81,9 +80,9 @@ type NodeProjectInfoDetails = {
  * Compact, sanitized projection of result details serialized into tool
  * content for the model. Internal authorization, cache, fingerprint, policy,
  * invocation, and timing metadata stay in `details` (which the cache and
- * tests rely on) and never appear in content. The bounded evidence `ref`, the
- * realized `publication` outcome of a requested publication, and bounded
- * coercion tokens are copied through, unchanged.
+ * tests rely on) and never appear in content. Bounded coercion tokens are
+ * copied through, unchanged; the auditing `pc_` evidence ref stays in
+ * `details` only.
  */
 export interface ProjectCommandModelContent {
   readonly [key: string]: unknown;
@@ -112,8 +111,6 @@ export interface ProjectCommandModelContent {
   readonly forced: boolean;
   readonly cacheDecision: ProjectCommandCacheDecision;
   readonly producerScope?: "session" | "flow";
-  readonly ref?: string;
-  readonly publication?: ProjectCommandEvidencePublication;
   readonly coercions?: readonly string[];
 }
 
@@ -149,18 +146,6 @@ const projectCommandErrorContractSchema = Type.Object(
     shapeDeterministic: Type.Optional(
       Type.Boolean({ description: "Whether the failure depends only on the request shape." }),
     ),
-  },
-  { additionalProperties: false },
-);
-
-const projectCommandPublicationSchema = Type.Object(
-  {
-    scope: Type.Union([Type.Literal("root"), Type.Literal("flow")], {
-      description: "Publication scope.",
-    }),
-    flowId: Type.Optional(Type.String({ description: "Target flow identifier." })),
-    published: Type.Boolean({ description: "Whether the evidence was published." }),
-    error: Type.Optional(Type.String({ description: "Bounded publication failure reason." })),
   },
   { additionalProperties: false },
 );
@@ -231,8 +216,6 @@ export const projectCommandModelContentSchema = Type.Object(
         description: "Evidence scope of the producing run.",
       }),
     ),
-    ref: Type.Optional(Type.String({ description: "Stable pc_ evidence reference." })),
-    publication: Type.Optional(projectCommandPublicationSchema),
     coercions: Type.Optional(
       Type.Array(Type.String(), { description: "Request fields normalized or rejected up front." }),
     ),
@@ -292,8 +275,6 @@ export function projectCommandModelContent(
     cacheDecision: details.cacheDecision,
     ...definedObjectProperties([
       ["producerScope", details.producerScope],
-      ["ref", details.ref],
-      ["publication", details.publication],
       ["coercions", details.coercions],
     ]),
   };

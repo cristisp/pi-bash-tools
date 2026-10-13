@@ -8,17 +8,11 @@ The project command policy authorizes the semantic command ID together with its 
 
 ## Input forms
 
-Every execution request has a `commandId` and may include `force`, `covers`, and `publish`.
+Every execution request has a `commandId` and may include `force`.
 
 `force` is a boolean or the compatibility literal `"true"` or `"false"`, and bypasses a result-cache reuse without changing the cache key.
 
-`covers` contains at most 64 opaque strings, each 1 through 512 characters, that are preserved in evidence.
-
-`publish` is `{ "flowId": "bounded-flow-id" }` and explicitly publishes compatible evidence after authorization.
-
-A lookup request is a separate shape containing only `ref`, optional `flowId`, and optional `covers`.
-
-Lookup requests never execute a command and cannot include `force`, `publish`, or command execution fields.
+The retired evidence fields (`ref`, `flowId`, `covers`, and `publish`) are rejected with an `invalid-request` error.
 
 Every optional field also accepts explicit `null`, treated as omitted (strict-decoder compatibility).
 
@@ -151,17 +145,17 @@ A successful or failed execution returns a details object with the following pri
 }
 ```
 
-The details may also include project information, `diagnostic`, `suggestedAction`, fingerprints, relevant inputs, repository state, mutability, concurrency, drift, provenance, publication, and producer fields.
+The details may also include project information, `diagnostic`, `suggestedAction`, fingerprints, relevant inputs, repository state, mutability, concurrency, drift, provenance, and producer fields.
 
-Model-facing content carries the bounded evidence `ref` when a completed execution stored evidence, the `publication` outcome when the request asked to publish, and the bounded coercion tokens when the request carried nullable placeholders that were treated as absent; each key is omitted entirely when it is undefined, and the remaining evidence metadata stays in details.
-Failing and cancelled executions report the stored `pc_` reference in the failure or cancellation message and keep `ref` and `publication` in their error details and invocation records.
-Only the reference enters the message; the realized publication outcome stays in error details.
+Model-facing content carries the bounded coercion tokens when the request carried nullable placeholders that were treated as absent; the key is omitted entirely when it is undefined, and the remaining evidence metadata stays in details.
+The deterministic `pc_` audit reference stays in details, error details, and invocation records, and never enters model-facing content.
+Failing and cancelled executions report the `pc_` reference in the failure or cancellation message; only the reference enters the message.
 
 `node_project_info` also exposes `nodeVersion`, `manifestPresent`, `packageManager`, `scripts`, and `applicableCommands` when available.
 
 ## Structured content contract
 
-The tool declares `outputSchema` (the `projectCommandModelContentSchema` projection) and mirrors the model-facing JSON text exactly in `structuredContent`, for executions, cached reuse, and evidence lookups.
+The tool declares `outputSchema` (the `projectCommandModelContentSchema` projection) and mirrors the model-facing JSON text exactly in `structuredContent`, for executions and cached reuse.
 
 The schema describes the compact, sanitized projection, not the full `details`: internal metadata such as fingerprints, policy and reuse policy ids, invocation and tool-call ids, durations, relevant inputs, scope, and repository state stays only in `details` and never enters `structuredContent`.
 
@@ -179,7 +173,7 @@ Non-mutating identical requests can use single-flight coordination, which is rep
 
 Repository state includes the canonical repository identity, `HEAD`, and a dirty-files digest that includes Git-reported paths, content, mode, size, and status.
 
-A completed execution that stored evidence returns the bounded `pc_` reference in model-facing content, and a request that asked to publish reports the realized publication outcome there.
-A failing or cancelled execution that stored evidence reports the `pc_` reference in the failure or cancellation message, and the realized publication outcome remains in error details.
+A completed execution reports the deterministic `pc_` audit reference in details, error details, and invocation records; the reference never enters model-facing content.
+A failing or cancelled execution reports the `pc_` reference in the failure or cancellation message.
 
 See [Artifacts and observability](artifacts.md) for cache paths, evidence scope, and invocation records.

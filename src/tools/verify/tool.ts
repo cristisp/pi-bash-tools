@@ -639,11 +639,7 @@ function failureResultCategory(error: unknown): ResultCategory {
     return "RESOLUTION_FAILURE";
   }
   if (code === "cancelled") return "CANCELLED";
-  if (
-    code.startsWith("policy-") ||
-    code.includes("authorization") ||
-    code === "publication-failure"
-  ) {
+  if (code.startsWith("policy-") || code.includes("authorization")) {
     return "POLICY_FAILURE";
   }
   return "IMPLEMENTATION_FAILURE";
@@ -661,11 +657,7 @@ function failureReason(
   if (code === "not-found" || code.includes("resolution") || code.includes("repository-state")) {
     return "resolution-failure";
   }
-  if (
-    code.startsWith("policy-") ||
-    code.includes("authorization") ||
-    code === "publication-failure"
-  ) {
+  if (code.startsWith("policy-") || code.includes("authorization")) {
     return "policy-failure";
   }
   return executionStarted ? "execution-failure" : "preparation-failure";
@@ -716,9 +708,8 @@ function verifyFailureInvocationDetails(
   | "role"
   | "ref"
 > {
-  const flowId = input?.flowId ?? rawVerifyStringParameter(rawParams, "flowId");
   const lookupAttempted = ref !== undefined;
-  const lookupOutcome = lookupAttempted ? verifyLookupFailureOutcome(input, error) : undefined;
+  const lookupOutcome = lookupAttempted ? verifyLookupFailureOutcome(error) : undefined;
   const fresh = input?.fresh === true || rawVerifyParameter(rawParams, "fresh") === true;
   return {
     redactedParameters: {
@@ -729,7 +720,6 @@ function verifyFailureInvocationDetails(
             ? []
             : VERIFY_PHASES.filter((phase) => !input.omit.includes(phase)),
       ...(ref === undefined ? {} : { lookup: true, ref }),
-      ...(flowId === undefined ? {} : { flowId }),
     },
     resultCategory: failureResultCategory(error),
     executed: executionStarted,
@@ -1014,45 +1004,68 @@ async function runVerifySteps(options: VerifyStepRunOptions, index = 0): Promise
 function publishVerifyEvidence(options: {
   readonly cache: VerifyEvidenceCache;
   readonly record: VerifyEvidenceRecord;
-  readonly input: NormalizedVerifyInput;
+  readonly flowId: string | undefined;
   readonly state: VerifyRepositoryState | undefined;
   readonly finalState: VerifyRepositoryState | undefined;
   readonly stableForCache: boolean;
 }): {
   readonly outputRecord: VerifyEvidenceRecord;
-  readonly publication: ProjectCommandInvocationPublicationMetadata | undefined;
+  readonly invocationPublication: ProjectCommandInvocationPublicationMetadata | undefined;
 } {
-  if (options.input.publish === undefined) {
-    return { outputRecord: options.record, publication: undefined };
+  const { flowId } = options;
+  if (flowId === undefined) {
+    return { outputRecord: options.record, invocationPublication: undefined };
   }
+  const failure = (
+    error: string,
+  ): {
+    outputRecord: VerifyEvidenceRecord;
+    invocationPublication: ProjectCommandInvocationPublicationMetadata;
+  } => {
+    const outputRecord: VerifyEvidenceRecord = {
+      ...options.record,
+      publication: {
+        flowId,
+        producerScope: "flow",
+        published: false,
+        error,
+      },
+    };
+    return {
+      outputRecord,
+      invocationPublication: {
+        scope: "flow",
+        flowId,
+        published: false,
+        error,
+      },
+    };
+  };
   if (!options.stableForCache || options.state === undefined || options.finalState === undefined) {
-    throw new VerifyToolError(
-      "publication-failure",
-      `verify could not publish ${options.record.ref}: repository state is unreadable or changed during execution; rerun with a readable, stable repository`,
+    return failure(
+      `verify could not publish ${options.record.ref}: repository state is unreadable or changed during execution`,
     );
   }
   if (options.state.repositoryIdentity !== options.finalState.repositoryIdentity) {
-    throw new VerifyToolError(
-      "publication-failure",
-      `verify could not publish ${options.record.ref}: repository identity changed from ${options.state.repositoryIdentity} to ${options.finalState.repositoryIdentity}`,
+    return failure(
+      `verify could not publish ${options.record.ref}: repository identity changed during execution`,
     );
   }
   const published = options.cache.publish?.(
     options.record.ref,
-    options.input.publish.flowId,
+    flowId,
     options.finalState.repositoryIdentity,
   );
   if (published === undefined) {
-    throw new VerifyToolError(
-      "publication-failure",
-      `verify could not publish ${options.record.ref} to flow ${options.input.publish.flowId}: no compatible stable evidence was stored`,
+    return failure(
+      `verify could not publish ${options.record.ref} to flow ${flowId}: no compatible stable evidence was stored`,
     );
   }
   return {
     outputRecord: published,
-    publication: {
+    invocationPublication: {
       scope: "flow",
-      flowId: options.input.publish.flowId,
+      flowId,
       published: true,
     },
   };
@@ -1221,7 +1234,6 @@ async function stableVerifyCacheLookup(options: {
 }): Promise<StableVerifyCacheLookup | undefined> {
   if (
     options.input.fresh ||
-    options.input.publish !== undefined ||
     options.state === undefined ||
     options.repositoryStateReader === undefined
   ) {
@@ -1256,39 +1268,25 @@ async function stableVerifyCacheLookup(options: {
 }
 
 function verifyLookupFailureOutcome(
-  input: NormalizedVerifyInput | undefined,
   error: unknown,
 ): ProjectCommandInvocationLookupOutcome | undefined {
-  if (input === undefined) return undefined;
-  const orchestration = readProjectCommandOrchestrationContext();
-  if (
-    input.flowId !== undefined &&
-    (orchestration.effectiveScope !== "flow" || orchestration.flowId !== input.flowId)
-  ) {
-    return projectCommandInvocationLookupOutcome("unauthorized-flow");
-  }
   return error instanceof VerifyToolError && error.code === "not-found"
     ? projectCommandInvocationLookupOutcome("not-found")
     : undefined;
 }
 
 function verifyLookupNotFoundError(
-  input: NormalizedVerifyInput,
   orchestration: ReturnType<typeof readProjectCommandOrchestrationContext>,
 ): VerifyToolError {
+  const flowId = effectiveOrchestrationFlowId(orchestration);
   const bucket =
-    input.flowId !== undefined
-      ? `the effective flow scope ${input.flowId}`
-      : effectiveOrchestrationFlowId(orchestration) !== undefined
-        ? `the effective flow scope ${orchestration.flowId}`
-        : "the process-local root-session cache";
+    flowId !== undefined
+      ? `the effective flow scope ${flowId}`
+      : "the process-local root-session cache";
   const guidance =
-    input.flowId !== undefined &&
-    (orchestration.effectiveScope !== "flow" || orchestration.flowId !== input.flowId)
-      ? "A flow lookup requires the same effective flow scope; environment variables alone do not authorize a lookup."
-      : bucket === "the process-local root-session cache"
-        ? "Root-session refs are process-scoped and are not durable across processes."
-        : "Only refs from the current effective flow are searchable.";
+    flowId !== undefined
+      ? "Only refs from the current effective flow are searchable."
+      : "Root-session refs are process-scoped and are not durable across processes.";
   return new VerifyToolError("not-found", `validation ref not found in ${bucket}. ${guidance}`, {
     resultCategory: "RESOLUTION_FAILURE",
     executed: false,
@@ -1360,22 +1358,8 @@ async function lookupVerifyEvidence(options: {
   const { dependencies, input, requestSignal, ctx, toolCallId, invocationStartedAt } = options;
   if (input.ref === undefined) return undefined;
   const orchestration = readProjectCommandOrchestrationContext();
-  if (
-    input.flowId !== undefined &&
-    (orchestration.effectiveScope !== "flow" || orchestration.flowId !== input.flowId)
-  ) {
-    throw new VerifyToolError(
-      "not-found",
-      `validation ref not found in the effective flow scope ${input.flowId}. A flow lookup requires the same effective flow scope; environment variables alone do not authorize a lookup.`,
-      {
-        resultCategory: "RESOLUTION_FAILURE",
-        executed: false,
-        retryable: false,
-      },
-    );
-  }
-  const record = dependencies.cache.getByRef(input.ref, input.flowId);
-  if (record === undefined) throw verifyLookupNotFoundError(input, orchestration);
+  const record = dependencies.cache.getByRef(input.ref);
+  if (record === undefined) throw verifyLookupNotFoundError(orchestration);
   let currentRepositoryState: VerifyRepositoryState | undefined;
   if (dependencies.repositoryStateReader !== undefined) {
     try {
@@ -1630,10 +1614,10 @@ async function executePreparedVerify(options: {
     stateDrift,
   });
   if (stableForCache && !verifyStepTelemetry.sharedExecution) dependencies.cache.set(record);
-  const { outputRecord, publication } = publishVerifyEvidence({
+  const { outputRecord, invocationPublication } = publishVerifyEvidence({
     cache: dependencies.cache,
     record,
-    input,
+    flowId: effectiveOrchestrationFlowId(orchestration),
     state,
     finalState,
     stableForCache,
@@ -1647,7 +1631,7 @@ async function executePreparedVerify(options: {
     prepared,
     outputRecord,
     false,
-    publication,
+    invocationPublication,
     {
       cacheDecision: input.fresh ? "forced" : stableForCache ? "miss" : "ineligible",
       concurrentExecutions: record.concurrentExecutions,
@@ -1770,7 +1754,7 @@ function createVerifyToolWithDependencies(
     name: "verify",
     label: "Verify",
     description:
-      "Run package-script format, lint, typecheck, and test phases in fixed order with bounded validation evidence and stable lookup references. Execution preflights package scripts and rejects any non-omitted phase whose selected script is unavailable; retry with that phase in omit. Use fresh: true to rerun without changing the evidence key, and use ref with optional flowId only for lookup without execution. Executing requests may include covers and publish: { flowId }. Root-session refs are process-scoped; flow refs are durable only within an authorized flow.",
+      "Run package-script format, lint, typecheck, and test phases in fixed order with bounded validation evidence and stable lookup references. Execution preflights package scripts and rejects any non-omitted phase whose selected script is unavailable; retry with that phase in omit. Use fresh: true to rerun without changing the evidence key, and use ref alone for lookup without execution. Completed runs publish evidence to the effective flow scope automatically. Root-session refs are process-scoped; flow refs are durable only within the effective flow.",
     promptSnippet: "Run fixed-order project verification",
     parameters: verifyInputSchema,
     outputSchema: verifyOutputSchema,

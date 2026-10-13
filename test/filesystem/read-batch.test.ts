@@ -22,10 +22,6 @@ import {
   type ReadBatchInput,
   type ReadBatchToolContext,
 } from "../../src/tools/filesystem/read-batch-tool.ts";
-import type {
-  ReadEvidenceRecord,
-  ReadEvidenceStore,
-} from "../../src/tools/filesystem/read-evidence-store.ts";
 import { createPolicyTestFixtures } from "../policy/test-fixtures.ts";
 
 const fixtures = createPolicyTestFixtures();
@@ -56,15 +52,6 @@ function recorderCapture(): {
       records.push(record);
     },
     records,
-  };
-}
-
-function storeDouble(published: boolean): ReadEvidenceStore {
-  return {
-    getByRef: () => undefined,
-    lookupOutcome: () => "missing",
-    publish: () => published,
-    clear: () => undefined,
   };
 }
 
@@ -101,7 +88,7 @@ it("reads bounded ranges in one request and returns per-path errors", async () =
     content: "second",
     output: { truncated: false, totalLines: 4 },
   });
-  expect(result.details.results[0]?.ref).toMatch(/^rr_[a-f0-9]{24}$/u);
+  expect(result.details.results[0]?.contentHash).toMatch(/^[0-9a-f]{64}$/u);
   expect(result.details.results[1]).toMatchObject({
     path: "src/missing.ts",
     error: { code: "path-resolution-failure" },
@@ -216,7 +203,7 @@ it("allows disjoint ranges for the same path in one request", async () => {
   expect(result.details.continuation).toBeUndefined();
 });
 
-it("returns unchanged and the prior ref for equivalent normalized reads", async () => {
+it("returns unchanged with the content hash for equivalent normalized reads", async () => {
   const directory = await fixtures.createDirectory();
   await writeFile(join(directory, "read.ts"), "alpha\nbeta\n");
   const configPath = join(await realpath(directory), "bash-tools.json");
@@ -252,12 +239,11 @@ it("returns unchanged and the prior ref for equivalent normalized reads", async 
     path: "read.ts",
     range: { offset: 1, limit: 1 },
     unchanged: true,
-    ref: first.details.results[0]?.ref,
     contentHash: expectedHash,
   });
 });
 
-it("refreshes the reference after the file content changes", async () => {
+it("refreshes the content hash after the file content changes", async () => {
   const directory = await fixtures.createDirectory();
   const filePath = join(directory, "changed.txt");
   await writeFile(filePath, "before");
@@ -286,7 +272,7 @@ it("refreshes the reference after the file content changes", async () => {
     unchanged: false,
     content: "after",
   });
-  expect(second.details.results[0]?.ref).not.toBe(first.details.results[0]?.ref);
+  expect(second.details.results[0]?.contentHash).not.toBe(first.details.results[0]?.contentHash);
 });
 
 it("caps the aggregate returned content and reports aggregate-limit skips", async () => {
@@ -454,7 +440,6 @@ it("returns stable content hashes for fresh and unchanged observations", async (
   expect(second.details.results[0]).toEqual({
     path: "hashed.txt",
     unchanged: true,
-    ref: first.details.results[0]?.ref,
     contentHash: expectedHash,
   });
 });
@@ -501,7 +486,7 @@ describe("read batch invocation records", () => {
     const record = capture.records[0];
     if (record === undefined) throw new Error("expected one invocation record");
     expect(record).toMatchObject({
-      invocationFormatVersion: 1,
+      invocationFormatVersion: 2,
       sessionId: "session-1",
       toolCallId: "call-1",
       reason: "completed",
@@ -529,10 +514,10 @@ describe("read batch invocation records", () => {
     const serialized = JSON.stringify(record);
     expect(serialized).not.toContain("src.txt");
     expect(serialized).not.toContain("one\\ntwo\\n");
-    expect(record.items[0]?.ref).toBe(result.details.results[0]?.ref);
+    expect(Object.hasOwn(record.items[0] ?? {}, "ref")).toBe(false);
   });
 
-  it("counts unchanged repeats and carries the prior refs", async () => {
+  it("counts unchanged repeats without carrying refs", async () => {
     const { configPath } = await invocationFixture();
     const root = await realpath(dirname(configPath));
     await writeFile(join(root, "read.ts"), "alpha\n");
@@ -562,7 +547,11 @@ describe("read batch invocation records", () => {
     expect(capture.records[1]?.aggregate.unchangedCount).toBe(1);
     expect(capture.records[1]?.aggregate.contentBytes).toBe(0);
     expect(capture.records[1]?.items[0]?.unchanged).toBe(true);
-    expect(capture.records[1]?.items[0]?.ref).toBe(capture.records[0]?.items[0]?.ref);
+    for (const record of capture.records) {
+      for (const item of record.items) {
+        expect(Object.hasOwn(item, "ref")).toBe(false);
+      }
+    }
   });
 
   it("records invalid requests and rethrows without item data", async () => {
@@ -629,7 +618,7 @@ describe("read batch invocation records", () => {
     });
 
     expect(malformed).toMatchObject({
-      invocationFormatVersion: 1,
+      invocationFormatVersion: 2,
       reason: "failed",
       requestedPaths: 0,
       durationMs: 0,
@@ -770,7 +759,7 @@ describe("read batch invocation records", () => {
     });
   });
 
-  it("records orchestration attribution and a failed publication block", async () => {
+  it("records orchestration attribution without publication fields", async () => {
     const { configPath } = await invocationFixture();
     const root = await realpath(dirname(configPath));
     const capture = recorderCapture();
@@ -785,7 +774,7 @@ describe("read batch invocation records", () => {
     try {
       await tool.execute(
         "call-1",
-        { paths: [{ path: "missing.txt" }], publish: { flowId: "flow-a" } },
+        { paths: [{ path: "missing.txt" }] },
         undefined,
         undefined,
         context(root, "session-1"),
@@ -797,82 +786,11 @@ describe("read batch invocation records", () => {
         delegationId: "delegation-1",
         scope: "flow",
         flowId: "flow-a",
-        publication: {
-          scope: "flow",
-          flowId: "flow-a",
-          published: false,
-          error: "Published read evidence requires a fresh read of every requested path.",
-        },
       });
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
-  it("records a successful publication outcome", async () => {
-    const { configPath } = await invocationFixture();
-    const root = await realpath(dirname(configPath));
-    await writeFile(join(root, "read.ts"), "alpha\n");
-    const capture = recorderCapture();
-    const tool = createReadBatchToolForTesting({
-      configPath,
-      invocationRecorder: capture.recorder,
-      readEvidenceStore: storeDouble(true),
-    });
-    vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
-    vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
-    vi.stubEnv("PI_ORCHESTRATION_ROLE", "worker");
-    vi.stubEnv("PI_DELEGATION_ID", "delegation-1");
-    try {
-      await tool.execute(
-        "call-1",
-        { paths: [{ path: "read.ts" }], publish: { flowId: "flow-a" } },
-        undefined,
-        undefined,
-        context(root, "session-1"),
-      );
-
-      expect(capture.records[0]).toMatchObject({
-        role: "worker",
-        delegationId: "delegation-1",
-        scope: "flow",
-        flowId: "flow-a",
-        publication: { scope: "flow", flowId: "flow-a", published: true },
-      });
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
-  it("records a store-denied publication outcome", async () => {
-    const { configPath } = await invocationFixture();
-    const root = await realpath(dirname(configPath));
-    await writeFile(join(root, "read.ts"), "alpha\n");
-    const capture = recorderCapture();
-    const tool = createReadBatchToolForTesting({
-      configPath,
-      invocationRecorder: capture.recorder,
-      readEvidenceStore: storeDouble(false),
-    });
-    vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
-    vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
-    try {
-      await tool.execute(
-        "call-1",
-        { paths: [{ path: "read.ts" }], publish: { flowId: "flow-a" } },
-        undefined,
-        undefined,
-        context(root, "session-1"),
-      );
-
-      expect(capture.records[0]).toMatchObject({
-        publication: {
-          scope: "flow",
-          flowId: "flow-a",
-          published: false,
-          error: "Read evidence was not published to the requested flow.",
-        },
-      });
+      for (const record of capture.records) {
+        expect(Object.hasOwn(record, "publication")).toBe(false);
+        expect(Object.hasOwn(record, "lookup")).toBe(false);
+      }
     } finally {
       vi.unstubAllEnvs();
     }
@@ -899,38 +817,7 @@ describe("read batch invocation records", () => {
     expect(Object.hasOwn(capture.records[0] ?? {}, "role")).toBe(false);
     expect(Object.hasOwn(capture.records[0] ?? {}, "delegationId")).toBe(false);
     expect(Object.hasOwn(capture.records[0] ?? {}, "publication")).toBe(false);
-  });
-
-  it("records attribution on a lookup invocation without a publication block", async () => {
-    const { configPath } = await invocationFixture();
-    const root = await realpath(dirname(configPath));
-    const capture = recorderCapture();
-    const tool = createReadBatchToolForTesting({
-      configPath,
-      invocationRecorder: capture.recorder,
-    });
-    vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
-    vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
-    vi.stubEnv("PI_ORCHESTRATION_ROLE", "reviewer");
-    try {
-      await expect(
-        tool.execute(
-          "call-1",
-          { ref: "rr_000000000000000000000000" },
-          undefined,
-          undefined,
-          context(root, "session-1"),
-        ),
-      ).rejects.toThrow(/not found/u);
-
-      expect(capture.records[0]).toMatchObject({ role: "reviewer" });
-      expect(capture.records[0]?.lookup?.attempted).toBe(true);
-      for (const record of capture.records) {
-        expect(Object.hasOwn(record, "publication")).toBe(false);
-      }
-    } finally {
-      vi.unstubAllEnvs();
-    }
+    expect(Object.hasOwn(capture.records[0] ?? {}, "lookup")).toBe(false);
   });
 });
 
@@ -1015,50 +902,59 @@ describe("read batch authorization attribution", () => {
   });
 });
 
-it("coerces null placeholders to omitted fields and reports the coercions", async () => {
+it("coerces a null paths placeholder to absent and fails closed", async () => {
   const directory = await fixtures.createDirectory();
-  await writeFile(join(directory, "one.ts"), "one\n");
   const configPath = join(await realpath(directory), "bash-tools.json");
   await writeFile(configPath, JSON.stringify({ version: 1 }));
   const tool = createReadBatchToolForTesting({ configPath });
 
-  const result = await tool.execute(
-    "read-null",
-    { paths: [{ path: "one.ts" }], ref: null, flowId: null, covers: null, publish: null },
-    undefined,
-    undefined,
-    context(directory),
-  );
-  expect(result.details.results[0]).toMatchObject({ path: "one.ts", unchanged: false });
-  expect(result.details.coercions).toEqual([
-    "ref:null-to-absent",
-    "flowId:null-to-absent",
-    "covers:null-to-absent",
-    "publish:null-to-absent",
-  ]);
+  await expect(
+    tool.execute("read-null", { paths: null }, undefined, undefined, context(directory)),
+  ).rejects.toThrow(/paths must contain at least one entry/u);
+});
 
-  const ref = result.details.results[0]?.ref;
-  expect(ref).toMatch(/^rr_[a-f0-9]{24}$/u);
+it("keeps null placeholders and retired request fields fail-closed for read_batch", async () => {
+  const directory = await fixtures.createDirectory();
+  const configPath = join(await realpath(directory), "bash-tools.json");
+  await writeFile(configPath, JSON.stringify({ version: 1 }));
+  const tool = createReadBatchToolForTesting({ configPath });
+
   await expect(
     tool.execute(
-      "read-null-lookup",
-      { ref, flowId: null, covers: null },
+      "retired-ref",
+      { ref: "junk-string" } as never,
       undefined,
       undefined,
       context(directory),
     ),
-  ).rejects.toThrow(/not found in the process-local root-session store/u);
-});
-
-it("keeps null placeholders fail-closed for read_batch", async () => {
-  const directory = await fixtures.createDirectory();
-  const configPath = join(await realpath(directory), "bash-tools.json");
-  await writeFile(configPath, JSON.stringify({ version: 1 }));
-  const tool = createReadBatchToolForTesting({ configPath });
-
+  ).rejects.toThrow(/unsupported request field "ref"/u);
   await expect(
-    tool.execute("bad-ref", { ref: "junk-string" }, undefined, undefined, context(directory)),
-  ).rejects.toThrow(/ref must be a read_batch evidence reference/u);
+    tool.execute(
+      "retired-publish",
+      { publish: null } as never,
+      undefined,
+      undefined,
+      context(directory),
+    ),
+  ).rejects.toThrow(/unsupported request field "publish"/u);
+  await expect(
+    tool.execute(
+      "retired-flow",
+      { flowId: null } as never,
+      undefined,
+      undefined,
+      context(directory),
+    ),
+  ).rejects.toThrow(/unsupported request field "flowId"/u);
+  await expect(
+    tool.execute(
+      "retired-covers",
+      { covers: null } as never,
+      undefined,
+      undefined,
+      context(directory),
+    ),
+  ).rejects.toThrow(/unsupported request field "covers"/u);
   await expect(
     tool.execute(
       "future-null",
@@ -1069,135 +965,11 @@ it("keeps null placeholders fail-closed for read_batch", async () => {
     ),
   ).rejects.toThrow(/unsupported request field "futureOption"/u);
   await expect(
-    tool.execute("empty-ref", { ref: null, paths: [] }, undefined, undefined, context(directory)),
+    tool.execute("empty-paths", { paths: [] }, undefined, undefined, context(directory)),
   ).rejects.toThrow(/paths must contain at least one entry/u);
 });
 
 describe("records one invocation per terminal path", () => {
-  function storeBackedDouble(): ReadEvidenceStore {
-    const records = new Map<string, ReadEvidenceRecord>();
-    return {
-      getByRef: (ref) => records.get(ref),
-      lookupOutcome: (ref) => (records.has(ref) ? "found" : "missing"),
-      publish: (record) => {
-        records.set(record.ref, record);
-        return true;
-      },
-      clear: () => records.clear(),
-    };
-  }
-
-  it("records exactly one completed lookup record for a lookup hit", async () => {
-    const { configPath } = await invocationFixture();
-    const root = await realpath(dirname(configPath));
-    await writeFile(join(root, "read.ts"), "alpha\n");
-    const capture = recorderCapture();
-    const tool = createReadBatchToolForTesting({
-      configPath,
-      invocationRecorder: capture.recorder,
-      readEvidenceStore: storeBackedDouble(),
-    });
-    vi.stubEnv("PI_ORCHESTRATION_FLOW", "flow-a");
-    vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
-    try {
-      const published = await tool.execute(
-        "publish",
-        { paths: [{ path: "read.ts" }], publish: { flowId: "flow-a" } },
-        undefined,
-        undefined,
-        context(root, "session-1"),
-      );
-      const ref = published.details.publish?.ref;
-      expect(ref).toMatch(/^rr_[a-f0-9]{24}$/u);
-
-      const lookup = await tool.execute(
-        "lookup",
-        { ref },
-        undefined,
-        undefined,
-        context(root, "session-1"),
-      );
-
-      expect(lookup.details.lookup?.executed).toBe(false);
-      expect(lookup.structuredContent).toEqual(lookup.details);
-      expect(Check(readBatchDetailsSchema, lookup.structuredContent)).toBe(true);
-      expect(capture.records).toHaveLength(2);
-      expect(capture.records[1]).toMatchObject({
-        reason: "completed",
-        executed: false,
-        requestedPaths: 0,
-        lookup: { attempted: true, success: true, outcome: "success" },
-      });
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
-  it("records exactly one completed not-found record for a lookup miss", async () => {
-    const { configPath } = await invocationFixture();
-    const root = await realpath(dirname(configPath));
-    const capture = recorderCapture();
-    const tool = createReadBatchToolForTesting({
-      configPath,
-      invocationRecorder: capture.recorder,
-      readEvidenceStore: storeDouble(false),
-    });
-
-    await expect(
-      tool.execute(
-        "call-1",
-        { ref: "rr_000000000000000000000000" },
-        undefined,
-        undefined,
-        context(root, "session-1"),
-      ),
-    ).rejects.toThrow(/not found/u);
-
-    expect(capture.records).toHaveLength(1);
-    expect(capture.records[0]).toMatchObject({
-      reason: "completed",
-      executed: false,
-      requestedPaths: 0,
-      lookup: { attempted: true, success: false, failure: "not-found", outcome: "not-found" },
-    });
-  });
-
-  it("records exactly one failed record when the store lookup throws", async () => {
-    const { configPath } = await invocationFixture();
-    const root = await realpath(dirname(configPath));
-    const capture = recorderCapture();
-    const failingStore: ReadEvidenceStore = {
-      getByRef: () => {
-        throw new Error("store unavailable");
-      },
-      lookupOutcome: () => "missing",
-      publish: () => false,
-      clear: () => undefined,
-    };
-    const tool = createReadBatchToolForTesting({
-      configPath,
-      invocationRecorder: capture.recorder,
-      readEvidenceStore: failingStore,
-    });
-
-    await expect(
-      tool.execute(
-        "call-1",
-        { ref: "rr_000000000000000000000000" },
-        undefined,
-        undefined,
-        context(root, "session-1"),
-      ),
-    ).rejects.toThrow(/store unavailable/u);
-
-    expect(capture.records).toHaveLength(1);
-    expect(capture.records[0]).toMatchObject({
-      reason: "failed",
-      executed: false,
-      lookup: { attempted: true, success: false, failure: "lookup-failure" },
-    });
-  });
-
   it("records exactly one completed record for a normal batch read", async () => {
     const { configPath } = await invocationFixture();
     const root = await realpath(dirname(configPath));

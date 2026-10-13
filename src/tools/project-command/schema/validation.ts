@@ -5,7 +5,7 @@ import {
   withToolErrorContract,
   type ToolErrorContract,
 } from "../../errors.ts";
-import { FLOW_ID_PATTERN, isRecord, isValidPublishValue } from "../../value-validation.ts";
+import { isRecord } from "../../value-validation.ts";
 import { projectCommandIdGuidance } from "../command-id-guidance.ts";
 import { getProjectCommandDefinitions, type ProjectCommandDefinition } from "../definitions.ts";
 import { boundedEvidenceRefSegment } from "../diagnostics.ts";
@@ -18,11 +18,7 @@ import {
   validateNodeTestPaths,
   validateProjectCommandRevision,
 } from "../parameters.ts";
-import type {
-  ProjectCommandEvidenceLookup,
-  ProjectCommandInput,
-  ProjectCommandInputFor,
-} from "../schema.ts";
+import type { ProjectCommandInput, ProjectCommandInputFor } from "../schema.ts";
 
 function defaultErrorContract(message: string): ToolErrorContract {
   return createToolErrorContract({
@@ -124,38 +120,6 @@ export function parseJsonStringArray(
   return undefined;
 }
 
-function validateEvidenceIdentifier(
-  value: unknown,
-  field: string,
-  pattern: RegExp,
-): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "string" || !pattern.test(value)) {
-    throw invalidRequest(field, {
-      remediation: `Provide ${field} with the expected bounded identifier shape and retry.`,
-      correctedExample: field === "ref" ? { ref: "pc_example" } : { flowId: "flow-1" },
-    });
-  }
-  return value;
-}
-
-function validateEvidenceCovers(value: unknown, commandId: string): readonly string[] | undefined {
-  if (value === undefined) return undefined;
-  if (
-    !Array.isArray(value) ||
-    value.length > 64 ||
-    !value.every(
-      (cover): cover is string =>
-        typeof cover === "string" && cover.length > 0 && cover.length <= 512,
-    )
-  ) {
-    throw invalidRequest("covers", {
-      correctedExample: { commandId, covers: ["AC-001"] },
-    });
-  }
-  return value;
-}
-
 function validateNodeScriptVariant(
   value: unknown,
   family: "test" | "lint" | "format",
@@ -209,15 +173,14 @@ function findDefinition(
 }
 
 function validateRequestKeys(keys: readonly string[], commandId: string): void {
-  const evidenceKeys = ["publish", "covers"];
   const expectedKeys =
     commandId === "node_test"
-      ? ["commandId", "force", "paths", "variant", ...evidenceKeys]
+      ? ["commandId", "force", "paths", "variant"]
       : commandId === "fallow_audit"
-        ? ["commandId", "force", "base", ...evidenceKeys]
+        ? ["commandId", "force", "base"]
         : commandId === "node_lint" || commandId === "node_format"
-          ? ["commandId", "force", "variant", ...evidenceKeys]
-          : ["commandId", "force", ...evidenceKeys];
+          ? ["commandId", "force", "variant"]
+          : ["commandId", "force"];
   const invalidKey = keys.find((key) => !expectedKeys.includes(key));
   if (!keys.includes("commandId") || invalidKey !== undefined) {
     throw invalidRequest(invalidKey ?? "commandId", {
@@ -226,28 +189,26 @@ function validateRequestKeys(keys: readonly string[], commandId: string): void {
   }
 }
 
-export type NormalizedProjectCommandInput =
-  | {
-      readonly commandId: string;
-      readonly force?: boolean;
-      readonly paths?: readonly string[];
-      readonly base?: string;
-      readonly variant?: string;
-      readonly ref?: string;
-      readonly flowId?: string;
-      readonly publish?: { readonly flowId: string };
-      readonly covers?: readonly string[];
-      readonly coercions?: readonly string[];
-    }
-  | ProjectCommandEvidenceLookup;
+export type NormalizedProjectCommandInput = {
+  readonly commandId: string;
+  readonly force?: boolean;
+  readonly paths?: readonly string[];
+  readonly base?: string;
+  readonly variant?: string;
+  readonly coercions?: readonly string[];
+};
 
 function normalizeFallowAuditRequest(
   params: Record<string, unknown>,
   commandId: string,
-  evidence: Record<string, unknown>,
+  coercions: string[],
 ): NormalizedProjectCommandInput {
   try {
-    return { commandId, base: validateProjectCommandRevision(params.base), ...evidence };
+    return {
+      commandId,
+      base: validateProjectCommandRevision(params.base),
+      ...(coercions.length === 0 ? {} : { coercions: [...coercions] }),
+    };
   } catch {
     throw invalidRequest("base");
   }
@@ -257,7 +218,6 @@ function normalizeNodeTestRequest(
   params: Record<string, unknown>,
   commandId: string,
   coercions: string[],
-  evidence: Record<string, unknown>,
 ): NormalizedProjectCommandInput {
   try {
     const variant = validateNodeScriptVariant(params.variant, "test");
@@ -271,13 +231,9 @@ function normalizeNodeTestRequest(
     if (parsedPaths !== undefined) coercions.push("paths:string-json-array");
     const paths = validateNodeTestPaths(parsedPaths?.value ?? params.paths);
     const base = paths.length === 0 ? { commandId } : { commandId, paths };
-    const normalizedEvidence = {
-      ...evidence,
-      ...(coercions.length === 0 ? {} : { coercions: [...coercions] }),
-    };
     return variant === undefined
-      ? { ...base, ...normalizedEvidence }
-      : { ...base, variant, ...normalizedEvidence };
+      ? { ...base, ...(coercions.length === 0 ? {} : { coercions: [...coercions] }) }
+      : { ...base, variant, ...(coercions.length === 0 ? {} : { coercions: [...coercions] }) };
   } catch (error) {
     if (error instanceof ProjectCommandToolError) throw error;
     throw invalidRequest("paths");
@@ -287,14 +243,17 @@ function normalizeNodeTestRequest(
 function normalizeNodeScriptRequest(
   params: Record<string, unknown>,
   commandId: "node_lint" | "node_format",
-  evidence: Record<string, unknown>,
+  coercions: string[],
 ): NormalizedProjectCommandInput {
   try {
     const variant = validateNodeScriptVariant(
       params.variant,
       commandId === "node_lint" ? "lint" : "format",
     );
-    return variant === undefined ? { commandId, ...evidence } : { commandId, variant, ...evidence };
+    const normalizedEvidence = coercions.length === 0 ? {} : { coercions: [...coercions] };
+    return variant === undefined
+      ? { commandId, ...normalizedEvidence }
+      : { commandId, variant, ...normalizedEvidence };
   } catch (error) {
     if (error instanceof ProjectCommandToolError) throw error;
     throw invalidRequest("variant");
@@ -305,123 +264,23 @@ function normalizedCommandRequest(
   params: Record<string, unknown>,
   commandId: string,
   coercions: string[],
-  evidence: Record<string, unknown>,
 ): NormalizedProjectCommandInput {
   if (commandId === "fallow_audit") {
-    return normalizeFallowAuditRequest(params, commandId, evidence);
+    return normalizeFallowAuditRequest(params, commandId, coercions);
   }
   if (commandId === "node_test") {
-    return normalizeNodeTestRequest(params, commandId, coercions, evidence);
+    return normalizeNodeTestRequest(params, commandId, coercions);
   }
   if (commandId === "node_lint" || commandId === "node_format") {
-    return normalizeNodeScriptRequest(params, commandId, evidence);
-  }
-  return { commandId, ...evidence };
-}
-
-interface NormalizedEvidenceFields {
-  readonly ref?: string;
-  readonly flowId?: string;
-  readonly publish?: { readonly flowId: string };
-  readonly covers?: readonly string[];
-  readonly evidence: Record<string, unknown>;
-}
-
-function normalizeEvidenceFields(
-  params: Record<string, unknown>,
-  commandId: string,
-  coercions: string[],
-): NormalizedEvidenceFields {
-  const covers = validateEvidenceCovers(params.covers, commandId);
-  const ref = validateEvidenceIdentifier(params.ref, "ref", /^[A-Za-z0-9_-]{8,128}$/u);
-  const flowId = validateEvidenceIdentifier(params.flowId, "flowId", FLOW_ID_PATTERN);
-  const publishValue = params.publish;
-  let publish: { readonly flowId: string } | undefined;
-  if (publishValue !== undefined) {
-    if (!isValidPublishValue(publishValue)) {
-      throw invalidRequest("publish", {
-        correctedExample: { commandId, publish: { flowId: "flow-1" } },
-      });
-    }
-    publish = { flowId: publishValue.flowId };
-  }
-  if (ref !== undefined && (publish !== undefined || commandId !== "")) {
-    throw invalidRequest("ref", {
-      remediation:
-        "Use ref with optional flowId and covers only; do not include execution options.",
-      correctedExample: { ref: "pc_example", flowId: "flow-1" },
-    });
-  }
-  if (flowId !== undefined && ref === undefined) {
-    throw invalidRequest("flowId", {
-      remediation: "flowId is lookup-only and requires ref.",
-      correctedExample: { ref: "pc_example", flowId: "flow-1" },
-    });
+    return normalizeNodeScriptRequest(params, commandId, coercions);
   }
   return {
-    ref,
-    flowId,
-    publish,
-    covers,
-    evidence: {
-      ...(ref === undefined ? {} : { ref }),
-      ...(flowId === undefined ? {} : { flowId }),
-      ...(publish === undefined ? {} : { publish }),
-      ...(covers === undefined ? {} : { covers }),
-      ...(coercions.length === 0 ? {} : { coercions: [...coercions] }),
-    },
-  };
-}
-
-function normalizeLookupRequest(
-  evidence: NormalizedEvidenceFields,
-  coercions: string[],
-): ProjectCommandEvidenceLookup {
-  if (evidence.ref === undefined) throw invalidRequest("ref");
-  return {
-    ref: evidence.ref,
-    ...(evidence.flowId === undefined ? {} : { flowId: evidence.flowId }),
-    ...(evidence.covers === undefined ? {} : { covers: evidence.covers }),
+    commandId,
     ...(coercions.length === 0 ? {} : { coercions: [...coercions] }),
   };
 }
 
-function normalizedRequest(
-  params: Record<string, unknown>,
-  commandId: string,
-  coercions: string[],
-): NormalizedProjectCommandInput {
-  const evidence = normalizeEvidenceFields(params, commandId, coercions);
-  if (commandId === "") return normalizeLookupRequest(evidence, coercions);
-  return normalizedCommandRequest(params, commandId, coercions, evidence.evidence);
-}
-
-const PROJECT_COMMAND_INPUT_KEYS = new Set([
-  "commandId",
-  "force",
-  "paths",
-  "variant",
-  "base",
-  "publish",
-  "covers",
-  "ref",
-  "flowId",
-]);
-
-function validateProjectCommandLookup(
-  request: Record<string, unknown>,
-  coercions: string[],
-): NormalizedProjectCommandInput {
-  const lookupKeys = ["ref", "flowId", "covers"];
-  const invalidLookupKey = Object.keys(request).find((key) => !lookupKeys.includes(key));
-  if (invalidLookupKey !== undefined) {
-    throw invalidRequest(invalidLookupKey, {
-      remediation: "Lookup requests accept only ref, optional flowId, and covers.",
-      correctedExample: { ref: "pc_example", flowId: "flow-1" },
-    });
-  }
-  return normalizedRequest(request, "", coercions);
-}
+const PROJECT_COMMAND_INPUT_KEYS = new Set(["commandId", "force", "paths", "variant", "base"]);
 
 function validateProjectCommandExecution(
   request: Record<string, unknown>,
@@ -445,7 +304,7 @@ function validateProjectCommandExecution(
   } catch {
     throw invalidRequest("force");
   }
-  const normalized = normalizedRequest(
+  const normalized = normalizedCommandRequest(
     legacyVariant === undefined ? request : { ...request, variant: legacyVariant.variant },
     commandId,
     coercions,
@@ -470,9 +329,7 @@ export function validateProjectCommandInput(
       string,
       unknown
     >;
-    return "ref" in stripped
-      ? validateProjectCommandLookup(stripped, coercions)
-      : validateProjectCommandExecution(stripped, definitions, coercions);
+    return validateProjectCommandExecution(stripped, definitions, coercions);
   } catch (error) {
     if (error instanceof ProjectCommandToolError) {
       throw error;

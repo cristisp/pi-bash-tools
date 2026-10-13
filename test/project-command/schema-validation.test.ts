@@ -127,31 +127,25 @@ it("coerces JSON path arrays and records the coercion", () => {
   );
 });
 
-it("keeps evidence references lookup-only with a fail-closed allowlist", () => {
-  expect(
-    validateProjectCommandInput({
-      ref: "pc_example",
-      flowId: "flow-1",
-      covers: ["AC-001"],
-    }),
-  ).toEqual({
-    ref: "pc_example",
-    flowId: "flow-1",
-    covers: ["AC-001"],
-  });
-  expect(validateVerifyInput({ ref: "vr_example", covers: ["AC-001"] })).toMatchObject({
+it("retires evidence lookup on project_command while verify keeps its fail-closed allowlist", () => {
+  expect(validateVerifyInput({ ref: "vr_example" })).toMatchObject({
     ref: "vr_example",
-    covers: ["AC-001"],
     fresh: false,
   });
   expect(() =>
+    validateProjectCommandInput({ ref: "pc_example", flowId: "flow-1", covers: ["AC-001"] }),
+  ).toThrow(/invalid/iu);
+  expect(() =>
     validateProjectCommandInput({ ref: "pc_example", publish: { flowId: "flow-1" } }),
-  ).toThrow(/lookup requests.*only.*ref.*flowId.*covers/iu);
+  ).toThrow(/invalid/iu);
+  expect(() => validateVerifyInput({ ref: "vr_example", covers: ["AC-001"] })).toThrow(
+    /lookup cannot include execution options/iu,
+  );
   expect(() => validateVerifyInput({ ref: "vr_example", fresh: false })).toThrow(
     /lookup cannot include execution options/iu,
   );
   expect(() => validateProjectCommandInput({ ref: "pc_example", futureOption: true })).toThrow(
-    /lookup requests.*only/iu,
+    /invalid/iu,
   );
   expect(() => validateProjectCommandInput({ commandId: "node_test", fresh: true })).toThrow(
     /invalid/iu,

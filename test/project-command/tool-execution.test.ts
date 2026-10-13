@@ -6,10 +6,6 @@ import type { ProjectCommandInvocationRecord } from "../../src/observability/pro
 import { displayPath } from "../../src/tools/path-display.ts";
 import { getProjectCommandDefinition } from "../../src/tools/project-command/definitions.ts";
 import { PROJECT_COMMAND_DIAGNOSTIC_MAX_CHARS } from "../../src/tools/project-command/diagnostics.ts";
-import type {
-  ProjectCommandEvidenceRecord,
-  ProjectCommandEvidenceStore,
-} from "../../src/tools/project-command/evidence.ts";
 import type { ProjectCommandExecutionOutcome } from "../../src/tools/project-command/execution.ts";
 import type { ProjectCommandRepositoryState } from "../../src/tools/project-command/repository-state.ts";
 import { resolveFixedProjectCommand } from "../../src/tools/project-command/resolution.ts";
@@ -105,7 +101,7 @@ it("adds invocation metadata to an invalid request without resolved scope or out
   });
 });
 
-it("shares one non-mutating evidence execution across overlapping identical requests", async () => {
+it("shares one non-mutating execution across overlapping identical requests", async () => {
   const fixtureData = await fixture();
   const definition = getProjectCommandDefinition("workspace_path");
   if (definition === undefined) throw new Error("missing workspace_path definition");
@@ -213,256 +209,44 @@ it("shares one non-mutating evidence execution across overlapping identical requ
   }
 }, 15_000);
 
-it("looks up stored evidence and rejects missing references", async () => {
+it("rejects retired evidence request fields with an invalid request", async () => {
   const fixtureData = await fixture();
-  const definition = getProjectCommandDefinition("workspace_path");
-  if (definition === undefined) throw new Error("missing workspace_path definition");
-  const resolved = resolveFixedProjectCommand(definition);
-  await authorize(fixtureData, definition, resolved);
-  let storedRecord: ProjectCommandEvidenceRecord | undefined;
-  const evidence: ProjectCommandEvidenceStore = {
-    getByRef: (ref) => (storedRecord?.ref === ref ? storedRecord : undefined),
-    set: (record) => {
-      storedRecord = record;
-      return true;
-    },
-    publish: () => false,
-    clear: () => {
-      storedRecord = undefined;
-    },
-  };
   const tool = createProjectCommandToolForTesting({
     configPath: fixtureData.configPath,
-    evidence,
-    executor: async () => ({
-      status: "success" as const,
-      exit: { code: 0, signal: null },
-      timedOut: false,
-      cancelled: false,
-      stdout: { text: "workspace", truncated: false, totalBytes: 9, totalLines: 1 },
-      stderr: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
-    }),
   });
-  const executed = await tool.execute(
-    "lookup-producer",
-    { commandId: "workspace_path" },
-    undefined,
-    undefined,
-    context(fixtureData.directory),
+  const retiredValues: ReadonlyArray<readonly [string, unknown]> = [
+    ["ref", "pc_legacy1"],
+    ["publish", { flowId: "flow-a" }],
+    ["covers", ["AC-001"]],
+    ["flowId", "flow-a"],
+    ["ref", null],
+  ];
+  const errors = await Promise.all(
+    retiredValues.map(([field, value]) =>
+      tool
+        .execute(
+          `retired-${field}`,
+          { commandId: "workspace_path", [field]: value },
+          undefined,
+          undefined,
+          context(fixtureData.directory),
+        )
+        .catch((rejection: unknown) => rejection),
+    ),
   );
-  const ref = executed.details.ref;
-  if (typeof ref !== "string") throw new Error("expected an evidence reference");
-
-  const lookedUp = await tool.execute(
-    "lookup-consumer",
-    { ref },
-    undefined,
-    undefined,
-    context(fixtureData.directory),
-  );
-  expect(lookedUp.details).toMatchObject({
-    commandId: "workspace_path",
-    ref,
-    executed: true,
-    reused: false,
-  });
-
-  const missing = await tool
-    .execute(
-      "lookup-missing",
-      { ref: "pc_missing" },
-      undefined,
-      undefined,
-      context(fixtureData.directory),
-    )
-    .catch((error: unknown) => error);
-  expect(missing).toBeInstanceOf(ProjectCommandToolError);
-  expect(missing).toMatchObject({
-    contract: { code: "project-command-error", category: "IMPLEMENTATION_FAILURE" },
-  });
-  expect(missing).toHaveProperty("message", expect.stringContaining("pc_missing"));
-});
-
-function lookupSessionContext(directory: string) {
-  return context(directory, {
-    sessionManager: { getSessionId: () => "lookup-session" },
-  });
-}
-
-it("records success and not-found evidence lookup telemetry outcomes", async () => {
-  const fixtureData = await fixture();
-  const definition = getProjectCommandDefinition("workspace_path");
-  if (definition === undefined) throw new Error("missing workspace_path definition");
-  const resolved = resolveFixedProjectCommand(definition);
-  await authorize(fixtureData, definition, resolved);
-  let storedRecord: ProjectCommandEvidenceRecord | undefined;
-  const lookupOutcome = vi.fn(() => "missing" as const);
-  const evidence: ProjectCommandEvidenceStore = {
-    getByRef: (ref) => (storedRecord?.ref === ref ? storedRecord : undefined),
-    lookupOutcome,
-    set: (record) => {
-      storedRecord = record;
-      return true;
-    },
-    publish: () => false,
-    clear: () => {
-      storedRecord = undefined;
-    },
-  };
-  const records: ProjectCommandInvocationRecord[] = [];
-  const tool = createProjectCommandToolForTesting({
-    configPath: fixtureData.configPath,
-    evidence,
-    invocationRecorder: (record) => records.push(record),
-    executor: async () => ({
-      status: "success" as const,
-      exit: { code: 0, signal: null },
-      timedOut: false,
-      cancelled: false,
-      stdout: { text: "workspace", truncated: false, totalBytes: 9, totalLines: 1 },
-      stderr: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
-    }),
-  });
-  const executed = await tool.execute(
-    "lookup-producer",
-    { commandId: "workspace_path" },
-    undefined,
-    undefined,
-    lookupSessionContext(fixtureData.directory),
-  );
-  const ref = executed.details.ref;
-  if (typeof ref !== "string") throw new Error("expected an evidence reference");
-
-  await tool.execute(
-    "lookup-consumer",
-    { ref },
-    undefined,
-    undefined,
-    lookupSessionContext(fixtureData.directory),
-  );
-  expect(records.find((record) => record.toolCallId === "lookup-consumer")?.lookup).toEqual({
-    attempted: true,
-    success: true,
-    outcome: "success",
-  });
-  const producer = records.find((record) => record.toolCallId === "lookup-producer");
-  expect(producer?.preparationDurationMs).toBeGreaterThanOrEqual(0);
-  expect(producer?.authorizationDurationMs).toBeGreaterThanOrEqual(0);
-  expect(producer === undefined ? true : "queueDurationMs" in producer).toBe(false);
-  const consumerLookup = records.find((record) => record.toolCallId === "lookup-consumer");
-  expect(consumerLookup === undefined ? true : "preparationDurationMs" in consumerLookup).toBe(
-    false,
-  );
-  expect(consumerLookup === undefined ? true : "authorizationDurationMs" in consumerLookup).toBe(
-    false,
-  );
-  expect(consumerLookup === undefined ? true : "queueDurationMs" in consumerLookup).toBe(false);
-
-  const missing = await tool
-    .execute(
-      "lookup-missing",
-      { ref: "pc_missing1" },
-      undefined,
-      undefined,
-      lookupSessionContext(fixtureData.directory),
-    )
-    .catch((error: unknown) => error);
-  expect(missing).toBeInstanceOf(ProjectCommandToolError);
-  expect(missing).toHaveProperty(
-    "message",
-    "Project command evidence ref pc_missing1 not found in the process-local root-session store; evidence refs are non-replayable and process-scoped.",
-  );
-  expect(records.find((record) => record.toolCallId === "lookup-missing")?.lookup).toEqual({
-    attempted: true,
-    success: false,
-    failure: "not-found",
-    outcome: "not-found",
-  });
-  const missingLookup = records.find((record) => record.toolCallId === "lookup-missing");
-  expect(missingLookup === undefined ? true : "preparationDurationMs" in missingLookup).toBe(false);
-  expect(missingLookup === undefined ? true : "authorizationDurationMs" in missingLookup).toBe(
-    false,
-  );
-  expect(missingLookup === undefined ? true : "queueDurationMs" in missingLookup).toBe(false);
-  expect(lookupOutcome).toHaveBeenCalledWith("pc_missing1", undefined);
-});
-
-it("records the corrupt outcome for detectable in-process corruption", async () => {
-  const fixtureData = await fixture();
-  const evidence: ProjectCommandEvidenceStore = {
-    getByRef: () => undefined,
-    lookupOutcome: () => "corrupt",
-    set: () => true,
-    publish: () => false,
-    clear: () => undefined,
-  };
-  const records: ProjectCommandInvocationRecord[] = [];
-  const tool = createProjectCommandToolForTesting({
-    configPath: fixtureData.configPath,
-    evidence,
-    invocationRecorder: (record) => records.push(record),
-  });
-  const corrupt = await tool
-    .execute(
-      "lookup-corrupt",
-      { ref: "pc_corrupt0" },
-      undefined,
-      undefined,
-      lookupSessionContext(fixtureData.directory),
-    )
-    .catch((error: unknown) => error);
-  expect(corrupt).toBeInstanceOf(ProjectCommandToolError);
-  expect(corrupt).toHaveProperty(
-    "message",
-    "Project command evidence ref pc_corrupt0 not found in the process-local root-session store; evidence refs are non-replayable and process-scoped.",
-  );
-  expect(records.find((record) => record.toolCallId === "lookup-corrupt")?.lookup).toEqual({
-    attempted: true,
-    success: false,
-    failure: "not-found",
-    outcome: "corrupt",
-  });
-});
-
-it("classifies wrong-flow evidence lookups as unauthorized-flow without querying the store", async () => {
-  const fixtureData = await fixture();
-  const getByRef = vi.fn(() => undefined);
-  const lookupOutcome = vi.fn(() => "missing" as const);
-  const evidence: ProjectCommandEvidenceStore = {
-    getByRef,
-    lookupOutcome,
-    set: () => true,
-    publish: () => false,
-    clear: () => undefined,
-  };
-  const records: ProjectCommandInvocationRecord[] = [];
-  const tool = createProjectCommandToolForTesting({
-    configPath: fixtureData.configPath,
-    evidence,
-    invocationRecorder: (record) => records.push(record),
-  });
-  const wrongFlow = await tool
-    .execute(
-      "lookup-wrong-flow",
-      { ref: "pc_flowrefs", flowId: "flow-a" },
-      undefined,
-      undefined,
-      lookupSessionContext(fixtureData.directory),
-    )
-    .catch((error: unknown) => error);
-  expect(wrongFlow).toBeInstanceOf(ProjectCommandToolError);
-  expect(wrongFlow).toHaveProperty(
-    "message",
-    "Project command evidence ref pc_flowrefs not found in flow flow-a; evidence refs are non-replayable and process-scoped.",
-  );
-  expect(getByRef).not.toHaveBeenCalled();
-  expect(lookupOutcome).not.toHaveBeenCalled();
-  expect(records.find((record) => record.toolCallId === "lookup-wrong-flow")?.lookup).toEqual({
-    attempted: true,
-    success: false,
-    failure: "not-found",
-    outcome: "unauthorized-flow",
-  });
+  for (const [index, [field]] of retiredValues.entries()) {
+    const error = errors[index];
+    expect(error).toBeInstanceOf(ProjectCommandToolError);
+    if (!(error instanceof ProjectCommandToolError)) {
+      throw new Error("expected a ProjectCommandToolError");
+    }
+    expect(error.details).toMatchObject({
+      category: "INVALID_REQUEST",
+      executed: false,
+      error: { code: "invalid-request", invalidField: field },
+    });
+    expect(error.message).toContain(`Correct the ${field} field`);
+  }
 });
 
 it("reports repository state drift after an execution moves the tree", async () => {
@@ -554,64 +338,40 @@ it("reports invocation identity, normalized scope, bounded output metadata, and 
   }
 });
 
-it("executes a full-property payload with null placeholders instead of misrouting to lookup", async () => {
+it("rejects retired evidence fields in an otherwise fully nulled payload", async () => {
   const fixtureData = await fixture();
-  const definition = getProjectCommandDefinition("workspace_path");
-  if (definition === undefined) throw new Error("missing workspace_path definition");
-  const resolved = resolveFixedProjectCommand(definition);
-  const projectPath = await authorize(fixtureData, definition, resolved);
   const tool = createProjectCommandToolForTesting({
     configPath: fixtureData.configPath,
-    executor: async () => ({
-      status: "success" as const,
-      exit: { code: 0, signal: null },
-      timedOut: false,
-      cancelled: false,
-      stdout: { text: "workspace", truncated: false, totalBytes: 9, totalLines: 1 },
-      stderr: { text: "", truncated: false, totalBytes: 0, totalLines: 0 },
-    }),
   });
-  const response = await tool.execute(
-    "ref-null-full",
-    {
-      commandId: "workspace_path",
-      force: null,
-      paths: null,
-      variant: null,
-      base: null,
-      publish: null,
-      covers: null,
-      ref: null,
-      flowId: null,
-    },
-    undefined,
-    undefined,
-    context(fixtureData.directory),
-  );
-  expect(response.details).toMatchObject({
-    commandId: "workspace_path",
-    projectPath: displayPath(projectPath),
-    toolCallId: "ref-null-full",
-    reused: false,
-    coercions: [
-      "force:null-to-absent",
-      "paths:null-to-absent",
-      "variant:null-to-absent",
-      "base:null-to-absent",
-      "publish:null-to-absent",
-      "covers:null-to-absent",
-      "ref:null-to-absent",
-      "flowId:null-to-absent",
-    ],
+  const error = await tool
+    .execute(
+      "ref-null-full",
+      {
+        commandId: "workspace_path",
+        force: null,
+        paths: null,
+        variant: null,
+        base: null,
+        publish: null,
+        covers: null,
+        ref: null,
+        flowId: null,
+      } as Parameters<typeof tool.execute>[1],
+      undefined,
+      undefined,
+      context(fixtureData.directory),
+    )
+    .catch((rejection: unknown) => rejection);
+  expect(error).toBeInstanceOf(ProjectCommandToolError);
+  if (!(error instanceof ProjectCommandToolError)) {
+    throw new Error("expected a ProjectCommandToolError");
+  }
+  expect(error.details).toMatchObject({
+    category: "INVALID_REQUEST",
+    executed: false,
+    error: { code: "invalid-request", invalidField: "publish" },
   });
-  expect(response.details).not.toHaveProperty("lookup");
-  expectInvocationMetadata(response.details, "ref-null-full");
-  expect(response.content[0]).toMatchObject({
-    type: "text",
-    text: expect.stringContaining(
-      '"coercions":["force:null-to-absent","paths:null-to-absent","variant:null-to-absent","base:null-to-absent","publish:null-to-absent","covers:null-to-absent","ref:null-to-absent","flowId:null-to-absent"]',
-    ),
-  });
+  expect(error.details).not.toHaveProperty("coercions");
 });
 
 function expectCanonicalCancellation(
@@ -879,21 +639,6 @@ it("keeps exit code two as a Fallow execution failure", async () => {
   });
 });
 
-function capturingEvidenceStore(): ProjectCommandEvidenceStore {
-  let stored: ProjectCommandEvidenceRecord | undefined;
-  return {
-    getByRef: (ref) => (stored?.ref === ref ? stored : undefined),
-    set: (record) => {
-      stored = record;
-      return true;
-    },
-    publish: () => false,
-    clear: () => {
-      stored = undefined;
-    },
-  };
-}
-
 function failingFallowHealthExecutor(): () => Promise<ProjectCommandExecutionOutcome> {
   return async () => ({
     status: "nonzero" as const,
@@ -926,7 +671,7 @@ function storedRef(error: ProjectCommandToolError): string {
   return ref;
 }
 
-it("reports the stored evidence reference after the reason segment of a failing execution", async () => {
+it("includes the evidence reference after the reason segment of a failing execution", async () => {
   const fixtureData = await fixture();
   const definition = getProjectCommandDefinition("fallow_health");
   if (definition === undefined) throw new Error("missing fallow_health definition");
@@ -939,7 +684,6 @@ it("reports the stored evidence reference after the reason segment of a failing 
   await authorize(fixtureData, definition, resolved);
   const tool = createProjectCommandToolForTesting({
     configPath: fixtureData.configPath,
-    evidence: capturingEvidenceStore(),
     resolver: async () => resolved,
     executor: failingFallowHealthExecutor(),
   });
@@ -980,47 +724,7 @@ it("reports the stored evidence reference after the reason segment of a failing 
   expect(error.message).not.toContain("covers");
 });
 
-it("keeps the failure message unchanged when no evidence is stored", async () => {
-  const fixtureData = await fixture();
-  const definition = getProjectCommandDefinition("fallow_health");
-  if (definition === undefined) throw new Error("missing fallow_health definition");
-  const resolved = {
-    ...resolveFixedProjectCommand(definition),
-    executable: process.execPath,
-    args: ["/project/node_modules/fallow/bin/fallow", ...definition.args],
-    fingerprintArgs: definition.argvTemplate,
-  } satisfies ResolvedProjectCommand;
-  await authorize(fixtureData, definition, resolved);
-  const rejectingEvidence: ProjectCommandEvidenceStore = {
-    getByRef: () => undefined,
-    set: () => false,
-    publish: () => false,
-    clear: () => undefined,
-  };
-  const tool = createProjectCommandToolForTesting({
-    configPath: fixtureData.configPath,
-    evidence: rejectingEvidence,
-    resolver: async () => resolved,
-    executor: failingFallowHealthExecutor(),
-  });
-  const error = await expectProjectCommandToolError(
-    tool.execute(
-      "failure-without-ref",
-      { commandId: "fallow_health" },
-      undefined,
-      undefined,
-      context(fixtureData.directory),
-    ),
-  );
-  const resolvedCommand = [resolved.executable, ...resolved.args].join(" ");
-  expect(error.message).toBe(
-    `Project command failed; status: nonzero; reason: the command exited with a nonzero status; commandId: fallow_health; resolvedCommand: ${resolvedCommand}; parameters: {}; exit: code 2; diagnostic: "invalid options"`,
-  );
-  expect(error.message).not.toContain("ref:");
-  expect(error.details).not.toHaveProperty("ref");
-});
-
-it("keeps the stored evidence reference in a truncated failure message", async () => {
+it("keeps the evidence reference in a truncated failure message", async () => {
   const fixtureData = await fixture();
   const definition = getProjectCommandDefinition("node_test");
   if (definition === undefined) throw new Error("missing node_test definition");
@@ -1035,7 +739,6 @@ it("keeps the stored evidence reference in a truncated failure message", async (
   const longDiagnostic = `failure: ${"x".repeat(2_100)}`;
   const tool = createProjectCommandToolForTesting({
     configPath: fixtureData.configPath,
-    evidence: capturingEvidenceStore(),
     resolver: async () => resolved,
     executor: async () => ({
       status: "nonzero" as const,
@@ -1073,7 +776,7 @@ it("keeps the stored evidence reference in a truncated failure message", async (
   });
 });
 
-it("reports the stored evidence reference in an executed cancellation message", async () => {
+it("reports the evidence reference in an executed cancellation message", async () => {
   const fixtureData = await fixture();
   const definition = getProjectCommandDefinition("workspace_path");
   if (definition === undefined) throw new Error("missing workspace_path definition");
@@ -1081,7 +784,6 @@ it("reports the stored evidence reference in an executed cancellation message", 
   await authorize(fixtureData, definition, resolved);
   const tool = createProjectCommandToolForTesting({
     configPath: fixtureData.configPath,
-    evidence: capturingEvidenceStore(),
     executor: async () => ({
       status: "cancelled" as const,
       exit: { code: null, signal: "SIGTERM" },
@@ -1159,7 +861,7 @@ it("keeps the pre-execution cancellation message unchanged without evidence", as
   expect(executorCalls).toBe(0);
 });
 
-it("keeps the T-003 model content projection when evidence is stored", async () => {
+it("keeps the pc_ reference out of model-facing content", async () => {
   const fixtureData = await fixture();
   const definition = getProjectCommandDefinition("workspace_path");
   if (definition === undefined) throw new Error("missing workspace_path definition");
@@ -1167,7 +869,6 @@ it("keeps the T-003 model content projection when evidence is stored", async () 
   await authorize(fixtureData, definition, resolved);
   const tool = createProjectCommandToolForTesting({
     configPath: fixtureData.configPath,
-    evidence: capturingEvidenceStore(),
     executor: async () => ({
       status: "success" as const,
       exit: { code: 0, signal: null },
@@ -1178,18 +879,30 @@ it("keeps the T-003 model content projection when evidence is stored", async () 
     }),
   });
   const response = await tool.execute(
-    "content-with-ref",
+    "content-without-ref",
     { commandId: "workspace_path" },
     undefined,
     undefined,
     context(fixtureData.directory),
   );
-  const ref = response.details.ref;
-  if (typeof ref !== "string") throw new Error("expected a stored evidence reference");
-  expect(response.content[0]).toMatchObject({
-    type: "text",
-    text: expect.stringContaining(`"ref":"${ref}"`),
-  });
+  if (typeof response.details.ref !== "string") {
+    throw new Error("expected an audit evidence reference in details");
+  }
+  const contentEntry = response.content[0];
+  if (
+    contentEntry === undefined ||
+    contentEntry.type !== "text" ||
+    contentEntry.text === undefined
+  ) {
+    throw new Error("expected text content");
+  }
+  const projected: unknown = JSON.parse(contentEntry.text);
+  if (typeof projected !== "object" || projected === null || Array.isArray(projected)) {
+    throw new Error("expected serialized object content");
+  }
+  expect(projected).not.toHaveProperty("ref");
+  expect(projected).not.toHaveProperty("publication");
+  expect(JSON.stringify(projected)).not.toContain("pc_");
 });
 
 it("uses the cleaned bounded Node diagnostic in the failure message while preserving raw output", async () => {

@@ -167,15 +167,6 @@ function isBoundedCacheRelevantInputArray(
   );
 }
 
-export const EVIDENCE_PROJECT_COMMAND_OPTIONAL_DETAILS_PROFILE: ProjectCommandOptionalDetailsValidationProfile =
-  {
-    isRelevantInputs: (value) =>
-      isBoundedProjectCommandParameters(value, PROJECT_COMMAND_PARAMETERS_MAX_KEYS, 64 * 1024),
-    nodeVersionMaxLength: 128,
-    arrayMaxItems: 256,
-    arrayItemMaxLength: 256,
-  };
-
 export const CACHE_PROJECT_COMMAND_OPTIONAL_DETAILS_PROFILE: ProjectCommandOptionalDetailsValidationProfile =
   {
     isRelevantInputs: isCacheRelevantInputs,

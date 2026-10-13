@@ -12,11 +12,11 @@ export const EVIDENCE_ENVELOPE_FORMAT_VERSION = 1 as const;
 
 export const EVIDENCE_PRODUCER = "bash-tools" as const;
 
-export const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 
-export type SharedEvidenceScope = "session" | "flow";
+type SharedEvidenceScope = "session" | "flow";
 
-export type SharedEvidenceKind = "project-command" | "verify" | "read-batch";
+export type SharedEvidenceKind = "verify";
 
 export interface SharedEvidenceWorkspaceBlock {
   readonly repositoryId: string;

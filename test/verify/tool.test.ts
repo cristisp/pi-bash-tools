@@ -1194,7 +1194,7 @@ it("resolves a root-published oversized-totals ref from a flow seat and refuses 
   });
 });
 
-it("publishes flow evidence with oversized totals and keeps distinct publication failures", async () => {
+it("auto-publishes flow evidence with oversized totals and records best-effort publication failures", async () => {
   const cwd = await projectFixture();
   const cacheRoot = await mkdtemp(join(tmpdir(), "bash-tools-verify-publish-seat-"));
   fixtureDirectories.push(cacheRoot);
@@ -1217,7 +1217,7 @@ it("publishes flow evidence with oversized totals and keeps distinct publication
     });
     const published = await tool.execute(
       "verify-publish-seat",
-      { omit: ["typecheck"] as const, publish: { flowId: "publish-seat-flow" } },
+      { omit: ["typecheck"] as const },
       undefined,
       undefined,
       context(cwd),
@@ -1229,20 +1229,6 @@ it("publishes flow evidence with oversized totals and keeps distinct publication
     expect(published.details.perStep[0]?.stdout.totalBytes).toBe(136_119);
     expect(published.details.perStep[0]?.stdout.totalLines).toBe(1_768);
 
-    await expect(
-      tool.execute(
-        "verify-publish-seat-wrong-flow",
-        {
-          omit: ["typecheck"] as const,
-          covers: ["MISMATCH"],
-          publish: { flowId: "other-flow" },
-        },
-        undefined,
-        undefined,
-        context(cwd),
-      ),
-    ).rejects.toThrow("no compatible stable evidence was stored");
-
     const unreadableTool = createVerifyToolForTesting({
       policy: policy(),
       resolver: deps.resolver,
@@ -1250,19 +1236,21 @@ it("publishes flow evidence with oversized totals and keeps distinct publication
       repositoryStateReader: async () => undefined,
       cache,
     });
-    await expect(
-      unreadableTool.execute(
-        "verify-publish-seat-unreadable",
-        {
-          omit: ["typecheck"] as const,
-          covers: ["UNREADABLE"],
-          publish: { flowId: "publish-seat-flow" },
-        },
-        undefined,
-        undefined,
-        context(cwd),
-      ),
-    ).rejects.toThrow("repository state is unreadable or changed during execution");
+    const unreadable = await unreadableTool.execute(
+      "verify-publish-seat-unreadable",
+      {
+        omit: ["typecheck"] as const,
+        covers: ["UNREADABLE"],
+      },
+      undefined,
+      undefined,
+      context(cwd),
+    );
+    expect(unreadable.details.publication).toMatchObject({
+      flowId: "publish-seat-flow",
+      published: false,
+      error: expect.stringContaining("repository state is unreadable or changed during execution"),
+    });
   });
 });
 
@@ -1641,15 +1629,35 @@ it("reports recorded, matching, changed, and unreadable repository state on look
   expect(unreadable.details).not.toHaveProperty("currentRepositoryState");
 });
 
-it("publishes only stable root evidence to an explicitly requested flow", async () => {
+it("publishes stable evidence automatically to the effective flow and leaves root sessions unpublished", async () => {
   const cwd = await projectFixture();
   const cacheRoot = await mkdtemp(join(tmpdir(), "bash-tools-verify-publish-"));
   fixtureDirectories.push(cacheRoot);
-  const previousFlow = process.env.PI_ORCHESTRATION_FLOW;
-  const previousScope = process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
-  vi.stubEnv("PI_ORCHESTRATION_FLOW", undefined);
-  vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", undefined);
-  try {
+  await withFlowScope(undefined, async () => {
+    const deps = dependencies();
+    const cache = createVerifyEvidenceCache({ rootDirectory: cacheRoot });
+    const tool = createVerifyToolForTesting({
+      policy: policy(),
+      resolver: deps.resolver,
+      executor: deps.executor,
+      repositoryStateReader: deps.repositoryStateReader,
+      cache,
+    });
+    const rootRun = await tool.execute(
+      "verify-publish-root",
+      { omit: ["typecheck"] },
+      undefined,
+      undefined,
+      context(cwd),
+    );
+    expect(rootRun.details).toMatchObject({
+      ref: expect.stringMatching(/^vr_/u),
+      provenance: { scope: "root" },
+    });
+    expect(rootRun.details.publication).toBeUndefined();
+  });
+
+  await withFlowScope("publish-flow", async () => {
     const deps = dependencies();
     const cache = createVerifyEvidenceCache({ rootDirectory: cacheRoot });
     const tool = createVerifyToolForTesting({
@@ -1661,7 +1669,7 @@ it("publishes only stable root evidence to an explicitly requested flow", async 
     });
     const published = await tool.execute(
       "verify-publish",
-      { omit: ["typecheck"], publish: { flowId: "publish-flow" } },
+      { omit: ["typecheck"] },
       undefined,
       undefined,
       context(cwd),
@@ -1672,11 +1680,9 @@ it("publishes only stable root evidence to an explicitly requested flow", async 
       provenance: { scope: "flow", flowId: "publish-flow" },
     });
 
-    vi.stubEnv("PI_ORCHESTRATION_FLOW", "publish-flow");
-    vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", "flow");
     const lookup = await tool.execute(
       "verify-publish-lookup",
-      { ref: published.details.ref, flowId: "publish-flow" },
+      { ref: published.details.ref },
       undefined,
       undefined,
       context(cwd),
@@ -1686,12 +1692,7 @@ it("publishes only stable root evidence to an explicitly requested flow", async 
       publication: { flowId: "publish-flow", published: true },
       provenance: { scope: "flow", flowId: "publish-flow" },
     });
-  } finally {
-    if (previousFlow === undefined) delete process.env.PI_ORCHESTRATION_FLOW;
-    else process.env.PI_ORCHESTRATION_FLOW = previousFlow;
-    if (previousScope === undefined) delete process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
-    else process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE = previousScope;
-  }
+  });
 });
 
 gitIntegration("verify publication with a tracked deletion", () => {
@@ -1705,11 +1706,7 @@ gitIntegration("verify publication with a tracked deletion", () => {
     expect(observedState).toBeDefined();
     const cacheRoot = await mkdtemp(join(tmpdir(), "bash-tools-verify-publish-deletion-"));
     fixtureDirectories.push(cacheRoot);
-    const previousFlow = process.env.PI_ORCHESTRATION_FLOW;
-    const previousScope = process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
-    vi.stubEnv("PI_ORCHESTRATION_FLOW", undefined);
-    vi.stubEnv("PI_ORCHESTRATION_EVIDENCE_SCOPE", undefined);
-    try {
+    await withFlowScope("publish-deletion-flow", async () => {
       const deps = dependencies();
       const cache = createVerifyEvidenceCache({ rootDirectory: cacheRoot });
       const tool = createVerifyToolForTesting({
@@ -1721,7 +1718,7 @@ gitIntegration("verify publication with a tracked deletion", () => {
       });
       const published = await tool.execute(
         "verify-publish-deletion",
-        { omit: ["typecheck"], publish: { flowId: "publish-deletion-flow" } },
+        { omit: ["typecheck"] },
         undefined,
         undefined,
         context(repository.directory),
@@ -1734,12 +1731,7 @@ gitIntegration("verify publication with a tracked deletion", () => {
       expect(published.details.repositoryState?.dirtyFilesDigest).toBe(
         observedState?.dirtyFilesDigest,
       );
-    } finally {
-      if (previousFlow === undefined) delete process.env.PI_ORCHESTRATION_FLOW;
-      else process.env.PI_ORCHESTRATION_FLOW = previousFlow;
-      if (previousScope === undefined) delete process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE;
-      else process.env.PI_ORCHESTRATION_EVIDENCE_SCOPE = previousScope;
-    }
+    });
   });
 });
 
@@ -1941,21 +1933,29 @@ it("emits distinct verify lookup telemetry outcomes without changing error wordi
     outcome: "not-found",
   });
 
-  const wrongFlow = await tool
+  const retiredFlowId = await tool
     .execute(
       "verify-outcome-wrong-flow",
-      { ref: "vr_flowrefs", flowId: "flow-b" },
+      { ref: "vr_flowrefs", flowId: "flow-b" } as Parameters<typeof tool.execute>[1],
       undefined,
       undefined,
       context(cwd),
     )
     .catch((error: unknown) => error);
-  expect(wrongFlow).toMatchObject({ code: "not-found" });
-  expect(wrongFlow).toHaveProperty(
-    "message",
-    "validation ref not found in the effective flow scope flow-b. A flow lookup requires the same effective flow scope; environment variables alone do not authorize a lookup.",
-  );
-  const wrongFlowRecord = records.find(
+  expect(retiredFlowId).toMatchObject({ code: "invalid-request" });
+  const retiredPublish = await tool
+    .execute(
+      "verify-outcome-retired-publish",
+      { omit: ["typecheck"] as const, publish: { flowId: "flow-b" } } as Parameters<
+        typeof tool.execute
+      >[1],
+      undefined,
+      undefined,
+      context(cwd),
+    )
+    .catch((error: unknown) => error);
+  expect(retiredPublish).toMatchObject({ code: "invalid-request" });
+  const retiredFlowIdRecord = records.find(
     (record) =>
       record &&
       typeof record === "object" &&
@@ -1964,11 +1964,10 @@ it("emits distinct verify lookup telemetry outcomes without changing error wordi
   ) as
     | { lookup?: { attempted: boolean; success: boolean; failure?: string; outcome?: string } }
     | undefined;
-  expect(wrongFlowRecord?.lookup).toEqual({
+  expect(retiredFlowIdRecord?.lookup).toEqual({
     attempted: true,
     success: false,
-    failure: "not-found",
-    outcome: "unauthorized-flow",
+    failure: "invalid-request",
   });
 });
 
@@ -2022,9 +2021,7 @@ it("executes a full-property payload whose optional fields are explicit null", a
       scripts: null,
       continueOnFailure: null,
       ref: null,
-      flowId: null,
       fresh: null,
-      publish: null,
       covers: null,
     },
     undefined,
@@ -2039,9 +2036,37 @@ it("executes a full-property payload whose optional fields are explicit null", a
     "scripts:null-to-absent",
     "continueOnFailure:null-to-absent",
     "ref:null-to-absent",
-    "flowId:null-to-absent",
     "fresh:null-to-absent",
-    "publish:null-to-absent",
     "covers:null-to-absent",
   ]);
+});
+
+it("rejects retired evidence request fields with null placeholders and values", async () => {
+  const cwd = await projectFixture();
+  const deps = dependencies();
+  const tool = createVerifyToolForTesting({
+    policy: policy(),
+    resolver: deps.resolver,
+    executor: deps.executor,
+    repositoryStateReader: deps.repositoryStateReader,
+  });
+  const cases = [
+    ["retired-flow-id-null", { ref: null, flowId: null }],
+    ["retired-flow-id-value", { ref: "vr_example", flowId: "flow-1" }],
+    ["retired-publish-null", { publish: null }],
+    ["retired-publish-value", { omit: ["typecheck"] as const, publish: { flowId: "flow-1" } }],
+  ] as const;
+  await Promise.all(
+    cases.map(async ([toolCallId, rawParams]) => {
+      await expect(
+        tool.execute(
+          toolCallId,
+          rawParams as Parameters<typeof tool.execute>[1],
+          undefined,
+          undefined,
+          context(cwd),
+        ),
+      ).rejects.toMatchObject({ code: "invalid-request" });
+    }),
+  );
 });

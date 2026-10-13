@@ -45,16 +45,12 @@ it("flattens the model-facing schema into a single strict object", () => {
   expect(Object.keys(properties()).sort()).toEqual([
     "base",
     "commandId",
-    "covers",
-    "flowId",
     "force",
     "paths",
-    "publish",
-    "ref",
     "variant",
   ]);
   expect(schema.description).toContain("Execution requests require commandId");
-  expect(schema.description).toContain("Provide either commandId or ref, never both.");
+  expect(schema.description).not.toContain("ref");
 });
 
 it("lists every command ID and the legacy variant aliases in the commandId schema", () => {
@@ -116,34 +112,11 @@ it("preserves command-specific field schemas and evidence options", () => {
     { type: "string", pattern: FALLOW_REVISION_PATTERN },
     { type: "null" },
   ]);
-  expect(withNull(schemaProperties.ref)).toMatchObject([
-    { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
-    { type: "null" },
-  ]);
-  expect(withNull(schemaProperties.flowId)).toMatchObject([
-    { type: "string", pattern: "^[A-Za-z0-9_-]{1,64}$" },
-    { type: "null" },
-  ]);
-  expect(withNull(schemaProperties.publish)).toMatchObject([
-    {
-      type: "object",
-      additionalProperties: false,
-      properties: { flowId: { type: "string", pattern: "^[A-Za-z0-9_-]{1,64}$" } },
-    },
-    { type: "null" },
-  ]);
-  expect(withNull(schemaProperties.covers)).toMatchObject([
-    {
-      type: "array",
-      maxItems: 64,
-      items: { type: "string", minLength: 1, maxLength: 512 },
-    },
-    { type: "null" },
-  ]);
+  for (const retired of ["covers", "flowId", "publish", "ref"]) {
+    expect(retired in schemaProperties, `${retired} must not reappear`).toBe(false);
+  }
 
-  expect(JSON.stringify(projectCommandInputSchema)).toContain(
-    '"description":"Lookup-only evidence reference; null means omitted."',
-  );
+  expect(JSON.stringify(projectCommandInputSchema)).not.toContain("Lookup-only evidence reference");
   expect(JSON.stringify(projectCommandInputSchema)).toContain('"force"');
   expect(JSON.stringify(projectCommandInputSchema)).toContain('"true"');
 });

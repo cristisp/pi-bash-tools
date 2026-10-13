@@ -7,10 +7,6 @@ import {
   getProjectCommandDefinition,
   projectCommandIdentity,
 } from "../../src/tools/project-command/definitions.ts";
-import type {
-  ProjectCommandEvidenceRecord,
-  ProjectCommandEvidenceStore,
-} from "../../src/tools/project-command/evidence.ts";
 import {
   PROJECT_COMMAND_MODEL_OUTPUT_MAX_CHARS,
   projectCommandModelContent,
@@ -151,52 +147,17 @@ describe("projectCommandModelContent", () => {
     }
   });
 
-  it("includes the evidence reference when defined and omits the key otherwise", () => {
-    const withRef = projectCommandModelContent(detailsFixture({ ref: "pc_example" }));
-    expect(withRef.ref).toBe("pc_example");
-
-    const withoutRef = projectCommandModelContent(detailsFixture());
-    expect("ref" in withoutRef).toBe(false);
-    expect(withoutRef).not.toHaveProperty("ref");
-  });
-
-  it("includes the publication outcome when defined and omits the key otherwise", () => {
-    const published = projectCommandModelContent(
-      detailsFixture({
-        ref: "pc_example",
-        publication: { scope: "flow", flowId: "flow-a", published: true },
-      }),
-    );
-    expect(published.publication).toEqual({ scope: "flow", flowId: "flow-a", published: true });
-
-    const failed = projectCommandModelContent(
-      detailsFixture({
-        ref: "pc_example",
-        publication: {
-          scope: "flow",
-          flowId: "flow-a",
-          published: false,
-          error: "Evidence publication was not available from the producer scope.",
-        },
-      }),
-    );
-    expect(failed.publication).toEqual({
-      scope: "flow",
-      flowId: "flow-a",
-      published: false,
-      error: "Evidence publication was not available from the producer scope.",
-    });
-
-    const withoutPublication = projectCommandModelContent(detailsFixture({ ref: "pc_example" }));
-    expect("publication" in withoutPublication).toBe(false);
-    expect(withoutPublication).not.toHaveProperty("publication");
+  it("keeps the audit reference and publication outcome out of model content", () => {
+    const content = projectCommandModelContent(detailsFixture({ ref: "pc_example" }));
+    expect(content).not.toHaveProperty("ref");
+    expect(content).not.toHaveProperty("publication");
   });
 
   it("includes coercion tokens when defined and omits the key otherwise", () => {
     const coerced = projectCommandModelContent(
-      detailsFixture({ coercions: ["ref:null-to-absent", "covers:null-to-absent"] }),
+      detailsFixture({ coercions: ["paths:string-json-array"] }),
     );
-    expect(coerced.coercions).toEqual(["ref:null-to-absent", "covers:null-to-absent"]);
+    expect(coerced.coercions).toEqual(["paths:string-json-array"]);
 
     const withoutCoercions = projectCommandModelContent(detailsFixture());
     expect("coercions" in withoutCoercions).toBe(false);
@@ -376,32 +337,18 @@ describe("projectCommandModelContent", () => {
       JSON.stringify(response.structuredContent),
     ).toBe(true);
     expect(response.structuredContent).toEqual(content);
-    const ref = content.ref;
-    expect(typeof ref === "string" && ref.startsWith("pc_")).toBe(true);
-    expect("publication" in content).toBe(false);
+    expect(content).not.toHaveProperty("ref");
+    expect(content).not.toHaveProperty("publication");
   });
 
-  it("serializes the evidence reference for executions and lookups", async () => {
+  it("serializes model content without the audit reference", async () => {
     const fixtureData = await fixture();
     const definition = getProjectCommandDefinition("workspace_path");
     if (definition === undefined) throw new Error("missing workspace_path definition");
     const resolved = resolveFixedProjectCommand(definition);
     await authorize(fixtureData, definition, resolved);
-    let storedRecord: ProjectCommandEvidenceRecord | undefined;
-    const evidence: ProjectCommandEvidenceStore = {
-      getByRef: (ref) => (storedRecord?.ref === ref ? storedRecord : undefined),
-      set: (record) => {
-        storedRecord = record;
-        return true;
-      },
-      publish: () => false,
-      clear: () => {
-        storedRecord = undefined;
-      },
-    };
     const tool = createProjectCommandToolForTesting({
       configPath: fixtureData.configPath,
-      evidence,
       executor: async (_resolved, cwd) => ({
         status: "success" as const,
         exit: { code: 0, signal: null },
@@ -412,35 +359,23 @@ describe("projectCommandModelContent", () => {
       }),
     });
     const executed = await tool.execute(
-      "serialized-ref-producer",
+      "serialized-content",
       { commandId: "workspace_path" },
       undefined,
       undefined,
       context(fixtureData.directory),
     );
-    const ref = executed.details.ref;
-    if (typeof ref !== "string") throw new Error("expected an evidence reference");
-    const executedContent = parsedTextContent(executed);
-    expect(executedContent.ref).toBe(ref);
-    expect("publication" in executedContent).toBe(false);
-
-    const lookedUp = await tool.execute(
-      "serialized-ref-lookup",
-      { ref },
-      undefined,
-      undefined,
-      context(fixtureData.directory),
-    );
-    const lookedUpContent = parsedTextContent(lookedUp);
-    expect(lookedUpContent.ref).toBe(ref);
-    expect("publication" in lookedUpContent).toBe(false);
-    expect(tool.outputSchema).toBe(projectCommandModelContentSchema);
-    for (const response of [executed, lookedUp]) {
-      expect(
-        Check(projectCommandModelContentSchema, response.structuredContent),
-        JSON.stringify(response.structuredContent),
-      ).toBe(true);
-      expect(response.structuredContent).toEqual(parsedTextContent(response));
+    if (typeof executed.details.ref !== "string") {
+      throw new Error("expected an audit reference in details");
     }
+    const executedContent = parsedTextContent(executed);
+    expect(executedContent).not.toHaveProperty("ref");
+    expect(executedContent).not.toHaveProperty("publication");
+    expect(tool.outputSchema).toBe(projectCommandModelContentSchema);
+    expect(
+      Check(projectCommandModelContentSchema, executed.structuredContent),
+      JSON.stringify(executed.structuredContent),
+    ).toBe(true);
+    expect(executed.structuredContent).toEqual(executedContent);
   });
 });

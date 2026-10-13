@@ -1,4 +1,4 @@
-import { Type } from "typebox";
+import { Type, type TSchema } from "typebox";
 
 import {
   NODE_TEST_PATH_PATTERN,
@@ -7,10 +7,13 @@ import {
   PROJECT_COMMAND_MAX_SCRIPT_VARIANT_LENGTH,
   PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN,
 } from "../project-command/parameters.ts";
-import { optionalNullable } from "../project-command/schema.ts";
 import { parseJsonStringArray, stripNullProperties } from "../project-command/schema/validation.ts";
-import { FLOW_ID_PATTERN, isRecord, isValidPublishValue } from "../value-validation.ts";
+import { isRecord } from "../value-validation.ts";
 import { VERIFY_PHASES, type VerifyPhase } from "./types.ts";
+
+function optionalNullable<const T extends TSchema>(schema: T) {
+  return Type.Optional(Type.Union([schema, Type.Null()]));
+}
 
 const packageScriptNamePattern = PROJECT_COMMAND_SCRIPT_VARIANT_PATTERN;
 const packageScriptNameRegex = new RegExp(packageScriptNamePattern, "u");
@@ -74,16 +77,7 @@ export const verifyInputSchema = Type.Object(
         Type.String({
           pattern: "^[A-Za-z0-9_-]{8,128}$",
           description:
-            "Lookup-only stored validation evidence; use with optional flowId and no execution options; null means omitted.",
-        }),
-        Type.Null(),
-      ]),
-    ),
-    flowId: Type.Optional(
-      Type.Union([
-        Type.String({
-          pattern: FLOW_ID_PATTERN.source,
-          description: "Lookup-only evidence flow scope; requires ref.",
+            "Lookup-only stored validation evidence; the lookup flow comes from the effective flow scope; null means omitted.",
         }),
         Type.Null(),
       ]),
@@ -93,21 +87,6 @@ export const verifyInputSchema = Type.Object(
         Type.Boolean({ description: "Force fresh execution; cannot be combined with ref." }),
         Type.Null(),
       ]),
-    ),
-    publish: optionalNullable(
-      Type.Object(
-        {
-          flowId: Type.String({
-            pattern: FLOW_ID_PATTERN.source,
-            description:
-              "Flow ID that receives published validation evidence after successful execution.",
-          }),
-        },
-        {
-          additionalProperties: false,
-          description: "Publish execution evidence to this flow after successful authorization.",
-        },
-      ),
     ),
     covers: optionalNullable(
       Type.Array(
@@ -127,7 +106,7 @@ export const verifyInputSchema = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Run the configured verification phases, or look up stored validation evidence with ref. Execution requests preflight package scripts and reject any non-omitted phase whose selected script is unavailable; retry with that phase in omit. Execution requests may select paths, scripts, omitted phases, and publication; lookup requests accept only ref with optional flowId and covers. Explicit null values are treated as omitted.",
+      "Run the configured verification phases, or look up stored validation evidence with ref. Execution requests preflight package scripts and reject any non-omitted phase whose selected script is unavailable; retry with that phase in omit. Execution requests may select paths, scripts, omitted phases, and covers; lookup requests accept only ref, and the lookup flow is derived from the effective flow scope. Completed runs publish evidence to the effective flow scope automatically. Explicit null values are treated as omitted.",
   },
 );
 
@@ -137,9 +116,7 @@ export interface VerifyInput {
   readonly scripts?: Partial<Record<VerifyPhase, string>> | null;
   readonly continueOnFailure?: boolean | null;
   readonly ref?: string | null;
-  readonly flowId?: string | null;
   readonly fresh?: boolean | null;
-  readonly publish?: { readonly flowId: string } | null;
   readonly covers?: readonly string[] | null;
 }
 
@@ -149,9 +126,7 @@ export interface NormalizedVerifyInput {
   readonly scripts: Readonly<Partial<Record<VerifyPhase, string>>>;
   readonly continueOnFailure: boolean;
   readonly ref?: string;
-  readonly flowId?: string;
   readonly fresh: boolean;
-  readonly publish?: { readonly flowId: string };
   readonly covers: readonly string[];
   readonly coercions: readonly string[];
 }
@@ -309,9 +284,7 @@ function validateVerifyExecutionFields(
 
 interface VerifyEvidenceFields {
   readonly ref?: string;
-  readonly flowId?: string;
   readonly fresh: boolean;
-  readonly publish?: { readonly flowId: string };
   readonly covers: readonly string[];
 }
 
@@ -328,16 +301,6 @@ function validateVerifyRef(value: unknown): string | undefined {
   return value;
 }
 
-function validateVerifyFlowId(value: unknown): string | undefined {
-  if (value !== undefined && (typeof value !== "string" || !FLOW_ID_PATTERN.test(value))) {
-    throw new VerifyToolError(
-      "invalid-request",
-      'verify field flowId must be a bounded lookup scope and requires ref; expected string, for example "flow-1"',
-    );
-  }
-  return value;
-}
-
 function validateVerifyFresh(value: unknown): boolean {
   if (value !== undefined && typeof value !== "boolean") {
     throw new VerifyToolError(
@@ -346,17 +309,6 @@ function validateVerifyFresh(value: unknown): boolean {
     );
   }
   return value === true;
-}
-
-function validateVerifyPublish(value: unknown): { readonly flowId: string } | undefined {
-  if (value === undefined) return undefined;
-  if (!isValidPublishValue(value)) {
-    throw new VerifyToolError(
-      "invalid-request",
-      'verify field publish must be {flowId: string}; expected object, for example {flowId: "flow-1"}',
-    );
-  }
-  return { flowId: value.flowId };
 }
 
 function validateVerifyCovers(value: unknown): readonly string[] {
@@ -378,15 +330,11 @@ function validateVerifyEvidenceFields(
   value: Readonly<Record<string, unknown>>,
 ): VerifyEvidenceFields {
   const ref = validateVerifyRef(value.ref);
-  const flowId = validateVerifyFlowId(value.flowId);
   const fresh = validateVerifyFresh(value.fresh);
-  const publish = validateVerifyPublish(value.publish);
   const covers = validateVerifyCovers(value.covers);
   return {
     ...(ref === undefined ? {} : { ref }),
-    ...(flowId === undefined ? {} : { flowId }),
     fresh,
-    ...(publish === undefined ? {} : { publish }),
     covers,
   };
 }
@@ -397,9 +345,7 @@ const VERIFY_INPUT_KEYS = new Set([
   "scripts",
   "continueOnFailure",
   "ref",
-  "flowId",
   "fresh",
-  "publish",
   "covers",
 ]);
 
@@ -414,22 +360,11 @@ function validateVerifyLookupRestrictions(
   evidence: VerifyEvidenceFields,
   omit: readonly VerifyPhase[],
 ): void {
-  const { ref, flowId, fresh, publish } = evidence;
-  if (
-    ref !== undefined &&
-    (fresh ||
-      publish !== undefined ||
-      Object.keys(value).some((key) => !["ref", "flowId", "covers"].includes(key)))
-  ) {
+  const { ref, fresh } = evidence;
+  if (ref !== undefined && (fresh || Object.keys(value).some((key) => key !== "ref"))) {
     throw new VerifyToolError(
       "invalid-request",
-      'verify ref lookup cannot include execution options; expected {ref} or {ref,flowId}, for example {ref: "vr_example", flowId: "flow-1"}',
-    );
-  }
-  if (flowId !== undefined && ref === undefined) {
-    throw new VerifyToolError(
-      "invalid-request",
-      'verify field flowId is lookup-only and requires ref; expected {ref,flowId}, for example {ref: "vr_example", flowId: "flow-1"}',
+      'verify ref lookup cannot include execution options; expected {ref}, for example {ref: "vr_example"}',
     );
   }
   if (ref === undefined && omit.length === VERIFY_PHASES.length) {
@@ -453,9 +388,7 @@ export function validateVerifyInput(value: unknown): NormalizedVerifyInput {
     scripts,
     continueOnFailure,
     ...(evidence.ref === undefined ? {} : { ref: evidence.ref }),
-    ...(evidence.flowId === undefined ? {} : { flowId: evidence.flowId }),
     fresh: evidence.fresh ?? false,
-    ...(evidence.publish === undefined ? {} : { publish: evidence.publish }),
     covers: evidence.covers,
     coercions,
   };

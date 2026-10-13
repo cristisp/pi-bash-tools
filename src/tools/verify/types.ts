@@ -58,9 +58,10 @@ export interface VerifyEvidenceProvenance {
 
 export interface VerifyPublication {
   readonly flowId: string;
-  readonly repositoryIdentity: string;
+  readonly repositoryIdentity?: string;
   readonly producerScope: VerifyEvidenceScope;
   readonly published: boolean;
+  readonly error?: string;
 }
 
 export interface VerifyEvidenceRecord {
@@ -192,11 +193,16 @@ const verifyEvidenceProvenanceSchema = Type.Object(
 const verifyPublicationSchema = Type.Object(
   {
     flowId: Type.String({ description: "Target flow identifier." }),
-    repositoryIdentity: Type.String({ description: "Repository identity of the publication." }),
+    repositoryIdentity: Type.Optional(
+      Type.String({ description: "Repository identity of the publication." }),
+    ),
     producerScope: Type.Union([Type.Literal("root"), Type.Literal("flow")], {
       description: "Producer scope of the publication.",
     }),
     published: Type.Boolean({ description: "Whether the evidence was published." }),
+    error: Type.Optional(
+      Type.String({ description: "Bounded reason the automatic publication did not complete." }),
+    ),
   },
   { additionalProperties: false },
 );

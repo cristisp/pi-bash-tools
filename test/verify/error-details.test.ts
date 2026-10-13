@@ -67,7 +67,7 @@ it("does not classify invalid verify requests with a ref as stale lookups", asyn
   });
   const cases = [
     ["invalid-fresh", { ref: "vr_stale", fresh: true }],
-    ["invalid-flow", { ref: "vr_stale", flowId: "!" }],
+    ["retired-flow", { ref: "vr_stale", flowId: "!" }],
     ["invalid-covers", { ref: "vr_stale", covers: [""] }],
   ] as const;
 

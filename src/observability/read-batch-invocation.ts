@@ -7,26 +7,18 @@ import {
 import {
   boundedErrorCode,
   boundedIdentifier,
-  boundedLookupOutcome,
   boundedNumber,
   boundedOptionalIdentifier,
   validCompletionReason,
 } from "./bounded.ts";
 import { appendInvocationStreamRecord } from "./invocation-stream.ts";
 
-const READ_BATCH_INVOCATION_FORMAT_VERSION = 1 as const;
+const READ_BATCH_INVOCATION_FORMAT_VERSION = 2 as const;
 export const READ_BATCH_INVOCATION_ENTRY_TYPE = "bash-tools.read-batch-invocation" as const;
 export const READ_BATCH_INVOCATION_MAX_BYTES = 8 * 1024;
 export const READ_BATCH_INVOCATION_MAX_ITEMS = 32;
 
 export type ReadBatchInvocationReason = "completed" | "cancelled" | "invalid-request" | "failed";
-
-export interface ReadBatchInvocationLookupMetadata {
-  readonly attempted: boolean;
-  readonly success: boolean;
-  readonly failure?: string;
-  readonly outcome?: string;
-}
 
 export interface ReadBatchInvocationRange {
   readonly offset?: number;
@@ -42,7 +34,6 @@ export interface ReadBatchInvocationItem {
   readonly totalBytes: number;
   readonly totalLines: number;
   readonly contentBytes: number;
-  readonly ref?: string;
   readonly errorCode?: string;
 }
 
@@ -54,13 +45,6 @@ export interface ReadBatchInvocationAggregate {
   readonly unchangedCount: number;
   readonly truncatedCount: number;
   readonly errorCount: number;
-}
-
-export interface ReadBatchInvocationPublicationMetadata {
-  readonly scope: "root" | "flow";
-  readonly flowId?: string;
-  readonly published: boolean;
-  readonly error?: string;
 }
 
 export interface ReadBatchInvocationRecordInput {
@@ -76,10 +60,8 @@ export interface ReadBatchInvocationRecordInput {
   readonly scope?: "session" | "flow";
   readonly flowId?: string;
   readonly repositoryState?: SharedEvidenceWorkspaceBlock;
-  readonly lookup?: ReadBatchInvocationLookupMetadata;
   readonly role?: string;
   readonly delegationId?: string;
-  readonly publication?: ReadBatchInvocationPublicationMetadata;
 }
 
 export interface ReadBatchInvocationRecord {
@@ -96,10 +78,8 @@ export interface ReadBatchInvocationRecord {
   readonly scope?: "session" | "flow";
   readonly flowId?: string;
   readonly repositoryState?: SharedEvidenceWorkspaceBlock;
-  readonly lookup?: ReadBatchInvocationLookupMetadata;
   readonly role?: string;
   readonly delegationId?: string;
-  readonly publication?: ReadBatchInvocationPublicationMetadata;
 }
 
 export type ReadBatchInvocationRecorder = (record: ReadBatchInvocationRecord) => void;
@@ -108,46 +88,6 @@ export type ReadBatchInvocationAPI = Pick<ExtensionAPI, "appendEntry">;
 
 function validScope(value: unknown): "session" | "flow" | undefined {
   return value === "session" || value === "flow" ? value : undefined;
-}
-
-function boundedPublication(value: unknown): ReadBatchInvocationPublicationMetadata | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const candidate = value as {
-    readonly scope?: unknown;
-    readonly flowId?: unknown;
-    readonly published?: unknown;
-    readonly error?: unknown;
-  };
-  const flowId = boundedOptionalIdentifier(candidate.flowId);
-  const error = boundedOptionalIdentifier(candidate.error);
-  return {
-    scope: candidate.scope === "flow" ? "flow" : "root",
-    published: candidate.published === true,
-    ...(flowId === undefined ? {} : { flowId }),
-    ...(error === undefined ? {} : { error }),
-  };
-}
-
-function boundedLookup(value: unknown): ReadBatchInvocationLookupMetadata | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const candidate = value as {
-    readonly attempted?: unknown;
-    readonly success?: unknown;
-    readonly failure?: unknown;
-    readonly outcome?: unknown;
-  };
-  if (candidate.attempted !== true) return undefined;
-  const outcome = boundedLookupOutcome(
-    typeof candidate.outcome === "string" ? candidate.outcome : undefined,
-  );
-  return {
-    attempted: true,
-    success: candidate.success === true,
-    ...(typeof candidate.failure === "string"
-      ? { failure: boundedIdentifier(candidate.failure) }
-      : {}),
-    ...(outcome === undefined ? {} : { outcome }),
-  };
 }
 
 function validRange(value: unknown): ReadBatchInvocationRange | undefined {
@@ -181,12 +121,10 @@ function validItem(value: unknown): ReadBatchInvocationItem | undefined {
     readonly totalBytes?: unknown;
     readonly totalLines?: unknown;
     readonly contentBytes?: unknown;
-    readonly ref?: unknown;
     readonly errorCode?: unknown;
   };
   const pathHash = typeof candidate.pathHash === "string" ? candidate.pathHash : "";
   const errorCode = typeof candidate.errorCode === "string" ? candidate.errorCode : undefined;
-  const ref = typeof candidate.ref === "string" ? candidate.ref : undefined;
   const range = validRange(candidate.range);
   return {
     pathHash: boundedIdentifier(pathHash),
@@ -199,7 +137,6 @@ function validItem(value: unknown): ReadBatchInvocationItem | undefined {
     contentBytes: boundedNumber(
       typeof candidate.contentBytes === "number" ? candidate.contentBytes : 0,
     ),
-    ...(ref === undefined ? {} : { ref: boundedIdentifier(ref) }),
     ...(errorCode === undefined ? {} : { errorCode: boundedErrorCode(errorCode) }),
   };
 }
@@ -256,10 +193,8 @@ export function buildReadBatchInvocationRecord(
   const scope = validScope(input.scope);
   const flowId =
     typeof input.flowId === "string" && input.flowId.length > 0 ? input.flowId : undefined;
-  const lookup = boundedLookup(input.lookup);
   const role = boundedOptionalIdentifier(input.role);
   const delegationId = boundedOptionalIdentifier(input.delegationId);
-  const publication = boundedPublication(input.publication);
   const build = (frozenItems: readonly ReadBatchInvocationItem[]): ReadBatchInvocationRecord =>
     Object.freeze({
       invocationFormatVersion: READ_BATCH_INVOCATION_FORMAT_VERSION,
@@ -277,10 +212,8 @@ export function buildReadBatchInvocationRecord(
       ...(isBoundedSharedEvidenceWorkspace(input.repositoryState)
         ? { repositoryState: input.repositoryState }
         : {}),
-      ...(lookup === undefined ? {} : { lookup }),
       ...(role === undefined ? {} : { role }),
       ...(delegationId === undefined ? {} : { delegationId }),
-      ...(publication === undefined ? {} : { publication }),
     });
   let record = build(Object.freeze(items));
   while (items.length > 0) {

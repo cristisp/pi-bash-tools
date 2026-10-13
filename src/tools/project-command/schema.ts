@@ -1,7 +1,6 @@
-import { Type, type Static, type TObject, type TSchema } from "typebox";
+import { Type, type Static, type TObject } from "typebox";
 
 import { booleanInputSchema, type BooleanInput } from "../boolean.ts";
-import { FLOW_ID_PATTERN } from "../value-validation.ts";
 import {
   getProjectCommandDefinitions,
   type ProjectCommandDefinition,
@@ -28,69 +27,18 @@ export type ProjectCommandInputSchema<
     readonly ProjectCommandDefinition<ProjectCommandId>[],
 > = Definitions extends readonly ProjectCommandDefinition[] ? TObject : never;
 
-export type ProjectCommandEvidenceLookup = {
-  readonly ref: string;
-  readonly flowId?: string;
-  readonly covers?: readonly string[];
-  readonly coercions?: readonly string[];
-};
-
-type EvidenceExecutionOptions = {
-  readonly publish?: { readonly flowId: string } | null;
-  readonly covers?: readonly string[] | null;
-};
-
 type InputForDefinition<Definition extends ProjectCommandDefinition> = {
   readonly commandId: Definition["commandId"];
   readonly force?: BooleanInput | null;
   readonly paths?: readonly string[] | null;
   readonly variant?: string | null;
   readonly base?: string | null;
-  readonly ref?: string | null;
-  readonly flowId?: string | null;
-} & EvidenceExecutionOptions;
+};
 
 export type ProjectCommandInputFor<Definitions extends readonly ProjectCommandDefinition[]> =
-  | InputForDefinition<Definitions[number]>
-  | ProjectCommandEvidenceLookup;
+  InputForDefinition<Definitions[number]>;
 
 type ProjectCommandRuntimeInputSchema = TObject;
-
-export function optionalNullable<const T extends TSchema>(schema: T) {
-  return Type.Optional(Type.Union([schema, Type.Null()]));
-}
-
-function evidenceProperties() {
-  return {
-    publish: optionalNullable(
-      Type.Object(
-        {
-          flowId: Type.String({
-            pattern: FLOW_ID_PATTERN.source,
-            description: "Flow ID that receives published evidence after successful execution.",
-          }),
-        },
-        {
-          additionalProperties: false,
-          description: "Execution-only publication target for authorized evidence.",
-        },
-      ),
-    ),
-    covers: optionalNullable(
-      Type.Array(
-        Type.String({
-          minLength: 1,
-          maxLength: 512,
-          description: "Acceptance-criteria identifier to attach to published evidence.",
-        }),
-        {
-          maxItems: 64,
-          description: "Optional acceptance-criteria identifiers to preserve in evidence.",
-        },
-      ),
-    ),
-  };
-}
 
 function legacyVariantCommandId(commandId: string) {
   return Type.String({
@@ -145,8 +93,7 @@ function commandIdSchema(definitions: readonly ProjectCommandDefinition[]) {
     .map((definition) => legacyVariantCommandId(definition.commandId));
   return Type.Optional(
     Type.Union([...commandIds, ...legacyAliases, Type.Null()], {
-      description:
-        "One fixed command ID for execution requests, or a legacy variant alias. Omit or pass null for lookup-only requests with ref.",
+      description: "One fixed command ID for execution requests, or a legacy variant alias.",
     }),
   );
 }
@@ -160,7 +107,6 @@ export function createProjectCommandInputSchema(
 export function createProjectCommandInputSchema(
   definitions: readonly ProjectCommandDefinition[],
 ): ProjectCommandRuntimeInputSchema {
-  const { publish, covers } = evidenceProperties();
   return Type.Object(
     {
       commandId: commandIdSchema(definitions),
@@ -180,31 +126,11 @@ export function createProjectCommandInputSchema(
           Type.Null(),
         ]),
       ),
-      publish,
-      covers,
-      ref: Type.Optional(
-        Type.Union([
-          Type.String({
-            pattern: "^[A-Za-z0-9_-]{8,128}$",
-            description: "Lookup-only evidence reference; null means omitted.",
-          }),
-          Type.Null(),
-        ]),
-      ),
-      flowId: Type.Optional(
-        Type.Union([
-          Type.String({
-            pattern: FLOW_ID_PATTERN.source,
-            description: "Lookup-only evidence flow scope; requires ref.",
-          }),
-          Type.Null(),
-        ]),
-      ),
     },
     {
       additionalProperties: false,
       description:
-        "Run one fixed command from the registered project command catalog, including fixed Node dependency listings and package scripts and fixed Fallow analyses. Execution requests require commandId and may include force, command-specific fields (paths, variant, or base as applicable to the selected command), covers, and publish: { flowId }. Lookup-only requests accept only ref with optional flowId and covers and never execute a command. Provide either commandId or ref, never both.",
+        "Run one fixed command from the registered project command catalog, including fixed Node dependency listings and package scripts and fixed Fallow analyses. Execution requests require commandId and may include force, command-specific fields (paths, variant, or base as applicable to the selected command).",
     },
   );
 }

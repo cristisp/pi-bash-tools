@@ -18,10 +18,7 @@ import {
   projectCommandDiagnostic,
 } from "./diagnostics.ts";
 import type { ProjectCommandResolutionError } from "./errors.ts";
-import type {
-  ProjectCommandEvidenceProvenance,
-  ProjectCommandEvidencePublication,
-} from "./evidence.ts";
+import type { ProjectCommandEvidenceProvenance } from "./evidence.ts";
 import type { ProjectCommandExecutionOutcome, ProjectCommandOutput } from "./execution.ts";
 import type { ProjectCommandRelevantInputs } from "./relevant-inputs.ts";
 import type { ProjectCommandRepositoryState } from "./repository-state.ts";
@@ -41,9 +38,7 @@ export interface ProjectCommandInvocationMetadata {
   readonly cacheDecision: ProjectCommandCacheDecision;
   readonly forced: boolean;
   readonly evidenceRef?: string;
-  readonly covers?: readonly string[];
   readonly repositoryState?: ProjectCommandRepositoryState;
-  readonly publication?: ProjectCommandEvidencePublication;
   readonly provenance?: ProjectCommandEvidenceProvenance;
   readonly recordedRepositoryState?: ProjectCommandRepositoryState;
   readonly currentRepositoryState?: ProjectCommandRepositoryState;
@@ -68,8 +63,6 @@ export interface ProjectCommandOutputDetails {
   readonly projectPath: string;
   readonly fingerprint: string;
   readonly ref?: string;
-  readonly covers?: readonly string[];
-  readonly publication?: ProjectCommandEvidencePublication;
   readonly provenance?: ProjectCommandEvidenceProvenance;
   readonly repositoryState?: ProjectCommandRepositoryState;
   readonly recordedRepositoryState?: ProjectCommandRepositoryState;
@@ -148,12 +141,10 @@ function outputMetadata(
     ["producerInvocationId", metadata.producerInvocationId],
     ["producerScope", metadata.producerScope],
     ["ref", metadata.evidenceRef],
-    ["covers", metadata.covers],
     ["coercions", metadata.coercions],
     ["mutating", metadata.mutating],
     ["concurrentExecutions", metadata.concurrentExecutions],
     ["stateDrift", metadata.stateDrift],
-    ["publication", metadata.publication],
     ["provenance", metadata.provenance],
     ["repositoryState", metadata.repositoryState],
     ["recordedRepositoryState", metadata.recordedRepositoryState],

@@ -3,8 +3,8 @@ import { expect, it } from "vitest";
 import { validateProjectCommandInput } from "../../src/tools/project-command/schema.ts";
 import { validateVerifyInput } from "../../src/tools/verify/schema.ts";
 
-it("normalizes a full-property execution payload with null placeholders for project_command", () => {
-  expect(
+it("rejects retired evidence fields on project_command instead of stripping them", () => {
+  expect(() =>
     validateProjectCommandInput({
       commandId: "node_project_info",
       force: null,
@@ -16,35 +16,10 @@ it("normalizes a full-property execution payload with null placeholders for proj
       ref: null,
       flowId: null,
     }),
-  ).toEqual({
-    commandId: "node_project_info",
-    coercions: [
-      "force:null-to-absent",
-      "paths:null-to-absent",
-      "variant:null-to-absent",
-      "base:null-to-absent",
-      "publish:null-to-absent",
-      "covers:null-to-absent",
-      "ref:null-to-absent",
-      "flowId:null-to-absent",
-    ],
-  });
-});
-
-it("classifies commandId null with a ref string as a lookup request", () => {
-  expect(validateProjectCommandInput({ commandId: null, ref: "pc_example", flowId: null })).toEqual(
-    {
-      ref: "pc_example",
-      coercions: ["commandId:null-to-absent", "flowId:null-to-absent"],
-    },
+  ).toThrow(/invalid/iu);
+  expect(() => validateProjectCommandInput({ commandId: "node_project_info", ref: null })).toThrow(
+    /ref/iu,
   );
-});
-
-it("keeps lookup-only coercion payloads fail-closed for junk references", () => {
-  expect(() =>
-    validateProjectCommandInput({ commandId: "node_project_info", ref: "junk-string" }),
-  ).toThrow(/lookup requests.*only.*ref.*flowId.*covers/iu);
-  expect(() => validateProjectCommandInput({ ref: "" })).toThrow(/invalid/iu);
 });
 
 it("keeps non-null invalid values failing with unchanged messages", () => {
@@ -56,10 +31,10 @@ it("keeps non-null invalid values failing with unchanged messages", () => {
   ).toThrow(/invalid/iu);
   expect(() =>
     validateProjectCommandInput({ commandId: "node_project_info", covers: [42] }),
-  ).toThrow(/covers/iu);
+  ).toThrow(/invalid/iu);
   expect(() =>
     validateProjectCommandInput({ ref: "pc_example", publish: { flowId: "flow-1" } }),
-  ).toThrow(/lookup requests.*only/iu);
+  ).toThrow(/invalid/iu);
 });
 
 it("rejects null placeholders on unknown fields instead of stripping them", () => {
@@ -76,9 +51,7 @@ it("normalizes a full-property verify payload with null placeholders as executio
       scripts: null,
       continueOnFailure: null,
       ref: null,
-      flowId: null,
       fresh: null,
-      publish: null,
       covers: null,
     }),
   ).toEqual({
@@ -93,9 +66,7 @@ it("normalizes a full-property verify payload with null placeholders as executio
       "scripts:null-to-absent",
       "continueOnFailure:null-to-absent",
       "ref:null-to-absent",
-      "flowId:null-to-absent",
       "fresh:null-to-absent",
-      "publish:null-to-absent",
       "covers:null-to-absent",
     ],
   });

@@ -79,7 +79,15 @@ it("registers ten tools, session listeners, and the cache prune command", async 
     },
   } satisfies Parameters<typeof extension>[0];
   extension(pi);
-  expect(events).toEqual(["session_start", "session_shutdown", "tool_call", "tool_result"]);
+  expect(events).toEqual([
+    "session_start",
+    "session_shutdown",
+    "session_before_switch",
+    "session_before_fork",
+    "session_compact",
+    "tool_call",
+    "tool_result",
+  ]);
   expect(names).toEqual([
     "git_status",
     "git_diff",
@@ -152,7 +160,66 @@ it("registers ten tools, session listeners, and the cache prune command", async 
   ]);
   expect(unrecordedVerifyResult).toBeUndefined();
 
+  const firstRead: unknown = Reflect.apply(toolResultHandler, undefined, [
+    {
+      type: "tool_result",
+      toolName: "read",
+      toolCallId: "index-read-1",
+      input: { path: "a.ts" },
+      content: [{ type: "text", text: "same" }],
+      isError: false,
+    },
+    context,
+  ]);
+  expect(firstRead).toBeUndefined();
+  const repeatRead: unknown = Reflect.apply(toolResultHandler, undefined, [
+    {
+      type: "tool_result",
+      toolName: "read",
+      toolCallId: "index-read-2",
+      input: { path: "a.ts" },
+      content: [{ type: "text", text: "same" }],
+      isError: false,
+    },
+    context,
+  ]);
+  expect(repeatRead).toMatchObject({
+    isError: false,
+    structuredContent: expect.stringContaining("tool call index-read-1"),
+  });
+
   emit("session_start", { type: "session_start", reason: "startup" });
+  const postResetRepeat: unknown = Reflect.apply(toolResultHandler, undefined, [
+    {
+      type: "tool_result",
+      toolName: "read",
+      toolCallId: "index-read-3",
+      input: { path: "a.ts" },
+      content: [{ type: "text", text: "same" }],
+      isError: false,
+    },
+    context,
+  ]);
+  expect(postResetRepeat).toBeUndefined();
+
+  const largeWholeFileRead: unknown = Reflect.apply(toolResultHandler, undefined, [
+    {
+      type: "tool_result",
+      toolName: "read",
+      toolCallId: "index-read-large",
+      input: { path: "big.ts" },
+      content: [{ type: "text", text: "x".repeat(40_000) }],
+      isError: false,
+    },
+    context,
+  ]);
+  expect(largeWholeFileRead).toMatchObject({
+    isError: false,
+    content: [
+      { type: "text", text: expect.any(String) },
+      { type: "text", text: expect.stringContaining("read_batch with a bounded line range") },
+    ],
+  });
   emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
   emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
   expect(entries).toHaveLength(2);

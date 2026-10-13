@@ -14,15 +14,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 
-import {
-  EVIDENCE_ENVELOPE_FORMAT_VERSION,
-  EVIDENCE_PRODUCER,
-  sharedEvidenceRequestHash,
-  sharedRepositoryId,
-  type SharedEvidenceRecord,
-  type SharedEvidenceScope,
-  type SharedEvidenceWorkspaceBlock,
-} from "../../evidence/envelope.ts";
+import { sharedRepositoryId, type SharedEvidenceWorkspaceBlock } from "../../evidence/envelope.ts";
 import type {
   AuthorizationOutcomeObserver,
   AuthorizationOutcomeRecorder,
@@ -33,8 +25,6 @@ import {
   recordReadBatchInvocation,
   type ReadBatchInvocationAggregate,
   type ReadBatchInvocationItem,
-  type ReadBatchInvocationLookupMetadata,
-  type ReadBatchInvocationPublicationMetadata,
   type ReadBatchInvocationReason,
   type ReadBatchInvocationRecorder,
 } from "../../observability/read-batch-invocation.ts";
@@ -62,7 +52,7 @@ import type { ProjectCommandRepositoryStateReader } from "../project-command/rep
 import { createProjectCommandRepositoryStateReader } from "../project-command/repository-state.ts";
 import { stripNullProperties } from "../project-command/schema/validation.ts";
 import { decodeUtf8Prefix } from "../truncation.ts";
-import { FLOW_ID_PATTERN, toJsonValue } from "../value-validation.ts";
+import { toJsonValue } from "../value-validation.ts";
 import {
   authorizeAndPersistFilesystemAccesses,
   loadFilesystemPolicyForRequest,
@@ -79,22 +69,6 @@ import {
 } from "./errors.ts";
 import { recordObservedContent } from "./observed-content-store.ts";
 import { canonicalExistingPath, requestPath } from "./paths.ts";
-import {
-  resolveReadEvidenceLookup,
-  type ReadEvidenceLookupOutcome,
-  type ReadEvidenceLookupResult,
-  type ReadEvidencePathProbe,
-} from "./read-evidence-lookup.ts";
-import {
-  createPublishedReadEvidenceRecord,
-  createReadEvidenceStore,
-  type ReadEvidenceEntry,
-  type ReadEvidenceStore,
-} from "./read-evidence-store.ts";
-import {
-  READ_EVIDENCE_MAX_RECORD_BYTES,
-  readEvidenceRecordBytes,
-} from "./read-evidence-validation.ts";
 
 const READ_BATCH_MAX_PATHS = 32;
 const READ_BATCH_MAX_PATH_LENGTH = 4_096;
@@ -104,12 +78,7 @@ const READ_BATCH_MAX_CONTENT_BYTES = 64 * 1024;
 const READ_BATCH_MAX_AGGREGATE_CONTENT_BYTES = 256 * 1024;
 const READ_BATCH_MAX_FILE_BYTES = 8 * 1024 * 1024;
 const READ_BATCH_MAX_CACHE_ENTRIES = 512;
-const READ_BATCH_REF_PREFIX = "rr_";
-const READ_BATCH_REF_PATTERN = /^rr_[0-9a-f]{24}$/u;
-const READ_BATCH_MAX_FLOW_ID_LENGTH = 64;
-const READ_BATCH_MAX_COVERS = 64;
-const READ_BATCH_MAX_COVER_LENGTH = 512;
-const READ_BATCH_INPUT_KEYS = new Set(["paths", "ref", "flowId", "covers", "publish"]);
+const READ_BATCH_INPUT_KEYS = new Set(["paths"]);
 
 const readBatchRangeParameters = Type.Object(
   {
@@ -149,22 +118,6 @@ const readBatchPathParameters = Type.Object(
   },
 );
 
-const readBatchPublishParameters = Type.Object(
-  {
-    flowId: Type.String({
-      minLength: 1,
-      maxLength: READ_BATCH_MAX_FLOW_ID_LENGTH,
-      pattern: FLOW_ID_PATTERN.source,
-      description: "Flow ID authorized to receive the freshly read evidence",
-    }),
-  },
-  {
-    additionalProperties: false,
-    description:
-      "Execution-only publication request. The resulting aggregate ref is durable and lookupable by authorized children in this flow.",
-  },
-);
-
 const readBatchParameters = Type.Object(
   {
     paths: Type.Optional(
@@ -172,63 +125,16 @@ const readBatchParameters = Type.Object(
         Type.Array(readBatchPathParameters, {
           minItems: 1,
           maxItems: READ_BATCH_MAX_PATHS,
-          description:
-            "Execution request: one or more repository-relative files to read. Required unless ref is supplied for lookup.",
+          description: "One or more repository-relative files to read.",
         }),
         Type.Null(),
       ]),
-    ),
-    ref: Type.Optional(
-      Type.Union([
-        Type.String({
-          pattern: "^rr_[0-9a-f]{24}$",
-          maxLength: 32,
-          description:
-            "Lookup request: previously published read_batch evidence ref. Use this instead of paths; it must not be combined with publish.",
-        }),
-        Type.Null(),
-      ]),
-    ),
-    flowId: Type.Optional(
-      Type.Union([
-        Type.String({
-          minLength: 1,
-          maxLength: READ_BATCH_MAX_FLOW_ID_LENGTH,
-          pattern: FLOW_ID_PATTERN.source,
-          description:
-            "Lookup-only flow scope; requires ref. For execution publication, use publish.flowId instead.",
-        }),
-        Type.Null(),
-      ]),
-    ),
-    covers: Type.Optional(
-      Type.Union([
-        Type.Array(
-          Type.String({
-            minLength: 1,
-            maxLength: READ_BATCH_MAX_COVER_LENGTH,
-            description: "Acceptance-criteria identifier to associate with this lookup",
-          }),
-          {
-            maxItems: READ_BATCH_MAX_COVERS,
-            description:
-              "Optional bounded acceptance-criteria identifiers for a published-ref lookup; valid only with ref.",
-          },
-        ),
-        Type.Null(),
-      ]),
-    ),
-    publish: Type.Optional(
-      Type.Union([readBatchPublishParameters, Type.Null()], {
-        description:
-          "Optional execution-only publication. Do not combine with ref; publication must target the caller's authorized flow.",
-      }),
     ),
   },
   {
     additionalProperties: false,
     description:
-      "Two request forms are supported: execution uses paths and may include publish.flowId; lookup uses ref and may include flowId and covers. Do not combine execution and lookup fields. Explicit null on optional fields is treated as omitted, and invalid combinations are rejected at runtime.",
+      "One or more repository-relative files to read, each with an optional bounded line range. Explicit null on optional fields is treated as omitted, and invalid combinations are rejected at runtime.",
   },
 );
 
@@ -257,7 +163,6 @@ export interface ReadBatchPathResult {
   readonly path: string;
   readonly range?: ReadBatchRange;
   readonly unchanged?: boolean;
-  readonly ref?: string;
   readonly contentHash?: string;
   readonly content?: string;
   readonly output?: ReadBatchOutput;
@@ -269,19 +174,9 @@ export interface ReadBatchContinuation {
   readonly totalPaths: number;
 }
 
-export interface ReadBatchPublicationMetadata {
-  readonly scope: "flow";
-  readonly flowId: string;
-  readonly published: boolean;
-  readonly ref?: string;
-  readonly error?: string;
-}
-
 export interface ReadBatchDetails {
   readonly results: readonly ReadBatchPathResult[];
   readonly continuation?: ReadBatchContinuation;
-  readonly publish?: ReadBatchPublicationMetadata;
-  readonly lookup?: ReadEvidenceLookupResult;
   readonly coercions?: readonly string[];
 }
 
@@ -326,88 +221,12 @@ const readBatchPathResultSchema = Type.Object(
     unchanged: Type.Optional(
       Type.Boolean({ description: "True when the item served an unchanged prior read." }),
     ),
-    ref: Type.Optional(
-      Type.String({ description: "Process-local rr_ read evidence reference for this item." }),
-    ),
     contentHash: Type.Optional(
       Type.String({ description: "Lowercase SHA-256 digest of the full file bytes." }),
     ),
     content: Type.Optional(Type.String({ description: "Bounded file text." })),
     output: Type.Optional(readBatchOutputBlockSchema),
     error: Type.Optional(readBatchPathErrorSchema),
-  },
-  { additionalProperties: false },
-);
-
-const readEvidenceLookupEntrySchema = Type.Object(
-  {
-    path: Type.String({ description: "Workspace-relative path of the recorded entry." }),
-    range: Type.Optional(readBatchRangeSchema),
-    contentHash: Type.Optional(
-      Type.String({ description: "Lowercase SHA-256 digest of the recorded file bytes." }),
-    ),
-    status: Type.Union(
-      [
-        Type.Literal("unchanged"),
-        Type.Literal("changed"),
-        Type.Literal("unreadable"),
-        Type.Literal("unauthorized"),
-      ],
-      { description: "Reauthorization and re-derivation status of the recorded entry." },
-    ),
-    content: Type.Optional(
-      Type.String({ description: "Bounded stored text, present only when unchanged." }),
-    ),
-    output: Type.Optional(readBatchOutputBlockSchema),
-  },
-  { additionalProperties: false },
-);
-
-const sharedEvidenceWorkspaceBlockSchema = Type.Object(
-  {
-    repositoryId: Type.String({ description: "SHA-256 hex digest of the repository identity." }),
-    head: Type.Union([Type.String(), Type.Null()], {
-      description: "Repository HEAD commit, or null when unavailable.",
-    }),
-    dirtyDigest: Type.Union([Type.String(), Type.Null()], {
-      description: "SHA-256 hex digest of the dirty-file identities, or null when unavailable.",
-    }),
-    status: Type.Union([Type.Literal("readable"), Type.Literal("degraded")], {
-      description: "Observation health.",
-    }),
-  },
-  { additionalProperties: false },
-);
-
-const readBatchLookupSchema = Type.Object(
-  {
-    ref: Type.String({ description: "Resolved rr_ read evidence reference." }),
-    covers: Type.Optional(
-      Type.Array(Type.String(), { description: "Attribution identifiers requested with the ref." }),
-    ),
-    executed: Type.Literal(false),
-    repositoryStateStatus: Type.Union(
-      [Type.Literal("matches"), Type.Literal("mismatch"), Type.Literal("unreadable")],
-      {
-        description: "Workspace comparison status between the stored and the current observation.",
-      },
-    ),
-    entries: Type.Array(readEvidenceLookupEntrySchema, {
-      description: "Per-path reauthorization and content re-derivation results.",
-    }),
-    workspace: Type.Optional(sharedEvidenceWorkspaceBlockSchema),
-    currentWorkspace: Type.Optional(sharedEvidenceWorkspaceBlockSchema),
-  },
-  { additionalProperties: false },
-);
-
-const readBatchPublicationSchema = Type.Object(
-  {
-    scope: Type.Literal("flow"),
-    flowId: Type.String({ description: "Target orchestration flow identifier." }),
-    published: Type.Boolean({ description: "Whether the evidence was published." }),
-    ref: Type.Optional(Type.String({ description: "Published rr_ reference on success." })),
-    error: Type.Optional(Type.String({ description: "Bounded publication error." })),
   },
   { additionalProperties: false },
 );
@@ -433,8 +252,6 @@ export const readBatchDetailsSchema = Type.Object(
         { additionalProperties: false },
       ),
     ),
-    publish: Type.Optional(readBatchPublicationSchema),
-    lookup: Type.Optional(readBatchLookupSchema),
     coercions: Type.Optional(
       Type.Array(Type.String(), {
         description: "Descriptions of request fields normalized or rejected up front.",
@@ -443,8 +260,7 @@ export const readBatchDetailsSchema = Type.Object(
   },
   {
     additionalProperties: false,
-    description:
-      "Bounded batch read or evidence lookup payload, also returned as the model-facing JSON text.",
+    description: "Bounded batch read payload, also returned as the model-facing JSON text.",
   },
 );
 
@@ -471,7 +287,6 @@ export interface ReadBatchToolTestOptions {
   readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
   readonly authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder;
   readonly authorizationRetryTracker?: AuthorizationRetryTracker;
-  readonly readEvidenceStore?: ReadEvidenceStore;
 }
 
 export interface ReadBatchToolOptions {
@@ -502,22 +317,6 @@ interface NormalizedReadBatchPath {
 interface NormalizedReadBatchExecuteRequest {
   readonly kind: "execute";
   readonly paths: ReadonlyArray<NormalizedReadBatchPath>;
-  readonly publishFlowId?: string;
-}
-
-interface NormalizedReadBatchLookupRequest {
-  readonly kind: "lookup";
-  readonly ref: string;
-  readonly flowId?: string;
-  readonly covers?: readonly string[];
-}
-
-type NormalizedReadBatchRequest =
-  | NormalizedReadBatchExecuteRequest
-  | NormalizedReadBatchLookupRequest;
-
-interface PreviousRead {
-  readonly evidence: SharedEvidenceRecord;
 }
 
 interface ReadBatchPathFailureOptions {
@@ -671,71 +470,8 @@ function normalizePathInput(value: unknown): NormalizedReadBatchPath {
   };
 }
 
-function normalizePublishInput(value: unknown): string {
-  if (!isRecord(value)) {
-    throw filesystemInvalidRequest("publish must be an object with a flowId", "publish");
-  }
-  const invalidKey = Object.keys(value).find((key) => key !== "flowId");
-  if (invalidKey !== undefined) {
-    throw filesystemInvalidRequest(`unsupported publish field "${invalidKey}"`, "publish");
-  }
-  const flowId = value.flowId;
-  if (typeof flowId !== "string" || !FLOW_ID_PATTERN.test(flowId)) {
-    throw filesystemInvalidRequest("publish.flowId must be a bounded flow identifier", "publish");
-  }
-  return flowId;
-}
-
-function normalizeLookupInput(
-  params: Readonly<Record<string, unknown>>,
-): NormalizedReadBatchLookupRequest {
-  const allowed = ["ref", "flowId", "covers"];
-  const invalidKey = Object.keys(params).find((key) => !allowed.includes(key));
-  if (invalidKey !== undefined) {
-    throw filesystemInvalidRequest(`unsupported request field "${invalidKey}"`, invalidKey);
-  }
-  const ref = params.ref;
-  if (typeof ref !== "string" || !READ_BATCH_REF_PATTERN.test(ref)) {
-    throw filesystemInvalidRequest("ref must be a read_batch evidence reference", "ref");
-  }
-  const flowId = params.flowId;
-  if (flowId !== undefined) {
-    if (typeof flowId !== "string" || !FLOW_ID_PATTERN.test(flowId)) {
-      throw filesystemInvalidRequest("flowId must be a bounded flow identifier", "flowId");
-    }
-  }
-  const covers = params.covers;
-  let normalizedCovers: readonly string[] | undefined;
-  if (covers !== undefined) {
-    if (
-      !Array.isArray(covers) ||
-      covers.length > READ_BATCH_MAX_COVERS ||
-      !covers.every(
-        (cover) =>
-          typeof cover === "string" &&
-          cover.length > 0 &&
-          cover.length <= READ_BATCH_MAX_COVER_LENGTH,
-      )
-    ) {
-      throw filesystemInvalidRequest(
-        `covers must contain at most ${READ_BATCH_MAX_COVERS} bounded strings`,
-        "covers",
-      );
-    }
-    normalizedCovers = Object.freeze(
-      covers.filter((cover): cover is string => typeof cover === "string"),
-    );
-  }
-  return {
-    kind: "lookup",
-    ref,
-    ...(flowId === undefined ? {} : { flowId }),
-    ...(normalizedCovers === undefined ? {} : { covers: normalizedCovers }),
-  };
-}
-
 function validateReadBatchRequest(rawParams: ReadBatchInput): {
-  readonly request: NormalizedReadBatchRequest;
+  readonly request: NormalizedReadBatchExecuteRequest;
   readonly coercions: readonly string[];
 } {
   if (!isRecord(rawParams)) {
@@ -743,10 +479,7 @@ function validateReadBatchRequest(rawParams: ReadBatchInput): {
   }
   const coercions: string[] = [];
   const params = stripNullProperties(rawParams, coercions, READ_BATCH_INPUT_KEYS) as ReadBatchInput;
-  if (params.ref !== undefined) {
-    return { request: normalizeLookupInput(params), coercions };
-  }
-  const invalidKey = Object.keys(params).find((key) => key !== "paths" && key !== "publish");
+  const invalidKey = Object.keys(params).find((key) => key !== "paths");
   if (invalidKey !== undefined) {
     throw filesystemInvalidRequest(`unsupported request field "${invalidKey}"`, invalidKey);
   }
@@ -761,16 +494,7 @@ function validateReadBatchRequest(rawParams: ReadBatchInput): {
   }
   const inputs = params.paths.map(normalizePathInput);
   validateNoOverlappingRanges(inputs);
-  const publishFlowId =
-    params.publish === undefined ? undefined : normalizePublishInput(params.publish);
-  return {
-    request: {
-      kind: "execute",
-      paths: inputs,
-      ...(publishFlowId === undefined ? {} : { publishFlowId }),
-    },
-    coercions,
-  };
+  return { request: { kind: "execute", paths: inputs }, coercions };
 }
 
 function validateNoOverlappingRanges(inputs: ReadonlyArray<NormalizedReadBatchPath>): void {
@@ -797,26 +521,6 @@ function normalizedRangeKey(range: ReadBatchRange | undefined): string {
   return range === undefined ? "all" : JSON.stringify(range);
 }
 
-function readReference(
-  root: string,
-  path: string,
-  range: ReadBatchRange | undefined,
-  contentHash: string,
-): string {
-  const hash = createHash("sha256")
-    .update("read-batch-v1", "utf8")
-    .update("\0", "utf8")
-    .update(root, "utf8")
-    .update("\0", "utf8")
-    .update(path, "utf8")
-    .update("\0", "utf8")
-    .update(normalizedRangeKey(range), "utf8")
-    .update("\0", "utf8")
-    .update(contentHash, "utf8")
-    .digest("hex");
-  return `${READ_BATCH_REF_PREFIX}${hash.slice(0, 24)}`;
-}
-
 function cacheScope(): string {
   const context = readProjectCommandOrchestrationContext();
   const flowId = effectiveOrchestrationFlowId(context);
@@ -834,10 +538,6 @@ function scopeMetadata(scope: string): ReadBatchScopeMetadata {
     : { scope: "session" };
 }
 
-function envelopeScope(scope: string): SharedEvidenceScope {
-  return scope.startsWith("flow:") ? "flow" : "session";
-}
-
 function cacheKey(
   scope: string,
   root: string,
@@ -847,7 +547,7 @@ function cacheKey(
   return JSON.stringify([scope, root, path, normalizedRangeKey(range)]);
 }
 
-function trimCache(cache: Map<string, PreviousRead>): void {
+function trimCache(cache: Map<string, string>): void {
   while (cache.size > READ_BATCH_MAX_CACHE_ENTRIES) {
     const first = cache.keys().next().value;
     if (first === undefined) return;
@@ -1173,7 +873,7 @@ function finalizeReadBatchRead(
   scope: string,
   bytes: Buffer,
   signal: AbortSignal | undefined,
-  cache: Map<string, PreviousRead>,
+  cache: Map<string, string>,
 ): ReadBatchPathResult {
   let selected: { readonly content: string; readonly output: ReadBatchOutput };
   try {
@@ -1196,39 +896,21 @@ function finalizeReadBatchRead(
   const contentHash = createHash("sha256").update(bytes).digest("hex");
   if (input.range === undefined) recordObservedContent(canonical, contentHash);
   const key = cacheKey(scope, root, path, input.range);
-  const previous = cache.get(key);
-  if (previous?.evidence.contentHash === contentHash) {
+  const previousHash = cache.get(key);
+  if (previousHash === contentHash) {
     return {
       path,
       ...(input.range === undefined ? {} : { range: input.range }),
       unchanged: true,
-      ref: previous.evidence.ref,
       contentHash,
     };
   }
-  const ref = readReference(root, path, input.range, contentHash);
-  cache.set(key, {
-    evidence: Object.freeze({
-      evidenceFormatVersion: EVIDENCE_ENVELOPE_FORMAT_VERSION,
-      ref,
-      producer: EVIDENCE_PRODUCER,
-      kind: "read-batch" as const,
-      scope: envelopeScope(scope),
-      requestHash: sharedEvidenceRequestHash({
-        root,
-        path,
-        range: normalizedRangeKey(input.range),
-      }),
-      contentHash,
-      output: Object.freeze(selected.output),
-    }),
-  });
+  cache.set(key, contentHash);
   trimCache(cache);
   return {
     path,
     ...(input.range === undefined ? {} : { range: input.range }),
     unchanged: false,
-    ref,
     contentHash,
     content: selected.content,
     output: selected.output,
@@ -1245,7 +927,7 @@ async function readOne(
   fileSystem: ReadBatchFileSystem,
   signal: AbortSignal | undefined,
   scope: string,
-  cache: Map<string, PreviousRead>,
+  cache: Map<string, string>,
   observe: AuthorizationOutcomeObserver | undefined,
   retryTracker: AuthorizationRetryTracker | undefined,
   budget: ReadBatchAggregateBudget,
@@ -1324,40 +1006,6 @@ function classifyReadBatchFailure(error: unknown): ReadBatchInvocationReason {
   return "failed";
 }
 
-function lookupInvocationOutcomeMetadata(
-  outcome: ReadEvidenceLookupOutcome,
-): ReadBatchInvocationLookupMetadata {
-  return outcome === "success"
-    ? { attempted: true, success: true, outcome: "success" }
-    : { attempted: true, success: false, failure: "not-found", outcome };
-}
-
-function lookupInvocationMetadata(
-  outcome: ReadEvidenceLookupOutcome | undefined,
-): ReadBatchInvocationLookupMetadata | undefined {
-  if (outcome === undefined) return undefined;
-  return lookupInvocationOutcomeMetadata(outcome);
-}
-
-function readBatchLookupCatchReason(
-  classified: ReadBatchInvocationReason,
-  lookupOutcome: ReadEvidenceLookupOutcome | undefined,
-): ReadBatchInvocationReason {
-  if (classified !== "failed" || lookupOutcome === undefined || lookupOutcome === "success") {
-    return classified;
-  }
-  return "completed";
-}
-
-function readBatchLookupCatchMetadata(
-  lookupOutcome: ReadEvidenceLookupOutcome | undefined,
-): ReadBatchInvocationLookupMetadata {
-  if (lookupOutcome === undefined) {
-    return { attempted: true, success: false, failure: "lookup-failure" };
-  }
-  return lookupInvocationOutcomeMetadata(lookupOutcome);
-}
-
 function readBatchInvocationItem(pathResult: ReadBatchPathResult): ReadBatchInvocationItem {
   const content = pathResult.content;
   const output = pathResult.output;
@@ -1371,7 +1019,6 @@ function readBatchInvocationItem(pathResult: ReadBatchPathResult): ReadBatchInvo
     totalBytes: output?.totalBytes ?? 0,
     totalLines: output?.totalLines ?? 0,
     contentBytes: content === undefined ? 0 : Buffer.byteLength(content, "utf8"),
-    ...(pathResult.ref === undefined ? {} : { ref: pathResult.ref }),
     ...(errorCode === undefined ? {} : { errorCode }),
   };
 }
@@ -1408,84 +1055,6 @@ interface ReadBatchInvocationOptions {
   readonly executed: boolean;
   readonly scopeInfo?: ReadBatchScopeMetadata;
   readonly requestedPaths?: number;
-  readonly lookup?: ReadBatchInvocationLookupMetadata;
-}
-
-function readEvidencePublicationFailure(
-  flowId: string,
-  error: string,
-): ReadBatchPublicationMetadata {
-  return { scope: "flow", flowId, published: false, error };
-}
-
-function toInvocationPublication(
-  value: ReadBatchPublicationMetadata | undefined,
-): ReadBatchInvocationPublicationMetadata | undefined {
-  if (value === undefined) return undefined;
-  return {
-    scope: value.scope,
-    flowId: value.flowId,
-    published: value.published,
-    ...(value.error === undefined ? {} : { error: value.error }),
-  };
-}
-
-function publishReadBatchEvidence(
-  store: ReadEvidenceStore,
-  root: string,
-  flowId: string,
-  results: ReadonlyArray<ReadBatchPathResult>,
-  workspace: SharedEvidenceWorkspaceBlock | undefined,
-): ReadBatchPublicationMetadata {
-  const entries: ReadEvidenceEntry[] = [];
-  for (const item of results) {
-    if (
-      item.error !== undefined ||
-      item.content === undefined ||
-      item.contentHash === undefined ||
-      item.output === undefined
-    ) {
-      return {
-        scope: "flow",
-        flowId,
-        published: false,
-        error: "Published read evidence requires a fresh read of every requested path.",
-      };
-    }
-    entries.push({
-      path: item.path,
-      ...(item.range === undefined ? {} : { range: item.range }),
-      contentHash: item.contentHash,
-      content: item.content,
-      output: item.output,
-    });
-  }
-  const record = createPublishedReadEvidenceRecord({
-    root,
-    flowId,
-    entries,
-    ...(workspace === undefined ? {} : { workspace }),
-  });
-  const recordBytes = readEvidenceRecordBytes(record);
-  if (recordBytes === undefined || recordBytes > READ_EVIDENCE_MAX_RECORD_BYTES) {
-    return readEvidencePublicationFailure(
-      flowId,
-      "Read evidence exceeds the published record size bound.",
-    );
-  }
-  try {
-    return store.publish(record, flowId)
-      ? { scope: "flow", flowId, published: true, ref: record.ref }
-      : readEvidencePublicationFailure(
-          flowId,
-          "Read evidence was not published to the requested flow.",
-        );
-  } catch {
-    return readEvidencePublicationFailure(
-      flowId,
-      "Read evidence was not published to the requested flow.",
-    );
-  }
 }
 
 function createReadBatchToolWithDependencies(
@@ -1496,26 +1065,21 @@ function createReadBatchToolWithDependencies(
   repositoryStateReader: ProjectCommandRepositoryStateReader | undefined,
   authorizationOutcomeRecorder: AuthorizationOutcomeRecorder | undefined,
   authorizationRetryTracker: AuthorizationRetryTracker | undefined,
-  readEvidenceStore: ReadEvidenceStore,
 ): ReadBatchToolDefinition {
-  const cache = new Map<string, PreviousRead>();
+  const cache = new Map<string, string>();
   const schemaHash = hashToolParameters(readBatchParameters);
   return {
     name: "read_batch",
     label: "Batch read",
     description:
-      "Read bounded repository-relative file ranges, or resolve previously published read evidence. Use paths for execution, ref for lookup, publish.flowId for authorized flow publication, and covers for lookup attribution.",
-    promptSnippet: "Read files or resolve published evidence",
+      "Read one or more repository-relative files with optional bounded line ranges. Fetch known files once, and use bounded ranges for large files instead of repeated whole-file reads.",
+    promptSnippet: "Read bounded file ranges in one call",
     annotations: { readOnlyHint: true },
     parameters: readBatchParameters,
     outputSchema: readBatchDetailsSchema,
     executionMode: "sequential",
     renderCall(args, theme) {
       const paths = Array.isArray(args?.paths) ? args.paths : [];
-      const ref = typeof args?.ref === "string" ? args.ref : undefined;
-      if (paths.length === 0 && ref !== undefined) {
-        return renderCallLine(theme, "read_batch", [renderStringArgument(ref, theme)]);
-      }
       const first = paths[0];
       const summary =
         first !== undefined && typeof first === "object" && first !== null && "path" in first
@@ -1546,7 +1110,6 @@ function createReadBatchToolWithDependencies(
         recorded = true;
         const details = options.details;
         const scopeInfo = options.scopeInfo ?? { scope: "session" };
-        const publication = toInvocationPublication(details?.publish);
         recordReadBatchInvocation(invocationRecorder, {
           sessionId,
           toolCallId,
@@ -1560,143 +1123,24 @@ function createReadBatchToolWithDependencies(
           scope: scopeInfo.scope,
           ...(scopeInfo.flowId === undefined ? {} : { flowId: scopeInfo.flowId }),
           ...(workspaceBlock === undefined ? {} : { repositoryState: workspaceBlock }),
-          ...(options.lookup === undefined ? {} : { lookup: options.lookup }),
           ...(orchestration.orchestrated && orchestration.role !== undefined
             ? { role: orchestration.role }
             : {}),
           ...(orchestration.orchestrated && orchestration.delegationId !== undefined
             ? { delegationId: orchestration.delegationId }
             : {}),
-          ...(publication === undefined ? {} : { publication }),
         });
       };
       try {
         const { request, coercions } = validateReadBatchRequest(params);
         const requestSignal = signal ?? ctx.signal;
-        if (request.kind === "lookup") {
-          const requestedFlowId = request.flowId;
-          const unauthorizedFlow =
-            requestedFlowId !== undefined &&
-            (orchestration.effectiveScope !== "flow" || orchestration.flowId !== requestedFlowId);
-          const flowId = effectiveOrchestrationFlowId(orchestration);
-          const scopeInfo = scopeMetadata(cacheScope());
-          let lookupOutcome: ReadEvidenceLookupOutcome | undefined;
-          let lookupRoot: ResolvedReadBatchRoot | undefined;
-          let lookupLoaded: LoadedPolicy | undefined;
-          const ensureLookupRoot = async (): Promise<ResolvedReadBatchRoot> => {
-            if (lookupRoot === undefined) {
-              lookupRoot = await resolveRoot(ctx.cwd, fileSystem, gitExec, requestSignal);
-            }
-            return lookupRoot;
-          };
-          const ensureLookupPolicy = async (): Promise<LoadedPolicy> => {
-            if (lookupLoaded === undefined) {
-              lookupLoaded = await loadFilesystemPolicyForRequest(policy, ctx.cwd, requestSignal);
-            }
-            return lookupLoaded;
-          };
-          const probePath = async (entry: ReadEvidenceEntry): Promise<ReadEvidencePathProbe> => {
-            const resolvedRoot = await ensureLookupRoot();
-            const loaded = await ensureLookupPolicy();
-            const resolved = await resolveReadBatchPath(
-              { path: entry.path, ...(entry.range === undefined ? {} : { range: entry.range }) },
-              resolvedRoot.root,
-              resolvedRoot.root,
-              fileSystem,
-              requestSignal,
-            );
-            if ("error" in resolved) return { status: "unreadable" };
-            const inspectionError = await inspectReadBatchFile(
-              resolved.canonical,
-              fileSystem,
-              requestSignal,
-            );
-            if (inspectionError !== undefined) return { status: "unreadable" };
-            const authorizationError = await authorizeReadBatchPath(
-              resolved.canonical,
-              loaded,
-              ctx,
-              policy,
-              requestSignal,
-              authorizationObserver,
-              authorizationRetryTracker,
-            );
-            if (authorizationError !== undefined) return { status: "unauthorized" };
-            const contents = await readReadBatchFile(resolved.canonical, fileSystem, requestSignal);
-            if ("error" in contents) return { status: "unreadable" };
-            const currentHash = createHash("sha256").update(contents.bytes).digest("hex");
-            if (currentHash !== entry.contentHash) return { status: "changed" };
-            try {
-              const derived = outputContent(contents.bytes, entry.range);
-              return {
-                status: "unchanged",
-                content: derived.content,
-                output: derived.output,
-              };
-            } catch {
-              return { status: "changed" };
-            }
-          };
-          const observeWorkspace = async (): Promise<SharedEvidenceWorkspaceBlock | undefined> => {
-            if (repositoryStateReader === undefined) return undefined;
-            const resolvedRoot = await ensureLookupRoot();
-            const state = await repositoryStateReader(resolvedRoot.cwd, requestSignal).catch(
-              () => undefined,
-            );
-            return Object.freeze({
-              repositoryId: sharedRepositoryId(resolvedRoot.root),
-              head: state?.head ?? null,
-              dirtyDigest: state?.dirtyFilesDigest ?? null,
-              status: state === undefined ? "degraded" : "readable",
-            });
-          };
-          try {
-            const lookupResult = await resolveReadEvidenceLookup({
-              store: readEvidenceStore,
-              ref: request.ref,
-              requestedFlowId,
-              flowId,
-              covers: request.covers,
-              unauthorizedFlow,
-              probePath,
-              observeWorkspace,
-              onOutcome: (outcome) => {
-                lookupOutcome = outcome;
-              },
-            });
-            const outcome = result({
-              results: Object.freeze([]),
-              lookup: lookupResult,
-              ...(coercions.length === 0 ? {} : { coercions: [...coercions] }),
-            });
-            record({
-              reason: "completed",
-              details: outcome.details,
-              executed: false,
-              scopeInfo,
-              requestedPaths: 0,
-              lookup: lookupInvocationMetadata(lookupOutcome),
-            });
-            return outcome;
-          } catch (error) {
-            const classified = classifyReadBatchFailure(error);
-            record({
-              reason: readBatchLookupCatchReason(classified, lookupOutcome),
-              executed: false,
-              scopeInfo,
-              requestedPaths: 0,
-              lookup: readBatchLookupCatchMetadata(lookupOutcome),
-            });
-            throw error;
-          }
-        }
         const inputs = request.paths;
         if (requestSignal?.aborted) throw filesystemCancellationError("Batch read cancelled");
         const resolvedRoot = await resolveRoot(ctx.cwd, fileSystem, gitExec, requestSignal);
         const root = resolvedRoot.root;
         const canonicalCwd = resolvedRoot.cwd;
         if (requestSignal?.aborted) throw filesystemCancellationError("Batch read cancelled");
-        const shouldObserveState = observeState || request.publishFlowId !== undefined;
+        const shouldObserveState = observeState;
         const observedStatePromise =
           shouldObserveState && repositoryStateReader !== undefined
             ? repositoryStateReader(canonicalCwd, requestSignal).catch(() => undefined)
@@ -1719,14 +1163,6 @@ function createReadBatchToolWithDependencies(
               ...(input.range === undefined ? {} : { range: input.range }),
               error: failure,
             })),
-            ...(request.publishFlowId === undefined
-              ? {}
-              : {
-                  publish: readEvidencePublicationFailure(
-                    request.publishFlowId,
-                    "Read evidence was not published because the filesystem policy could not be loaded.",
-                  ),
-                }),
           });
           record({ reason: "completed", details: outcome.details, executed: false });
           return outcome;
@@ -1787,23 +1223,11 @@ function createReadBatchToolWithDependencies(
           firstSkippedIndex === undefined
             ? undefined
             : { nextIndex: firstSkippedIndex, totalPaths: inputs.length };
-        let details: ReadBatchDetails = {
+        const details: ReadBatchDetails = {
           results: Object.freeze(results),
           ...(continuation === undefined ? {} : { continuation }),
           ...(coercions.length === 0 ? {} : { coercions: [...coercions] }),
         };
-        if (request.publishFlowId !== undefined) {
-          details = {
-            ...details,
-            publish: publishReadBatchEvidence(
-              readEvidenceStore,
-              root,
-              request.publishFlowId,
-              results,
-              workspaceBlock,
-            ),
-          };
-        }
         const outcome = result(details);
         record({
           reason: "completed",
@@ -1834,7 +1258,6 @@ export function createReadBatchTool(
       (gitExec === undefined ? undefined : createProjectCommandRepositoryStateReader(gitExec)),
     options?.authorizationOutcomeRecorder,
     options?.authorizationRetryTracker,
-    createReadEvidenceStore(),
   );
 }
 
@@ -1850,6 +1273,5 @@ export function createReadBatchToolForTesting(
     options.repositoryStateReader,
     options.authorizationOutcomeRecorder,
     options.authorizationRetryTracker,
-    options.readEvidenceStore ?? createReadEvidenceStore(),
   );
 }

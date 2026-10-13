@@ -190,6 +190,8 @@ it("renders empty optional paths without an invalid argument marker", () => {
     lastComponent: undefined,
     state: {},
     cwd,
+    durationMs: 0,
+    outputPad: 0,
     executionStarted: false,
     argsComplete: true,
     isPartial: false,

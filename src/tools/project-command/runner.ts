@@ -15,8 +15,6 @@ import {
 import {
   recordProjectCommandInvocation,
   redactProjectCommandParameters,
-  type ProjectCommandInvocationLookupMetadata,
-  type ProjectCommandInvocationLookupOutcome,
   type ProjectCommandInvocationOutputMetadata,
   type ProjectCommandInvocationReason,
   type ProjectCommandInvocationRecorder,
@@ -47,13 +45,7 @@ import {
   projectCommandIdentity,
   type ProjectCommandDefinition,
 } from "./definitions.ts";
-import {
-  createProjectCommandEvidenceRecord,
-  type ProjectCommandEvidenceProvenance,
-  type ProjectCommandEvidencePublication,
-  type ProjectCommandEvidenceRecord,
-  type ProjectCommandEvidenceStore,
-} from "./evidence.ts";
+import { projectCommandEvidenceRef, type ProjectCommandEvidenceProvenance } from "./evidence.ts";
 import type { ProjectCommandExecutionOutcome } from "./execution.ts";
 import {
   createProjectCommandLogicalRequestKey,
@@ -127,7 +119,6 @@ export interface ProjectCommandInvocationOptions {
   readonly errorDetailsRecorder?: ProjectCommandErrorDetailsRecorder;
   readonly schemaHash?: string;
   readonly repositoryStateReader?: ProjectCommandRepositoryStateReader;
-  readonly evidence?: ProjectCommandEvidenceStore;
   readonly authorizationOutcomeRecorder?: AuthorizationOutcomeRecorder;
   readonly authorizationRetryTracker?: AuthorizationRetryTracker;
 }
@@ -169,8 +160,6 @@ interface InvocationMetadataOptions {
   readonly forced?: boolean;
   readonly reused?: boolean;
   readonly evidenceRef?: string;
-  readonly covers?: readonly string[];
-  readonly publication?: ProjectCommandEvidencePublication;
   readonly provenance?: ProjectCommandEvidenceProvenance;
   readonly repositoryState?: ProjectCommandRepositoryState;
   readonly recordedRepositoryState?: ProjectCommandRepositoryState;
@@ -209,8 +198,6 @@ function invocationMetadata(
     forced: options.forced ?? false,
     ...definedObjectProperties([
       ["evidenceRef", options.evidenceRef],
-      ["covers", options.covers],
-      ["publication", options.publication],
       ["provenance", options.provenance],
       ["repositoryState", options.repositoryState],
       ["recordedRepositoryState", options.recordedRepositoryState],
@@ -264,18 +251,6 @@ function enrichToolError(
   return enriched;
 }
 
-function stripEvidenceParameters(
-  params: ProjectCommandRequestParameters,
-): ProjectCommandRequestParameters {
-  const {
-    covers: _covers,
-    publish: _publish,
-    coercions: _coercions,
-    ...resolutionParameters
-  } = params;
-  return resolutionParameters;
-}
-
 async function resolveCommandForTool(
   resolver: ProjectCommandResolver,
   definition: ProjectCommandDefinition,
@@ -285,7 +260,7 @@ async function resolveCommandForTool(
   definitions: readonly ProjectCommandDefinition[],
 ): Promise<ResolvedProjectCommand> {
   try {
-    return await resolver(definition, projectPath, signal, stripEvidenceParameters(params));
+    return await resolver(definition, projectPath, signal, params);
   } catch (error) {
     if (error instanceof ProjectCommandToolError && error.name === "AbortError") {
       throw error;
@@ -1018,88 +993,21 @@ async function executeWithCache(
   };
 }
 
-function evidenceStorageFlowId(state: ProjectCommandInvocationState): string | undefined {
-  return state.producerScope === "flow" ? state.flowId : undefined;
-}
-
-function withEvidencePublication(
-  evidence: ProjectCommandEvidenceStore,
-  record: ProjectCommandEvidenceRecord,
-  details: ProjectCommandOutputDetails,
-  state: ProjectCommandInvocationState,
-): ProjectCommandOutputDetails {
-  const storageFlowId = evidenceStorageFlowId(state);
-  if (!evidence.set(record, storageFlowId)) {
-    state.evidenceRef = undefined;
-    return details;
-  }
-  if (state.requestedPublicationFlowId !== undefined) {
-    const targetFlowId = state.requestedPublicationFlowId;
-    const publicationCandidate: ProjectCommandEvidencePublication = {
-      scope: "flow",
-      flowId: targetFlowId,
-      published: true,
-    };
-    const published = evidence.publish(
-      record.ref,
-      targetFlowId,
-      state.repositoryState?.repositoryIdentity,
-      publicationCandidate,
-    );
-    const publication: ProjectCommandEvidencePublication = published
-      ? publicationCandidate
-      : {
-          ...publicationCandidate,
-          published: false,
-          error: "Evidence publication was not available from the producer scope.",
-        };
-    state.publication = publication;
-    const root = storageFlowId === undefined ? evidence.getByRef(record.ref) : undefined;
-    if (root !== undefined) {
-      evidence.set(
-        Object.freeze({
-          ...root,
-          details: Object.freeze({ ...root.details, publication }),
-          publication,
-        }),
-      );
-    }
-  }
-  return {
-    ...details,
-    ref: record.ref,
-    covers: record.covers,
-    ...(record.repositoryState === undefined
-      ? {}
-      : {
-          repositoryState: record.repositoryState,
-          recordedRepositoryState: record.repositoryState,
-        }),
-    provenance: record.provenance,
-    ...(state.publication === undefined ? {} : { publication: state.publication }),
-  };
-}
-
-function storeEvidence(
-  evidence: ProjectCommandEvidenceStore | undefined,
+function withEvidenceRef(
   details: ProjectCommandOutputDetails,
   state: ProjectCommandInvocationState,
   toolCallId: string,
 ): ProjectCommandOutputDetails {
-  if (evidence === undefined || !details.executed) return details;
+  if (!details.executed) return details;
   const provenance: ProjectCommandEvidenceProvenance = {
     ...(state.provenance ?? { scope: state.producerScope ?? "session" }),
     producerInvocationId: toolCallId,
   };
-  state.producerInvocationId = state.producerInvocationId ?? toolCallId;
+  state.producerInvocationId ??= toolCallId;
   state.provenance = provenance;
-  const record = createProjectCommandEvidenceRecord(details, {
-    repositoryState: state.repositoryState,
-    covers: state.covers,
-    provenance,
-  });
-  state.evidenceRef = record.ref;
-  return withEvidencePublication(evidence, record, details, state);
+  const ref = projectCommandEvidenceRef(details);
+  state.evidenceRef = ref;
+  return { ...details, ref };
 }
 
 interface ProjectCommandInvocationState {
@@ -1128,14 +1036,11 @@ interface ProjectCommandInvocationState {
   repositoryState: ProjectCommandRepositoryState | undefined;
   currentRepositoryState: ProjectCommandRepositoryState | undefined;
   evidenceRef: string | undefined;
-  covers: readonly string[] | undefined;
   coercions: readonly string[] | undefined;
   mutating: boolean | undefined;
   concurrentExecutions: number | undefined;
   stateDrift: boolean | undefined;
   sharedExecution: boolean;
-  publication: ProjectCommandEvidencePublication | undefined;
-  requestedPublicationFlowId: string | undefined;
   provenance: ProjectCommandEvidenceProvenance | undefined;
   repositoryStateStatus: "matches" | "mismatch" | "unreadable" | undefined;
   commandId: string | undefined;
@@ -1145,7 +1050,6 @@ interface ProjectCommandInvocationState {
   retryable: boolean | undefined;
   executed: boolean;
   output: ProjectCommandInvocationOutputMetadata | undefined;
-  lookup: ProjectCommandInvocationLookupMetadata | undefined;
 }
 
 function createInvocationState(
@@ -1178,14 +1082,11 @@ function createInvocationState(
     repositoryState: undefined,
     currentRepositoryState: undefined,
     evidenceRef: undefined,
-    covers: undefined,
     coercions: undefined,
     mutating: undefined,
     concurrentExecutions: undefined,
     stateDrift: undefined,
     sharedExecution: false,
-    publication: undefined,
-    requestedPublicationFlowId: undefined,
     provenance: undefined,
     repositoryStateStatus: undefined,
     commandId: undefined,
@@ -1195,7 +1096,6 @@ function createInvocationState(
     retryable: undefined,
     executed: false,
     output: undefined,
-    lookup: undefined,
   };
 }
 
@@ -1278,7 +1178,6 @@ async function reconcileRepositoryState(
 
 function finalizeExecutedProjectCommand(
   cache: ProjectCommandResultCache,
-  evidence: ProjectCommandEvidenceStore | undefined,
   inspection: CacheInspection,
   resultFingerprint: string | undefined,
   executed: ExecutedWithCache,
@@ -1304,7 +1203,7 @@ function finalizeExecutedProjectCommand(
     prepared.projectPath,
     toolCallId,
   );
-  return storeEvidence(evidence, details, state, toolCallId);
+  return withEvidenceRef(details, state, toolCallId);
 }
 
 const EARLY_FAILURE_REASONS: Partial<Record<ResultCategory, ProjectCommandInvocationReason>> = {
@@ -1325,14 +1224,8 @@ const PROJECT_COMMAND_SINGLE_FLIGHTS = new Map<string, ProjectCommandSingleFligh
 function projectCommandSingleFlightKey(
   prepared: PreparedProjectCommand,
   state: ProjectCommandInvocationState,
-  evidence: ProjectCommandEvidenceStore | undefined,
 ): string | undefined {
-  if (
-    evidence === undefined ||
-    state.forced ||
-    state.mutating === true ||
-    state.logicalRequestKey === undefined
-  ) {
+  if (state.forced || state.mutating === true || state.logicalRequestKey === undefined) {
     return undefined;
   }
   return [
@@ -1433,8 +1326,6 @@ function recordInvocation(
                 ? {}
                 : { stateMatchesCurrent: state.repositoryStateStatus === "matches" }),
             },
-      publication: state.publication,
-      lookup: state.lookup,
       coercions: state.coercions,
       mutating: state.mutating,
       concurrentExecutions: state.concurrentExecutions,
@@ -1473,13 +1364,11 @@ function invocationMetadataForState(
       currentRepositoryState: state.currentRepositoryState,
       repositoryStateStatus: state.repositoryStateStatus,
       evidenceRef: state.evidenceRef,
-      covers: state.covers,
       coercions: state.coercions,
       mutating: state.mutating,
       concurrentExecutions: state.concurrentExecutions,
       stateDrift: state.stateDrift,
       sharedExecution: state.sharedExecution,
-      publication: state.publication,
       ...options,
     },
   );
@@ -1558,12 +1447,7 @@ async function prepareProjectCommand(
   const params = stripForce(validatedParams);
   state.commandId = params.commandId;
   state.redactedParameters = redactProjectCommandParameters(params);
-  state.covers = Array.isArray(params.covers) ? params.covers : undefined;
   state.coercions = Array.isArray(params.coercions) ? params.coercions : undefined;
-  state.requestedPublicationFlowId =
-    isRecord(params.publish) && typeof params.publish.flowId === "string"
-      ? params.publish.flowId
-      : undefined;
   state.provenance = {
     scope: state.producerScope ?? "session",
     ...(state.flowId === undefined ? {} : { flowId: state.flowId }),
@@ -1676,110 +1560,9 @@ function repositoryStateStatus(
     : "mismatch";
 }
 
-function evidenceLookupFlowId(
-  requested: string | undefined,
-  orchestration: ProjectCommandOrchestrationContext,
-): string | undefined {
-  if (requested !== undefined) {
-    return orchestration.effectiveScope === "flow" && orchestration.flowId === requested
-      ? requested
-      : undefined;
-  }
-  return effectiveOrchestrationFlowId(orchestration);
-}
-
-function evidenceNotFound(ref: string, flowId: string | undefined): ProjectCommandToolError {
-  const scope = flowId === undefined ? "the process-local root-session store" : `flow ${flowId}`;
-  return new ProjectCommandToolError(
-    `Project command evidence ref ${ref} not found in ${scope}; evidence refs are non-replayable and process-scoped.`,
-  );
-}
-
-function evidenceLookupFailureState(
-  state: ProjectCommandInvocationState,
-  outcome: ProjectCommandInvocationLookupOutcome | undefined,
-): void {
-  state.lookup = {
-    attempted: true,
-    success: false,
-    failure: "not-found",
-    ...(outcome === undefined ? {} : { outcome }),
-  };
-}
-
-async function executeEvidenceLookup(
-  evidence: ProjectCommandEvidenceStore,
-  repositoryStateReader: ProjectCommandRepositoryStateReader | undefined,
-  ref: string,
-  requestedFlowId: string | undefined,
-  signal: AbortSignal | undefined,
-  state: ProjectCommandInvocationState,
-): Promise<AgentToolResult<ProjectCommandOutputDetails>> {
-  const orchestration = readProjectCommandOrchestrationContext();
-  if (
-    requestedFlowId !== undefined &&
-    (orchestration.effectiveScope !== "flow" || orchestration.flowId !== requestedFlowId)
-  ) {
-    evidenceLookupFailureState(state, "unauthorized-flow");
-    throw evidenceNotFound(ref, requestedFlowId);
-  }
-  const flowId = evidenceLookupFlowId(requestedFlowId, orchestration);
-  const record = evidence.getByRef(ref, flowId);
-  if (record === undefined) {
-    const outcome = evidence.lookupOutcome?.(ref, flowId);
-    evidenceLookupFailureState(state, outcome === "corrupt" ? "corrupt" : "not-found");
-    throw evidenceNotFound(ref, flowId);
-  }
-  state.lookup = { attempted: true, success: true, outcome: "success" };
-  throwIfRequestAborted(signal);
-
-  let currentRepositoryState: ProjectCommandRepositoryState | undefined;
-  if (repositoryStateReader !== undefined) {
-    try {
-      currentRepositoryState = await repositoryStateReader(
-        record.details.scope.projectPath,
-        signal,
-      );
-    } catch {
-      if (signal?.aborted) throw commandCancellationError();
-    }
-  }
-  const status = repositoryStateStatus(record.repositoryState, currentRepositoryState);
-  const provenance = record.provenance;
-  const details = {
-    ...record.details,
-    ref: record.ref,
-    covers: record.covers,
-    ...(record.repositoryState === undefined
-      ? {}
-      : {
-          repositoryState: record.repositoryState,
-          recordedRepositoryState: record.repositoryState,
-        }),
-    ...(currentRepositoryState === undefined ? {} : { currentRepositoryState }),
-    repositoryStateStatus: status,
-    provenance,
-    ...(record.publication === undefined ? {} : { publication: record.publication }),
-  } satisfies ProjectCommandOutputDetails;
-  state.commandId = record.details.commandId;
-  state.redactedParameters = record.details.parameters;
-  state.evidenceRef = record.ref;
-  state.covers = record.covers;
-  state.provenance = provenance;
-  state.repositoryState = record.repositoryState;
-  state.currentRepositoryState = currentRepositoryState;
-  state.repositoryStateStatus = status;
-  state.resultCategory = record.details.category;
-  state.status = undefined;
-  state.executed = false;
-  state.publication = record.publication;
-  return result(details);
-}
-
 async function executePreparedProjectCommandCore(
   executor: ProjectCommandExecutor,
   cache: ProjectCommandResultCache,
-  evidence: ProjectCommandEvidenceStore | undefined,
   repositoryStateReader: ProjectCommandRepositoryStateReader | undefined,
   stateSnapshotter: ProjectCommandStateSnapshotter,
   prepared: PreparedProjectCommand,
@@ -1830,7 +1613,6 @@ async function executePreparedProjectCommandCore(
   );
   const evidencedDetails = finalizeExecutedProjectCommand(
     cache,
-    evidence,
     inspection,
     state.resultFingerprint,
     executed,
@@ -1856,7 +1638,6 @@ async function executePreparedProjectCommandCore(
 async function executePreparedProjectCommand(
   executor: ProjectCommandExecutor,
   cache: ProjectCommandResultCache,
-  evidence: ProjectCommandEvidenceStore | undefined,
   repositoryStateReader: ProjectCommandRepositoryStateReader | undefined,
   stateSnapshotter: ProjectCommandStateSnapshotter,
   prepared: PreparedProjectCommand,
@@ -1864,12 +1645,11 @@ async function executePreparedProjectCommand(
   state: ProjectCommandInvocationState,
   ctx: ProjectCommandToolContext,
 ): Promise<AgentToolResult<ProjectCommandOutputDetails>> {
-  const key = projectCommandSingleFlightKey(prepared, state, evidence);
+  const key = projectCommandSingleFlightKey(prepared, state);
   if (key === undefined) {
     return executePreparedProjectCommandCore(
       executor,
       cache,
-      evidence,
       repositoryStateReader,
       stateSnapshotter,
       prepared,
@@ -1897,9 +1677,7 @@ async function executePreparedProjectCommand(
       state.executed = false;
       state.output = shared.output;
       state.evidenceRef = shared.ref;
-      state.covers = shared.covers;
       state.provenance = shared.provenance;
-      state.publication = shared.publication;
       state.repositoryState = shared.recordedRepositoryState ?? shared.repositoryState;
       state.currentRepositoryState = shared.currentRepositoryState;
       state.repositoryStateStatus = shared.repositoryStateStatus;
@@ -1924,7 +1702,6 @@ async function executePreparedProjectCommand(
       const output = await executePreparedProjectCommandCore(
         executor,
         cache,
-        evidence,
         repositoryStateReader,
         stateSnapshotter,
         prepared,
@@ -1976,33 +1753,6 @@ export function createProjectCommandExecute<
       readProjectCommandOrchestrationContext(),
     );
     try {
-      const requestSignal = signal ?? ctx.signal;
-      if (isRecord(rawParams) && "ref" in rawParams) {
-        const validatedLookup = validateProjectCommandInput(rawParams, capturedDefinitions);
-        const lookupRecord: Readonly<Record<string, unknown>> = isRecord(validatedLookup)
-          ? validatedLookup
-          : {};
-        if (!("commandId" in lookupRecord)) {
-          const lookupRef = typeof lookupRecord.ref === "string" ? lookupRecord.ref : undefined;
-          if (lookupRef === undefined) {
-            throw invalidRequest("ref");
-          }
-          if (invocationOptions.evidence === undefined) {
-            throw evidenceNotFound(lookupRef, undefined);
-          }
-          state.coercions = Array.isArray(lookupRecord.coercions)
-            ? lookupRecord.coercions
-            : undefined;
-          return await executeEvidenceLookup(
-            invocationOptions.evidence,
-            invocationOptions.repositoryStateReader,
-            lookupRef,
-            typeof lookupRecord.flowId === "string" ? lookupRecord.flowId : undefined,
-            requestSignal,
-            state,
-          );
-        }
-      }
       state.preparationEntered = true;
       const prepared = await prepareProjectCommand(
         policy,
@@ -2023,7 +1773,6 @@ export function createProjectCommandExecute<
       return await executePreparedProjectCommand(
         executor,
         cache,
-        invocationOptions.evidence,
         invocationOptions.repositoryStateReader,
         stateSnapshotter,
         prepared,

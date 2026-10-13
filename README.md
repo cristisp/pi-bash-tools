@@ -77,13 +77,16 @@ Notification failures are ignored and never change the authorization result.
 The interceptor guards the built-in `read`, `write`, `edit`, `ls`, `find`, and `grep` tool calls before they execute.
 It does not intercept `bash` or `user_bash`.
 
+Successful native `read` results are checked for unchanged repeats: when the same session repeats a read of the same path with the same `offset` and `limit` and the returned content is identical, the extension answers the repeat with a short unchanged notice naming the earlier read instead of resending the content, mirroring the `unchanged: true` response of `read_batch`.
+The check is bounded and fail-closed: nested calls, error and image results, and sessions without an id are never replaced, the observation store is cleared on session start, switch, fork, and shutdown and after completed compaction, and any internal failure passes the original result through.
+Whole-file native `read` results also receive an appended informational hint pointing to ranged `read_batch` requests when the returned text is at least 32,768 bytes or the native read was truncated; the content is never blocked or removed, and ranged, error, image, and nested results never receive the hint.
+
 The extension also registers `read_batch`, `move`, and `delete` tools.
 `read_batch` accepts `{ paths: [{ path, range?: { offset?, limit? } }] }`, reads at most 32 paths, caps each returned file at 64 KiB of text and 2,000 requested lines, and reports a bounded result or error for every path.
-Successful entries report repository-relative paths, a stable `rr_` reference, and a stable `contentHash` (the SHA-256 digest of the full file bytes).
-A request may opt into flow publication with `publish: { flowId }`, which stores the bounded batch under the caller's own authorized flow and returns the aggregate `publish.ref`; a later `read_batch { ref }` lookup reauthorizes and re-reads every recorded path and returns stored content only when the current bytes still match the recorded hash.
+Successful entries report repository-relative paths and a stable `contentHash` (the SHA-256 digest of the full file bytes).
 The aggregate returned content across all paths in one request is capped at 256 KiB; once the cap is reached, the first affected path and every later path return a bounded `aggregate-limit` error in request order without being authorized or read, and the result reports `continuation` with `nextIndex` and `totalPaths` so the caller can re-issue the remaining paths in a follow-up request.
 The same path may not appear twice with overlapping ranges in one request; such requests are rejected up front, while disjoint ranges of one path remain allowed.
-A repeated path and range in the same process-local scope returns `unchanged: true` with the prior reference when the file content hash is unchanged.
+A repeated path and range in the same process-local scope returns `unchanged: true` with the prior content hash when the file content is unchanged.
 The batch cache is process-local and separates effective flow scopes without using orchestration environment variables as authorization.
 `move` authorizes both the source and destination with the move capability and rejects existing destinations.
 Moving a directory relocates its tree in one atomic rename, and a destination inside the source directory is rejected.
@@ -237,23 +240,20 @@ Set `fresh: true` to execute again without changing the content-addressed cache 
 A fresh execution reports `reused: false` and can retain the same reference when its evidence is identical.
 `fresh` cannot be combined with `ref`.
 
-`project_command` execution evidence uses distinct bounded `pc_` references.
-A completed execution returns the `pc_` reference in model-facing content, and a request that asked to publish reports the realized publication outcome there.
-Failing and cancelled executions report the stored `pc_` reference in the failure or cancellation message and keep it in their error details and invocation records.
-The realized publication outcome for those executions stays in error details and invocation records.
-Project-command evidence is non-replayable: looking up `{ "ref": "pc_example" }` returns stored evidence without executing a command and never acts as a result-cache hit.
+`project_command` executions report a deterministic `pc_` audit reference derived from the result itself.
+The reference appears in error details and invocation records for auditing, and failing or cancelled executions include it in the failure or cancellation message; it never enters model-facing content.
+`project_command` no longer publishes evidence to flows and no longer accepts evidence lookup requests; the retired fields (`ref`, `flowId`, `covers`, and `publish`) are rejected with an `invalid-request` error.
 Project-command script and Fallow commands retain `reusePolicy: "never"`.
-Lookup accepts only `ref`, optional `flowId`, and opaque `covers` fields.
-Unknown fields and execution options such as `publish` or `fresh` are rejected for lookup requests.
-The same lookup-only rules apply to `verify` references.
+For `verify`, lookup is exactly `{ ref }`; the lookup flow is derived from the caller's own effective flow scope.
+Unknown fields, execution options, and the retired `publish` and lookup-time `flowId` fields are rejected for lookup requests, including explicit `null` placeholders.
 
 Root-session evidence is process-local by default and is not durable across processes.
-A lookup with `flowId` succeeds only when the caller has the same effective flow scope.
-An executing request may explicitly request `publish: { "flowId": "flow-1" }` after authorization and compatible repository-state checks.
+Completed `verify` runs inside a flow publish their evidence to the effective flow scope automatically; outside a flow nothing is published and the result carries no `publication` block.
 Publication is reported only after the destination write is confirmed.
-Publishing to the caller's own effective flow is an accepted no-op that preserves the flow record.
+When the run cannot publish (unreadable or drifted repository state, or no compatible stable evidence), the result reports a best-effort `publication` with `published: false` and a bounded error instead of failing.
+Re-publishing equivalent evidence to the same flow is an idempotent success that preserves the first published record.
 
-Evidence includes `covers`, producer provenance, recorded repository state, and current repository state when it can be read.
+Verify evidence includes `covers`, producer provenance, recorded repository state, and current repository state when it can be read.
 `repositoryStateStatus` is `matches`, `mismatch`, or `unreadable`.
 The recorded state includes `dirtyFilesDigest`, which fingerprints the Git-reported paths together with their content, mode, size, and status while excluding ignored paths.
 `stateDrift: true` indicates that the repository moved between the start and completion observations of an execution.
@@ -271,7 +271,7 @@ Wrong-flow lookups are classified from the caller's own orchestration context be
 Corrupt records are distinguished from missing records only when the caller's own in-process scope can observe the difference.
 Model-facing lookup error wording is unchanged by this classification.
 
-The project-command invocation recorder stores bounded `flowId`, `delegationId`, `role`, `ref`, verdict, mutability, publication, lookup outcome, coercion, concurrency, drift, and aggregate-verify metadata.
+The invocation recorder stores bounded `flowId`, `delegationId`, `role`, `ref`, verdict, mutability, publication, lookup outcome, coercion, concurrency, drift, and aggregate-verify metadata.
 One aggregate invocation record is emitted per `verify` call rather than one record per phase.
 Process status remains separate from the aggregate verify verdict.
 

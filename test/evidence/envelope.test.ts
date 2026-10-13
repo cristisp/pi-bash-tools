@@ -73,42 +73,40 @@ describe("output blocks", () => {
 describe("envelope validators", () => {
   const validRecord = {
     evidenceFormatVersion: EVIDENCE_ENVELOPE_FORMAT_VERSION,
-    ref: "rr_test",
+    ref: "vr_test",
     producer: EVIDENCE_PRODUCER,
-    kind: "read-batch",
+    kind: "verify",
     scope: "session",
     requestHash: "a".repeat(64),
     contentHash: "b".repeat(64),
   };
 
   it("accepts a bounded record", () => {
-    expect(isBoundedSharedEvidenceRecord(validRecord, ["read-batch"])).toBe(true);
+    expect(isBoundedSharedEvidenceRecord(validRecord, ["verify"])).toBe(true);
   });
 
   it("rejects records outside the producer, kind, scope, or hash contracts", () => {
-    expect(isBoundedSharedEvidenceRecord(validRecord, ["verify"])).toBe(false);
+    expect(isBoundedSharedEvidenceRecord(validRecord, [])).toBe(false);
     expect(
-      isBoundedSharedEvidenceRecord({ ...validRecord, producer: "codegraph-runner" }, [
-        "read-batch",
-      ]),
+      isBoundedSharedEvidenceRecord({ ...validRecord, producer: "codegraph-runner" }, ["verify"]),
     ).toBe(false);
-    expect(isBoundedSharedEvidenceRecord({ ...validRecord, scope: "root" }, ["read-batch"])).toBe(
+    expect(isBoundedSharedEvidenceRecord({ ...validRecord, scope: "root" }, ["verify"])).toBe(
       false,
     );
     expect(
-      isBoundedSharedEvidenceRecord({ ...validRecord, requestHash: "short" }, ["read-batch"]),
+      isBoundedSharedEvidenceRecord({ ...validRecord, requestHash: "short" }, ["verify"]),
     ).toBe(false);
     expect(
-      isBoundedSharedEvidenceRecord({ ...validRecord, evidenceFormatVersion: 2 }, ["read-batch"]),
+      isBoundedSharedEvidenceRecord({ ...validRecord, evidenceFormatVersion: 2 }, ["verify"]),
     ).toBe(false);
   });
 
   it("validates additive field sets without requiring every field", () => {
-    expect(isBoundedSharedEvidenceFields({}, ["read-batch"])).toBe(true);
-    expect(isBoundedSharedEvidenceFields({ kind: "read-batch" }, ["read-batch"])).toBe(true);
-    expect(isBoundedSharedEvidenceFields({ kind: "explore" }, ["read-batch"])).toBe(false);
+    expect(isBoundedSharedEvidenceFields({}, ["verify"])).toBe(true);
+    expect(isBoundedSharedEvidenceFields({ kind: "verify" }, ["verify"])).toBe(true);
+    expect(isBoundedSharedEvidenceFields({ kind: "explore" }, ["verify"])).toBe(false);
     expect(
-      isBoundedSharedEvidenceFields({ workspace: { repositoryId: "short" } }, ["read-batch"]),
+      isBoundedSharedEvidenceFields({ workspace: { repositoryId: "short" } }, ["verify"]),
     ).toBe(false);
   });
 

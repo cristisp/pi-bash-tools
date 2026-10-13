@@ -7,6 +7,7 @@ import {
 import type { Static, TSchema } from "typebox";
 
 import type { BashToolAnnotations } from "../annotations.ts";
+import { GIT_TOOL_NAMESPACE } from "../namespaces.ts";
 
 export type GitToolContext = Pick<ExtensionContext, "cwd" | "signal"> & {
   readonly sessionManager?: Pick<ExtensionContext["sessionManager"], "getSessionId">;
@@ -31,5 +32,5 @@ export function defineGitTool<P extends TSchema, D>(
     execute: GitToolExecute<P, D>;
   },
 ): GitToolDefinition<P, D> {
-  return tool;
+  return { ...tool, namespace: GIT_TOOL_NAMESPACE };
 }

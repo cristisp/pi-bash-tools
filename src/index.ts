@@ -14,6 +14,8 @@ import { createEnvironmentTool } from "./tools/environment/environment-tool.ts";
 import { createFilesystemAccessPolicyInterceptor } from "./tools/filesystem/access-policy.ts";
 import { createDeleteTool, createMoveTool } from "./tools/filesystem/mutation-tool.ts";
 import { createReadBatchTool } from "./tools/filesystem/read-batch-tool.ts";
+import { createReadRangeHint } from "./tools/filesystem/read-range-hint.ts";
+import { createReadRepeatDedupe } from "./tools/filesystem/read-repeat-dedupe.ts";
 import { createGitDiffTool } from "./tools/git/diff/tool.ts";
 import { boundedGitExec, type GitExec } from "./tools/git/execution.ts";
 import { createInvalidRequestTracker } from "./tools/git/invalid-request-tracker.ts";
@@ -55,15 +57,24 @@ export default function (pi: ExtensionAPI): void {
   const projectCommandErrorDetails = createProjectCommandErrorDetailsStore();
   const verifyErrorDetails = createVerifyErrorDetailsStore();
   const verifyToolResultHandler = createVerifyToolResultHandler(verifyErrorDetails);
+  const readRepeatDedupe = createReadRepeatDedupe();
+  const readRangeHint = createReadRangeHint();
   pi.on("session_start", (event, context) => {
     invocationSessionRecorder.onSessionStart(
       event,
       context satisfies ProjectCommandInvocationLifecycleContext,
     );
     toolInventoryRecorder(event, context);
+    readRepeatDedupe.clear();
     runStartupCachePrune();
   });
-  pi.on("session_shutdown", invocationSessionRecorder.onSessionShutdown);
+  pi.on("session_shutdown", (event, context) => {
+    readRepeatDedupe.clear();
+    invocationSessionRecorder.onSessionShutdown(event, context);
+  });
+  pi.on("session_before_switch", () => readRepeatDedupe.clear());
+  pi.on("session_before_fork", () => readRepeatDedupe.clear());
+  pi.on("session_compact", () => readRepeatDedupe.clear());
   pi.on(
     "tool_call",
     createFilesystemAccessPolicyInterceptor(
@@ -75,10 +86,14 @@ export default function (pi: ExtensionAPI): void {
   const projectCommandToolResultHandler = createProjectCommandToolResultHandler(
     projectCommandErrorDetails,
   );
-  pi.on("tool_result", (event) => {
+  pi.on("tool_result", (event, context) => {
     const projectCommandResult = projectCommandToolResultHandler(event);
     if (projectCommandResult !== undefined) return projectCommandResult;
-    return verifyToolResultHandler(event);
+    const verifyResult = verifyToolResultHandler(event);
+    if (verifyResult !== undefined) return verifyResult;
+    const repeatResult = readRepeatDedupe.toolResult(event, context);
+    if (repeatResult !== undefined) return repeatResult;
+    return readRangeHint.handler(event);
   });
   pi.registerTool(
     createGitStatusTool(exec, {

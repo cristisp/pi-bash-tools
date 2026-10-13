@@ -31,7 +31,6 @@ function item(overrides: Partial<ReadBatchInvocationItem> = {}): ReadBatchInvoca
     totalBytes: 1_234,
     totalLines: 56,
     contentBytes: 100,
-    ref: "rr_0123456789abcdef01234567",
     errorCode: undefined,
     ...overrides,
   };
@@ -48,7 +47,7 @@ function input(
     reason: "completed",
     executed: true,
     durationMs: 12.8,
-    items: [item(), item({ unchanged: true, truncated: false, contentBytes: 0, ref: undefined })],
+    items: [item(), item({ unchanged: true, truncated: false, contentBytes: 0 })],
     aggregate: {
       resultBytes: 4_321,
       contentBytes: 100,
@@ -72,7 +71,7 @@ describe("read batch invocation records", () => {
     const record = buildReadBatchInvocationRecord(input());
 
     expect(record).toMatchObject({
-      invocationFormatVersion: 1,
+      invocationFormatVersion: 2,
       sessionId: "session-1",
       toolCallId: "call-1",
       schemaHash: "schema-hash",
@@ -150,7 +149,6 @@ describe("read batch invocation records", () => {
             totalBytes: Number.NaN,
             totalLines: -1,
             contentBytes: Number.MAX_SAFE_INTEGER * 4,
-            ref: "x".repeat(1_000),
             errorCode: "y".repeat(1_000),
           }),
           "garbage" as unknown as ReadBatchInvocationItem,
@@ -171,7 +169,6 @@ describe("read batch invocation records", () => {
       totalLines: 0,
     });
     expect(record.items[0]?.contentBytes).toBe(9_999_999_999);
-    expect(record.items[0]?.ref).toHaveLength(256);
     expect(record.items[0]?.errorCode).toHaveLength(128);
   });
 
@@ -185,7 +182,7 @@ describe("read batch invocation records", () => {
       READ_BATCH_INVOCATION_MAX_BYTES,
     );
 
-    const oversized = item({ ref: "z".repeat(512) });
+    const oversized = item({ errorCode: "z".repeat(512) });
     const minimal = buildReadBatchInvocationRecord(
       input({
         sessionId: "s".repeat(10_000),
@@ -226,65 +223,48 @@ describe("read batch invocation records", () => {
     });
   });
 
-  it("records orchestration attribution and a bounded publication block when provided", () => {
+  it("records orchestration attribution when provided", () => {
     const record = buildReadBatchInvocationRecord(
       input({
         role: "worker",
         delegationId: "delegation-1",
-        publication: { scope: "flow", flowId: "flow-9", published: false, error: "denied" },
       }),
     );
 
     expect(record.role).toBe("worker");
     expect(record.delegationId).toBe("delegation-1");
-    expect(record.publication).toEqual({
-      scope: "flow",
-      flowId: "flow-9",
-      published: false,
-      error: "denied",
-    });
   });
 
-  it("omits attribution and publication when unused and normalizes malformed values", () => {
+  it("omits attribution, lookup, and publication when unused", () => {
     const record = buildReadBatchInvocationRecord(input());
 
     expect("role" in record).toBe(false);
     expect("delegationId" in record).toBe(false);
     expect("publication" in record).toBe(false);
+    expect("lookup" in record).toBe(false);
 
     const malformed = buildReadBatchInvocationRecord(
       input({
         role: "",
         delegationId: "",
-        publication: { scope: "sideways", flowId: "", published: "yes", error: "" } as never,
       }),
     );
 
     expect("role" in malformed).toBe(false);
     expect("delegationId" in malformed).toBe(false);
-    expect(malformed.publication).toEqual({ scope: "root", published: false });
   });
 
-  it("bounds attribution and publication identifiers and keeps records within the byte cap", () => {
+  it("bounds attribution identifiers and keeps records within the byte cap", () => {
     const record = buildReadBatchInvocationRecord(
       input({
         sessionId: "s".repeat(10_000),
         role: "r".repeat(1_000),
         delegationId: "d".repeat(1_000),
-        publication: {
-          scope: "flow",
-          flowId: "f".repeat(1_000),
-          published: true,
-          error: "e".repeat(1_000),
-        },
-        items: [item({ ref: "z".repeat(512) })],
       }),
     );
 
     expect(record.role).toHaveLength(256);
     expect(record.delegationId).toHaveLength(256);
-    expect(record.publication?.flowId).toHaveLength(256);
-    expect(record.publication?.error).toHaveLength(256);
     expect(Buffer.byteLength(JSON.stringify(record), "utf8")).toBeLessThanOrEqual(
       READ_BATCH_INVOCATION_MAX_BYTES,
     );

@@ -23,8 +23,7 @@ The failure identifies `missingPhase` and `missingScript` so the caller can retr
   },
   "continueOnFailure": false,
   "fresh": false,
-  "covers": ["AC-001"],
-  "publish": { "flowId": "flow-1" }
+  "covers": ["AC-001"]
 }
 ```
 
@@ -44,11 +43,13 @@ Script names use the bounded package-script grammar described in [Project comman
 
 `fresh` cannot be combined with `ref`.
 
-`covers` preserves at most 64 opaque acceptance-criteria strings.
+`covers` preserves at most 64 opaque acceptance-criteria strings on execution requests.
 
-`publish` requests publication to an authorized flow after execution.
+Completed runs publish their evidence to the effective flow scope automatically. The effective flow comes from the orchestration environment (`PI_ORCHESTRATION_FLOW` with flow evidence scope); outside a flow nothing is published and the result carries no `publication` block. Publication is best-effort: when repository state is unreadable, drifted during the run, or no compatible stable evidence was stored, the result reports `publication` with `published: false` and a bounded error instead of failing the run.
 
-A lookup request uses `ref` and may include `flowId` and `covers`, but it cannot include execution fields such as `fresh`, `publish`, `paths`, `omit`, or `scripts`.
+A lookup request is exactly `{ ref }`. The lookup flow is derived from the effective flow scope; a caller cannot name a flow. It cannot include execution fields such as `covers`, `fresh`, `paths`, `omit`, or `scripts`.
+
+The retired `publish` and lookup-time `flowId` request fields are rejected with `invalid-request`, including explicit `null` placeholders.
 
 A stale or missing lookup reference returns an error result that preserves the existing human-readable error content and includes `details` with `resultCategory: "RESOLUTION_FAILURE"`, `executed: false`, and `retryable: false`.
 
@@ -127,6 +128,8 @@ An unchanged request can return `status: "unchanged"`, `reused: true`, and the s
 A fresh execution reports `reused: false` and may retain the same reference when its evidence is identical.
 
 Evidence records contain the request key, reference, project path, resolved commands, all four step results, verdict, covers, repository state, provenance, publication, mutability, concurrency, drift, and shared-execution metadata when applicable.
+
+Inside a flow, a worker can run `verify` without any publication arguments and a reviewer in the same effective flow can resolve the returned `ref` with `{ ref }` alone.
 
 `repositoryStateStatus` is `matches`, `mismatch`, or `unreadable` when recorded and current state are compared.
 

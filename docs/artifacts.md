@@ -6,57 +6,45 @@ Generated records are diagnostic artifacts and are not authorization inputs.
 
 ## Evidence references
 
-`read_batch` references use the `rr_` prefix and are process-local cache references unless the request opts into publication.
+Successful `read_batch` results expose the record's `contentHash` (the lowercase SHA-256 digest of the full file bytes) directly on each item, including unchanged repeats.
 
-Successful `read_batch` results also expose the record's `contentHash` (the lowercase SHA-256 digest of the full file bytes) directly on each item, including unchanged repeats.
-
-A `read_batch` execution may request explicit publication with `publish: { "flowId": "..." }`.
-
-A published `rr_` batch record is stored under the caller's own authorized flow and is resolvable by the `ref` returned in the additive `publish.ref` result field.
-
-A published `rr_` reference is reauthorized and re-read on every lookup; only paths whose current bytes still match the recorded hash return content.
+Read evidence is no longer published or resolvable across sessions; the repeated-read cache is process-local and the content hash identifies unchanged repeats.
 
 `project_command` evidence references use the `pc_` prefix.
 
-A `project_command` request that completes with a result and stores evidence returns the bounded `pc_` reference in model-facing content as `ref`, mirroring the `rr_` reference returned to the model.
+A `project_command` execution reports the deterministic `pc_` audit reference in `details` as `ref`; the reference never enters model-facing content.
+The reference is derived from the result itself, so it needs no store.
+A failing or cancelled execution reports the `pc_` reference in the failure or cancellation message and keeps `ref` in its error details and invocation records.
 
-A `project_command` execution may request explicit publication with `publish: { "flowId": "..." }`, and model-facing content reports the realized outcome in `publication`; both keys are omitted entirely when they are undefined.
-A failing or cancelled execution whose evidence was stored reports the `pc_` reference in the failure or cancellation message and keeps `ref` in its error details and invocation records.
-The realized `publication` outcome for those executions stays in error details and invocation records.
+`project_command` no longer publishes evidence to flows and no longer accepts lookup requests; the retired fields (`ref`, `flowId`, `covers`, and `publish`) are rejected with an `invalid-request` error.
 
 `verify` evidence references use the `vr_` prefix.
 
 Evidence references are non-replayable lookups, not commands and not permission grants.
 
-A lookup with `ref` returns stored evidence without executing a command.
+A `verify` lookup with `ref` returns stored evidence without executing a command.
 
 Root-session evidence is process-local by default.
 
 Flow-scoped evidence is available only to the effective authorized flow and is stored under the flow cache directory.
 
-An execution may request explicit publication with `publish: { "flowId": "..." }` after authorization and compatible repository-state checks.
+Completed `verify` runs publish their evidence to the effective flow scope automatically; no request field is involved, and outside a flow nothing is published.
 
-Publication is reported only after the destination write succeeds.
+Publication is reported only after the destination write succeeds; when the run cannot publish (unreadable or drifted repository state, or no compatible stable evidence), the result reports a best-effort `publication` with `published: false` and a bounded error instead of failing.
 
-Lookups with a `flowId` succeed only when the caller has the same effective flow scope.
-
-Evidence includes opaque `covers`, producer provenance, repository state, and current-state comparison when available.
+Lookups are `{ ref }` alone; the lookup flow is derived from the effective flow scope, and the retired lookup-time `flowId` and `covers` fields are rejected.
 
 ### Lookup outcome telemetry
 
-When a session identity is available, `pc_` and `vr_` lookup invocations record an additive bounded `lookup.outcome` field on the invocation record alongside the existing `lookup` block (`attempted`, `success`, `failure`), without changing any model-facing error message or code.
+When a session identity is available, `vr_` lookup invocations record an additive bounded `lookup.outcome` field on the invocation record alongside the existing `lookup` block (`attempted`, `success`, `failure`), without changing any model-facing error message or code.
 
 The outcome is one of `success`, `not-found`, `unauthorized-flow`, or `corrupt`; any other value is dropped at persistence time.
 
-`unauthorized-flow` is derived only from the caller's own orchestration context before any store query, so a wrong-flow lookup never probes another scope.
+`unauthorized-flow` stays in the shared outcome set, but no current producer emits it: verify lookup flows are derived from the caller's own environment and can never name another scope.
 
-`corrupt` is emitted only where the store detects a present-but-invalid record in-process: the `project_command` root map and in-memory flow maps classify present-but-invalid records as `corrupt`, while the verify cache and all durable disk records are never probed for corruption and clamp to `not-found`.
+`corrupt` is emitted only where the store detects a present-but-invalid record in-process: the verify cache and all durable disk records are never probed for corruption and clamp to `not-found`.
 
 Expiry is not applicable: lookup records have no TTL, so capacity-trimmed records are indistinguishable from missing records and both report `not-found`.
-
-`rr_` references support the same additive `lookup.outcome` telemetry for lookup requests.
-
-An `rr_` lookup that is unauthorized, missing, or corrupt reports the same generic not-found wording, the wording names only the caller's own flow or no flow, and `unauthorized-flow` is derived only from the caller's own orchestration context before any store query.
 
 ## Shared evidence envelope
 
@@ -67,7 +55,7 @@ The envelope format version is `1` and is tracked by the constant `EVIDENCE_ENVE
 Envelope fields are additive on top of each producer's own record shape:
 
 - `producer` is `bash-tools` for every Bash Tools record; Codegraph records use `codegraph-runner`.
-- `kind` is `project-command` for `pc_` records, `verify` for `vr_` records, and `read-batch` for `rr_` records.
+- `kind` is `verify` for `vr_` records; the `read-batch` and `project-command` kinds are retired and no producer emits them.
 - `scope` is `session` or `flow` where the record has no other scope carrier.
 - `requestHash` and `contentHash` are lowercase SHA-256 hex digests over canonical JSON of the request identity and the stored result identity respectively.
 - `workspace` is an optional block with `repositoryId` (the SHA-256 digest of the canonical repository identity), `head`, `dirtyDigest`, and `status` (`readable` or `degraded`).
@@ -75,12 +63,9 @@ Envelope fields are additive on top of each producer's own record shape:
 
 The canonical repository identity and raw paths stay inside producer-owned records; the envelope carries only the digested `repositoryId`.
 
-Producers keep their own record version fields: `pc_` records keep `evidenceFormatVersion: 2`, `vr_` records keep `cacheFormatVersion: 3`, and `rr_` records use the envelope format version both in memory and when published to disk.
+Producers keep their own record version fields: `vr_` records keep `cacheFormatVersion: 3`.
 
-A canonical `pc_` record carries its producer identity once in `provenance` (`scope`, an optional `flowId`, and optional producer invocation, session, role, and delegation identifiers), keeps the raw `repositoryState` block that model-facing details need, and carries the envelope identity fields (`producer`, `kind`, `requestHash`, `contentHash`) without a duplicate top-level identity or `workspace` block.
-
-`pc_` readers accept stored `evidenceFormatVersion: 1` records by normalizing them in memory into the canonical shape: top-level producer identity fields are mapped into `provenance` when it is absent, and the redundant `workspace` and envelope `scope` fields are ignored.
-Normalization is never persisted, so an in-memory read of a legacy record returns the canonical view while the stored bytes stay unchanged until the next write at the same reference overwrites them with a version 2 record.
+The retired `pc_` record store and its versioned canonical record shape were removed with `pc_` publication; the surviving `pc_` reference is a deterministic audit identifier derived from result details and needs no stored record.
 
 ### Compatibility and version negotiation
 
@@ -130,9 +115,7 @@ The default cache root is `~/.pi/agent/bash-tools`.
 
 Setting `BASH_TOOLS_CACHE_ROOT` to an absolute directory relocates the cache root for every durable cache surface and the maintenance passes; relative, empty, or unset values keep the default.
 
-Flow-scoped project-command and verification records are stored below `flows/<flow-id>/project-command/`.
-
-Published `rr_` read evidence records share that flow directory and are keyed by their distinct `rr_` logical reference; they are bounded to 384 KiB per record, 256 KiB of stored content, and 32 entries. Each flow retains at most 128 records in memory, while durable records persist until the shared cache evicts them under the per-record, age, and directory bounds below. A record that meets the content caps but exceeds the 384 KiB serialized bound is rejected with a distinct `published: false` error instead of the unauthorized-publication error.
+Flow-scoped verification records are stored below `flows/<flow-id>/project-command/`.
 
 Disk cache files use hashed logical request keys and JSON records rather than user-provided filenames. Each `vr_` verification record is written once, keyed by its own reference, so request-key and reference lookups resolve the same durable record; records from the earlier double-written key layout stay resolvable by reference until they are overwritten or evicted.
 
@@ -142,7 +125,7 @@ Cache writes use temporary files, atomic rename, and lock files with stale-owner
 
 Cache coordination may briefly create `flows.lock`, per-entry claim files, owner-token files, and temporary files under the cache root.
 
-Root-session result caches remain in memory and do not become durable unless explicitly published to an authorized flow.
+Root-session result caches remain in memory and do not become durable unless published to a flow; completed `verify` runs inside a flow publish automatically.
 
 ### Cache maintenance
 
@@ -183,14 +166,11 @@ One aggregate invocation record is emitted for each `verify` call rather than on
 
 Read-batch invocations are recorded as `bash-tools.read-batch-invocation` entries.
 
-One invocation record is emitted per execute call for lookup and batch paths alike, and the outcome reason is one of `completed`, `cancelled`, `invalid-request`, or `failed`.
-A lookup whose store outcome was observed records `completed` with the outcome in the lookup block, while a lookup that fails before any outcome is observed records `failed` with the bounded `failure` label `lookup-failure`.
+One invocation record is emitted per execute call, and the outcome reason is one of `completed`, `cancelled`, `invalid-request`, or `failed`.
 
-Each read-batch record carries the session and tool-call identity, the requested path count, per-path size entries (path hash and length, range, unchanged and truncation flags, file bytes and line totals, returned content bytes, evidence reference, and error code), an aggregate block (model-facing result bytes, returned content bytes, file bytes and line totals, and unchanged, truncated, and error counts), duration, and the evidence scope.
+Each read-batch record carries the session and tool-call identity, the requested path count, per-path size entries (path hash and length, range, unchanged and truncation flags, file bytes and line totals, returned content bytes, and error code), an aggregate block (model-facing result bytes, returned content bytes, file bytes and line totals, and unchanged, truncated, and error counts), duration, and the evidence scope.
 
 Read-batch records never contain path strings or file content, and they are omitted when the session identity is unavailable.
-
-A read-batch invocation that resolves a published `rr_` reference carries the additive `lookup` block (`attempted`, `success`, optional `failure`, and the clamped `outcome`) with empty per-path items and zeroed aggregate content.
 
 When observability is active, read-batch invocations observe repository state and record it as an additive `repositoryState` block that follows the shared evidence envelope workspace shape.
 
@@ -199,9 +179,6 @@ The block carries `repositoryId` (the SHA-256 of the resolved workspace root), `
 Repository-state observation runs only when a recorder and session identity are present, uses the same derivation as `project_command` and `verify`, and never changes read results or errors.
 
 An orchestrated read-batch invocation also carries the additive bounded `role` and `delegationId` fields when the orchestration context provides them.
-
-A read-batch invocation whose request asked to publish read evidence also carries an additive `publication` block with `scope`, an optional bounded `flowId`, `published`, and an optional bounded `error`; the block mirrors the project-command publication shape, which is omitted when no publication was requested.
-The block is derived from the result's own `publish` block, so it reflects the realized outcome and is omitted on early failures that return before result shaping, such as request validation or cancellation.
 
 Git read-tool invocations are recorded as `bash-tools.git-invocation` entries.
 
@@ -285,7 +262,7 @@ Each record is capped at 8 KiB, and a missing or unwritable path produces a proc
 
 ## Useful observability fields
 
-Invocation records may include `flowId`, `delegationId`, `role`, `ref`, `verdict`, `mutating`, `publication`, `lookup` (with the additive clamped `outcome` field), `coercions`, `concurrentExecutions`, `stateDrift`, `sharedExecution`, `retryable`, and aggregate metadata.
+Invocation records may include `flowId`, `delegationId`, `role`, `ref`, `verdict`, `mutating`, `publication`, `lookup` (with the additive clamped `outcome` field), `coercions`, `concurrentExecutions`, `stateDrift`, `sharedExecution`, `retryable`, and aggregate metadata; the publication and lookup fields are populated only by `verify`.
 
 Project-command rejection records preserve the same `resultCategory`, `executed`, and `retryable` values exposed in `tool_result.details`.
 
@@ -305,11 +282,11 @@ A `project-command` invocation record may also carry the additive optional phase
 
 `queueDurationMs` is recorded only for a single-flight follower that waited on an in-flight execution and covers the wait until that execution settled, and it is omitted on the leader, cache-hit, and other paths.
 
-All three are omitted for evidence-`ref` lookups, which return before preparation, so a lookup record never labels any part of its duration as preparation, authorization, or queue time.
+All three are omitted for `vr_` evidence-`ref` lookups, which return before preparation, so a lookup record never labels any part of its duration as preparation, authorization, or queue time.
 
 The phase intervals are disjoint, so `preparationDurationMs + authorizationDurationMs + queueDurationMs + executionDurationMs` never exceeds `durationMs`; the unlabeled remainder is the post-authorization preparation gap between the authorization mark and the execution-or-queue mark and is never assigned to a phase.
 
-`executionDurationMs` runs from execution start through record emission, so post-execution result shaping, evidence storage, and publication fall inside `executionDurationMs` rather than in the unlabeled remainder.
+`executionDurationMs` runs from execution start through record emission, so post-execution result shaping, evidence storage, and `verify` publication fall inside `executionDurationMs` rather than in the unlabeled remainder.
 
 Read-batch records add `requestedPaths`, per-item size entries, and an `aggregate` block with `resultBytes` for the full model-facing result text, which supports result-size attribution per read-batch call.
 

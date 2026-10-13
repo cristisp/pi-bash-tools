@@ -1,21 +1,5 @@
-import {
-  aggregateSharedEvidenceOutput,
-  EVIDENCE_PRODUCER,
-  sharedEvidenceRequestHash,
-  type SharedEvidenceKind,
-  type SharedEvidenceOutputBlock,
-} from "../../evidence/envelope.ts";
-import { createProjectCommandDiskJsonCache } from "./cache.ts";
-import {
-  isEvidenceRecord,
-  normalizeEvidenceRecord,
-  PROJECT_COMMAND_EVIDENCE_FORMAT_VERSION,
-  safeEvidenceKey,
-} from "./evidence/record-validation.ts";
-export { isEvidenceRecord, normalizeEvidenceRecord };
-import { createProjectCommandEvidenceStoreInternal } from "./evidence/store.ts";
+import { hashCanonicalJson } from "../../observability/canonical-json.ts";
 import type { ProjectCommandOutputDetails } from "./output.ts";
-import type { ProjectCommandRepositoryState } from "./repository-state.ts";
 
 export interface ProjectCommandEvidenceProvenance {
   readonly scope: "session" | "flow";
@@ -26,57 +10,27 @@ export interface ProjectCommandEvidenceProvenance {
   readonly producerDelegationId?: string;
 }
 
-export interface ProjectCommandEvidencePublication {
-  readonly scope: "root" | "flow";
-  readonly flowId?: string;
-  readonly published: boolean;
-  readonly error?: string;
+function evidenceDigest(value: unknown): string {
+  try {
+    return hashCanonicalJson(value);
+  } catch {
+    return hashCanonicalJson({ type: typeof value });
+  }
 }
 
-export interface ProjectCommandEvidenceRecord {
-  readonly evidenceFormatVersion: typeof PROJECT_COMMAND_EVIDENCE_FORMAT_VERSION;
-  readonly key: string;
-  readonly ref: string;
-  readonly details: ProjectCommandOutputDetails;
-  readonly repositoryState?: ProjectCommandRepositoryState;
-  readonly covers: readonly string[];
-  readonly createdAt: number;
-  readonly producer?: typeof EVIDENCE_PRODUCER;
-  readonly kind?: SharedEvidenceKind;
-  readonly requestHash?: string;
-  readonly contentHash?: string;
-  readonly output?: SharedEvidenceOutputBlock;
-  readonly provenance: ProjectCommandEvidenceProvenance;
-  readonly publication?: ProjectCommandEvidencePublication;
-}
-
-export interface ProjectCommandEvidenceStore {
-  getByRef(ref: string, flowId?: string): ProjectCommandEvidenceRecord | undefined;
-  /** Classification for telemetry only; missing where corruption is not detectable. */
-  lookupOutcome?(ref: string, flowId?: string): "found" | "missing" | "corrupt";
-  set(record: ProjectCommandEvidenceRecord, flowId?: string): boolean;
-  publish(
-    ref: string,
-    flowId: string,
-    repositoryIdentity?: string,
-    publication?: ProjectCommandEvidencePublication,
-  ): boolean;
-  clear(): void;
-}
-
-export interface ProjectCommandEvidenceStoreOptions {
-  readonly rootDirectory?: string;
-}
-
-const safeKey = safeEvidenceKey;
-
-function projectCommandEvidenceDigest(
+/**
+ * Deterministic audit identifier for one executed command result. The
+ * identifier is derived from the result itself, so it needs no store: nothing
+ * resolves it, but error details, invocation records, and analyzer streams
+ * can still attribute executions across sessions.
+ */
+export function projectCommandEvidenceRef(
   details: Pick<
     ProjectCommandOutputDetails,
     "commandId" | "projectPath" | "parameters" | "status" | "category" | "stdout" | "stderr"
   >,
 ): string {
-  return safeKey({
+  const digest = evidenceDigest({
     commandId: details.commandId,
     projectPath: details.projectPath,
     parameters: details.parameters,
@@ -85,62 +39,5 @@ function projectCommandEvidenceDigest(
     stdout: details.stdout,
     stderr: details.stderr,
   });
-}
-
-export function createProjectCommandEvidenceRecord(
-  details: ProjectCommandOutputDetails,
-  options: Omit<
-    Partial<ProjectCommandEvidenceRecord>,
-    | "evidenceFormatVersion"
-    | "key"
-    | "ref"
-    | "details"
-    | "createdAt"
-    | "producer"
-    | "kind"
-    | "requestHash"
-    | "contentHash"
-    | "output"
-  > & {
-    readonly repositoryState?: ProjectCommandRepositoryState;
-    readonly provenance: ProjectCommandEvidenceProvenance;
-  },
-): ProjectCommandEvidenceRecord {
-  const digest = projectCommandEvidenceDigest(details);
-  const ref = `pc_${digest.slice(0, 24)}`;
-  return Object.freeze({
-    evidenceFormatVersion: PROJECT_COMMAND_EVIDENCE_FORMAT_VERSION,
-    key: safeKey({ ref, details }),
-    ref,
-    producer: EVIDENCE_PRODUCER,
-    kind: "project-command" as const,
-    requestHash: sharedEvidenceRequestHash({
-      commandId: details.commandId,
-      projectPath: details.projectPath,
-      parameters: details.parameters,
-    }),
-    contentHash: digest,
-    output: aggregateSharedEvidenceOutput([details.output.stdout, details.output.stderr]),
-    details: Object.freeze({ ...details, ref }),
-    ...(options.repositoryState === undefined ? {} : { repositoryState: options.repositoryState }),
-    covers: Object.freeze([...(options.covers ?? [])].slice(0, 64)),
-    createdAt: Date.now(),
-    provenance: options.provenance,
-    ...(options.publication === undefined ? {} : { publication: options.publication }),
-  });
-}
-
-export function createProjectCommandEvidenceStore(
-  options: ProjectCommandEvidenceStoreOptions = {},
-): ProjectCommandEvidenceStore {
-  return createProjectCommandEvidenceStoreInternal(
-    options,
-    isEvidenceRecord,
-    (rootDirectory, validate) =>
-      createProjectCommandDiskJsonCache(
-        rootDirectory === undefined ? {} : { rootDirectory },
-        validate,
-      ),
-    normalizeEvidenceRecord,
-  );
+  return `pc_${digest.slice(0, 24)}`;
 }

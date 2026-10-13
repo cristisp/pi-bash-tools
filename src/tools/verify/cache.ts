@@ -132,7 +132,15 @@ export function createVerifyEvidenceCache(
         },
       };
       const firstWrite = disk.publish(flowId, `ref:${published.ref}`, published);
-      return firstWrite ? published : undefined;
+      if (firstWrite) return published;
+      const existing = unwrapRef(disk.get(flowId, `ref:${published.ref}`), published.ref);
+      if (
+        existing !== undefined &&
+        existing.repositoryState?.repositoryIdentity === repositoryIdentity
+      ) {
+        return existing;
+      }
+      return undefined;
     },
   };
 }
