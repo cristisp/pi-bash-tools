@@ -221,6 +221,73 @@ describe("pruneEvidenceCaches", () => {
     expect(summary.reclaimedTempFiles).toBe(2);
   });
 
+  function createClaimLock(
+    root: string,
+    scopeName: string,
+    name: string,
+    ageMs: number,
+    now: number,
+  ): string {
+    const directory = join(root, "flows", scopeName, "project-command");
+    mkdirSync(directory, { recursive: true });
+    const claimPath = join(directory, name);
+    mkdirSync(claimPath);
+    const ownerPath = join(claimPath, "owner-abc123.token");
+    writeFileSync(ownerPath, "token", { encoding: "utf8" });
+    const past = new Date(now - ageMs);
+    utimesSync(ownerPath, past, past);
+    utimesSync(claimPath, past, past);
+    return claimPath;
+  }
+
+  it("reclaims stale claim locks and keeps fresh ones", async () => {
+    const root = await createRoot("bash-tools-cache-prune-claims-");
+    const now = 1_000_000;
+    const staleClaim = createClaimLock(root, "flow-a", "a".repeat(64) + ".claim", 60_000, now);
+    const freshClaim = createClaimLock(root, "flow-b", "b".repeat(64) + ".claim", 0, now);
+
+    const summary = pruneEvidenceCaches({ rootDirectory: root, now: () => now });
+
+    expect(summary.ownership).toBe("pruned");
+    expect(summary.reclaimedStaleClaims).toBe(1);
+    expect(existsSync(staleClaim)).toBe(false);
+    expect(existsSync(freshClaim)).toBe(true);
+  });
+
+  it("reclaims abandoned claim temp directories", async () => {
+    const root = await createRoot("bash-tools-cache-prune-claim-temps-");
+    const now = 1_000_000;
+    const directory = join(root, "flows", "flow-a", "project-command");
+    mkdirSync(directory, { recursive: true });
+    const abandoned = join(directory, `${"c".repeat(64)}.claim.1234.${"f".repeat(16)}.tmp`);
+    mkdirSync(abandoned);
+    writeFileSync(join(abandoned, "owner-def456.token"), "token", { encoding: "utf8" });
+    const past = new Date(now - 60_000);
+    utimesSync(abandoned, past, past);
+
+    const summary = pruneEvidenceCaches({ rootDirectory: root, now: () => now });
+
+    expect(summary.ownership).toBe("pruned");
+    expect(summary.reclaimedStaleClaims).toBe(1);
+    expect(existsSync(abandoned)).toBe(false);
+  });
+
+  it("removes empty flow directory trees and keeps non-empty ones", async () => {
+    const root = await createRoot("bash-tools-cache-prune-empty-dirs-");
+    const now = 1_000_000;
+    createFlowRecord(root, "flow-gone", "expired.json", 10, 8 * 24 * 60 * 60 * 1_000, now);
+    createFlowRecord(root, "flow-kept", "fresh.json", 10, 0, now);
+
+    const summary = pruneEvidenceCaches({ rootDirectory: root, now: () => now });
+
+    expect(summary.ownership).toBe("pruned");
+    expect(summary.removedEmptyDirectories).toBe(2);
+    expect(existsSync(join(root, "flows", "flow-gone"))).toBe(false);
+    expect(existsSync(join(root, "flows", "flow-kept", "project-command", "fresh.json"))).toBe(
+      true,
+    );
+  });
+
   it("tolerates a missing cache root and scope folders without family directories", async () => {
     const missing = pruneEvidenceCaches({
       rootDirectory: join(await createRoot("bash-tools-cache-prune-missing-"), "none"),

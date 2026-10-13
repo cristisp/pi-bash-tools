@@ -12,8 +12,9 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
-const CACHE_LOCK_TIMEOUT_MS = 30_000;
+export const CACHE_LOCK_TIMEOUT_MS = 30_000;
 const CACHE_LOCK_RETRY_MS = 10;
+const CLAIM_TEMP_PATTERN = /\.claim\.\d+\.[0-9a-f]{16}\.tmp$/u;
 const CACHE_LOCK_WAIT_BUFFER = new Int32Array(new SharedArrayBuffer(4));
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -222,6 +223,80 @@ export function reclaimOrphanTemps(
     }
   }
   return { removedFiles, removedBytes };
+}
+
+export interface StaleClaimReclaimResult {
+  readonly removedClaims: number;
+  readonly removedBytes: number;
+}
+
+function entrySize(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+function directoryBytes(path: string): number {
+  try {
+    let total = 0;
+    for (const name of readdirSync(path)) total += entrySize(join(path, name));
+    return total;
+  } catch {
+    return 0;
+  }
+}
+
+/** Reclaim claim-lock directories and abandoned claim temp directories left by dead sessions. */
+export function reclaimStaleClaims(
+  directory: string,
+  now: number,
+  maxIdleMs: number,
+): StaleClaimReclaimResult {
+  let entries;
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return { removedClaims: 0, removedBytes: 0 };
+  }
+  let removedClaims = 0;
+  let removedBytes = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const isClaim = entry.name.endsWith(".claim");
+    if (!isClaim && !CLAIM_TEMP_PATTERN.test(entry.name)) continue;
+    const claimPath = join(directory, entry.name);
+    let idleMs: number;
+    if (isClaim) {
+      const ownerPath = ownerPathIn(claimPath);
+      if (ownerPath === undefined) {
+        try {
+          idleMs = now - statSync(claimPath).mtimeMs;
+        } catch {
+          continue;
+        }
+      } else {
+        try {
+          idleMs = now - statSync(ownerPath).mtimeMs;
+        } catch {
+          continue;
+        }
+        removedBytes += entrySize(ownerPath);
+      }
+    } else {
+      try {
+        idleMs = now - statSync(claimPath).mtimeMs;
+      } catch {
+        continue;
+      }
+      removedBytes += directoryBytes(claimPath);
+    }
+    if (idleMs <= maxIdleMs) continue;
+    removeLockPath(claimPath);
+    removedClaims += 1;
+  }
+  return { removedClaims, removedBytes };
 }
 
 export function evictDirectory(
